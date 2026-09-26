@@ -59,7 +59,7 @@ struct ProgressScreen: View {
         Group {
             if layout == .sidebar {
                 HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 24) {
                         header
                         progressBar
                         stats
@@ -73,7 +73,7 @@ struct ProgressScreen: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 24) {
                     header
                     progressBar
                     stats
@@ -175,7 +175,7 @@ struct ProgressScreen: View {
         if !items.isEmpty {
             // Adaptive columns reflow at narrow widths and large text sizes.
             LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 120), alignment: .topLeading)],
+                columns: [GridItem(.adaptive(minimum: 150), alignment: .topLeading)],
                 alignment: .leading,
                 spacing: 10
             ) {
@@ -191,9 +191,10 @@ struct ProgressScreen: View {
                     }
                     .frame(minHeight: 38, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityElement(children: .combine)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(items.map { "\($0.id), \($0.value)" }.joined(separator: ", "))
         }
     }
 
@@ -272,11 +273,11 @@ struct ProgressScreen: View {
         if let line = presentation.issueLine {
             Label(line, systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(ResultStatusTone.warning.color)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                .background(ResultStatusTone.warning.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -285,16 +286,11 @@ struct ProgressScreen: View {
     @ViewBuilder
     private var destinationList: some View {
         if !presentation.destinations.isEmpty {
-            // Two columns at toolbar width; the sidebar layout already puts
-            // the backups in their own column.
-            let columns = layout == .toolbar
-                ? [GridItem(.flexible(), alignment: .topLeading), GridItem(.flexible(), alignment: .topLeading)]
-                : [GridItem(.flexible(), alignment: .topLeading)]
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
                 Text("Backups")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 12) {
                     ForEach(presentation.destinations) { row in
                         DestinationProgressRowView(row: row, tint: presentation.tone.color)
                     }
@@ -312,7 +308,7 @@ struct ProgressScreen: View {
                 ForEach(presentation.deviceNotes, id: \.self) { note in
                     Label(note.text, systemImage: note.symbol)
                         .font(.footnote)
-                        .foregroundStyle(note.isWarning ? Color.orange : Color.secondary)
+                        .foregroundStyle(note.isWarning ? ResultStatusTone.warning.color : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -325,19 +321,19 @@ private struct DestinationProgressRowView: View {
     let tint: Color
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Image(systemName: row.symbol)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
                 Text(row.name)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                Text(row.stateLabel)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
+                Label(row.stateLabel, systemImage: row.symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.12), in: Capsule())
             }
             ProgressView(value: row.fraction ?? 0)
                 .progressViewStyle(.linear)
@@ -347,10 +343,17 @@ private struct DestinationProgressRowView: View {
                 Text(row.path)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Spacer(minLength: 8)
+                    .help(row.path)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 16)
                 if let count = row.countText {
                     Text(count)
                         .monospacedDigit()
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Color.primary.opacity(0.06), in: Capsule())
                 }
             }
             .font(.caption)
@@ -363,5 +366,12 @@ private struct DestinationProgressRowView: View {
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Backup \(row.name), \(row.stateLabel)")
         .accessibilityValue(row.countText ?? "")
+    }
+
+    private var statusColor: Color {
+        switch row.state {
+        case .waiting, .copied: .secondary
+        case .copying, .verifying: tint
+        }
     }
 }

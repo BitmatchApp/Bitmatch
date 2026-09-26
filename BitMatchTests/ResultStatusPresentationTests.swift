@@ -99,6 +99,12 @@ final class ResultStatusPresentationTests: XCTestCase {
         }
     }
 
+    func testConnectionAndDocumentDeliverySuccessStayNeutral() {
+        XCTAssertEqual(NonVerificationSuccessPresentation.tone, .neutral)
+        XCTAssertNotEqual(NonVerificationSuccessPresentation.tone, .verified)
+        XCTAssertNotEqual(NonVerificationSuccessPresentation.tone.color, .green)
+    }
+
     // MARK: - Photographer card states
 
     func testOnlyLocallySafeCardIsGreen() {

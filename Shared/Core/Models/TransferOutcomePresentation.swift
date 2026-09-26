@@ -87,6 +87,36 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     var canEject: Bool { safetyState.canEject }
     var showsBackupRowsInline: Bool { safetyState == .needsAttention && !destinations.isEmpty }
 
+    /// Guidance that is not already stated in the detail line. This is part
+    /// of the visible banner, so every unsafe finish explicitly tells the
+    /// user to keep the card without repeating the same sentence twice.
+    var bannerGuidance: String? {
+        verdict.detail.localizedCaseInsensitiveContains("erase") ? nil : guidance
+    }
+
+    /// Exactly the words visible in the verdict banner, kept testable apart
+    /// from SwiftUI rendering.
+    var visibleVerdictText: String {
+        [cardName, finishTitle, verdict.detail, bannerGuidance]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+
+    /// The verdict words shown separately from the card name on Finish.
+    var finishTitle: String {
+        switch safetyState {
+        case .safeToErase: "is safe to erase"
+        case .copiedNotVerified: "copied, not verified"
+        case .needsAttention: "needs attention"
+        case .failed: "Transfer failed"
+        case .interrupted: "Transfer interrupted"
+        case .waiting: "is waiting"
+        case .preparing: "is preparing"
+        case .copying: "is copying"
+        case .verifying: "is verifying"
+        }
+    }
+
     static func shouldAutoEject(safetyState: CardSafetyState) -> Bool {
         safetyState.canEject
     }
@@ -165,7 +195,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 cardName: card,
                 sourceFileCount: sourceFileCount ?? sourceEvidence.fileCount,
                 sourceBytes: sourceBytes ?? sourceEvidence.bytes,
-                destinations: destinationNames,
+                destinations: destinationNames.map { shortenedDestinationName($0) },
                 algorithm: algorithm,
                 duration: duration,
                 reason: reason,
@@ -230,7 +260,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         let name = URL(fileURLWithPath: row.path).lastPathComponent
         let status = statusLabel(for: row.status)
         let size = ByteCountPresentation.fileSize(row.size)
-        guard let destination = destinationName ?? row.destination, !destination.isEmpty else {
+        let destination = destinationName ?? row.destination
+        guard let destination, !destination.isEmpty else {
             return "\(name), \(status), \(size)"
         }
         return "\(name), \(status), \(size), \(destination)"
@@ -338,15 +369,26 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         DestinationIdentityPresentation.title(for: destination)
     }
 
+    static func shortenedDestinationName(_ name: String, limit: Int = 28) -> String {
+        let characters = Array(name)
+        guard limit >= 5, characters.count > limit else { return name }
+        let visible = limit - 1
+        let leading = (visible + 1) / 2
+        let trailing = visible / 2
+        return String(characters.prefix(leading)) + "…" + String(characters.suffix(trailing))
+    }
+
     static func destinationLabel(_ destination: URL) -> String {
         let components = destination.standardizedFileURL.pathComponents
-        guard let index = components.firstIndex(of: "Volumes"), index + 1 < components.count else {
+        guard components.count >= 3,
+              components[0] == "/",
+              components[1] == "Volumes" else {
             let drive = destinationDriveName(destination)
             let folder = destination.lastPathComponent
             return folder.isEmpty || folder == drive ? drive : "\(drive) › \(folder)"
         }
-        let drive = components[index + 1]
-        let folderComponents = components.dropFirst(index + 2)
+        let drive = components[2]
+        let folderComponents = components.dropFirst(3)
         return folderComponents.isEmpty ? drive : "\(drive) › \(folderComponents.joined(separator: "/"))"
     }
 
@@ -377,7 +419,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 let summaries = DestinationResultSummary.make(rows: rows, destinations: destinations)
                     .filter { $0.issueCount > 0 }
                 if summaries.count == 1, let summary = summaries.first {
-                    let name = destinationDriveName(URL(fileURLWithPath: summary.id, isDirectory: true))
+                    let name = shortenedDestinationName(
+                        destinationDriveName(URL(fileURLWithPath: summary.id, isDirectory: true))
+                    )
                     let files = summary.issueCount == 1 ? "1 file failed" : "\(summary.issueCount) files failed"
                     return "\(files) on \(name)"
                 }

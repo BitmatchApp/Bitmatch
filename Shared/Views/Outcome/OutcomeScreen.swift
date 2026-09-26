@@ -83,7 +83,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 24) {
             verdictHeader
             actionButtons
             destinationList
@@ -118,26 +118,34 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
 
     // MARK: Verdict
 
-    /// The one state nobody can miss: a large icon and headline on a tinted
+    /// The one state nobody can miss: a clear icon and headline on a tinted
     /// banner, so "safe to erase" reads as a verdict, not a status line.
     private var verdictHeader: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: presentation.verdict.symbol)
-                .font(.system(size: 40, weight: .semibold))
+                .font(.system(size: 32, weight: .semibold))
+                .frame(width: 44, height: 44)
                 .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white : presentation.safetyState.tint.color)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(presentation.verdict.title)
-                    .font(.title.weight(.bold))
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(presentation.cardName)
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white.opacity(0.82) : Color.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(presentation.cardName)
+                Text(presentation.finishTitle)
+                    .font(.title2.weight(.semibold))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
                 Text(presentation.verdict.detail)
                     .font(.subheadline)
                     .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white.opacity(0.9) : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
-                if !presentation.safetyState.isSafe {
-                    Text(presentation.guidance)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(presentation.safetyState.tint.color)
+                if let guidance = presentation.bannerGuidance {
+                    Text(guidance)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white.opacity(0.9) : Color.primary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -163,14 +171,14 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                 }
             }
         }
-        .padding(16)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white : Color.primary)
         .background(
             presentation.safetyState == .safeToErase
                 ? presentation.safetyState.tint.color
                 : presentation.safetyState.tint.color.opacity(0.12),
-            in: RoundedRectangle(cornerRadius: 14)
+            in: RoundedRectangle(cornerRadius: 10)
         )
     }
 
@@ -219,17 +227,17 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     // MARK: Actions
 
     private var actionButtons: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if let notice {
                 Label(notice, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(ResultStatusTone.warning.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let exportError {
                 Label(exportError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(ResultStatusTone.warning.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -260,7 +268,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
             if let ejectError {
                 Label(ejectError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(ResultStatusTone.warning.color)
             }
         }
         .disabled(isBusy)

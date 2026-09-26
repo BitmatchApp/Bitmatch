@@ -189,6 +189,17 @@ struct TransferOutcomePresentationTests {
 
         #expect(outcome.verdict.detail == "1 file · 100 bytes verified on A and B · SHA-256 · 1m 15s")
         #expect(outcome.destinations.map(\.title) == ["A › Backup", "B › Backup"])
+        #expect(outcome.finishTitle == "is safe to erase")
+    }
+
+    @Test func longBackupNamesAreMiddleTruncatedInTheFinishSubtitle() {
+        let longName = "Production Backup With A Very Long Distinguishing End"
+        let shortened = TransferOutcomePresentation.shortenedDestinationName(longName)
+
+        #expect(shortened.count == 28)
+        #expect(shortened.contains("…"))
+        #expect(shortened.hasPrefix("Production Bac"))
+        #expect(shortened.hasSuffix("nguishing End"))
     }
 
     @Test func singleCardCopySummaryCarriesItsOwnVerdict() {
@@ -282,6 +293,29 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.verdict.detail == "The journal could not be saved. Do not erase the card.")
         #expect(outcome.showsNewTransfer)
         #expect(!outcome.showsBackupRowsInline)
+    }
+
+    /// The banner fields are the visible finish verdict. Every non-safe
+    /// terminal state must explicitly warn against erasing, and none may
+    /// expose Eject or verified green.
+    @Test func everyUnsafeFinishVisiblySaysNotToErase() {
+        let quickRows = [row("A001.mov", .copiedUnverified, backup: backupA)]
+        let failedRows = [row("A001.mov", .failed, backup: backupA)]
+        let outcomes = [
+            make(
+                state: .completed(.init(success: false, message: "All files copied", copiedNotVerified: true)),
+                rows: quickRows
+            ),
+            make(state: .completed(.init(success: false, message: "1 file failed")), rows: failedRows),
+            make(state: .failed, rows: failedRows, hasErrors: true),
+            make(state: .cancelled, rows: partialRows),
+        ]
+
+        for outcome in outcomes {
+            #expect(outcome.visibleVerdictText.localizedCaseInsensitiveContains("erase"), "\(outcome.safetyState)")
+            #expect(!outcome.canEject, "\(outcome.safetyState)")
+            #expect(outcome.safetyState.tint != .green, "\(outcome.safetyState)")
+        }
     }
 
     @Test func copySummaryIsOneLineForEverySafetyState() {
@@ -419,5 +453,14 @@ struct ResultRowAccessibilityLabelTests {
         )
         #expect(summary.contains("Empty"))
         #expect(!summary.contains("Zero KB"))
+    }
+
+    @Test func labelUsesPresentedDriveNameInsteadOfFolderFallback() {
+        let label = TransferOutcomePresentation.accessibilityLabel(
+            for: row(status: .verified, destination: "bitmatch_dst_UUID"),
+            destinationName: "Macintosh HD"
+        )
+        #expect(label.hasSuffix(", Macintosh HD"))
+        #expect(!label.contains("bitmatch_dst_UUID"))
     }
 }

@@ -64,6 +64,8 @@ enum MacWindowHeightPolicy {
     static let setupChrome: CGFloat = chrome
     /// Gap between sections in every shared screen.
     static let gap: CGFloat = 24
+    /// Gap between sections on the shared screens in this polish pass.
+    static let sectionGap: CGFloat = 24
 
     /// The window height for `screen`, between the window's minimum and the
     /// smaller of its maximum and `available` (the screen's visible height
@@ -95,13 +97,13 @@ enum MacWindowHeightPolicy {
             let title: CGFloat = compact ? 60 : 42
             let advanced: CGFloat = 68 + (advancedExpanded ? 150 : 0)
             let start: CGFloat = 58
-            return chrome + title + locations + advanced + start + 3 * gap
+            return chrome + title + locations + advanced + start + 3 * sectionGap
         case .masterReport:
             // Setup: wrapped header, drive label and picker, Day row and
             // hint, then the padded action button. Scan results scroll.
             let title: CGFloat = windowWidth < 680 ? 80 : 60
             let locations: CGFloat = 28 + 16 + 120 + 44 + 16 + 3 * 12
-            return chrome + title + locations + 58 + 2 * gap
+            return chrome + title + locations + 58 + 2 * sectionGap
         }
     }
 
@@ -152,25 +154,25 @@ enum MacWindowHeightPolicy {
         let width = windowWidth - 40
         let layout = AdaptiveNavigationPolicy.presentation(for: width)
         let backups = max(backups, 1)
-        // "Backups" heading (25) and 73 pt rows, 10 apart.
-        func backupList(rows: Int) -> CGFloat { 25 + CGFloat(rows) * 73 + CGFloat(rows - 1) * 10 }
+        // "Backups" heading (25) and 73 pt rows, 12 apart.
+        func backupList(rows: Int) -> CGFloat { 25 + CGFloat(rows) * 73 + CGFloat(rows - 1) * 12 }
         // Live results under the screen: gap, header row (41), and the
         // table's 200 pt minimum; it grows as rows arrive, then scrolls.
-        let liveResults: CGFloat = 16 + 241
+        let liveResults: CGFloat = sectionGap + 241
         let screen: CGFloat
         switch layout {
         case .compact:
             // Header 68 (detail wraps), bar 12, stats in two rows 76,
             // stacked Pause and Cancel 66, current file 16, note 16.
             let fixed: CGFloat = 68 + 12 + 76 + 66 + 16 + 16
-            screen = fixed + backupList(rows: backups) + 7 * gap
+            screen = fixed + backupList(rows: backups) + 7 * sectionGap
         case .toolbar:
-            // Header 52, bar 12, stats in one row 34, controls 28, file 16,
-            // backups in two columns, note 16.
-            let fixed: CGFloat = 52 + 12 + 34 + 28 + 16 + 16
-            screen = fixed + backupList(rows: (backups + 1) / 2) + 7 * gap
+            // Header 52, bar 12, stats in up to two rows 76, controls 28,
+            // file 16, full-width backup rows, note 16.
+            let fixed: CGFloat = 52 + 12 + 76 + 28 + 16 + 16
+            screen = fixed + backupList(rows: backups) + 7 * sectionGap
         case .sidebar:
-            let run: CGFloat = 52 + 12 + 34 + 28 + 16 + 16 + 80 // 5 gaps
+            let run: CGFloat = 52 + 12 + 34 + 28 + 16 + 16 + 5 * sectionGap
             screen = max(run, backupList(rows: backups))
         }
         return chrome + screen + liveResults
@@ -196,14 +198,14 @@ enum MacWindowHeightPolicy {
             // Verdict 130 (title, wrapped detail and guidance, duration);
             // three stacked buttons and the note 130.
             let fixed: CGFloat = 130 + 130
-            screen = fixed + backupList(rows: backups) + disclosures + 5 * gap
+            screen = fixed + backupList(rows: backups) + disclosures + 5 * sectionGap
         case .toolbar:
             // Verdict 100; buttons in a row with the note 54.
             let fixed: CGFloat = 100 + 54
-            screen = fixed + backupList(rows: (backups + 1) / 2) + disclosures + 5 * gap
+            screen = fixed + backupList(rows: (backups + 1) / 2) + disclosures + 5 * sectionGap
         case .sidebar:
-            let verdictColumn: CGFloat = 100 + 54 + 20 + 48 // 3 gaps
-            screen = max(verdictColumn, backupList(rows: backups) + gap + 20)
+            let verdictColumn: CGFloat = 100 + 54 + 20 + 3 * sectionGap
+            screen = max(verdictColumn, backupList(rows: backups) + sectionGap + 20)
         }
         return chrome + screen + attention
     }

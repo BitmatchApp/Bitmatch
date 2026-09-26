@@ -47,8 +47,10 @@ struct TransferLibraryView: View {
     var body: some View {
         NavigationStack {
             listContent
+                #if os(macOS)
+                .navigationTitle("")
+                #else
                 .navigationTitle("Transfers")
-                #if os(iOS)
                 .navigationBarTitleDisplayMode(.inline)
                 #endif
                 .toolbar { toolbarContent }
@@ -70,18 +72,24 @@ struct TransferLibraryView: View {
     @ViewBuilder
     private var listContent: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 12) {
+                #if os(macOS)
+                Text("Transfers")
+                    .font(.title3.weight(.semibold))
+                    .accessibilityAddTraits(.isHeader)
+                #endif
                 Picker("Transfers", selection: $showHistory) {
                     Text("Queue (\(tabCounts.queue))").tag(false)
                     Text("History (\(tabCounts.history))").tag(true)
                 }
                 .pickerStyle(.segmented)
+                .tint(.secondary)
                 .labelsHidden()
 
                 if let message = coordinator.queueMessage ?? journal.persistenceError ?? errorMessage {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.callout)
-                        .foregroundStyle(.orange)
+                        .foregroundStyle(ResultStatusTone.warning.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
                 if !showHistory {
@@ -94,8 +102,7 @@ struct TransferLibraryView: View {
                 }
             }
             .padding(.horizontal)
-            .padding(.top, 8)
-            .padding(.bottom, 4)
+            .padding(.vertical, 12)
 
             if visibleRecords.isEmpty {
                 ContentUnavailableView(
@@ -352,7 +359,7 @@ private struct ReauthorizeLocationsView: View {
                                 } else if stale?.contains(location.index) == true && !location.identityCanBeConfirmed {
                                     Label("Cannot reconnect", systemImage: "exclamationmark.triangle")
                                         .font(.callout)
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(ResultStatusTone.warning.color)
                                         .labelStyle(.titleAndIcon)
                                 } else if stale?.contains(location.index) == true {
                                     Button("Choose") {
@@ -362,7 +369,7 @@ private struct ReauthorizeLocationsView: View {
                                 } else {
                                     Label("Connected", systemImage: "checkmark.circle.fill")
                                         .font(.callout)
-                                        .foregroundStyle(.green)
+                                        .foregroundStyle(NonVerificationSuccessPresentation.tone.color)
                                         .labelStyle(.iconOnly)
                                 }
                             }
@@ -481,7 +488,7 @@ private struct AddQueuedTransferView: View {
                     Text("Creates a one-time transfer using the current report settings. Locations and free space are checked again before copying.")
                         .font(.callout).foregroundStyle(.secondary)
                 }
-                if let errorMessage { Text(errorMessage).foregroundStyle(.orange) }
+                if let errorMessage { Text(errorMessage).foregroundStyle(ResultStatusTone.warning.color) }
             }
             .formStyle(.grouped)
             .navigationTitle("Add transfer")

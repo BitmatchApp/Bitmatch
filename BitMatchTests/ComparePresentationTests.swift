@@ -34,6 +34,12 @@ struct ComparePresentationTests {
         #expect(slot.sizeText?.contains("Zero KB") == false)
     }
 
+    @Test func folderLabelsExplainRolesAndSafety() {
+        #expect(ComparePresentation.referenceFolderLabel == "Reference folder")
+        #expect(ComparePresentation.folderToCheckLabel == "Folder to check")
+        #expect(ComparePresentation.nonDestructiveMessage == "Compare does not change either folder.")
+    }
+
     // MARK: Readiness
 
     /// Plant: in `CompareReadiness.resolve`, delete the line
@@ -272,7 +278,7 @@ struct ComparePresentationTests {
     func emptyScreenHighlightsLeftFirst() {
         let presentation = Self.screen(left: Self.emptySlot, right: Self.emptySlot)
         #expect(presentation.nextStep == .chooseLeft)
-        #expect(presentation.actionTitle == "Choose the left folder to compare")
+        #expect(presentation.actionTitle == "Choose the reference folder")
         #expect(!presentation.readiness.canStart)
     }
 
@@ -283,7 +289,7 @@ struct ComparePresentationTests {
     func rightChosenFirstStillHighlightsLeft() {
         let presentation = Self.screen(left: Self.emptySlot, right: Self.loaded(Self.backup))
         #expect(presentation.nextStep == .chooseLeft)
-        #expect(presentation.actionTitle == "Choose the left folder to compare")
+        #expect(presentation.actionTitle == "Choose the reference folder")
     }
 
     /// Left chosen: the highlight moves to Right.
@@ -293,7 +299,7 @@ struct ComparePresentationTests {
     func leftChosenHighlightsRight() {
         let presentation = Self.screen(left: Self.loaded(Self.card), right: Self.emptySlot)
         #expect(presentation.nextStep == .chooseRight)
-        #expect(presentation.actionTitle == "Choose the right folder to compare")
+        #expect(presentation.actionTitle == "Choose the folder to check")
         #expect(!presentation.readiness.canStart)
     }
 

@@ -35,7 +35,7 @@ struct CompareScreen: View {
         Group {
             if layout == .sidebar, case .finished = presentation.phase {
                 HStack(alignment: .top, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 24) {
                         header
                         folders
                         controls
@@ -45,7 +45,7 @@ struct CompareScreen: View {
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 24) {
                     header
                     folders
                     controls
@@ -74,7 +74,7 @@ struct CompareScreen: View {
             Text("Compare folders")
                 .font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
-            Text("Check that a backup holds every file from the folder you trust, unchanged.")
+            Text(ComparePresentation.nonDestructiveMessage)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -86,11 +86,11 @@ struct CompareScreen: View {
     private var folders: some View {
         let stack = layout == .compact
             ? AnyLayout(VStackLayout(spacing: 12))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 16))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
         return stack {
             CompareFolderSlotView(
-                side: "Left folder",
-                role: "The one you trust",
+                side: ComparePresentation.referenceFolderLabel,
+                role: "The folder you trust",
                 detail: "The folder you trust",
                 slot: presentation.left,
                 isEditable: presentation.allowsEditing,
@@ -100,16 +100,16 @@ struct CompareScreen: View {
                 drop: actions.dropLeft
             )
             if layout != .compact {
-                Image(systemName: "arrow.right")
+                Image(systemName: "arrow.left.arrow.right")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .padding(.top, 34)
                     .accessibilityHidden(true)
             }
             CompareFolderSlotView(
-                side: "Right folder",
-                role: "Checked against the left",
-                detail: "The copy to check",
+                side: ComparePresentation.folderToCheckLabel,
+                role: "Compared with the reference",
+                detail: "The folder to check",
                 slot: presentation.right,
                 isEditable: presentation.allowsEditing,
                 isNextStep: presentation.nextStep == .chooseRight,
@@ -132,19 +132,19 @@ struct CompareScreen: View {
                 verificationMode: $verificationMode
             )
             .padding(12)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
 
             VStack(alignment: .leading, spacing: 8) {
                 compareButton
                 if let message = presentation.blockMessage {
                     Label(message, systemImage: "exclamationmark.triangle.fill")
                         .font(.footnote)
-                        .foregroundStyle(Color.orange)
+                        .foregroundStyle(ResultStatusTone.warning.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
             .padding(12)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -189,7 +189,7 @@ struct CompareScreen: View {
                     CompareVerdictHeader(verdict: verdict)
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
                 }
             }
         }
@@ -381,7 +381,7 @@ private struct CompareProgressSection: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 
