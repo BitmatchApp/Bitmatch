@@ -443,6 +443,7 @@ struct SetupLocationPicker: View {
                         )
                 )
         )
+        .nextStepHighlight(isHighlighted && isEnabled && !isTargeted, cornerRadius: 10)
         .opacity(isEnabled ? 1 : 0.65)
     }
 }

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-26
+
+A redesign release. On Mac, BitMatch is now one window that changes as you work: pick a card, pick backups, Start, and it tells you in plain words when the card is safe to erase. Queue the next card right from the main screen, see past transfers in History, and get a notification when a card is done. Verification now reads the backup drive itself rather than a copy left in memory, and a transfer only counts as complete when every file is verified at its exact place on every backup. Settings, Compare, Master Report and the iPad layout were rebuilt to match, and the copy and verify engine is one Swift 6 package shared by every platform.
+
+- Safety: verification reads the backup drive, not memory. Copies are written past the system cache and flushed to the drive (F_FULLFSYNC, then the folder), so the verify pass cannot pass by re-reading data still held in RAM.
 - Redesign the Mac as one morphing window with native toolbar controls, compact live progress, inline queue editing, in-window History, and fail-safe PDF verdicts.
 - Polish the Mac transfer setup with a unified toolbar, compact drive and queue panels, clearer capacity and empty-source wording, and close and Quit protection during transfers.
 - Polish Copying, Finish, Transfers, Settings, Compare, and Master Report with calmer native layouts, clearer folder labels, and accessible status details.
@@ -11,18 +16,13 @@ All notable changes to this project will be documented in this file.
 - Finish the inline Transfer Queue with per-card safety states, pause and recovery controls, queue summaries, notifications, and Dock attention counts.
 - Finish and Transfers now share one fail-safe card state, show Copy Summary for every outcome, keep finished records in History, and reserve green and Eject for checksum-verified cards.
 - Settings now use the native Mac Settings window and add notification, queue, safe-eject and sound preferences; notification permission is offered after the first transfer starts, and File gains New Transfer and safety-gated Eject shortcuts.
-
-## [0.2.0] - 2026-09-26
-
-A redesign release. BitMatch now tells you, in plain words, when a card is safe to erase, and shows it on the Dock while you work. The Mac main screen lists your connected cards and drives and lets you queue card after card. Settings, the Transfers list, Compare, Master Report and the iPad layout were rebuilt to match, reports paginate cleanly, and the copy and verify engine is now one Swift 6 package shared by every platform.
-
 - iPad: Larger mode controls and source/backup pickers at regular widths, plus the three latest transfers below Copy & Verify setup with access to the Transfers sheet.
 - Compare Folders and Master Report now share Copy & Verify’s grouped location pickers and full-width action panels on Mac, iPad, and iPhone.
 - Reports: PDF pages keep file rows together, repeat column headers, and show page numbers while rendering one page at a time on Mac, iPad, and iPhone.
 - Mac: Queue cards from setup while keeping backups, run the queue from its compact strip, and queue connected cards during a one-time transfer.
 - Mac: Copy & Verify setup shows connected cards and drives with capacity, selection status, and one-click card and backup actions.
 - Transfers: the sheet is redesigned as a compact, native-looking list (Mac, iPad, iPhone) — one row per transfer with a colored status pill, a trailing "..." menu and swipe/context actions in place of stacks of buttons, a Queue/History segmented control with counts, plain empty states, and search that only appears for History (once it has records) and never grabs focus. Every existing action (retry, retry without ASC MHL, reconnect, export, remove from queue, per-file details) is still reachable.
-- Finish screen: a big, unmistakable verdict (green "is safe to erase" only when every file on every backup was checksum verified; blue "copied, not verified" for Quick mode; amber "needs attention" for issues; red "Transfer failed"), plain-language safety guidance in place of the old jargon lines, a prominent Eject button on Mac when the source is a removable card (secondary with a caution line for anything short of fully verified, never shown on iPad/iPhone), an optional "eject automatically when it's safe to erase" preference (Mac only, off by default, and gated the same way as the button), and a small "Notify me when a transfer ends" toggle that requests notification permission when turned on.
+- Finish screen: a big, unmistakable verdict (green "is safe to erase" only when every file on every backup was checksum verified; amber "copied, not verified" for Quick mode; amber "needs attention" for issues; red "Transfer failed"), plain-language safety guidance in place of the old jargon lines, a prominent Eject button on Mac when the source is a removable card (secondary with a caution line for anything short of fully verified, never shown on iPad/iPhone), an optional "eject automatically when it's safe to erase" preference (Mac only, off by default, and gated the same way as the button), and a small "Notify me when a transfer ends" toggle that requests notification permission when turned on.
 - New app icon: twelve segments turning blue to green around a check. Mac: the Dock icon shows transfer progress (segments light up, percent in the middle), then the verdict: a green check when every file on every backup verified, amber when something needs a look, red when it failed. It stays until the next transfer.
 - Setup: project fields show clear examples ("e.g. Day 3") instead of names that looked filled in, missing fields are listed in one line ("Still needed: client, job name and camera."), and the mode is called Copy & Verify on Mac, iPad and iPhone.
 - Wording: Transfer results now read plainly instead of repeating engine language ("Operation completed successfully; contents have not been checksum verified." is now "All files copied. Not verified: Quick mode only compares file sizes."). Queue and history summaries no longer say the same thing twice. "File results" wording throughout the outcome screen and per-backup summaries is now just "files".
