@@ -14,7 +14,8 @@ struct UnreadableMediaNoticeTests {
         volumeKind: String? = nil,
         isLeaf: Bool = true,
         isRemovable: Bool = true,
-        isInternal: Bool = false
+        isInternal: Bool = false,
+        content: String? = nil
     ) -> UnreadableMediaNotice.Media {
         UnreadableMediaNotice.Media(
             bsdName: "disk9s1",
@@ -24,8 +25,20 @@ struct UnreadableMediaNoticeTests {
             volumeKind: volumeKind,
             isLeaf: isLeaf,
             isRemovable: isRemovable,
-            isInternal: isInternal
+            isInternal: isInternal,
+            content: content
         )
+    }
+
+    /// An APFS external drive's physical-store partition has no file system
+    /// of its own; it is not an unreadable card. Fails if the container
+    /// partition check is removed from `UnreadableMediaNotice.make`.
+    @Test func apfsAndOtherContainerPartitionsGetNoNotice() {
+        #expect(UnreadableMediaNotice.make(for: media(model: "Disk Image", content: "7C3457EF-0000-11AA-AA11-00306543ECAC")) == nil)
+        #expect(UnreadableMediaNotice.make(for: media(model: "T7 Shield", content: "Apple_APFS")) == nil)
+        #expect(UnreadableMediaNotice.make(for: media(model: "SSD", content: "426f6f74-0000-11aa-aa11-00306543ecac")) == nil)
+        // An unknown partition type is still explained.
+        #expect(UnreadableMediaNotice.make(for: media(model: "Card", content: "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7")) != nil)
     }
 
     /// Fails if the SxS match is removed from `UnreadableMediaNotice.make`.

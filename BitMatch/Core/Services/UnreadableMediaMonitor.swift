@@ -20,7 +20,20 @@ struct UnreadableMediaNotice: Equatable, Identifiable {
         let isLeaf: Bool
         let isRemovable: Bool
         let isInternal: Bool
+        /// The partition type (GUID or name), or nil.
+        var content: String? = nil
     }
+
+    /// Partitions that hold other volumes, or boot helpers, never files: an
+    /// APFS drive's physical store has no file system of its own, so every
+    /// APFS external drive looked like an unreadable card.
+    static let containerPartitionTypes: Set<String> = [
+        "7C3457EF-0000-11AA-AA11-00306543ECAC", "Apple_APFS",
+        "69646961-6700-11AA-AA11-00306543ECAC", "Apple_APFS_ISC",
+        "52637672-7900-11AA-AA11-00306543ECAC", "Apple_APFS_Recovery",
+        "53746F72-6167-11AA-AA11-00306543ECAC", "Apple_CoreStorage",
+        "426F6F74-0000-11AA-AA11-00306543ECAC", "Apple_Boot",
+    ]
 
     let id: String
     let kind: Kind
@@ -30,6 +43,9 @@ struct UnreadableMediaNotice: Equatable, Identifiable {
 
     static func make(for media: Media) -> Self? {
         guard media.volumeKind == nil, media.isLeaf, media.isRemovable, !media.isInternal else { return nil }
+        if let content = media.content, containerPartitionTypes.contains(content.uppercased()) || containerPartitionTypes.contains(content) {
+            return nil
+        }
         let text = [media.vendor, media.model, media.mediaName].compactMap { $0 }.joined(separator: " ").lowercased()
         let isSony = text.contains("sony")
         if text.contains("axs") {
@@ -72,7 +88,8 @@ extension UnreadableMediaNotice.Media {
             isLeaf: description[kDADiskDescriptionMediaLeafKey as String] as? Bool ?? false,
             isRemovable: (description[kDADiskDescriptionMediaRemovableKey as String] as? Bool ?? false)
                 || (description[kDADiskDescriptionMediaEjectableKey as String] as? Bool ?? false),
-            isInternal: description[kDADiskDescriptionDeviceInternalKey as String] as? Bool ?? false
+            isInternal: description[kDADiskDescriptionDeviceInternalKey as String] as? Bool ?? false,
+            content: description[kDADiskDescriptionMediaContentKey as String] as? String
         )
     }
 }

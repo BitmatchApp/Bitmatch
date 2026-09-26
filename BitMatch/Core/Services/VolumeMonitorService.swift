@@ -25,7 +25,6 @@ final class VolumeMonitorService: ObservableObject {
     #if os(macOS)
     private var diskArbitrationSession: DASession?
     #endif
-    private let detectionQueue = DispatchQueue(label: "volume.detection", qos: .utility)
     
     // File system monitoring
     #if os(macOS)
@@ -147,7 +146,10 @@ final class VolumeMonitorService: ObservableObject {
         volumesDispatchSource = DispatchSource.makeFileSystemObjectSource(
             fileDescriptor: fileDescriptor,
             eventMask: .write,
-            queue: detectionQueue
+            // The handler is main-actor isolated (it is formed inside this
+            // @MainActor class). Delivered on any other queue, Swift 6's
+            // isolation check traps: every mount or eject crashed the app.
+            queue: .main
         )
         
         volumesDispatchSource?.setEventHandler { [weak self] in
