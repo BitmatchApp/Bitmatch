@@ -212,7 +212,7 @@ struct MacMainView: View {
                 }
             }
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .frame(maxWidth: .infinity)
         .background(darkBackground)
     }
     

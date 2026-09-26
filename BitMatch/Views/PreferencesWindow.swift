@@ -89,6 +89,7 @@ struct PreferencesWindow: View {
 
     private func settingsPane<Content: View>(_ content: Content, pane: PreferencesPane) -> some View {
         content
+            .frame(width: 680, alignment: .topLeading)
             .fixedSize(horizontal: false, vertical: true)
             .background {
                 GeometryReader { proxy in
@@ -98,7 +99,6 @@ struct PreferencesWindow: View {
                     )
                 }
             }
-            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: - General
