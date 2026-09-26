@@ -47,7 +47,9 @@ public enum BitMatchError: LocalizedError, Sendable {
         case .operationCancelled:
             return "Operation was cancelled"
         case .insufficientStorage(let required, let available):
-            return "Insufficient storage - Need: \(ByteCountFormatter().string(fromByteCount: required)), Available: \(ByteCountFormatter().string(fromByteCount: available))"
+            let requiredText = required > 0 ? ByteCountFormatter().string(fromByteCount: required) : "Empty"
+            let availableText = available > 0 ? ByteCountFormatter().string(fromByteCount: available) : "No space"
+            return "Insufficient storage - Need: \(requiredText), Available: \(availableText)"
         case .networkError(let message):
             return "Network error: \(message)"
         case .unknownError(let message):

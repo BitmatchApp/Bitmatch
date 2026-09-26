@@ -13,8 +13,8 @@ struct SetupLocationsPlatform {
     var pickBackups: @MainActor () async -> [URL]
     var addBackup: @MainActor (URL) -> String?
     var removeBackup: @MainActor (URL) -> Void
-    /// Formatted free space for a backup, or nil.
-    var freeSpace: (URL) -> String?
+    /// Available and total capacity for a backup, or nil.
+    var capacity: (URL) -> SetupLocationsPresentation.Capacity?
     /// Shows refusals of the user's own pick or drop (Mac: the toast; iOS:
     /// an alert). Never called for an empty list.
     var showRefusals: @MainActor ([String]) -> Void
@@ -128,7 +128,7 @@ struct CoordinatorSetupLocations: View {
             isAnalysingSource: coordinator.isAnalysingSource,
             cameraName: cameraLabels.detectedCameraName ?? coordinator.detectedCamera?.displayName,
             destinationURLs: coordinator.destinationURLs,
-            freeSpace: platform.freeSpace,
+            capacity: platform.capacity,
             isOperationInProgress: coordinator.isOperationInProgress,
             nextStep: context.nextStep,
             layout: context.layout

@@ -23,14 +23,14 @@ struct SetupLocationsPresentationTests {
             isAnalysingSource: analysing,
             cameraName: "",
             destinationURLs: backups,
-            freeSpace: { _ in "2 TB" },
+            capacity: { _ in .init(availableBytes: 842_000_000_000, totalBytes: 2_000_000_000_000) },
             isOperationInProgress: running,
             nextStep: nextStep,
             layout: layout
         )
     }
 
-    /// Only the box that is the next step glows; a missing choice is never
+    /// Only the box that is the next step is highlighted; a missing choice is never
     /// a banner.
     /// Plant: in `SetupLocationsPresentation.make`, set
     /// `highlightsBackups: destinationURLs.isEmpty` (ignore `nextStep`).
@@ -69,13 +69,78 @@ struct SetupLocationsPresentationTests {
         #expect(make(source: card).source?.cameraName == nil)
     }
 
+    @Test func emptySourceUsesPlainWording() {
+        let presentation = SetupLocationsPresentation.make(
+            sourceURL: card,
+            sourceFileCount: 0,
+            sourceBytes: 0,
+            isAnalysingSource: false,
+            cameraName: nil,
+            destinationURLs: [],
+            capacity: { _ in nil },
+            isOperationInProgress: false,
+            nextStep: nil,
+            layout: .compact
+        )
+
+        #expect(presentation.source?.detail == "Empty folder")
+        #expect(presentation.source?.detail?.contains("Zero KB") == false)
+    }
+
+    @Test func zeroByteFilesUseEmptyInsteadOfAZeroUnit() {
+        let presentation = SetupLocationsPresentation.make(
+            sourceURL: card,
+            sourceFileCount: 2,
+            sourceBytes: 0,
+            isAnalysingSource: false,
+            cameraName: nil,
+            destinationURLs: [],
+            capacity: { _ in nil },
+            isOperationInProgress: false,
+            nextStep: nil,
+            layout: .compact
+        )
+
+        #expect(presentation.source?.detail == "2 files · Empty")
+    }
+
     /// Plant: in `SetupLocationsPresentation.make`, pass
-    /// `freeSpace: freeSpace(url)` (drop " available").
-    @Test func backupsShowFreeSpace() {
+    @Test func backupsShowCapacity() {
         let presentation = make(backups: [raid])
 
-        #expect(presentation.backups.map(\.title) == ["Shoot"])
-        #expect(presentation.backups.first?.freeSpace == "2 TB available")
-        #expect(presentation.backupCountTitle == "1 selected")
+        #expect(presentation.backups.map(\.title) == ["RAID_A"])
+        #expect(presentation.backups.first?.capacity == "842 GB free of 2 TB")
+    }
+
+    @Test func backupIdentityPrefersTheVolumeAndNeverATemporaryPath() {
+        #expect(DestinationIdentityPresentation.title(
+            for: URL(fileURLWithPath: "/Volumes/Samsung T7/Jobs/A001"),
+            reportedVolumeName: nil
+        ) == "Samsung T7")
+        #expect(DestinationIdentityPresentation.title(
+            for: URL(fileURLWithPath: "/var/folders/xx/T/bitmatch-destination"),
+            reportedVolumeName: "Macintosh HD"
+        ) == "Macintosh HD")
+        #expect(DestinationIdentityPresentation.folderLabel(
+            for: URL(fileURLWithPath: "/var/folders/xx/T/bitmatch-destination"),
+            driveName: "Macintosh HD"
+        ) == "Folder: bitmatch-destination")
+    }
+
+    @Test func backupShowsHowMuchMoreSpaceItNeeds() {
+        let presentation = SetupLocationsPresentation.make(
+            sourceURL: card,
+            sourceFileCount: 1,
+            sourceBytes: 4_200_000_000,
+            isAnalysingSource: false,
+            cameraName: nil,
+            destinationURLs: [raid],
+            capacity: { _ in .init(availableBytes: 2_000_000_001, totalBytes: 2_000_000_000_000) },
+            isOperationInProgress: false,
+            nextStep: nil,
+            layout: .compact
+        )
+
+        #expect(presentation.backups.first?.capacity == "Needs 3.2 GB more")
     }
 }

@@ -232,7 +232,7 @@ struct PhotographerCardRowPresentation: Identifiable, Equatable, Sendable {
             cameraName: card.provenance.cameraName,
             cardTitle: "\(workflow.sourceUnitLabel) " + String(format: "%03d", card.provenance.cardNumber),
             fileCountTitle: formattedFileCount(card.fileCount),
-            byteCountTitle: ByteCountFormatter.string(fromByteCount: card.totalBytes, countStyle: .file),
+            byteCountTitle: ByteCountPresentation.fileSize(card.totalBytes),
             renderedPath: card.renderedRelativePath,
             statusTitle: statusTitle(for: card.localState),
             status: .make(localState: card.localState),

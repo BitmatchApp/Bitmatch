@@ -22,6 +22,8 @@ import Foundation
 ///   (`SafetyValidator.validateAvailableSpace`), so "Ready" cannot fail at
 ///   start. A backup whose capacity cannot be read is left to the runtime.
 /// - A source still being analysed waits (`analysing`), after any blocker.
+/// - An analysed source with no files is blocked. A zero-byte file still
+///   counts as a file and may be transferred.
 /// - Warnings: Quick mode, and a source that needs more than 70% of a
 ///   backup's free space.
 public struct TransferReadiness: Equatable, Sendable {
@@ -45,9 +47,11 @@ public struct TransferReadiness: Equatable, Sendable {
 
     public static let noSourceIssue = "No source folder selected"
     public static let noDestinationIssue = "No destination folders selected"
+    public static let emptySourceIssue = "Source folder is empty"
 
     public static func assess(
         source: URL?,
+        sourceFileCount: Int? = nil,
         sourceBytes: Int64?,
         isAnalysingSource: Bool,
         destinations: [URL],
@@ -62,6 +66,10 @@ public struct TransferReadiness: Equatable, Sendable {
 
         var blockers: [String] = []
         var warnings: [String] = []
+
+        if !isAnalysingSource, sourceFileCount == 0 {
+            blockers.append(emptySourceIssue)
+        }
 
         let uniqueDestinationPaths = Set(destinations.map { PathContainment.comparablePath($0.standardizedFileURL.resolvingSymlinksInPath().path) })
         if uniqueDestinationPaths.count != destinations.count {

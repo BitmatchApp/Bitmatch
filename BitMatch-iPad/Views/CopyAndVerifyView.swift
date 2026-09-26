@@ -157,7 +157,7 @@ private struct IOSSetupLocations: View {
                 pickBackups: { await coordinator.pickFoldersForBackups() },
                 addBackup: { coordinator.addDestination($0) },
                 removeBackup: { coordinator.removeDestinationFolder($0) },
-                freeSpace: SetupLocationsPresentation.formattedFreeSpace,
+                capacity: SetupLocationsPresentation.capacity,
                 showRefusals: { reasons in
                     Task {
                         await coordinator.showAlert(

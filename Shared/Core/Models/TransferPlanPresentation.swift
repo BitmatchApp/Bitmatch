@@ -175,6 +175,7 @@ struct TransferPlanPresentation: Equatable {
         guard let sourceInfo else {
             return "Analysis pending"
         }
+        if sourceInfo.fileCount == 0 { return "Empty folder" }
         return "\(formattedCount(sourceInfo.fileCount)) files · \(formattedSize(sourceInfo.totalSize))"
     }
 
@@ -223,6 +224,6 @@ struct TransferPlanPresentation: Equatable {
     }
 
     private static func formattedSize(_ size: Int64) -> String {
-        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        ByteCountPresentation.fileSize(size)
     }
 }

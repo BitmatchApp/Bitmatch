@@ -63,7 +63,7 @@ struct TransferCard: Identifiable {
     }
     
     var formattedSize: String {
-        return ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+        return ByteCountPresentation.fileSize(totalSize)
     }
 }
 
@@ -80,4 +80,3 @@ enum AutomaticSourceSelectionPolicy {
 }
 
 // MARK: - ResultRow Codable Extension
-

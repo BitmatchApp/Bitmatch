@@ -44,9 +44,6 @@ struct MacSetupView: View {
                 )
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
         .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
     }
 }

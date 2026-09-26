@@ -206,8 +206,8 @@ class ErrorReportingService: ObservableObject {
             )
             
         case .insufficientStorage(let required, let available):
-            let requiredStr = ByteCountFormatter.string(fromByteCount: required, countStyle: .file)
-            let availableStr = ByteCountFormatter.string(fromByteCount: available, countStyle: .file)
+            let requiredStr = ByteCountPresentation.fileSize(required)
+            let availableStr = ByteCountPresentation.capacity(available)
             
             return ErrorAnalysis(
                 category: .storage,

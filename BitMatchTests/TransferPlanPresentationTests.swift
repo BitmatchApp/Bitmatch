@@ -129,6 +129,30 @@ struct TransferPlanPresentationTests {
     }
 
     @Test
+    func emptyFolderHasNoZeroByteUnit() {
+        let empty = FolderInfo(
+            url: sourceURL,
+            fileCount: 0,
+            totalSize: 0,
+            lastModified: .distantPast,
+            isInternalDrive: false
+        )
+        let plan = TransferPlanPresentation.make(
+            sourceURL: sourceURL,
+            sourceInfo: empty,
+            destinationURLs: [destinationURL],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(),
+            isAnalyzing: false,
+            blockingIssues: [],
+            warnings: []
+        )
+
+        #expect(plan.sourceDetail == "Empty folder")
+    }
+
+    @Test
     func readyStatusUsesTheSameSafeLanguageOnEveryDevice() {
         let display = TransferPlanStatusDisplay.make(.ready)
 

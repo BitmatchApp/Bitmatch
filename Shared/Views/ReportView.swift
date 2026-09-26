@@ -40,10 +40,7 @@ struct ReportView: View {
     
     private var averageFileSize: String {
         guard let average = reportStatistics.averageFileSizeBytes else { return "—" }
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useGB, .useMB, .useKB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: average)
+        return ByteCountPresentation.fileSize(average)
     }
     
     private var largestFile: ResultRow? {
@@ -75,10 +72,7 @@ struct ReportView: View {
     }
     
     private var totalSizeFormatted: String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useGB, .useMB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: s.totalBytesProcessed)
+        ByteCountPresentation.fileSize(s.totalBytesProcessed)
     }
     
     var body: some View {
@@ -639,7 +633,7 @@ struct ReportView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: compact ? 132 : 140, alignment: .leading)
-            Text(row.formattedSize)
+            Text(ByteCountPresentation.fileSize(row.size))
                 .font(.system(size: 10, weight: .medium))
                 .frame(width: compact ? 72 : 65, alignment: .trailing)
         }
@@ -916,7 +910,7 @@ private struct StatChip: View {
 
 private func formattedFileSize(_ row: ResultRow?) -> String {
     guard let row else { return "—" }
-    return ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file)
+    return ByteCountPresentation.fileSize(row.size)
 }
 
 @ViewBuilder

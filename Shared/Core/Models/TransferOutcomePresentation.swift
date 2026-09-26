@@ -226,11 +226,11 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     /// Audit H12: one spoken stop per file result ("name, status, size,
     /// destination") instead of four or five separate VoiceOver stops per
     /// row, with no column names to say what "80 KB" means.
-    static func accessibilityLabel(for row: ResultRow) -> String {
+    static func accessibilityLabel(for row: ResultRow, destinationName: String? = nil) -> String {
         let name = URL(fileURLWithPath: row.path).lastPathComponent
         let status = statusLabel(for: row.status)
-        let size = ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file)
-        guard let destination = row.destination, !destination.isEmpty else {
+        let size = ByteCountPresentation.fileSize(row.size)
+        guard let destination = destinationName ?? row.destination, !destination.isEmpty else {
             return "\(name), \(status), \(size)"
         }
         return "\(name), \(status), \(size), \(destination)"
@@ -335,17 +335,15 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     }
 
     static func destinationDriveName(_ destination: URL) -> String {
-        let components = destination.standardizedFileURL.pathComponents
-        if let index = components.firstIndex(of: "Volumes"), index + 1 < components.count {
-            return components[index + 1]
-        }
-        return destination.lastPathComponent
+        DestinationIdentityPresentation.title(for: destination)
     }
 
     static func destinationLabel(_ destination: URL) -> String {
         let components = destination.standardizedFileURL.pathComponents
         guard let index = components.firstIndex(of: "Volumes"), index + 1 < components.count else {
-            return destination.lastPathComponent
+            let drive = destinationDriveName(destination)
+            let folder = destination.lastPathComponent
+            return folder.isEmpty || folder == drive ? drive : "\(drive) › \(folder)"
         }
         let drive = components[index + 1]
         let folderComponents = components.dropFirst(index + 2)
@@ -417,9 +415,10 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         }
         var parts = [cardName]
         if let sourceBytes {
-            parts.append(ByteCountFormatter.string(fromByteCount: sourceBytes, countStyle: .file))
+            parts.append(ByteCountPresentation.fileSize(sourceBytes))
         }
         parts.append(verdict)
+        if safetyState.eraseWarning != nil { parts.append("do not erase the card") }
         // The algorithm names a check that passed, so only a safe card lists it.
         if let algorithm, safetyState == .safeToErase { parts.append(algorithm) }
         if !destinations.isEmpty { parts.append(destinations.joined(separator: ", ")) }
@@ -441,7 +440,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         switch safetyState {
         case .safeToErase:
             let files = sourceFileCount == 1 ? "1 file" : "\(sourceFileCount) files"
-            let size = ByteCountFormatter.string(fromByteCount: sourceBytes, countStyle: .file)
+            let size = ByteCountPresentation.fileSize(sourceBytes)
             return ["\(files) · \(size) verified on \(destinationText)", algorithm, duration.map(durationText)]
                 .compactMap { $0 }
                 .joined(separator: " · ")

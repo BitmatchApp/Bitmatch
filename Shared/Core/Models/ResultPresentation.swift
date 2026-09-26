@@ -72,6 +72,17 @@ enum CardSafetyState: Equatable, Sendable {
     var claimsVerified: Bool { isSafe }
     var isSuccessNotification: Bool { isSafe }
 
+    /// Visible on every finished state that does not prove the source safe.
+    /// Active and waiting states use progress wording instead.
+    var eraseWarning: String? {
+        switch self {
+        case .copiedNotVerified, .needsAttention, .failed, .interrupted:
+            return "Do not erase the card."
+        case .waiting, .preparing, .copying, .verifying, .safeToErase:
+            return nil
+        }
+    }
+
     func headline(cardName: String) -> String {
         let cardStart = cardName.isEmpty ? "The card" : cardName
         let card = cardName.isEmpty ? "the card" : cardName

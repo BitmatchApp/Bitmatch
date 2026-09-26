@@ -167,6 +167,7 @@ struct ResultsTableView: View {
     
     @ViewBuilder
     private var resultsList: some View {
+        let destinationNames = destinationNameMap
         ScrollViewReader { proxy in
             ScrollView {
                 if filteredResults.isEmpty && showOnlyIssues {
@@ -217,7 +218,7 @@ struct ResultsTableView: View {
                         // Use LazyVStack for better performance with many items
                         LazyVStack(spacing: 2) {
                             ForEach(filteredResults) { row in
-                                resultRow(for: row)
+                                resultRow(for: row, destinationNames: destinationNames)
                                     .id(row.id)
                             }
                         }
@@ -260,12 +261,12 @@ struct ResultsTableView: View {
     }
     
     @ViewBuilder
-    private func resultRow(for row: ResultRow) -> some View {
+    private func resultRow(for row: ResultRow, destinationNames: [String: String]) -> some View {
         Group {
             if ResultTableLayoutPolicy.presentation(for: availableWidth) == .detailed {
-                detailedResultRow(for: row)
+                detailedResultRow(for: row, destinationNames: destinationNames)
             } else {
-                compactResultRow(for: row)
+                compactResultRow(for: row, destinationNames: destinationNames)
             }
         }
         .padding(.horizontal, 12)
@@ -275,11 +276,14 @@ struct ResultsTableView: View {
         )
         // Audit H12: one VoiceOver stop per row, not five.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(TransferOutcomePresentation.accessibilityLabel(for: row))
+        .accessibilityLabel(TransferOutcomePresentation.accessibilityLabel(
+            for: row,
+            destinationName: destinationName(for: row, destinationNames: destinationNames)
+        ))
     }
 
     @ViewBuilder
-    private func detailedResultRow(for row: ResultRow) -> some View {
+    private func detailedResultRow(for row: ResultRow, destinationNames: [String: String]) -> some View {
         let status = ResultStatusPresentation.make(status: row.status)
         HStack(spacing: 8) {
             // Status icon
@@ -297,7 +301,7 @@ struct ResultsTableView: View {
                 .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
 
             // File size
-            Text(ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file))
+            Text(ByteCountPresentation.fileSize(row.size))
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.white.opacity(0.6))
                 .frame(width: 80, alignment: .trailing)
@@ -307,7 +311,7 @@ struct ResultsTableView: View {
                 Image(systemName: "externaldrive.fill")
                     .font(.system(size: 10))
                     .foregroundColor(.blue.opacity(0.7))
-                Text(row.destination ?? "-")
+                Text(destinationName(for: row, destinationNames: destinationNames) ?? "-")
                     .font(.system(size: 10))
                     .foregroundColor(.white.opacity(0.7))
                     .lineLimit(1)
@@ -323,7 +327,7 @@ struct ResultsTableView: View {
     }
 
     @ViewBuilder
-    private func compactResultRow(for row: ResultRow) -> some View {
+    private func compactResultRow(for row: ResultRow, destinationNames: [String: String]) -> some View {
         let status = ResultStatusPresentation.make(status: row.status)
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: status.symbol)
@@ -337,8 +341,8 @@ struct ResultsTableView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
-                    Text(ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file))
-                    if let destination = row.destination, !destination.isEmpty {
+                    Text(ByteCountPresentation.fileSize(row.size))
+                    if let destination = destinationName(for: row, destinationNames: destinationNames), !destination.isEmpty {
                         Label(destination, systemImage: "externaldrive.fill")
                             .lineLimit(1)
                     }
@@ -362,6 +366,17 @@ struct ResultsTableView: View {
                 .onAppear { availableWidth = proxy.size.width }
                 .onChange(of: proxy.size.width) { _, width in availableWidth = width }
         }
+    }
+
+    private var destinationNameMap: [String: String] {
+        DestinationIdentityPresentation.nameMap(for: coordinator.destinationURLs)
+    }
+
+    private func destinationName(for row: ResultRow, destinationNames: [String: String]) -> String? {
+        DestinationIdentityPresentation.resultDriveName(
+            for: row,
+            destinationNames: destinationNames
+        )
     }
     
 }

@@ -58,7 +58,7 @@ struct FolderInfo: Identifiable, Equatable {
     
     var name: String { url.lastPathComponent }
     var formattedSize: String {
-        ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+        ByteCountPresentation.fileSize(totalSize)
     }
     var formattedFileCount: String {
         let formatter = NumberFormatter()
@@ -88,7 +88,7 @@ struct EnhancedFolderInfo: Identifiable, Equatable {
     
     var name: String { url.lastPathComponent }
     var formattedSize: String {
-        ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+        ByteCountPresentation.fileSize(totalSize)
     }
     var formattedFileCount: String {
         let formatter = NumberFormatter()
@@ -106,12 +106,12 @@ struct EnhancedFolderInfo: Identifiable, Equatable {
     }
     
     var formattedAverageFileSize: String {
-        ByteCountFormatter.string(fromByteCount: averageFileSize, countStyle: .file)
+        ByteCountPresentation.fileSize(averageFileSize)
     }
     
     var formattedLargestFile: String {
         guard let largest = largestFile else { return "No files" }
-        let size = ByteCountFormatter.string(fromByteCount: largest.size, countStyle: .file)
+        let size = ByteCountPresentation.fileSize(largest.size)
         return "\(largest.name) (\(size))"
     }
     
@@ -185,7 +185,7 @@ struct FolderDisplayInfo {
     
     var formattedAvailableSpace: String? {
         guard let space = availableSpace else { return nil }
-        return ByteCountFormatter.string(fromByteCount: space, countStyle: .file)
+        return ByteCountPresentation.capacity(space)
     }
     
     var spaceUtilizationWarning: String? {

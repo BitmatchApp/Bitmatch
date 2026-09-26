@@ -93,6 +93,9 @@ struct MainScreenQueueTests {
         coordinator.generateASCMHL = false
         let live = Task { await coordinator.startOperation() }
         #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+        // Empty sources are refused by design; the next card needs a file to
+        // exercise cancellation, not the refusal path.
+        try Data("next card".utf8).write(to: fixture.folders.secondary.appendingPathComponent("B.ARW"))
         try coordinator.enqueueNext(source: fixture.folders.secondary)
         coordinator.cancelOperation()
         await live.value

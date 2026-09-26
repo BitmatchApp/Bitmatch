@@ -44,4 +44,18 @@ struct ResultDestinationLabelTests {
         #expect(summaries.count == 1)
         #expect(summaries.first?.rows.count == 3)
     }
+
+    @Test func fileListUsesTheBackupDriveRatherThanTheChosenFolder() {
+        let selected = URL(fileURLWithPath: "/Volumes/Samsung T7/Jobs/Smith", isDirectory: true)
+        let row = ResultRow(
+            path: "clip.mov",
+            status: "✅ Verified",
+            size: 10,
+            checksum: "abc",
+            destination: "Smith",
+            destinationPath: "/Volumes/Samsung T7/Jobs/Smith/clip.mov"
+        )
+
+        #expect(DestinationIdentityPresentation.resultDriveName(for: row, destinations: [selected]) == "Samsung T7")
+    }
 }

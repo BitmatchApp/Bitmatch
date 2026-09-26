@@ -29,8 +29,8 @@ struct SetupLocationsDrops {
 /// `ProfessionalSourceCard` / `DestinationsFlowView`). It shows a
 /// `SetupLocationsPresentation` and decides nothing itself.
 ///
-/// The empty box that is the next step glows (`nextStepHighlight`) instead
-/// of showing a banner. Every control is at least 44 pt tall and works
+/// The empty box that is the next step receives neutral emphasis instead of
+/// showing a banner. Every control is at least 44 pt tall and works
 /// without hover. Selection is shown in the accent colour, never green:
 /// green means verified.
 struct SetupLocationsView: View {
@@ -61,16 +61,15 @@ struct SetupLocationsView: View {
         Group {
             if presentation.sideBySide {
                 ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 16) {
+                    HStack(alignment: .center, spacing: 12) {
                         sourceBox
-                            .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
+                            .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                         Image(systemName: "arrow.right")
                             .font(.body.weight(.semibold))
                             .foregroundStyle(.tertiary)
-                            .padding(.top, 34)
                             .accessibilityHidden(true)
                         backupsBox
-                            .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
+                            .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     }
                     stacked
                 }
@@ -78,7 +77,7 @@ struct SetupLocationsView: View {
                 stacked
             }
         }
-        .padding(14)
+        .padding(12)
         .background(
             SetupLocationsPanelBackground()
         )
@@ -88,7 +87,7 @@ struct SetupLocationsView: View {
     }
 
     private var stacked: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 24) {
             sourceBox
             backupsBox
         }
@@ -118,11 +117,12 @@ struct SetupLocationsView: View {
                 .accessibilityHint("Opens a folder picker for the card or folder to copy")
             }
         }
+        .frame(maxHeight: presentation.sideBySide ? .infinity : nil, alignment: .topLeading)
         .fileDrop(isTargeted: $isSourceTargeted, enabled: presentation.canEdit, perform: drops?.source)
     }
 
     private func selectedSource(_ source: SetupLocationsPresentation.Source) -> some View {
-        HStack(alignment: .top, spacing: 10) {
+        HStack(alignment: .top, spacing: 8) {
             Image(systemName: "folder.fill")
                 .font(.title3)
                 .foregroundStyle(Color.accentColor)
@@ -159,11 +159,28 @@ struct SetupLocationsView: View {
             }
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .frame(
+            maxWidth: .infinity,
+            minHeight: selectedSourceMinimumHeight,
+            maxHeight: presentation.sideBySide ? .infinity : nil,
+            alignment: .topLeading
+        )
         .background(
             SetupSelectedLocationBackground(isTargeted: isSourceTargeted)
         )
         .help(source.path)
+    }
+
+    /// At wide sizes the source and backup surfaces read as one transfer
+    /// route. Grow the selected source surface with the backup stack instead
+    /// of leaving a hollow source column beneath a short card.
+    private var selectedSourceMinimumHeight: CGFloat? {
+        guard presentation.sideBySide else { return nil }
+        guard !presentation.backups.isEmpty else { return pickerMinimumHeight }
+        let rows = CGFloat(presentation.backups.count) * 74
+        let gaps = CGFloat(max(0, presentation.backups.count - 1)) * 8
+        let addBackup = presentation.canEdit ? 52.0 : 0
+        return max(pickerMinimumHeight, rows + gaps + addBackup)
     }
 
     private func sourceAccessibilityLabel(_ source: SetupLocationsPresentation.Source) -> String {
@@ -176,15 +193,7 @@ struct SetupLocationsView: View {
 
     private var backupsBox: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .firstTextBaseline) {
-                sectionTitle("Backups")
-                Spacer(minLength: 0)
-                if let count = presentation.backupCountTitle {
-                    Text(count)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
+            sectionTitle("Backups")
             if presentation.backups.isEmpty {
                 SetupLocationPicker(
                     symbol: "externaldrive.badge.plus",
@@ -216,7 +225,7 @@ struct SetupLocationsView: View {
 
     private func backupRow(_ backup: SetupLocationsPresentation.Backup, index: Int) -> some View {
         let isTargeted = targetedBackup == index
-        return HStack(alignment: .top, spacing: 10) {
+        return HStack(alignment: .top, spacing: 8) {
             Image(systemName: "externaldrive.fill")
                 .font(.title3)
                 .foregroundStyle(Color.accentColor)
@@ -231,15 +240,15 @@ struct SetupLocationsView: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if let free = backup.freeSpace {
-                    Text(free)
+                if let capacity = backup.capacity {
+                    Text(capacity)
                         .font(.footnote)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(capacity.hasPrefix("Needs ") ? Color.orange : Color.secondary)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(["Backup: \(backup.title)", backup.freeSpace].compactMap { $0 }.joined(separator: ", "))
+            .accessibilityLabel(["Backup: \(backup.title)", backup.capacity].compactMap { $0 }.joined(separator: ", "))
             if presentation.canEdit {
                 removeButton(
                     label: "Remove backup \(backup.title)",
@@ -309,12 +318,21 @@ struct SetupLocationsView: View {
             Image(systemName: "xmark.circle.fill")
                 .font(.title3)
                 .foregroundStyle(.secondary)
-                .frame(width: 44, height: 44)
+                .frame(width: removeTarget, height: removeTarget)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .accessibilityLabel(label)
         .accessibilityHint(hint)
+        .help(hint)
+    }
+
+    private var removeTarget: CGFloat {
+        #if os(macOS)
+        return 24
+        #else
+        return 44
+        #endif
     }
 }
 
@@ -350,7 +368,7 @@ struct SetupLocationPicker: View {
 
     var body: some View {
         Button(action: action) {
-            VStack(spacing: 6) {
+            VStack(spacing: 8) {
                 Image(systemName: symbol)
                     .font(.title2)
                     .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary)
@@ -372,7 +390,7 @@ struct SetupLocationPicker: View {
         .disabled(!isEnabled)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.primary.opacity(0.03))
+                .fill(Color.primary.opacity(isHighlighted ? 0.05 : 0.03))
                 .overlay(
                     RoundedRectangle(cornerRadius: 10)
                         .strokeBorder(
@@ -381,8 +399,7 @@ struct SetupLocationPicker: View {
                         )
                 )
         )
-        // A drop in progress already shows its own outline.
-        .nextStepHighlight(isHighlighted && !isTargeted, cornerRadius: 10)
+        .opacity(isEnabled ? 1 : 0.65)
     }
 }
 
@@ -401,8 +418,8 @@ struct SetupSelectedLocationBackground: View {
 
 struct SetupLocationsPanelBackground: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 14)
+        RoundedRectangle(cornerRadius: 10)
             .fill(Color.primary.opacity(0.03))
-            .overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
     }
 }

@@ -75,7 +75,7 @@ struct TransferProgressPresentationTests {
         #expect(p.title != "Preparing")
         #expect((p.fraction ?? 0) > 0)
         #expect(p.percentText == "25%")
-        #expect(p.countText == "3 of 8 copied")
+        #expect(p.countText == "3 / 8")
     }
 
     /// Plant: in `TransferProgressPresentation.make`, pass
@@ -106,8 +106,21 @@ struct TransferProgressPresentationTests {
         #expect(p.destinations.count == 2)
         #expect(p.destinations[0].fraction == 1.0)
         #expect(p.destinations[1].fraction == 0.25)
-        #expect(p.destinations[0].countText == "4 of 4 copied")
+        #expect(p.destinations[0].countText == "4 / 4")
         #expect(p.destinations[1].state == .copying)
+    }
+
+    @Test func destinationRowsNameTheDriveAndKeepTheFolderSecondary() {
+        let folder = URL(fileURLWithPath: "/Volumes/Samsung T7/Jobs/Smith", isDirectory: true)
+        let p = make(
+            state: .inProgress,
+            progress: progress(stage: .copying, overall: 0.25, totals: [8], completed: [2]),
+            destinations: [folder]
+        )
+
+        #expect(p.destinations.first?.name == "Samsung T7")
+        #expect(p.destinations.first?.path == "Folder: Smith")
+        #expect(p.destinations.first?.path.contains("/Volumes/") == false)
     }
 
     /// Audit C1: a fully copied backup is "Copied", then "Verifying", and

@@ -86,20 +86,20 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: 24) {
             header
             locationsCard
             problems
             if layout == .sidebar && hasTrailingColumn {
-                HStack(alignment: .top, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 16) {
+                HStack(alignment: .top, spacing: 24) {
+                    VStack(alignment: .leading, spacing: 24) {
                         workflowPicker
                         preflight
                         advanced
                         startArea
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 24) {
                         projectSection
                         evidenceSection
                     }
@@ -126,10 +126,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     // MARK: Header and locations
 
     private var header: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Copy & verify")
-                .font(.title2.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
+        VStack(alignment: .leading, spacing: 8) {
             Text("Choose a source, then a folder on each backup drive.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -147,7 +144,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     private var workflowPicker: some View {
         let stack = layout == .compact
             ? AnyLayout(VStackLayout(spacing: 8))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 10))
+            : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
         return stack {
             workflowButton(.quick)
                 .disabled(presentation.isWorkflowLocked)
@@ -162,7 +159,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         return Button {
             actions.chooseWorkflow(workflow)
         } label: {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
                 Image(systemName: workflow.symbol)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(selected ? Color.accentColor : Color.secondary)
@@ -186,14 +183,14 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             .padding(12)
             .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 10)
                     .fill(selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.04))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 10)
                     .strokeBorder(selected ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.10))
             )
-            .contentShape(RoundedRectangle(cornerRadius: 12))
+            .contentShape(RoundedRectangle(cornerRadius: 8))
         }
         .buttonStyle(.plain)
         .accessibilityLabel(workflow.title)
@@ -208,7 +205,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     private var projectSection: some View {
         if presentation.showsProjectSetup {
             projectSetup
-                .nextStepHighlight(presentation.start.nextStep == .prepareCard, cornerRadius: 14)
+                .nextStepHighlight(presentation.start.nextStep == .prepareCard, cornerRadius: 10)
                 .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
         }
     }
@@ -228,7 +225,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     private var preflight: some View {
         if presentation.plan.showsStatusBanner {
             let display = TransferPlanStatusDisplay.make(presentation.plan.status)
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 8) {
                 Image(systemName: display.symbol)
                     .font(.body.weight(.semibold))
                     .foregroundStyle(display.tone.color)
@@ -244,7 +241,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                 Spacer(minLength: 0)
             }
             .padding(12)
-            .background(display.tone.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 12))
+            .background(display.tone.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Preflight: \(display.title). \(display.detail)")
         }
@@ -263,7 +260,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             labelContent
         }
         .padding(12)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: Start
@@ -274,10 +271,11 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             HStack(spacing: 8) {
                 Button(action: actions.start) {
                     Label(start.title, systemImage: start.symbol)
-                        .frame(maxWidth: .infinity, minHeight: 32)
+                        .frame(maxWidth: .infinity, minHeight: 44)
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
+                .buttonBorderShape(.roundedRectangle(radius: 8))
                 // Grey while waiting on a step or a problem: a button that
                 // cannot be pressed should not look pressable.
                 .tint(start.canStart ? Color.accentColor : Color.gray)
@@ -285,9 +283,13 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                 .accessibilityLabel(start.title)
                 .accessibilityHint(start.accessibilityHint)
                 if let enqueue = actions.enqueue {
-                    Button("Add to Queue", action: enqueue)
+                    Button(action: enqueue) {
+                        Text("Add to Queue")
+                            .frame(minHeight: 44)
+                    }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+                        .buttonBorderShape(.roundedRectangle(radius: 8))
                 }
             }
             if let blocker = start.blocker {
@@ -303,7 +305,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             }
         }
         .padding(12)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
     }
 }
 

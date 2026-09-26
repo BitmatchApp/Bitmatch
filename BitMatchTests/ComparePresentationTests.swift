@@ -26,6 +26,14 @@ struct ComparePresentationTests {
         onlyInLeftCount: 0, onlyInRightCount: 0, commonCount: 3, mismatchedCount: 0
     )
 
+    @Test func zeroByteFolderUsesEmptyWording() {
+        let slot = CompareFolderSlot.make(
+            url: Self.card, infoURL: Self.card, fileCount: 1, totalSize: 0, isFetching: false
+        )
+        #expect(slot.sizeText == "Empty")
+        #expect(slot.sizeText?.contains("Zero KB") == false)
+    }
+
     // MARK: Readiness
 
     /// Plant: in `CompareReadiness.resolve`, delete the line

@@ -147,6 +147,9 @@ struct SharedCoordinatorMacParityTests {
         defer { fixture.folders.cleanup() }
         let other = fixture.folders.root.appendingPathComponent("other-card", isDirectory: true)
         try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        // Analyzed empty sources stay blocked by design; this refusal path
+        // needs a source that can become ready once its scan finishes.
+        try Data("card".utf8).write(to: other.appendingPathComponent("B.ARW"))
 
         // No suspension between choosing the source and asking: the scan
         // cannot have finished.

@@ -20,14 +20,20 @@ final class LocalTransferJournal: ObservableObject {
     let fileURL: URL
     let queueSessionFileURL: URL
     private let beforeMarkRunning: ((UUID) throws -> Void)?
+    private let beforeCancel: ((UUID) throws -> Void)?
 
-    init(fileURL: URL? = nil, beforeMarkRunning: ((UUID) throws -> Void)? = nil) {
+    init(
+        fileURL: URL? = nil,
+        beforeMarkRunning: ((UUID) throws -> Void)? = nil,
+        beforeCancel: ((UUID) throws -> Void)? = nil
+    ) {
         let selectedURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
         self.fileURL = selectedURL
         self.queueSessionFileURL = selectedURL.deletingLastPathComponent()
             .appendingPathComponent("transfer-queue-session.json")
         self.beforeMarkRunning = beforeMarkRunning
+        self.beforeCancel = beforeCancel
         store = TransferJournal(fileURL: selectedURL)
         refresh()
     }
@@ -126,6 +132,7 @@ final class LocalTransferJournal: ObservableObject {
 
     func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil) throws {
         defer { refresh() }
+        try beforeCancel?(id)
         try store.cancel(id: id, summary: summary, results: results)
     }
 }

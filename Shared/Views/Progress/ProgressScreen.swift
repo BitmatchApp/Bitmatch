@@ -186,7 +186,10 @@ struct ProgressScreen: View {
                             .foregroundStyle(.secondary)
                         Text(item.value)
                             .font(.body.monospacedDigit().weight(.medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
                     }
+                    .frame(minHeight: 38, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .accessibilityElement(children: .combine)
                 }
@@ -339,6 +342,7 @@ private struct DestinationProgressRowView: View {
             ProgressView(value: row.fraction ?? 0)
                 .progressViewStyle(.linear)
                 .tint(tint)
+                .frame(minHeight: 8)
             HStack {
                 Text(row.path)
                     .lineLimit(1)
@@ -350,11 +354,12 @@ private struct DestinationProgressRowView: View {
                 }
             }
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.primary.opacity(0.72))
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .help(row.helpPath)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Backup \(row.name), \(row.stateLabel)")
         .accessibilityValue(row.countText ?? "")

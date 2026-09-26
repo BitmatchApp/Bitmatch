@@ -93,7 +93,7 @@ class SharedReportGenerationService: ObservableObject {
     private func generateReportData(transfers: [TransferCard], configuration: ReportConfiguration) -> ReportData {
         let totalSize = transfers.reduce(0) { $0 + $1.totalSize }
         let totalFiles = transfers.reduce(0) { $0 + $1.fileCount }
-        let formattedSize = ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+        let formattedSize = ByteCountPresentation.fileSize(totalSize)
         
         // Group transfers by camera for better organization
         let cameraGroups = Dictionary(grouping: transfers) { $0.cameraName }
@@ -359,21 +359,15 @@ class SharedReportGenerationService: ObservableObject {
         if reportData.summary.totalTransfers > 0 {
             let averageFiles = Double(reportData.summary.totalFiles) / Double(reportData.summary.totalTransfers)
             let averageSize = reportData.summary.totalSize / Int64(reportData.summary.totalTransfers)
-            let sizeFormatter = ByteCountFormatter()
-            sizeFormatter.allowedUnits = [.useGB, .useMB, .useKB]
-            sizeFormatter.countStyle = .file
             summaryLines.append("Average Files / Transfer: \(String(format: "%.1f", averageFiles))")
-            summaryLines.append("Average Transfer Size: \(sizeFormatter.string(fromByteCount: averageSize))")
+            summaryLines.append("Average Transfer Size: \(ByteCountPresentation.fileSize(averageSize))")
         }
         
         if let largest = reportData.allTransfers.max(by: { $0.totalSize < $1.totalSize }) {
-            let sizeFormatter = ByteCountFormatter()
-            sizeFormatter.allowedUnits = [.useGB, .useMB]
-            sizeFormatter.countStyle = .file
             let name = URL(fileURLWithPath: largest.sourcePath).lastPathComponent.isEmpty ?
                 URL(fileURLWithPath: largest.sourcePath).deletingLastPathComponent().lastPathComponent :
                 URL(fileURLWithPath: largest.sourcePath).lastPathComponent
-            summaryLines.append("Largest Transfer: \(name) (\(sizeFormatter.string(fromByteCount: largest.totalSize)), \(largest.fileCount) files)")
+            summaryLines.append("Largest Transfer: \(name) (\(ByteCountPresentation.fileSize(largest.totalSize)), \(largest.fileCount) files)")
         }
         
         let destinationCounts = reportData.allTransfers
@@ -438,7 +432,7 @@ class SharedReportGenerationService: ObservableObject {
             NSAttributedString.Key.foregroundColor: platformColor(hex: "#333333")
         ]
         for transfer in group.transfers {
-            let transferSize = ByteCountFormatter.string(fromByteCount: transfer.totalSize, countStyle: .file)
+            let transferSize = ByteCountPresentation.fileSize(transfer.totalSize)
             let statusSymbol = transfer.verified ? "✅" : "⚠️"
             let sourceLeaf = URL(fileURLWithPath: transfer.sourcePath).lastPathComponent.isEmpty ?
                 URL(fileURLWithPath: transfer.sourcePath).deletingLastPathComponent().lastPathComponent :
@@ -458,7 +452,7 @@ class SharedReportGenerationService: ObservableObject {
             if destinationSummary.isEmpty {
                 destinationSummary = "—"
             }
-            
+
             let transferLine = "\(statusSymbol) \(sourceLeaf) → \(destinationSummary) • \(transfer.fileCount) files • \(transferSize)"
             transferLine.draw(at: CGPoint(x: rect.minX, y: currentY), withAttributes: detailAttributes)
             currentY += configuration.fontSize + 4

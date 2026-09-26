@@ -55,7 +55,7 @@ final class VolumeMonitorService: ObservableObject {
         }
         
         var capacityFormatted: String {
-            ByteCountFormatter.string(fromByteCount: capacity, countStyle: .file)
+            ByteCountPresentation.capacity(capacity)
         }
     }
 

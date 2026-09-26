@@ -282,6 +282,7 @@ private struct CompareFolderSlotView: View {
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel("Clear \(side.lowercased())")
+                .help("Clear \(side.lowercased()) folder")
             }
         }
         .padding(12)
@@ -294,7 +295,7 @@ private struct CompareFolderSlotView: View {
     /// Audit M8 (Mac) and M7 (touch): a real hit area for the clear glyph.
     private static var clearTarget: CGFloat {
         #if os(macOS)
-        return 28
+        return 24
         #else
         return 44
         #endif
