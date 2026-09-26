@@ -95,8 +95,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                     VStack(alignment: .leading, spacing: 24) {
                         workflowPicker
                         preflight
-                        advanced
-                        if presentation.showsStartArea { startArea }
+                        controls
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     VStack(alignment: .leading, spacing: 24) {
@@ -109,8 +108,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                 workflowPicker
                 projectSection
                 preflight
-                advanced
-                if presentation.showsStartArea { startArea }
+                controls
                 evidenceSection
             }
         }
@@ -259,7 +257,14 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         ) {
             labelContent
         }
-        .frame(minHeight: 44)
+    }
+
+    private var controls: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            advanced
+            if presentation.showsStartArea { startArea }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: Start

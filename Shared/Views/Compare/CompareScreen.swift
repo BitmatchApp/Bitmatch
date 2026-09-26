@@ -127,7 +127,7 @@ struct CompareScreen: View {
     @ViewBuilder
     private var controls: some View {
         if !presentation.isRunning {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: 12) {
                 TransferOptionsSection(
                     isExpanded: $advancedExpanded,
                     verificationMode: $verificationMode
