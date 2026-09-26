@@ -49,14 +49,13 @@ struct MasterReportPresentation: Equatable {
     let canGenerate: Bool
     let nextStep: MasterReportNextStep?
 
-    /// - Parameter deliverVerb: "Save" on the Mac, "Share" on iPad and iPhone.
     static func make(
         hasLocation: Bool,
         isScanning: Bool,
         foundCount: Int,
         selectedCount: Int,
         isGenerating: Bool,
-        deliverVerb: String
+        deliverVerb _: String
     ) -> MasterReportPresentation {
         if !hasLocation {
             return .init(actionTitle: "Choose a drive to scan", canGenerate: false, nextStep: .chooseLocation)
@@ -73,9 +72,8 @@ struct MasterReportPresentation: Equatable {
         if isGenerating {
             return .init(actionTitle: "Creating report…", canGenerate: false, nextStep: nil)
         }
-        let noun = selectedCount == 1 ? "transfer" : "transfers"
         return .init(
-            actionTitle: "\(deliverVerb) Master Report (\(selectedCount) \(noun))",
+            actionTitle: "Create Master Report",
             canGenerate: true,
             nextStep: nil
         )

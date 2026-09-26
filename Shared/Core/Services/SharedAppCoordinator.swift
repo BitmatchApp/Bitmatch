@@ -167,7 +167,13 @@ class SharedAppCoordinator: ObservableObject {
     
     // MARK: - File Selection State
     @Published var sourceURL: URL?
-    @Published var destinationURLs: [URL] = []
+    @Published var destinationURLs: [URL] = [] {
+        didSet {
+            destinationVolumeNames = destinationURLs.map(DestinationVolumeLabel.resolve)
+        }
+    }
+    /// Resolved once per selection change, never once per progress tick.
+    private(set) var destinationVolumeNames: [String] = []
     @Published var leftURL: URL? { // For folder comparison
         didSet { if oldValue != leftURL { clearCompareOutcome() } }
     }
@@ -1723,6 +1729,10 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Completion State (derived from OperationState)
 
     var completionState: CompletionState {
+        // Master Report is its own workflow. A prior Copy outcome remains in
+        // the journal and reappears when Copy is selected, but must not route
+        // over the report screen while Master Report is active.
+        if currentMode == .masterReport { return .idle }
         switch operationState {
         case .completed(let info):
             if info.success {

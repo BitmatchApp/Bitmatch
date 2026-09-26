@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Polish Copying, Finish, Transfers, Settings, Compare, and Master Report with calmer native layouts, clearer folder labels, and accessible status details.
 - Safety: A transfer is complete only when every selected backup has exactly one result for every source-manifest file, with no duplicate or unexpected rows.
 - Finish the inline Transfer Queue with per-card safety states, pause and recovery controls, queue summaries, notifications, and Dock attention counts.
 - Finish and Transfers now share one fail-safe card state, show Copy Summary for every outcome, keep finished records in History, and reserve green and Eject for checksum-verified cards.

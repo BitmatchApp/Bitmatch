@@ -15,6 +15,7 @@ struct TransferRecordRow<Trailing: View>: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
+                    .help(record.title)
                 (Text(record.createdAt, style: .date) + Text(" · \(detail)"))
                     .font(.caption)
                     .foregroundStyle(.secondary)

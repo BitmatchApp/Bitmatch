@@ -224,6 +224,34 @@ enum CompletionVerdict: Equatable {
 }
 
 enum ResultPresentation {
+    /// The backup drive shown in a file row. A path under `/Volumes` names
+    /// the volume; other locations use the label recorded by the engine.
+    static func destinationDriveName(
+        for row: ResultRow,
+        destinationRoots: [URL] = [],
+        destinationNames: [String] = []
+    ) -> String? {
+        if let path = row.destinationPath {
+            let url = URL(fileURLWithPath: path)
+            if let mountedVolume = DestinationVolumeLabel.mountedVolumeName(for: url) {
+                return mountedVolume
+            }
+            let comparablePath = ResultPathMatch.comparablePath(path)
+            let indexedRoots = destinationRoots.enumerated()
+                .map { (index: $0.offset, path: ResultPathMatch.comparablePath($0.element.path)) }
+                .sorted { $0.path.count > $1.path.count }
+            if let match = indexedRoots.first(where: {
+                comparablePath == $0.path || comparablePath.hasPrefix($0.path + "/")
+            }) {
+                if destinationNames.indices.contains(match.index), !destinationNames[match.index].isEmpty {
+                    return destinationNames[match.index]
+                }
+                return DestinationVolumeLabel.name(for: destinationRoots[match.index])
+            }
+        }
+        return row.destination.flatMap { $0.isEmpty ? nil : $0 }
+    }
+
     static func mediaRows(
         _ rows: [ResultRow],
         allowedExtensions: Set<String>
@@ -259,6 +287,39 @@ enum ResultPresentation {
         let remainingCapacity = safeLimit - visibleIssues.count
         let newestSuccesses = summary.successfulRows.suffix(remainingCapacity)
         return visibleIssues + newestSuccesses
+    }
+}
+
+/// A backup's stable display name. Filesystem metadata is resolved when the
+/// selection changes, then the resulting string is reused while progress
+/// ticks rebuild their rows.
+enum DestinationVolumeLabel {
+    static func resolve(for destination: URL) -> String {
+        let volumeName = try? destination.resourceValues(forKeys: [.volumeNameKey]).volumeName
+        return name(for: destination, volumeName: volumeName)
+    }
+
+    /// Pure counterpart used by presentation and tests. `volumeName` is a
+    /// previously resolved label for internal, network or security-scoped
+    /// locations; inaccessible locations safely fall back to the folder.
+    static func name(for destination: URL, volumeName: String? = nil) -> String {
+        if let mountedVolume = mountedVolumeName(for: destination) {
+            return mountedVolume
+        }
+        if let volumeName, !volumeName.isEmpty {
+            return volumeName
+        }
+        return destination.lastPathComponent.isEmpty ? destination.path : destination.lastPathComponent
+    }
+
+    /// Only `/Volumes/<name>` is a mounted-volume path. A folder such as
+    /// `/Users/mike/Volumes/Project` is an ordinary folder hierarchy.
+    static func mountedVolumeName(for url: URL) -> String? {
+        let components = url.standardizedFileURL.pathComponents
+        guard components.count >= 3,
+              components[0] == "/",
+              components[1] == "Volumes" else { return nil }
+        return components[2]
     }
 }
 

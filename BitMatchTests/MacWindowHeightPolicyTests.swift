@@ -67,6 +67,20 @@ struct MacWindowHeightPolicyTests {
         #expect(after == before + 68)
     }
 
+    /// Progress draws full-width 73 pt backup rows with 12 pt gaps. Pin the
+    /// exact growth in compact, toolbar and sidebar layouts.
+    @Test func progressUsesExactMultiBackupRowHeightAtEveryLayoutWidth() throws {
+        for width in [CGFloat(580), 680] {
+            let one = try #require(Policy.contentHeight(for: .progress(backups: 1), windowWidth: width))
+            let four = try #require(Policy.contentHeight(for: .progress(backups: 4), windowWidth: width))
+            #expect(four - one == 255, "width \(width)")
+        }
+
+        let fourWide = try #require(Policy.contentHeight(for: .progress(backups: 4), windowWidth: 1100))
+        let sixWide = try #require(Policy.contentHeight(for: .progress(backups: 6), windowWidth: 1100))
+        #expect(sixWide - fourWide == 170)
+    }
+
     @Test func progressAndOutcomeMakeRoomForTheInlineQueue() throws {
         let progress = try #require(Policy.contentHeight(for: .progress(backups: 1), windowWidth: 680))
         let progressWithQueue = try #require(Policy.contentHeight(

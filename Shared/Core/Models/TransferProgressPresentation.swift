@@ -117,8 +117,9 @@ struct TransferProgressPresentation: Equatable, Sendable {
     /// indeterminate rather than a false 0%.
     let fraction: Double?
     let percentText: String?
-    /// "120 of 400 copied" or "80 of 400 verified" (file copies across all
-    /// backups).
+    /// "120 of 400" (file copies across all backups). The phase and heading
+    /// already say whether BitMatch is copying or verifying, so the changing
+    /// value stays compact and matches the live-results header.
     let countText: String?
     let speed: String?
     /// From observed copy speed only; `estimatingTimeLeft` until enough
@@ -137,8 +138,9 @@ struct TransferProgressPresentation: Equatable, Sendable {
         [title, percentText, countText].compactMap { $0 }.joined(separator: ", ")
     }
 
-    /// Time left before enough copying has been measured to estimate it.
-    static let estimatingTimeLeft = "Estimating…"
+    /// Speed and time left before enough copying has been measured.
+    static let estimating = "Estimating..."
+    static let estimatingTimeLeft = estimating
 
     static let cancelConfirmationTitle = "Cancel this transfer?"
     static let cancelConfirmationMessage =
@@ -152,6 +154,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
         progress: OperationProgress?,
         sourceName: String?,
         destinations: [URL],
+        destinationNames: [String]? = nil,
         speed: String?,
         timeRemaining: String?,
         elapsed: String?,
@@ -175,14 +178,19 @@ struct TransferProgressPresentation: Equatable, Sendable {
             tone: tone,
             fraction: fraction,
             percentText: fraction.map { "\(Int(($0 * 100).rounded(.down)))%" },
-            countText: Self.countText(progress: progress, phase: phase),
+            countText: Self.countText(progress: progress),
             // Speed and time left mean nothing while paused.
-            speed: isPaused ? nil : speed,
+            speed: isPaused ? nil : Self.speedText(phase: phase, measured: speed),
             timeRemaining: Self.timeLeft(phase: phase, measured: timeRemaining),
             elapsed: elapsed,
             currentFile: progress?.currentFile.flatMap { $0.isEmpty ? nil : $0 },
             issueLine: Self.issueLine(issueCount),
-            destinations: Self.rows(destinations: destinations, progress: progress, phase: phase),
+            destinations: Self.rows(
+                destinations: destinations,
+                destinationNames: destinationNames,
+                progress: progress,
+                phase: phase
+            ),
             controls: controls,
             deviceNotes: Self.notes(for: device)
         )
@@ -200,6 +208,10 @@ struct TransferProgressPresentation: Equatable, Sendable {
         case .copying, .verifying: return measured
         case .paused, .resuming, .writingReports, .finishing: return nil
         }
+    }
+
+    static func speedText(phase: ProgressPhase, measured: String?) -> String? {
+        phase == .copying ? measured ?? estimating : nil
     }
 
     static func phase(state: OperationState, stage: ProgressStage?) -> ProgressPhase {
@@ -264,14 +276,10 @@ struct TransferProgressPresentation: Equatable, Sendable {
         return "\(sourceName) to \(backups)"
     }
 
-    private static func countText(progress: OperationProgress?, phase: ProgressPhase) -> String? {
+    private static func countText(progress: OperationProgress?) -> String? {
         guard let progress, progress.totalFiles > 0 else { return nil }
         let total = progress.totalFiles
-        if phase == .verifying, let stage = progress.stageProgress {
-            let verified = min(total, Int((stage * Double(total)).rounded(.down)))
-            return "\(verified) of \(total) verified"
-        }
-        return "\(min(progress.filesProcessed, total)) of \(total) copied"
+        return "\(min(progress.filesProcessed, total).formatted()) of \(total.formatted())"
     }
 
     private static func issueLine(_ count: Int) -> String? {
@@ -282,6 +290,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
 
     static func rows(
         destinations: [URL],
+        destinationNames: [String]? = nil,
         progress: OperationProgress?,
         phase: ProgressPhase
     ) -> [DestinationProgressRow] {
@@ -296,16 +305,19 @@ struct TransferProgressPresentation: Equatable, Sendable {
                 let total = totals[index]
                 let done = min(completed[index], total)
                 fraction = total > 0 ? Double(done) / Double(total) : nil
-                countText = total > 0 ? "\(done) of \(total) copied" : nil
+                countText = total > 0 ? "\(done.formatted()) of \(total.formatted()) copied" : nil
                 if total > 0 && done >= total {
                     state = phase == .verifying ? .verifying : .copied
                 } else if done > 0 {
                     state = .copying
                 }
             }
+            let name = destinationNames.flatMap { names in
+                names.indices.contains(index) ? names[index] : nil
+            } ?? DestinationVolumeLabel.name(for: url)
             return DestinationProgressRow(
                 id: url.path,
-                name: url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent,
+                name: name,
                 path: url.path,
                 state: state,
                 fraction: fraction,
@@ -319,7 +331,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
         case .mac:
             return [ProgressDeviceNote(
                 text: "This Mac stays awake until the transfer ends.",
-                symbol: "bolt",
+                symbol: "moon.zzz",
                 isWarning: false
             )]
         case .iOS(let keepsScreenAwake, let backgroundSecondsLeft):
@@ -335,7 +347,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
             if keepsScreenAwake {
                 notes.append(ProgressDeviceNote(
                     text: "The screen stays on while BitMatch copies.",
-                    symbol: "bolt",
+                    symbol: "sun.max",
                     isWarning: false
                 ))
             }

@@ -13,6 +13,7 @@ extension TransferProgressPresentation {
             progress: coordinator.progress,
             sourceName: coordinator.sourceURL?.lastPathComponent,
             destinations: coordinator.destinationURLs,
+            destinationNames: coordinator.destinationVolumeNames,
             speed: smoothing.formattedAverageDataRate,
             timeRemaining: smoothing.formattedTimeRemaining,
             elapsed: coordinator.operationDuration,

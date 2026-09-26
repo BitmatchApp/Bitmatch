@@ -24,6 +24,55 @@ struct ResultDestinationLabelTests {
         #expect(TransferCompletion.destinationLabel(for: file, roots: [drive, root]) == "SSD 1")
     }
 
+    @Test func liveResultRowShowsTheDriveInsteadOfTheDestinationFolder() {
+        let row = ResultRow(
+            path: "/Card/A001.mov", status: ResultOutcome.verified.statusText, size: 10,
+            checksum: "abc", destination: "Smith", destinationPath: "/Volumes/SSD 1/Jobs/Smith/A001.mov"
+        )
+
+        #expect(ResultPresentation.destinationDriveName(for: row) == "SSD 1")
+    }
+
+    @Test func onlyTheRootVolumesDirectoryIdentifiesAMountedDrive() {
+        let nested = ResultRow(
+            path: "/Card/A001.mov", status: ResultOutcome.verified.statusText, size: 10,
+            checksum: "abc", destination: "Backup",
+            destinationPath: "/Users/mike/Volumes/Project/Backup/A001.mov"
+        )
+
+        #expect(DestinationVolumeLabel.mountedVolumeName(
+            for: URL(fileURLWithPath: "/Volumes/SSD/Jobs/A001.mov")
+        ) == "SSD")
+        #expect(DestinationVolumeLabel.mountedVolumeName(
+            for: URL(fileURLWithPath: "/Users/mike/Volumes/Project/Backup")
+        ) == nil)
+        #expect(ResultPresentation.destinationDriveName(for: nested) == "Backup")
+    }
+
+    @Test func precomputedLabelsCoverInternalAndSecurityScopedLocations() {
+        let internalFolder = URL(fileURLWithPath: "/Users/mike/Backups/Project", isDirectory: true)
+        let securityScopedFolder = URL(fileURLWithPath: "/private/restricted/Client Backup", isDirectory: true)
+
+        #expect(DestinationVolumeLabel.name(for: internalFolder, volumeName: "Macintosh HD") == "Macintosh HD")
+        #expect(DestinationVolumeLabel.name(for: securityScopedFolder, volumeName: "Client RAID") == "Client RAID")
+        #expect(DestinationVolumeLabel.name(for: securityScopedFolder) == "Client Backup")
+    }
+
+    @Test func liveResultUsesSelectedVolumeNameForTemporaryDestinationPath() {
+        let root = URL(fileURLWithPath: "/private/var/folders/xx/T/bitmatch_dst", isDirectory: true)
+        let row = ResultRow(
+            path: "/Card/A001.mov", status: ResultOutcome.verified.statusText, size: 10,
+            checksum: "abc", destination: "bitmatch_dst",
+            destinationPath: "/var/folders/xx/T/bitmatch_dst/A001.mov"
+        )
+
+        #expect(ResultPresentation.destinationDriveName(
+            for: row,
+            destinationRoots: [root],
+            destinationNames: ["Macintosh HD"]
+        ) == "Macintosh HD")
+    }
+
     /// `/var` is a symlink to `/private/var`; the same folder written both
     /// ways is still that backup.
     @Test func symlinkedSpellingStillMatchesItsBackup() {

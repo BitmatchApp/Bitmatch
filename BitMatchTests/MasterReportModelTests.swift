@@ -117,7 +117,7 @@ struct MasterReportModelTests {
     @Test func generateNeedsASelection() async throws {
         let model = await scannedModel([card(camera: "FX6", roll: "A001")])
         #expect(model.presentation(deliverVerb: "Save").canGenerate)
-        #expect(model.presentation(deliverVerb: "Save").actionTitle == "Save Master Report (1 transfer)")
+        #expect(model.presentation(deliverVerb: "Save").actionTitle == "Create Master Report")
 
         model.setGroup(try #require(model.groups.first), included: false)
 
