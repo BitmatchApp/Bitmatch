@@ -1,6 +1,6 @@
 # BitMatch
 
-**Free, open source camera card offload with checksum verification.** Offload camera cards to multiple drives, verify the copies with SHA-256, generate reports. For indie filmmakers, YouTubers, photographers, and small productions that don't want a subscription just to copy files.
+**A free, open source alternative to ShotPut Pro, Silverstack, and Hedge.** Offload camera cards to multiple drives, verify the copies with SHA-256, generate reports. For indie filmmakers, YouTubers, photographers, and small productions that don't want a subscription just to copy files.
 
 Now with photographer jobs, reusable folder recipes, and optional SFTP backups on Mac. Because apparently “I'll just add one more feature” wasn't a joke.
 

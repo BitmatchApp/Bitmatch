@@ -30,4 +30,4 @@ Run from the project directory after installing the official reference package i
 Scripts/ascmhl/validate_reference.sh /path/to/ascmitc/mhl /path/to/venv/bin
 ```
 
-[Recorded output](reference-validation.txt) includes the expected corruption error followed by the passing negative-control assertion. This is synthetic interoperability evidence, not validation against other offload or DIT applications, a DIT's production media, or physical iOS storage. Those acceptance checks remain outstanding.
+[Recorded output](reference-validation.txt) includes the expected corruption error followed by the passing negative-control assertion. This is synthetic interoperability evidence, not validation against Hedge/OffShoot, ShotPut, Silverstack, a DIT's production media, or physical iOS storage. Those acceptance checks remain outstanding.
