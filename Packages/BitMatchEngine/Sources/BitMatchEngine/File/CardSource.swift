@@ -86,6 +86,47 @@ public enum CardSource: Sendable {
 #endif
     }
 
+    /// A lightweight authoritative empty-source check for queue admission.
+    /// It follows the manifest's symlink and root-metadata rules, but stops
+    /// as soon as it finds one transferable file.
+    public static func containsRegularFile(base: URL) throws -> Bool {
+        let fileManager = FileManager.default
+        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        var isDirectory: ObjCBool = false
+        guard fileManager.fileExists(atPath: base.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            throw BitMatchError.fileNotFound(base)
+        }
+        var traversalError: Error?
+        guard let enumerator = fileManager.enumerator(
+            at: base,
+            includingPropertiesForKeys: Array(keys),
+            options: [],
+            errorHandler: { url, error in
+                if traversalError == nil {
+                    traversalError = NSError(
+                        domain: "CardSource",
+                        code: (error as NSError).code,
+                        userInfo: [NSLocalizedDescriptionKey: "Could not read \(url.lastPathComponent): \(error.localizedDescription)"]
+                    )
+                }
+                return false
+            }
+        ) else {
+            throw BitMatchError.fileAccessDenied(base)
+        }
+
+        while let item = enumerator.nextObject() as? URL {
+            if enumerator.level == 1, isRootVolumeMetadataDirectory(item) {
+                enumerator.skipDescendants()
+                continue
+            }
+            let values = try item.resourceValues(forKeys: keys)
+            if values.isSymbolicLink != true, values.isRegularFile == true { return true }
+        }
+        if let traversalError { throw traversalError }
+        return false
+    }
+
     /// Perf 1: Enumerate regular files once and cache the list.
     /// Pass result to both copy and verify phases to eliminate triple filesystem walk.
     /// ~20 bytes per entry overhead for 100K files ≈ 20MB - acceptable.

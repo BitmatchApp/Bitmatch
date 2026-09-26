@@ -67,4 +67,21 @@ struct CancelledOutcomeTests {
         #expect(true)
         #endif
     }
+
+    @Test func masterReportIsNotCoveredByPreviousTransferOutcome() {
+        #if os(macOS)
+        let coordinator = makeCoordinator()
+        coordinator.operationState = .completed(OperationCompletionInfo(success: false, message: "Not verified"))
+
+        #expect(coordinator.completionState != .idle)
+        coordinator.switchMode(to: .masterReport)
+        #expect(coordinator.completionState == .idle)
+        #expect(coordinator.operationState == .completed(OperationCompletionInfo(success: false, message: "Not verified")))
+
+        coordinator.switchMode(to: .copyAndVerify)
+        #expect(coordinator.completionState != .idle)
+        #else
+        #expect(true)
+        #endif
+    }
 }

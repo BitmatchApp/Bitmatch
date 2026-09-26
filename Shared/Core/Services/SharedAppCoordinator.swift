@@ -19,6 +19,19 @@ import BackgroundTasks
 
 @MainActor
 class SharedAppCoordinator: ObservableObject {
+    enum CancellationSettlementError: LocalizedError, Equatable {
+        case journalRecordMissing
+        case journalStillRunning(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .journalRecordMissing:
+                return "The transfer stopped, but BitMatch could not confirm its saved history. Keep the app open and review Transfers."
+            case .journalStillRunning(let detail):
+                return "The transfer stopped, but BitMatch could not save it as interrupted. \(detail)"
+            }
+        }
+    }
     
     // MARK: - Platform Manager
     private let platformManager: PlatformManager
@@ -167,7 +180,13 @@ class SharedAppCoordinator: ObservableObject {
     
     // MARK: - File Selection State
     @Published var sourceURL: URL?
-    @Published var destinationURLs: [URL] = []
+    @Published var destinationURLs: [URL] = [] {
+        didSet {
+            destinationVolumeNames = destinationURLs.map(DestinationVolumeLabel.resolve)
+        }
+    }
+    /// Resolved once per selection change, never once per progress tick.
+    private(set) var destinationVolumeNames: [String] = []
     @Published var leftURL: URL? { // For folder comparison
         didSet { if oldValue != leftURL { clearCompareOutcome() } }
     }
@@ -589,6 +608,9 @@ class SharedAppCoordinator: ObservableObject {
         origin: BackupTargetPolicy.Origin = .userChoice,
         facts: (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
     ) -> String? {
+        guard !isDestinationSelectionLocked else {
+            return Self.destinationSelectionLockedMessage
+        }
         if let refusal = BackupTargetPolicy.refusal(for: url, origin: origin, source: sourceURL, facts: facts) {
             SharedLogger.info("Backup refused (\(origin)): \(url.path): \(refusal)", category: .transfer)
             return refusal
@@ -602,6 +624,10 @@ class SharedAppCoordinator: ObservableObject {
     /// Replaces every backup at once (the debug tools), keeping only what
     /// `BackupTargetPolicy` allows for a user's own pick.
     func replaceDestinations(with urls: [URL]) {
+        guard !isDestinationSelectionLocked else {
+            SharedLogger.info(Self.destinationSelectionLockedMessage, category: .transfer)
+            return
+        }
         destinationURLs = urls.filter { url in
             guard let refusal = BackupTargetPolicy.refusal(for: url, origin: .userChoice, source: sourceURL) else {
                 return true
@@ -612,7 +638,25 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     func removeDestinationFolder(_ url: URL) {
+        guard !isDestinationSelectionLocked else {
+            SharedLogger.info(Self.destinationSelectionLockedMessage, category: .transfer)
+            return
+        }
         destinationURLs.removeAll { $0 == url }
+    }
+
+    private static let destinationSelectionLockedMessage =
+        "Backups are locked while staged or running queue cards use them. Remove those cards or let the batch finish first."
+
+    /// The route is immutable for the lifetime of a staged batch, including
+    /// the interval when its final card is running and there are no queued
+    /// records left. Failed/completed history does not keep Setup locked.
+    var isDestinationSelectionLocked: Bool {
+        transferJournal.records.contains { record in
+            queueSessionRecordIDs.contains(record.id)
+                && record.projectID == nil
+                && (record.state == .queued || record.state == .running)
+        }
     }
 
     private static func resolvedPath(_ url: URL) -> String {
@@ -624,6 +668,11 @@ class SharedAppCoordinator: ObservableObject {
     var isAnalysingSource: Bool {
         guard let sourceURL else { return false }
         return folderInfoService.isAwaitingSourceInfo(for: sourceURL)
+    }
+
+    var isSelectedSourceKnownEmpty: Bool {
+        guard let sourceURL, !isAnalysingSource, let info = sourceFolderInfo else { return false }
+        return info.url.standardizedFileURL == sourceURL.standardizedFileURL && info.fileCount == 0
     }
 
     /// True while the left compare folder has not finished its scan.
@@ -672,8 +721,17 @@ class SharedAppCoordinator: ObservableObject {
         transferJournal.records.filter { $0.state == .queued && $0.projectID == nil }.count
     }
 
+    /// One-time cards staged from Setup, in the order they will run. Setup
+    /// presents these as sources rather than duplicating them in Queue.
+    var stagedSetupTransfers: [LocalTransferRecord] {
+        let recordsByID = Dictionary(uniqueKeysWithValues: transferJournal.records.map { ($0.id, $0) })
+        return queueSessionRecordOrder.compactMap { recordsByID[$0] }.filter {
+            $0.state == .queued && $0.projectID == nil
+        }
+    }
+
     var canEnqueueSelection: Bool {
-        sourceURL != nil && !destinationURLs.isEmpty && !isOperationInProgress
+        operationReadinessAssessment.isReady && !isOperationInProgress
             && !usesProjectWorkflow && !photographerJobViewModel.hasPreparedIngestAwaitingStart
     }
 
@@ -695,6 +753,9 @@ class SharedAppCoordinator: ObservableObject {
             throw FileOperationError.unsafeOperation(refusal)
         }
         try SafetyValidator.validateResolvedDestinationRoots(source: source, destinations: destinations, settings: settings)
+        guard try CardSource.containsRegularFile(base: source) else {
+            throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
+        }
         if queueSessionEnded && !hasWaitingQueueSessionRecord {
             clearQueueSessionState()
         }
@@ -718,6 +779,22 @@ class SharedAppCoordinator: ObservableObject {
         }
         try enqueue(source: sourceURL, destinations: destinationURLs)
         self.sourceURL = nil
+    }
+
+    /// Starts the cards assembled on Setup. If more than one card is ready,
+    /// the current selection first enters the same validated journal path as
+    /// every other queued card, then the existing serial queue runs them.
+    func startSetupTransfers() throws {
+        guard !usesProjectWorkflow, !photographerJobViewModel.hasPreparedIngestAwaitingStart else {
+            throw FileOperationError.unsafeOperation("Finish setting up the project card before starting.")
+        }
+        if sourceURL != nil {
+            try enqueueSelection()
+        }
+        guard !stagedSetupTransfers.isEmpty else {
+            throw FileOperationError.unsafeOperation("Choose a source and backups first.")
+        }
+        startQueue()
     }
 
     var runningOneTimeTransfer: LocalTransferRecord? {
@@ -777,6 +854,29 @@ class SharedAppCoordinator: ObservableObject {
         persistQueueSession()
         // startQueue waits for executeOperation to unwind before advancing.
         startQueue()
+    }
+
+    /// Adds the inline Queue editor's draft through the same validated path
+    /// as every other queued transfer. When a one-time transfer is already
+    /// running, it becomes the first item in the queue session and the new
+    /// card follows it automatically.
+    func enqueueInlineCard(
+        source: URL,
+        destinations: [URL],
+        verificationMode: VerificationMode,
+        generateASCMHL: Bool
+    ) throws {
+        if let running = runningOneTimeTransfer {
+            addQueueSessionRecord(running.id)
+            if let volumeID = running.source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+        }
+        try enqueue(
+            source: source,
+            destinations: destinations,
+            verificationMode: verificationMode,
+            generateASCMHL: generateASCMHL
+        )
+        if isOperationInProgress { startQueue() }
     }
 
     func enqueueAutomaticallyDetectedCard(source: URL) throws {
@@ -846,6 +946,35 @@ class SharedAppCoordinator: ObservableObject {
         queueSessionRecordIDs.remove(id)
         queueSessionRecordOrder.removeAll { $0 == id }
         persistQueueSession()
+    }
+
+    /// Removes a stale failed/interrupted card from this queue without
+    /// deleting its History record. Unlike Skip and Continue, this does not
+    /// start waiting cards automatically.
+    func removePausedCardFromQueue(_ expectedID: UUID) throws {
+        guard queuePausedRecordID == expectedID,
+              let record = transferJournal.records.first(where: { $0.id == expectedID }),
+              Self.isQueueProblemState(record.state) else {
+            throw FileOperationError.unsafeOperation("Only the card pausing this queue can be removed.")
+        }
+        queueSessionRecordIDs.remove(expectedID)
+        queueSessionRecordOrder.removeAll { $0 == expectedID }
+        skippedQueueAttentionIDs.remove(expectedID)
+        reviewedQueueAttentionIDs.remove(expectedID)
+        queuePausedRecordID = nil
+        reviewedQueueRecordID = nil
+        queueMessage = nil
+        queueIsRunning = false
+        queueSessionEnded = false
+        if activeJournalRecordID == expectedID {
+            resetForNewOperation()
+            sourceURL = nil
+        }
+        if queueSessionRecordIDs.isEmpty {
+            clearQueueSessionState()
+        } else {
+            persistQueueSession()
+        }
     }
 
     func moveQueuedTransferToTop(_ id: UUID) throws {
@@ -1065,6 +1194,15 @@ class SharedAppCoordinator: ObservableObject {
             )
             return
         }
+        guard !isSelectedSourceKnownEmpty else {
+            operationState = .failed
+            updateProjectLifecycle(for: .failed)
+            await platformManager.presentAlert(
+                title: "Empty Source",
+                message: "Choose a source that contains files."
+            )
+            return
+        }
 
         let startID = UUID()
         activeStartID = startID
@@ -1153,7 +1291,21 @@ class SharedAppCoordinator: ObservableObject {
             return
         }
 
-        guard activeStartID == startID, !startCancellationRequested else { return }
+        guard activeStartID == startID, !startCancellationRequested else {
+            queueIsRunning = false
+            do {
+                try transferJournal.cancel(id: recordID, results: results)
+                handleAttemptTerminal(
+                    recordID: recordID,
+                    belongsToQueueSession: isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID)
+                )
+            } catch {
+                let message = "Could not save transfer results: \(error.localizedDescription)"
+                queueMessage = message
+                operationState = .failed
+            }
+            return
+        }
 
         // A new run starts its smoothed progress from zero, even if the last
         // run never reached a terminal state.
@@ -1465,6 +1617,48 @@ class SharedAppCoordinator: ObservableObject {
         operationState = .cancelled
         updateProjectLifecycle(for: .cancelled)
     }
+
+    /// Requests cancellation, then waits until the running task has unwound,
+    /// released its security scopes and durably moved its journal record out
+    /// of `.running`. App termination and window closure must await this.
+    func cancelOperationAndWaitForSettlement() async throws {
+        let startID = activeStartID
+        let recordID = activeJournalRecordID
+
+        guard startID != nil || isOperationInProgress || queueIsRunning else { return }
+        // The queue can be between records: stopping it is already settled,
+        // and no journal record is currently running.
+        guard startID != nil || isOperationInProgress else {
+            queueIsRunning = false
+            return
+        }
+        cancelOperation()
+
+        if let startID {
+            while activeStartID == startID || isOperationInProgress {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        } else {
+            while isOperationInProgress {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+
+        guard let recordID else {
+            // A natural finish can win the race before cancellation observes
+            // the active record. In that case there is no running record left.
+            if !transferJournal.records.contains(where: { $0.state == .running }) { return }
+            throw CancellationSettlementError.journalRecordMissing
+        }
+        guard let record = transferJournal.records.first(where: { $0.id == recordID }) else {
+            throw CancellationSettlementError.journalRecordMissing
+        }
+        guard record.state != .running else {
+            throw CancellationSettlementError.journalStillRunning(
+                transferJournal.persistenceError ?? queueMessage ?? "The journal still marks the transfer as running."
+            )
+        }
+    }
     
     func pauseOperation(reason: PauseInfo.PauseReason = .userRequested) async {
         guard stateService.currentState.canPause else { return }
@@ -1723,6 +1917,10 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Completion State (derived from OperationState)
 
     var completionState: CompletionState {
+        // Master Report is its own workflow. A prior Copy outcome remains in
+        // the journal and reappears when Copy is selected, but must not route
+        // over the report screen while Master Report is active.
+        if currentMode == .masterReport { return .idle }
         switch operationState {
         case .completed(let info):
             if info.success {
@@ -1832,7 +2030,7 @@ class SharedAppCoordinator: ObservableObject {
         }.reduce(0, +)
         
         if totalCapacity > 0 {
-            let formattedCapacity = ByteCountFormatter.string(fromByteCount: totalCapacity, countStyle: .file)
+            let formattedCapacity = ByteCountPresentation.capacity(totalCapacity)
             return "\(destinationURLs.count) destination\(destinationURLs.count == 1 ? "" : "s") • ~\(formattedCapacity) available"
         } else {
             return "\(destinationURLs.count) destination\(destinationURLs.count == 1 ? "" : "s")"
@@ -1841,11 +2039,16 @@ class SharedAppCoordinator: ObservableObject {
     
     private func getDriveCapacity(for url: URL) -> Int64? {
         do {
-            let values = try url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
-            if let cap = values.volumeAvailableCapacity {
-                return Int64(cap)
-            }
-            return nil
+            let values = try url.resourceValues(forKeys: [
+                .volumeAvailableCapacityForImportantUsageKey,
+                .volumeAvailableCapacityKey,
+            ])
+            guard values.volumeAvailableCapacityForImportantUsage != nil
+                    || values.volumeAvailableCapacity != nil else { return nil }
+            return SafetyValidator.resolvedAvailableSpace(
+                importantUsage: values.volumeAvailableCapacityForImportantUsage,
+                standardCapacity: values.volumeAvailableCapacity
+            )
         } catch {
             return nil
         }
@@ -1938,6 +2141,7 @@ class SharedAppCoordinator: ObservableObject {
     var transferReadiness: TransferReadiness {
         TransferReadiness.assess(
             source: sourceURL,
+            sourceFileCount: sourceFolderInfo?.fileCount,
             sourceBytes: sourceFolderInfo?.totalSize,
             isAnalysingSource: isAnalysingSource,
             destinations: destinationURLs,
@@ -2018,6 +2222,7 @@ extension OperationReadinessAssessment {
     /// the rest of the rule.
     static func assess(
         source: URL?,
+        sourceFileCount: Int? = nil,
         sourceBytes: Int64?,
         isAnalysingSource: Bool,
         destinations: [URL],
@@ -2028,6 +2233,7 @@ extension OperationReadinessAssessment {
     ) -> OperationReadinessAssessment {
         let readiness = TransferReadiness.assess(
             source: source,
+            sourceFileCount: sourceFileCount,
             sourceBytes: sourceBytes,
             isAnalysingSource: isAnalysingSource,
             destinations: destinations,
@@ -2074,16 +2280,16 @@ struct FolderMetadataSummary {
     let lastModified: Date
     
     var formattedTotalSize: String {
-        ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+        ByteCountPresentation.fileSize(totalSize)
     }
     
     var formattedAverageSize: String {
-        ByteCountFormatter.string(fromByteCount: averageFileSize, countStyle: .file)
+        ByteCountPresentation.fileSize(averageFileSize)
     }
     
     var formattedLargestFile: String? {
         guard let largest = largestFile else { return nil }
-        let size = ByteCountFormatter.string(fromByteCount: largest.size, countStyle: .file)
+        let size = ByteCountPresentation.fileSize(largest.size)
         return "\(largest.name) (\(size))"
     }
     

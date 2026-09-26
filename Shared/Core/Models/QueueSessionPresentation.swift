@@ -157,7 +157,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 }
                 return "Queue paused — \(row.cardName) \(state)"
             },
-            pausedCause: paused?.cause
+            pausedCause: paused?.cause.map(deduplicatedCause)
         )
     }
 
@@ -181,10 +181,12 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let paths = Dictionary(grouping: record.results, by: \.path)
         let recordedBytes = paths.values.compactMap { $0.first }.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
         let count = paths.isEmpty ? max(0, progress?.totalFiles ?? 0) : paths.count
-        let bytes = recordedBytes > 0 ? recordedBytes : progress?.totalBytes
+        // Recorded results are authoritative: a zero-byte total names genuinely
+        // empty content ("Empty"), it never falls back to live progress.
+        let bytes: Int64? = paths.isEmpty ? progress?.totalBytes : recordedBytes
         let evidence: String?
         if count > 0, let bytes {
-            evidence = "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) · \(count) \(count == 1 ? "file" : "files")"
+            evidence = "\(ByteCountPresentation.fileSize(bytes)) · \(count) \(count == 1 ? "file" : "files")"
         } else if count > 0 {
             evidence = "\(count) \(count == 1 ? "file" : "files")"
         } else {
@@ -201,7 +203,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             id: record.id,
             cardName: record.title,
             evidence: evidence,
-            destinations: "→ " + destinationNames.joined(separator: ", "),
+            destinations: destinationSummary(destinationNames),
             safetyState: state,
             progressFraction: record.state == .running ? progress?.stageProgress ?? progress?.overallProgress : nil,
             action: action,
@@ -236,6 +238,29 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let summary = record.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? nil : summary
     }
+
+    static func destinationSummary(_ names: [String]) -> String {
+        guard let first = names.first else { return "No backups" }
+        let allOnOneDrive = names.allSatisfy {
+            $0.compare(first, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        if allOnOneDrive {
+            return names.count == 1 ? "1 backup on \(first)" : "\(names.count) backups on \(first)"
+        }
+        return "\(names.count) backups: \(names.joined(separator: ", "))"
+    }
+
+    static func deduplicatedCause(_ cause: String) -> String {
+        var seen: Set<String> = []
+        let clauses = cause.split(separator: ";", omittingEmptySubsequences: true).compactMap { clause -> String? in
+            let value = clause.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return nil }
+            let key = value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else { return nil }
+            return value
+        }
+        return clauses.joined(separator: "; ")
+    }
 }
 
 private extension CardSafetyState {
@@ -250,6 +275,16 @@ private extension CardSafetyState {
 enum QueueCommandPolicy {
     static func canRunQueue(isPausedOnProblem: Bool, waitingCount: Int) -> Bool {
         !isPausedOnProblem && waitingCount > 0
+    }
+}
+
+enum ActiveQueuePresentation {
+    static func canAddCard(isOperationInProgress: Bool, queueIsRunning: Bool, destinationCount: Int) -> Bool {
+        (isOperationInProgress || queueIsRunning) && destinationCount > 0
+    }
+
+    static func showsReconnect(for state: LocalTransferState) -> Bool {
+        state == .queued
     }
 }
 

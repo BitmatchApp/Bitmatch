@@ -3,6 +3,10 @@ import XCTest
 import BitMatchEngine
 
 final class ResultPresentationTests: XCTestCase {
+    func testLiveRowsNameDestinationOnlyWhenBackupsAreMixed() {
+        XCTAssertFalse(LiveResultDestinationPolicy.showsDestinationInEachRow(backupCount: 1))
+        XCTAssertTrue(LiveResultDestinationPolicy.showsDestinationInEachRow(backupCount: 2))
+    }
     func testDestinationSummariesKeepSameNamedBackupsSeparate() {
         let first = URL(fileURLWithPath: "/Volumes/A/Backup")
         let second = URL(fileURLWithPath: "/Volumes/B/Backup")
@@ -145,7 +149,7 @@ final class ResultPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.title, "Transfer failed")
-        XCTAssertEqual(presentation.sourceGuidance, "Keep the card. Nothing here has been confirmed safe.")
+        XCTAssertEqual(presentation.sourceGuidance, "Do not erase the card. Nothing here has been confirmed safe.")
     }
 
     func testVisibleRowsCapsMoreThanOneThousandIssuesWithoutTrapping() {

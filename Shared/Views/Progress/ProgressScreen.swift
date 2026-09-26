@@ -39,8 +39,6 @@ struct ProgressScreen: View {
     /// question as the Cancel button.
     @Binding var confirmingCancel: Bool
 
-    @State private var width: CGFloat = 0
-
     init(
         presentation: TransferProgressPresentation,
         actions: ProgressActions,
@@ -51,46 +49,16 @@ struct ProgressScreen: View {
         _confirmingCancel = confirmingCancel
     }
 
-    private var layout: AdaptiveNavigationPresentation {
-        AdaptiveNavigationPolicy.presentation(for: width)
-    }
-
     var body: some View {
-        Group {
-            if layout == .sidebar {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 16) {
-                        header
-                        progressBar
-                        stats
-                        controls
-                        currentFile
-                        issue
-                        deviceNotes
-                    }
-                    .frame(maxWidth: .infinity, alignment: .topLeading)
-                    destinationList
-                        .frame(maxWidth: .infinity, alignment: .topLeading)
-                }
-            } else {
-                VStack(alignment: .leading, spacing: 16) {
-                    header
-                    progressBar
-                    stats
-                    controls
-                    currentFile
-                    issue
-                    destinationList
-                    deviceNotes
-                }
-            }
+        VStack(alignment: .leading, spacing: 14) {
+            header
+            progressBar
+            stats
+            issue
+            destinationList
+            deviceNotes
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .onGeometryChange(for: CGFloat.self) { proxy in
-            proxy.size.width
-        } action: { newWidth in
-            width = newWidth
-        }
         .onChange(of: presentation.phase) { _, phase in
             // Audit C3: phase changes of a long run are spoken.
             AccessibilityNotification.Announcement(TransferProgressPresentation.title(for: phase)).post()
@@ -120,27 +88,70 @@ struct ProgressScreen: View {
 
     // MARK: Header
 
+    @ViewBuilder
     private var header: some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: presentation.symbol)
-                .font(.title2.weight(.semibold))
-                .foregroundStyle(presentation.tone.color)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(presentation.title)
-                    .font(.title2.weight(.semibold))
-                if let detail = presentation.detail {
-                    Text(detail)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
+        #if os(macOS)
+        headerRow
+        #else
+        ViewThatFits(in: .horizontal) {
+            headerRow
+            VStack(alignment: .leading, spacing: 10) {
+                heading
+                controls
             }
-            Spacer(minLength: 0)
+        }
+        #endif
+    }
+
+    private var headerRow: some View {
+        HStack(alignment: .center, spacing: 16) {
+            heading
+            Spacer(minLength: 16)
+            controls
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private var heading: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("\(presentation.title) \(presentation.displaySourceName)")
+                .font(.title2.weight(.semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help("\(presentation.title) \(presentation.sourceName)")
+            if let subtitle = progressSubtitle {
+                Text(subtitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .help(fullProgressSubtitle)
+            }
+        }
         .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(presentation.title) \(presentation.sourceName). \(fullProgressSubtitle)")
         .accessibilityAddTraits(.isHeader)
+    }
+
+    private var destinationSummary: String {
+        let names = presentation.destinationNames
+        guard !names.isEmpty else { return "backups" }
+        if names.count == 1 { return names[0] }
+        if names.count == 2 { return "\(names[0]) and \(names[1])" }
+        return "\(names.count) backups"
+    }
+
+    private var fullProgressSubtitle: String {
+        let names = presentation.destinationNames
+        let destinations = names.isEmpty ? "backups" : names.joined(separator: ", ")
+        return ["to \(destinations)", presentation.elapsed.map { "\($0) elapsed" }]
+            .compactMap { $0 }.joined(separator: " · ")
+    }
+
+    private var progressSubtitle: String? {
+        if presentation.phase == .paused, let detail = presentation.detail { return detail }
+        return ["to \(destinationSummary)", presentation.elapsed.map { "\($0) elapsed" }]
+            .compactMap { $0 }.joined(separator: " · ")
     }
 
     // MARK: Bar and numbers
@@ -165,7 +176,6 @@ struct ProgressScreen: View {
         if let count = presentation.countText { items.append(Stat(id: "Files", value: count)) }
         if let speed = presentation.speed { items.append(Stat(id: "Speed", value: speed)) }
         if let remaining = presentation.timeRemaining { items.append(Stat(id: "Time left", value: remaining)) }
-        if let elapsed = presentation.elapsed { items.append(Stat(id: "Elapsed", value: elapsed)) }
         return items
     }
 
@@ -173,12 +183,7 @@ struct ProgressScreen: View {
     private var stats: some View {
         let items = statItems
         if !items.isEmpty {
-            // Adaptive columns reflow at narrow widths and large text sizes.
-            LazyVGrid(
-                columns: [GridItem(.adaptive(minimum: 120), alignment: .topLeading)],
-                alignment: .leading,
-                spacing: 10
-            ) {
+            HStack(alignment: .top, spacing: 16) {
                 ForEach(items) { item in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(item.id)
@@ -186,11 +191,15 @@ struct ProgressScreen: View {
                             .foregroundStyle(.secondary)
                         Text(item.value)
                             .font(.body.monospacedDigit().weight(.medium))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.85)
                     }
+                    .frame(minHeight: 38, alignment: .topLeading)
                     .frame(maxWidth: .infinity, alignment: .leading)
-                    .accessibilityElement(children: .combine)
                 }
             }
+            .accessibilityElement(children: .combine)
+            .accessibilityLabel(items.map { "\($0.id), \($0.value)" }.joined(separator: ", "))
         }
     }
 
@@ -208,23 +217,18 @@ struct ProgressScreen: View {
 
     @ViewBuilder
     private var controls: some View {
-        let stack = layout == .compact
-            ? AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
-            : AnyLayout(HStackLayout(spacing: 10))
-        stack {
+        HStack(spacing: 10) {
             switch presentation.controls.primary {
             case .resume:
                 // Paused: Resume is the next step, so it is the prominent one.
                 Button(action: actions.resume) {
-                    Label("Resume", systemImage: "play.fill")
-                        .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                    Label("Resume", systemImage: "play.fill").frame(minHeight: Self.minTarget)
                 }
                 .buttonStyle(.borderedProminent)
                 .accessibilityHint("Continues copying and verifying.")
             case .pause:
                 Button(action: actions.pause) {
-                    Label("Pause", systemImage: "pause.fill")
-                        .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                    Label("Pause", systemImage: "pause.fill").frame(minHeight: Self.minTarget)
                 }
                 .buttonStyle(.bordered)
                 .accessibilityHint("Pauses copying. Resume continues where it stopped.")
@@ -232,11 +236,10 @@ struct ProgressScreen: View {
                 EmptyView()
             }
             if presentation.controls.canCancel {
-                Button(role: .destructive) {
+                Button {
                     confirmingCancel = true
                 } label: {
-                    Label("Cancel", systemImage: "xmark")
-                        .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                    Text("Cancel…").frame(minHeight: Self.minTarget)
                 }
                 .buttonStyle(.bordered)
                 .accessibilityLabel("Cancel transfer")
@@ -246,34 +249,18 @@ struct ProgressScreen: View {
         }
     }
 
-    // MARK: Current file and problems
-
-    @ViewBuilder
-    private var currentFile: some View {
-        if let file = presentation.currentFile {
-            Label {
-                Text(file)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            } icon: {
-                Image(systemName: "doc")
-            }
-            .font(.footnote)
-            .foregroundStyle(.secondary)
-            .accessibilityLabel("Current file, \(file)")
-        }
-    }
+    // MARK: Problems
 
     @ViewBuilder
     private var issue: some View {
         if let line = presentation.issueLine {
             Label(line, systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(ResultStatusTone.warning.color)
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.orange.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
+                .background(ResultStatusTone.warning.color.opacity(0.1), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -282,18 +269,18 @@ struct ProgressScreen: View {
     @ViewBuilder
     private var destinationList: some View {
         if !presentation.destinations.isEmpty {
-            // Two columns at toolbar width; the sidebar layout already puts
-            // the backups in their own column.
-            let columns = layout == .toolbar
-                ? [GridItem(.flexible(), alignment: .topLeading), GridItem(.flexible(), alignment: .topLeading)]
-                : [GridItem(.flexible(), alignment: .topLeading)]
             VStack(alignment: .leading, spacing: 8) {
                 Text("Backups")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
-                LazyVGrid(columns: columns, alignment: .leading, spacing: 10) {
+                LazyVStack(alignment: .leading, spacing: 0) {
                     ForEach(presentation.destinations) { row in
-                        DestinationProgressRowView(row: row, tint: presentation.tone.color)
+                        DestinationProgressRowView(
+                            row: row,
+                            tint: presentation.tone.color,
+                            showsProgress: presentation.destinations.count > 1
+                        )
+                        if row.id != presentation.destinations.last?.id { Divider() }
                     }
                 }
             }
@@ -308,8 +295,8 @@ struct ProgressScreen: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(presentation.deviceNotes, id: \.self) { note in
                     Label(note.text, systemImage: note.symbol)
-                        .font(.footnote)
-                        .foregroundStyle(note.isWarning ? Color.orange : Color.secondary)
+                        .font(note.isWarning ? .footnote : .caption)
+                        .foregroundStyle(note.isWarning ? ResultStatusTone.warning.color : Color.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
@@ -320,43 +307,50 @@ struct ProgressScreen: View {
 private struct DestinationProgressRowView: View {
     let row: DestinationProgressRow
     let tint: Color
+    let showsProgress: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
-                Image(systemName: row.symbol)
-                    .foregroundStyle(.secondary)
-                    .accessibilityHidden(true)
                 Text(row.name)
                     .font(.subheadline.weight(.semibold))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 8)
-                Text(row.stateLabel)
-                    .font(.footnote.weight(.medium))
-                    .foregroundStyle(.secondary)
-            }
-            ProgressView(value: row.fraction ?? 0)
-                .progressViewStyle(.linear)
-                .tint(tint)
-            HStack {
-                Text(row.path)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 8)
+                Label(row.stateLabel, systemImage: row.symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(statusColor)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(statusColor.opacity(0.12), in: Capsule())
                 if let count = row.countText {
                     Text(count)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                         .monospacedDigit()
+                        .lineLimit(1)
                 }
             }
-            .font(.caption)
-            .foregroundStyle(.secondary)
+            if showsProgress {
+                ProgressView(value: row.fraction ?? 0)
+                    .progressViewStyle(.linear)
+                    .tint(tint)
+                    .frame(minHeight: 8)
+            }
         }
-        .padding(12)
+        .padding(.vertical, 9)
+        .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+        .help(row.helpPath)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Backup \(row.name), \(row.stateLabel)")
         .accessibilityValue(row.countText ?? "")
+    }
+
+    private var statusColor: Color {
+        switch row.state {
+        case .waiting, .copied: .secondary
+        case .copying, .verifying: tint
+        }
     }
 }

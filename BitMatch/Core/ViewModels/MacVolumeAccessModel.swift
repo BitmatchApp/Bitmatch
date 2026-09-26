@@ -159,6 +159,9 @@ final class MacVolumeAccessModel: ObservableObject {
     /// Internal (not private) so tests can drive the discovery policy
     /// without fabricating volume-monitor notifications.
     func handleBackupDrivesUpdate(_ drives: [VolumeMonitorService.DetectedVolume]) {
+        // Staging snapshots one shared backup route for the entire batch.
+        // Discovery must not auto-add or auto-remove behind that lock.
+        guard shared?.isDestinationSelectionLocked != true else { return }
         // Check if any current destinations are no longer available
         let driveURLs = Set(drives.map { $0.url.path })
         let removedDestinations = destinationURLs.filter { destination in
@@ -397,17 +400,6 @@ final class MacVolumeAccessModel: ObservableObject {
         for dest in loadLastDestinations() {
             shared?.addDestination(dest, origin: .restored, facts: volumeFacts)
         }
-    }
-    
-    // MARK: - Volume Space Helpers
-    func formattedAvailableSpace(for url: URL) -> String? {
-        do {
-            let rv = try url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
-            if let available = rv.volumeAvailableCapacity {
-                return ByteCountFormatter.string(fromByteCount: Int64(available), countStyle: .file)
-            }
-        } catch { }
-        return nil
     }
     
     // MARK: - Recent Folders Management

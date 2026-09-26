@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Redesign the Mac as one morphing window with native toolbar controls, compact live progress, inline queue editing, in-window History, and fail-safe PDF verdicts.
+- Polish the Mac transfer setup with a unified toolbar, compact drive and queue panels, clearer capacity and empty-source wording, and close and Quit protection during transfers.
+- Polish Copying, Finish, Transfers, Settings, Compare, and Master Report with calmer native layouts, clearer folder labels, and accessible status details.
 - Safety: A transfer is complete only when every selected backup has exactly one result for every source-manifest file, with no duplicate or unexpected rows.
 - Finish the inline Transfer Queue with per-card safety states, pause and recovery controls, queue summaries, notifications, and Dock attention counts.
 - Finish and Transfers now share one fail-safe card state, show Copy Summary for every outcome, keep finished records in History, and reserve green and Eject for checksum-verified cards.

@@ -327,6 +327,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Step 2: Build one fail-closed source manifest before safety validation.
         SharedLogger.debug("Prep: enumerating source manifest at \(operation.sourceURL.path)", category: .transfer)
         let sourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
+        guard !sourceManifest.isEmpty else {
+            throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
+        }
         let manifestURLByRelativePath = Dictionary(
             sourceManifest.map { ($0.relativePath, $0.url) },
             uniquingKeysWith: { first, _ in first }

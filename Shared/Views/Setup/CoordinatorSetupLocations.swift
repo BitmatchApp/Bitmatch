@@ -13,8 +13,8 @@ struct SetupLocationsPlatform {
     var pickBackups: @MainActor () async -> [URL]
     var addBackup: @MainActor (URL) -> String?
     var removeBackup: @MainActor (URL) -> Void
-    /// Formatted free space for a backup, or nil.
-    var freeSpace: (URL) -> String?
+    /// Available and total capacity for a backup, or nil.
+    var capacity: (URL) -> SetupLocationsPresentation.Capacity?
     /// Shows refusals of the user's own pick or drop (Mac: the toast; iOS:
     /// an alert). Never called for an empty list.
     var showRefusals: @MainActor ([String]) -> Void
@@ -37,6 +37,12 @@ struct SetupLocationSelection {
 
     func chooseSource(_ url: URL) -> [String] {
         guard !coordinator.isOperationInProgress else { return [] }
+        let path = BackupTargetPolicy.canonicalPath(url)
+        if coordinator.stagedSetupTransfers.contains(where: {
+            BackupTargetPolicy.canonicalPath($0.source.url) == path
+        }) {
+            return ["This card is already staged."]
+        }
         let decision = DestinationSelectionPolicy.evaluateSource(
             url,
             backups: coordinator.destinationURLs,
@@ -50,6 +56,9 @@ struct SetupLocationSelection {
 
     func addBackups(_ urls: [URL]) -> [String] {
         guard !coordinator.isOperationInProgress else { return [] }
+        guard coordinator.stagedSetupTransfers.isEmpty else {
+            return ["Remove the staged cards before changing backups."]
+        }
         let coordinator = self.coordinator
         return DestinationSelectionPolicy.addBackups(
             urls,
@@ -68,6 +77,7 @@ struct SetupLocationSelection {
     /// keeps discovery from adding the old drive straight back).
     func replaceBackup(at index: Int, with url: URL) -> [String] {
         guard !coordinator.isOperationInProgress,
+              coordinator.stagedSetupTransfers.isEmpty,
               coordinator.destinationURLs.indices.contains(index) else { return [] }
         let old = coordinator.destinationURLs[index]
         let decision = DestinationSelectionPolicy.evaluateBackup(
@@ -127,12 +137,33 @@ struct CoordinatorSetupLocations: View {
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
             isAnalysingSource: coordinator.isAnalysingSource,
             cameraName: cameraLabels.detectedCameraName ?? coordinator.detectedCamera?.displayName,
+            stagedSources: coordinator.stagedSetupTransfers.map { record in
+                SetupLocationsPresentation.StagedSource(
+                    id: record.id,
+                    title: record.title,
+                    path: record.source.url.path,
+                    detail: record.destinations.count == 1 ? "1 backup · Ready" : "\(record.destinations.count) backups · Ready"
+                )
+            },
             destinationURLs: coordinator.destinationURLs,
-            freeSpace: platform.freeSpace,
+            capacity: platform.capacity,
             isOperationInProgress: coordinator.isOperationInProgress,
+            showsAddAnotherCard: coordinator.sourceURL != nil
+                && !coordinator.usesProjectWorkflow
+                && !coordinator.photographerJobViewModel.hasPreparedIngestAwaitingStart,
+            canAddAnotherCard: coordinator.canEnqueueSelection,
+            addAnotherCardDisabledReason: addAnotherCardDisabledReason,
             nextStep: context.nextStep,
             layout: context.layout
         )
+    }
+
+    private var addAnotherCardDisabledReason: String? {
+        guard !coordinator.canEnqueueSelection else { return nil }
+        if coordinator.isAnalysingSource { return "Analyzing source…" }
+        if let blocker = coordinator.operationReadinessAssessment.blockingIssues.first { return blocker }
+        if coordinator.destinationURLs.isEmpty { return "Choose at least one backup first." }
+        return "This card is not ready to add."
     }
 
     private var selection: SetupLocationSelection {
@@ -158,6 +189,23 @@ struct CoordinatorSetupLocations: View {
             clearSource: {
                 guard !coordinator.isOperationInProgress else { return }
                 coordinator.sourceURL = nil
+            },
+            addAnotherCard: {
+                guard coordinator.canEnqueueSelection else { return }
+                do {
+                    try coordinator.enqueueSelection()
+                } catch {
+                    platform.showRefusals([error.localizedDescription])
+                    return
+                }
+                Task { @MainActor in
+                    guard let url = await platform.pickSource() else { return }
+                    presentRefusals(selection.chooseSource(url), platform: platform)
+                }
+            },
+            removeStagedCard: { id in
+                do { try coordinator.removeQueuedTransfer(id) }
+                catch { platform.showRefusals([error.localizedDescription]) }
             },
             pickBackups: {
                 Task { @MainActor in

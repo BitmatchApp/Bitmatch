@@ -317,12 +317,6 @@ public enum EvidenceWriter: Sendable {
         let pdfURL = saveDirectory.appendingPathComponent(fileName).nonConflictingSibling()
         
         do {
-            if generateFullReport, let pdfData {
-                // Save PDF
-                try pdfData.write(to: pdfURL)
-            }
-            
-            try Task.checkCancellation()
             // Save CSV manifest with enhanced data
             let csvURL = pdfURL.deletingPathExtension().appendingPathExtension("csv").nonConflictingSibling()
             try exportEnhancedCSV(results: results,
@@ -360,6 +354,15 @@ public enum EvidenceWriter: Sendable {
                     .appendingPathExtension("\(algorithm.rawValue.lowercased()).txt")
                     .nonConflictingSibling()
                 try writeRecordedChecksumManifest(results: results, algorithm: algorithm, to: checksumURL)
+            }
+
+            try Task.checkCancellation()
+            // The PDF carries the human-facing safety verdict, so it is the
+            // commit marker for a complete requested report. Write it only
+            // after every later-failing evidence component has succeeded;
+            // otherwise an old, safer verdict could survive a report error.
+            if generateFullReport, let pdfData {
+                try pdfData.write(to: pdfURL, options: .atomic)
             }
             
             SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")

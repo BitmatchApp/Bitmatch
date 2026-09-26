@@ -13,6 +13,7 @@ struct TransferReadinessTests {
 
     private func assess(
         source: URL?? = nil,
+        sourceFileCount: Int? = 1,
         sourceBytes: Int64? = 1_000,
         analysing: Bool = false,
         destinations: [URL]? = nil,
@@ -21,6 +22,7 @@ struct TransferReadinessTests {
     ) -> TransferReadiness {
         TransferReadiness.assess(
             source: source ?? self.source,
+            sourceFileCount: sourceFileCount,
             sourceBytes: sourceBytes,
             isAnalysingSource: analysing,
             destinations: destinations ?? [backup],
@@ -29,6 +31,15 @@ struct TransferReadinessTests {
             availableBytes: available,
             isWritable: writable
         )
+    }
+
+    @Test func analyzedEmptySourceIsBlockedButAZeroByteFileIsAllowed() {
+        let empty = assess(sourceFileCount: 0, sourceBytes: 0)
+        #expect(empty.status == .blocked)
+        #expect(empty.blockers == [TransferReadiness.emptySourceIssue])
+
+        let zeroByteFile = assess(sourceFileCount: 1, sourceBytes: 0)
+        #expect(zeroByteFile.isReady)
     }
 
     /// A 1 GB card with 1.5 GB free passed the old iOS 90% rule and then

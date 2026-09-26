@@ -14,7 +14,6 @@ struct MacSetupView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @EnvironmentObject var remoteBackups: MacRemoteBackupController
     @Binding var optionsExpanded: Bool
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         CoordinatorSetupScreen(
@@ -44,10 +43,6 @@ struct MacSetupView: View {
                 )
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.top, 4)
-        .padding(.bottom, 8)
-        .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
     }
 }
 

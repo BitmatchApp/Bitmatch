@@ -195,6 +195,9 @@ struct GeneralSettingsTests {
         #expect(NotificationAuthorizationPresentation.make(status: .denied) == .denied)
         #expect(NotificationAuthorizationPresentation.denied.showsSettingsButton)
         #expect(!NotificationAuthorizationPresentation.authorized.showsSettingsButton)
+        #expect(NotificationAuthorizationPresentation.notAsked.showsEnableButton)
+        #expect(!NotificationAuthorizationPresentation.authorized.showsEnableButton)
+        #expect(!NotificationAuthorizationPresentation.denied.showsEnableButton)
     }
 
     @Test func backgroundWarningNeverRequestsUndeterminedPermission() {

@@ -40,7 +40,7 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 title: safetyState.headline(cardName: cardName),
                 detail: "Quick mode only compares file sizes, not what's inside the files.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Keep \(card) until you run a verified copy. Quick mode can't confirm every file arrived intact."
+                sourceGuidance: "Do not erase \(card). Run a verified copy first; Quick mode can't confirm every file arrived intact."
             )
         case .needsAttention:
             let files = issueCount == 1 ? "1 file" : "\(issueCount) files"
@@ -48,14 +48,14 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 title: safetyState.headline(cardName: cardName),
                 detail: "\(files) had problems. Review them below.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Don't erase \(card) until every file below is resolved."
+                sourceGuidance: "Do not erase \(card) until every file below is resolved."
             )
         case .failed:
             return Self(
                 title: safetyState.headline(cardName: cardName),
                 detail: "No files were confirmed copied and verified.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Keep \(card). Nothing here has been confirmed safe."
+                sourceGuidance: "Do not erase \(card). Nothing here has been confirmed safe."
             )
         case .waiting, .preparing, .copying, .verifying, .interrupted:
             preconditionFailure("A completion verdict must produce a finish state")

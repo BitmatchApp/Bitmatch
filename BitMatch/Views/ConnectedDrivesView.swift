@@ -6,56 +6,75 @@ struct ConnectedDrivesView: View {
     let addAsBackup: (URL) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Connected drives")
-                .font(.subheadline.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
+        Group {
             if rows.isEmpty {
-                Text("Connect a card or drive to see it here.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    Image(systemName: "externaldrive")
+                        .foregroundStyle(.secondary)
+                        .accessibilityHidden(true)
+                    Text(ConnectedDrivesPresentation.emptyTitle)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
+                .padding(.horizontal, 12)
             } else {
-                ForEach(rows) { row in
-                    HStack(spacing: 10) {
-                        Image(systemName: row.role == .card ? "sdcard" : "externaldrive")
-                            .foregroundStyle(.secondary)
-                            .frame(width: 22)
-                            .accessibilityHidden(true)
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(row.displayName)
-                                .font(.subheadline)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Text(row.subtitle)
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                        }
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        switch row.state {
-                        case .isSource:
-                            Label("Card", systemImage: "checkmark")
-                                .foregroundStyle(.secondary)
-                        case .isBackup:
-                            Label("Backup", systemImage: "checkmark")
-                                .foregroundStyle(.secondary)
-                        case .none:
-                            ViewThatFits(in: .horizontal) {
-                                HStack(spacing: 6) { buttons(for: row) }
-                                VStack(alignment: .trailing, spacing: 4) { buttons(for: row) }
-                            }
+                VStack(alignment: .leading, spacing: 12) {
+                    Text("Connected drives")
+                        .font(.subheadline.weight(.semibold))
+                        .accessibilityAddTraits(.isHeader)
+                    VStack(spacing: 8) {
+                        ForEach(rows) { row in
+                            driveRow(row)
                         }
                     }
-                    .font(.caption)
-                    .padding(.vertical, 3)
-                    .accessibilityElement(children: .contain)
-                    .accessibilityLabel(row.displayName)
                 }
+                .padding(12)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.03))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+        )
+    }
+
+    private func driveRow(_ row: ConnectedDrivesPresentation.Row) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: row.role == .card ? "sdcard" : "externaldrive")
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.displayName)
+                    .font(.subheadline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(row.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            switch row.state {
+            case .isSource:
+                Label("Card", systemImage: "checkmark")
+                    .foregroundStyle(.secondary)
+            case .isBackup:
+                Label("Backup", systemImage: "checkmark")
+                    .foregroundStyle(.secondary)
+            case .none:
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { buttons(for: row) }
+                    VStack(alignment: .trailing, spacing: 8) { buttons(for: row) }
+                }
+            }
+        }
+        .font(.caption)
+        .frame(minHeight: 40)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(row.displayName)
     }
 
     @ViewBuilder
@@ -84,40 +103,16 @@ struct MacConnectedDrives: View {
                 volumes: monitor.connectedVolumes,
                 sourceURL: coordinator.sourceURL?.standardizedFileURL.resolvingSymlinksInPath(),
                 destinationURLs: coordinator.destinationURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
-            ),
+            ).filter { $0.state == .none },
             useAsCard: { show(selection.chooseSource($0)) },
             addAsBackup: { show(selection.addBackups([$0])) }
         )
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(coordinator.isOperationInProgress)
+        .disabled(coordinator.isOperationInProgress || !coordinator.stagedSetupTransfers.isEmpty)
     }
 
     private func show(_ refusals: [String]) {
         if !refusals.isEmpty { platform.showRefusals(refusals) }
-    }
-}
-
-@MainActor
-struct MacQueueNextCards: View {
-    @ObservedObject var coordinator: SharedAppCoordinator
-    @ObservedObject var monitor: VolumeMonitorService
-
-    var body: some View {
-        let rows = coordinator.queueCandidates(volumes: monitor.connectedVolumes)
-        if !rows.isEmpty {
-            VStack(alignment: .leading, spacing: 8) {
-                ForEach(rows) { row in
-                    Button("Queue \(row.displayName) next") {
-                        do { try coordinator.enqueueNext(source: row.url) }
-                        catch { Task { await coordinator.showError(error) } }
-                    }
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                }
-            }
-            .buttonStyle(.bordered)
-            .controlSize(.small)
-        }
     }
 }

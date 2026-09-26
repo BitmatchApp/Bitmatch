@@ -29,7 +29,7 @@ struct MasterReportTotals: Equatable {
     var allVerified: Bool { transfers > 0 && verified == transfers }
 
     var verifiedText: String { "\(verified) of \(transfers)" }
-    var sizeText: String { ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file) }
+    var sizeText: String { ByteCountPresentation.fileSize(bytes) }
 }
 
 /// The step the person has not taken yet. The screen highlights it instead
@@ -49,14 +49,13 @@ struct MasterReportPresentation: Equatable {
     let canGenerate: Bool
     let nextStep: MasterReportNextStep?
 
-    /// - Parameter deliverVerb: "Save" on the Mac, "Share" on iPad and iPhone.
     static func make(
         hasLocation: Bool,
         isScanning: Bool,
         foundCount: Int,
         selectedCount: Int,
         isGenerating: Bool,
-        deliverVerb: String
+        deliverVerb _: String
     ) -> MasterReportPresentation {
         if !hasLocation {
             return .init(actionTitle: "Choose a drive to scan", canGenerate: false, nextStep: .chooseLocation)
@@ -73,9 +72,8 @@ struct MasterReportPresentation: Equatable {
         if isGenerating {
             return .init(actionTitle: "Creating report…", canGenerate: false, nextStep: nil)
         }
-        let noun = selectedCount == 1 ? "transfer" : "transfers"
         return .init(
-            actionTitle: "\(deliverVerb) Master Report (\(selectedCount) \(noun))",
+            actionTitle: "Create Master Report",
             canGenerate: true,
             nextStep: nil
         )
@@ -104,9 +102,9 @@ struct MasterReportPresentation: Equatable {
     /// "3 issues" or "Not verified".
     static func statusText(for card: TransferCard) -> String {
         if case .completed(let info) = card.state, !info.message.isEmpty {
-            return info.message
+            return card.verified ? info.message : "\(info.message) — do not erase the card"
         }
-        return card.verified ? "Verified" : "Not verified"
+        return card.verified ? "Verified" : "Not verified — do not erase the card"
     }
 
     /// e.g. "MasterReport_2026-09-25", for the report's day, not the day it was made.

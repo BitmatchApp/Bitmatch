@@ -2,6 +2,14 @@
 import SwiftUI
 import BitMatchEngine
 
+private struct SettingsPaneHeightKey: PreferenceKey {
+    static let defaultValue: [String: CGFloat] = [:]
+
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
+    }
+}
+
 struct PreferencesWindow: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject private var generalSettings: GeneralSettings
@@ -10,7 +18,9 @@ struct PreferencesWindow: View {
     let remoteBackups: MacRemoteBackupController
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("BitMatchSelectedSettingsPane") private var selectedPane = PreferencesPane.general
+    @State private var measuredPaneHeights: [String: CGFloat] = [:]
 
     init(
         coordinator: SharedAppCoordinator,
@@ -44,23 +54,26 @@ struct PreferencesWindow: View {
 
     var body: some View {
         TabView(selection: $selectedPane) {
-            settingsPane(generalPreferences)
+            settingsPane(generalPreferences, pane: .general)
                 .tabItem { Label(PreferencesPane.general.rawValue, systemImage: PreferencesPane.general.icon) }
                 .tag(PreferencesPane.general)
-            settingsPane(verificationPreferences)
+            settingsPane(verificationPreferences, pane: .verification)
                 .tabItem { Label(PreferencesPane.verification.rawValue, systemImage: PreferencesPane.verification.icon) }
                 .tag(PreferencesPane.verification)
-            settingsPane(backupsPreferences)
+            settingsPane(backupsPreferences, pane: .backups)
                 .tabItem { Label(PreferencesPane.backups.rawValue, systemImage: PreferencesPane.backups.icon) }
                 .tag(PreferencesPane.backups)
-            settingsPane(reportPreferences)
+            settingsPane(reportPreferences, pane: .reports)
                 .tabItem { Label(PreferencesPane.reports.rawValue, systemImage: PreferencesPane.reports.icon) }
                 .tag(PreferencesPane.reports)
-            settingsPane(camerasPreferences)
+            settingsPane(camerasPreferences, pane: .cameras)
                 .tabItem { Label(PreferencesPane.cameras.rawValue, systemImage: PreferencesPane.cameras.icon) }
                 .tag(PreferencesPane.cameras)
         }
-        .frame(width: 720, height: 560)
+        .frame(width: 680, height: preferredHeight)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: selectedPane)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: preferredHeight)
+        .onPreferenceChange(SettingsPaneHeightKey.self) { measuredPaneHeights = $0 }
         .task { await notifier.refreshAuthorizationStatus() }
         .onChange(of: scenePhase) { _, phase in
             guard phase == .active else { return }
@@ -68,12 +81,24 @@ struct PreferencesWindow: View {
         }
     }
 
-    private func settingsPane<Content: View>(_ content: Content) -> some View {
-        ScrollView {
-            content
-                .frame(maxWidth: .infinity, alignment: .topLeading)
-                .padding(20)
-        }
+    private var preferredHeight: CGFloat {
+        let contentHeight = measuredPaneHeights[selectedPane.rawValue] ?? 360
+        // The tab strip sits outside the measured pane.
+        return min(max(contentHeight + 58, 260), 720)
+    }
+
+    private func settingsPane<Content: View>(_ content: Content, pane: PreferencesPane) -> some View {
+        content
+            .fixedSize(horizontal: false, vertical: true)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: SettingsPaneHeightKey.self,
+                        value: [pane.rawValue: proxy.size.height]
+                    )
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
     }
 
     // MARK: - General
@@ -86,13 +111,17 @@ struct PreferencesWindow: View {
                 Toggle(GeneralSettingsPresentation.notifyFinish, isOn: $generalSettings.notifyWhenTransferOrQueueFinishes)
                 Toggle(GeneralSettingsPresentation.notifyEachQueuedCard, isOn: $generalSettings.notifyForEachCardInQueue)
 
-                HStack {
-                    Text("\(GeneralSettingsPresentation.systemPermission): \(notifier.authorization.title)")
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    if notifier.authorization.showsSettingsButton {
-                        Button(GeneralSettingsPresentation.openNotificationSettings) {
-                            openURL(GeneralSettingsPresentation.macNotificationSettingsURL)
+                LabeledContent(GeneralSettingsPresentation.systemPermission) {
+                    HStack(spacing: 10) {
+                        Text(notifier.authorization.title).foregroundStyle(.secondary)
+                        if notifier.authorization.showsSettingsButton {
+                            Button(GeneralSettingsPresentation.openNotificationSettings) {
+                                openURL(GeneralSettingsPresentation.macNotificationSettingsURL)
+                            }
+                        } else if notifier.authorization.showsEnableButton {
+                            Button("Enable Notifications") {
+                                Task { await coordinator.enableNotificationsFromPrompt() }
+                            }
                         }
                     }
                 }
@@ -108,6 +137,7 @@ struct PreferencesWindow: View {
             }
         }
         .formStyle(.grouped)
+        .toggleStyle(.switch)
     }
 
     // MARK: - Verification
@@ -116,66 +146,43 @@ struct PreferencesWindow: View {
     private var verificationPreferences: some View {
         Form {
             Section {
-                Text("Every backup is checked against your card before BitMatch calls it verified. This sets how thoroughly that check runs.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            } header: {
-                Text("Verification").font(.title2).fontWeight(.semibold).foregroundColor(.primary)
-            }
-
-            Section("Current mode") {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text(coordinator.verificationMode == .standard ? "Verified copy · SHA-256" : coordinator.verificationMode.rawValue)
-                        .font(.headline)
-                    Text(coordinator.verificationMode.description)
-                        .font(.subheadline)
-                        .foregroundColor(.secondary)
-                    if coordinator.verificationMode == .quick {
-                        Label("File contents are not checked in Quick mode.", systemImage: "exclamationmark.triangle.fill")
-                            .foregroundColor(.orange)
-                    }
-                }
-                .padding(.vertical, 4)
-
-                DisclosureGroup("Change verification mode") {
+                LabeledContent("Mode") {
                     Picker("Mode", selection: $coordinator.verificationMode) {
                         ForEach(VerificationMode.allCases) { mode in
                             Text(mode.rawValue).tag(mode)
                         }
                     }
+                    .pickerStyle(.menu)
+                    .labelsHidden()
                     .onChange(of: coordinator.verificationMode) { _, _ in coordinator.saveVerificationMode() }
-                    .padding(.top, 4)
                 }
+                Text(verificationExplanation)
+                    .foregroundStyle(.secondary)
+                if coordinator.verificationMode == .quick {
+                    Label("Quick mode does not check file contents.", systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(ResultStatusTone.warning.color)
+                }
+            } header: {
+                Text("Verification")
             }
 
-            Section("Handoff record") {
+            Section("Handoff") {
                 ASCMHLPreferenceToggle(shared: coordinator)
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .toggleStyle(.switch)
     }
 
     // MARK: - Backups
 
     @ViewBuilder
     private var backupsPreferences: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Backups")
-                    .font(.title2)
-                    .fontWeight(.semibold)
-                Text("Save an off-site destination here once, then choose it for any project. BitMatch signs in with your Mac's SSH agent and only uploads from a Mac.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            }
-            RemoteBackupDestinationManager(
-                viewModel: coordinator.photographerJobViewModel,
-                remoteBackups: remoteBackups,
-                showsDoneButton: false
-            )
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        RemoteBackupDestinationManager(
+            viewModel: coordinator.photographerJobViewModel,
+            remoteBackups: remoteBackups,
+            showsDoneButton: false
+        )
     }
 
     // MARK: - Reports
@@ -184,59 +191,64 @@ struct PreferencesWindow: View {
     private var reportPreferences: some View {
         Form {
             Section {
-                Text("A report is a record of what happened during a transfer, saved next to your backups so you can hand it to anyone.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            } header: {
-                Text("Reports").font(.title2).fontWeight(.semibold).foregroundColor(.primary)
-            }
-
-            Section {
                 Toggle(TransferOptionsPresentation.reportToggleTitle(), isOn: $coordinator.reportSettings.makeReport)
-                    .toggleStyle(.checkbox)
+            } header: {
+                Text("Reports")
+            } footer: {
+                Text("Reports record what happened and are saved beside each backup.")
             }
 
             if coordinator.reportSettings.makeReport {
                 Section {
-                    TextField("Client name", text: $coordinator.reportSettings.clientName)
-                    TextField("Project name", text: $coordinator.reportSettings.projectName)
-                    TextField("Production title", text: $coordinator.reportSettings.production)
-                    TextField("Production company", text: $coordinator.reportSettings.company)
-                    VStack(alignment: .leading, spacing: 6) {
-                        Text("Notes")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                        TextEditor(text: $coordinator.reportSettings.notes)
-                            .font(.system(size: 12))
+                    reportField("Client", text: $coordinator.reportSettings.clientName, prompt: "Client name")
+                    reportField("Project", text: $coordinator.reportSettings.projectName, prompt: "Project name")
+                    reportField("Production", text: $coordinator.reportSettings.production, prompt: "Production title")
+                    reportField("Company", text: $coordinator.reportSettings.company, prompt: "Production company")
+                    LabeledContent("Notes") {
+                            ZStack(alignment: .topLeading) {
+                                if coordinator.reportSettings.notes.isEmpty {
+                                Text("Contacts or handoff details")
+                                        .font(.body)
+                                        .foregroundStyle(.tertiary)
+                                        .padding(.horizontal, 9)
+                                        .padding(.vertical, 8)
+                                        .allowsHitTesting(false)
+                                }
+                                TextEditor(text: $coordinator.reportSettings.notes)
+                                    .font(.body)
+                                    .scrollContentBackground(.hidden)
+                                    .padding(4)
+                            }
                             .frame(minHeight: 80)
+                            .background(Color(nsColor: .textBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
                             .overlay(
-                                RoundedRectangle(cornerRadius: 6)
-                                    .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                                RoundedRectangle(cornerRadius: 8)
+                                    .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
                             )
+                    }
+                    Divider()
+                    Button("Clear Project Details", role: .destructive) {
+                        clearReportMetadata()
                     }
                 } header: {
                     Text("Project details")
                 } footer: {
-                    Text("These appear on every report until you clear them.")
+                    Text("These details appear on every report until you clear them.")
                 }
 
                 Section {
                     Toggle("Include thumbnails", isOn: $coordinator.reportSettings.includeThumbnails)
-                        .toggleStyle(.checkbox)
+                } header: {
+                    Text("Contents")
                 } footer: {
-                    Text("Adds a small preview image for each file to the report.")
+                    Text("Adds one small preview for each file.")
                 }
 
-                Section {
-                    Button("Clear project details") {
-                        clearReportMetadata()
-                    }
-                }
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeInOut, value: coordinator.reportSettings.makeReport)
+        .toggleStyle(.switch)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: coordinator.reportSettings.makeReport)
     }
 
     // MARK: - Cameras
@@ -245,63 +257,69 @@ struct PreferencesWindow: View {
     private var camerasPreferences: some View {
         Form {
             Section {
-                Text("BitMatch can notice when a camera card is connected and set it up for you automatically.")
-                    .font(.subheadline)
-                    .foregroundColor(.secondary)
-            } header: {
-                Text("Cameras").font(.title2).fontWeight(.semibold).foregroundColor(.primary)
-            }
-
-            Section {
                 Toggle("Detect camera cards automatically", isOn: $coordinator.reportSettings.enableAutoCameraDetection)
-                    .toggleStyle(.checkbox)
-                    .onChange(of: coordinator.reportSettings.enableAutoCameraDetection) { oldValue, newValue in
+                    .onChange(of: coordinator.reportSettings.enableAutoCameraDetection) { _, newValue in
                         cameraAutoSource.toggleCameraDetection(newValue)
                     }
+            } header: {
+                Text("Camera cards")
+            } footer: {
+                Text("Recognizes RED, ARRI, Blackmagic, Sony, Canon, Panasonic, GoPro, DJI, and Fujifilm cards.")
             }
 
             if coordinator.reportSettings.enableAutoCameraDetection {
-                Section("When a card is detected") {
-                    Toggle("Set it as the source automatically", isOn: $coordinator.reportSettings.autoPopulateSource)
-                        .toggleStyle(.checkbox)
-                        .help("When enabled, a detected camera card is set as the source folder for you")
+                Section("When detected") {
+                    Toggle("Use as source", isOn: $coordinator.reportSettings.autoPopulateSource)
+                        .help("Sets a detected camera card as the source")
 
                     Toggle("Show a notification", isOn: $coordinator.reportSettings.showCameraDetectionNotifications)
-                        .toggleStyle(.checkbox)
-                        .help("Display a system notification when a camera card is detected")
+                        .help("Shows a notification when a camera card is detected")
                 }
 
-                Section {
-                    HStack {
-                        Button {
-                            cameraAutoSource.rescanForCameras()
-                        } label: {
-                            HStack(spacing: 6) {
-                                Image(systemName: "arrow.clockwise")
-                                Text("Rescan Now")
-                            }
-                        }
-                        .help("Manually scan for connected camera cards")
-
-                        Spacer()
-
+                Section("Status") {
+                    LabeledContent("Detection") {
                         HStack(spacing: 6) {
                             Circle()
-                                .fill(Color.green)
+                                .fill(Color.accentColor)
                                 .frame(width: 8, height: 8)
-                            Text("Active")
-                                .font(.caption)
-                                .foregroundColor(.secondary)
+                            Text("Active").foregroundStyle(.secondary)
                         }
                     }
-                } footer: {
-                    Text("Recognized cameras: RED, ARRI, Blackmagic, Sony, Canon, Panasonic, GoPro, DJI, and Fujifilm.")
+                    LabeledContent {
+                            Button {
+                                cameraAutoSource.rescanForCameras()
+                            } label: {
+                            Label("Rescan Now", systemImage: "arrow.clockwise")
+                            }
+                            .help("Scans for connected camera cards")
+                    } label: {
+                        Text("Scan")
+                    }
                 }
             }
         }
         .formStyle(.grouped)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .animation(.easeInOut, value: coordinator.reportSettings.enableAutoCameraDetection)
+        .toggleStyle(.switch)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.18), value: coordinator.reportSettings.enableAutoCameraDetection)
+    }
+
+    private func reportField(_ label: String, text: Binding<String>, prompt: String) -> some View {
+        LabeledContent(label) {
+            TextField("", text: text, prompt: Text(prompt))
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.leading)
+                .accessibilityLabel(label)
+                .frame(width: 320)
+        }
+    }
+
+    private var verificationExplanation: String {
+        switch coordinator.verificationMode {
+        case .standard: "Standard verifies each copy with SHA-256 checksums."
+        case .quick: "Quick compares file sizes without checking file contents."
+        case .thorough: "Thorough verifies each copy with SHA-256 and MD5 checksums."
+        case .paranoid: "Paranoid compares every byte and verifies SHA-256 checksums."
+        }
     }
 }
 
@@ -343,7 +361,7 @@ private struct ASCMHLPreferenceToggle: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
             Toggle("ASC MHL handoff record", isOn: $shared.generateASCMHL)
-                .toggleStyle(.checkbox)
+                .toggleStyle(.switch)
                 .disabled(!TransferOptionsPresentation.ascMHLEnabled(for: shared.verificationMode))
             Text(TransferOptionsPresentation.ascMHLFootnote(for: shared.verificationMode))
                 .font(.subheadline)

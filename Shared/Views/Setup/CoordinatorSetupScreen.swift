@@ -34,6 +34,8 @@ extension SetupPresentation {
             projectUnit: jobs.selectedWorkflow.sourceUnitLabel,
             isOperationInProgress: coordinator.isOperationInProgress,
             isQueuePaused: coordinator.hasUnresolvedQueueRecords,
+            hasCurrentSource: coordinator.sourceURL != nil,
+            stagedCardCount: coordinator.stagedSetupTransfers.count,
             sourceFileCount: coordinator.sourceFolderInfo?.fileCount,
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
             destinationCount: coordinator.destinationURLs.count,
@@ -98,22 +100,18 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
             },
             start: {
                 // The one Start: the same rule as ⌘R, including S-2.
+                guard SetupPresentation.make(coordinator: coordinator).start.canStart else { return }
                 coordinator.switchMode(to: .copyAndVerify)
-                Task { await coordinator.startCurrentMode() }
-            },
-            enqueue: enqueueAction
-        )
-    }
-
-    private var enqueueAction: (() -> Void)? {
-        #if os(macOS)
-        if coordinator.canEnqueueSelection {
-            return {
-                do { try coordinator.enqueueSelection() }
-                catch { Task { await coordinator.showError(error) } }
+                if SetupStartPolicy.startsSetupBatch(
+                    stagedCardCount: coordinator.stagedSetupTransfers.count,
+                    isOperationInProgress: coordinator.isOperationInProgress
+                ) {
+                    do { try coordinator.startSetupTransfers() }
+                    catch { Task { await coordinator.showError(error) } }
+                } else {
+                    Task { await coordinator.startCurrentMode() }
+                }
             }
-        }
-        #endif
-        return nil
+        )
     }
 }

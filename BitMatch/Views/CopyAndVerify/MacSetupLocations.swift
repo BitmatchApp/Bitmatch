@@ -16,7 +16,7 @@ struct MacSetupLocations: View {
 
     var body: some View {
         let volumeAccess = self.volumeAccess
-        VStack(spacing: 12) {
+        VStack(spacing: 24) {
             CoordinatorSetupLocations(coordinator: coordinator, context: context, platform: platform)
             MacConnectedDrives(monitor: volumeAccess.volumeMonitor, coordinator: coordinator, platform: platform)
         }
@@ -29,7 +29,7 @@ struct MacSetupLocations: View {
             pickBackups: { Self.chooseFolders(multiple: true, prompt: "Add Backup") },
             addBackup: { volumeAccess.addDestination($0) },
             removeBackup: { volumeAccess.removeDestination($0) },
-            freeSpace: { volumeAccess.formattedAvailableSpace(for: $0) },
+            capacity: SetupLocationsPresentation.capacity,
             showRefusals: { reasons in
                 NotificationCenter.default.post(
                     name: .dropRejected,

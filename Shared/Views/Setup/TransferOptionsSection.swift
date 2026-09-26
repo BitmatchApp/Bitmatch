@@ -54,7 +54,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
                         recordsColumn(options).frame(maxWidth: .infinity, alignment: .topLeading)
                     }
                 } else {
-                    VStack(alignment: .leading, spacing: 14) {
+                    VStack(alignment: .leading, spacing: 12) {
                         if showsLabelContent {
                             labelContent
                             Divider()
@@ -77,6 +77,8 @@ struct TransferOptionsSection<LabelContent: View>: View {
                         .multilineTextAlignment(.trailing)
                 }
             }
+            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+            .contentShape(Rectangle())
             .touchTarget()
         }
         .accessibilityHint(showsLabelContent
@@ -94,7 +96,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
     @ViewBuilder
     private func recordsColumn(_ presentation: TransferOptionsPresentation) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 8) {
                 LabeledContent("Verification") {
                     Picker("Verification", selection: $verificationMode) {
                         ForEach(VerificationMode.allCases) { Text($0.rawValue).tag($0) }
@@ -112,7 +114,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
             }
 
             if let generateASCMHL {
-                VStack(alignment: .leading, spacing: 4) {
+                VStack(alignment: .leading, spacing: 8) {
                     Toggle("ASC MHL handoff record", isOn: generateASCMHL)
                         .font(.optionsBody)
                         .disabled(!presentation.ascMHLEnabled)

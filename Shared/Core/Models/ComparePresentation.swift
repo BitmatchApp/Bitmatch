@@ -52,7 +52,7 @@ struct CompareFolderSlot: Equatable, Sendable {
     }
 
     var sizeText: String? {
-        totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+        totalSize.map(ByteCountPresentation.fileSize)
     }
 
     /// Shown when a folder is chosen but its details could not be read.
@@ -115,8 +115,8 @@ enum CompareReadiness: Equatable, Sendable {
     /// The reason line under a disabled Compare button. Nil when ready.
     var message: String? {
         switch self {
-        case .needsLeft: "Choose the left folder, the one you trust."
-        case .needsRight: "Choose the right folder to check against it."
+        case .needsLeft: "Choose the reference folder, the one you trust."
+        case .needsRight: "Choose the folder to check against the reference."
         case .blocked(let block): block.message
         case .loading: "Reading folder details…"
         case .running: "A compare is running."
@@ -267,6 +267,10 @@ enum ComparePhase: Equatable, Sendable {
 }
 
 struct ComparePresentation: Equatable, Sendable {
+    static let nonDestructiveMessage = "Compare does not change either folder."
+    static let referenceFolderLabel = "Reference folder"
+    static let folderToCheckLabel = "Folder to check"
+
     let left: CompareFolderSlot
     let right: CompareFolderSlot
     let mode: VerificationMode
@@ -291,8 +295,8 @@ struct ComparePresentation: Equatable, Sendable {
     /// needed under it.
     var actionTitle: String {
         switch readiness {
-        case .needsLeft: "Choose the left folder to compare"
-        case .needsRight: "Choose the right folder to compare"
+        case .needsLeft: "Choose the reference folder"
+        case .needsRight: "Choose the folder to check"
         case .blocked: "Choose two separate folders"
         case .loading: "Reading folder details…"
         case .running: "Comparing…"
@@ -321,8 +325,8 @@ struct ComparePresentation: Equatable, Sendable {
     /// all locked while anything runs.
     var allowsEditing: Bool { !isRunning }
 
-    var leftName: String { left.name ?? "Left folder" }
-    var rightName: String { right.name ?? "Right folder" }
+    var leftName: String { left.name ?? Self.referenceFolderLabel }
+    var rightName: String { right.name ?? Self.folderToCheckLabel }
 
     var verdict: CompareVerdictPresentation? {
         guard case .finished(let outcome) = phase else { return nil }

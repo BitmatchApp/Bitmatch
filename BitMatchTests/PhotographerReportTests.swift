@@ -19,6 +19,7 @@ struct PhotographerReportTests {
         try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: eventDate,
             finished: locallySafeAt, sourceURL: nil, destinationURLs: [root], results: results(),
             fileCount: 2, matchCount: 1, prefs: prefs, workers: 1, totalBytesProcessed: 101,
+            safetyState: .copiedNotVerified,
             generateFullReport: false)
         let files = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
         let jsonURL = try #require(files.first { $0.pathExtension == "json" })
@@ -360,7 +361,7 @@ struct PhotographerReportTests {
 
         #expect(payload.card.localState == .issues)
         #expect(try payload.results.allSatisfy(\.successful))
-        #expect(!ReportView.shouldShowSuccessBadge(issueCount: 0, photographyJob: payload))
+        #expect(!ReportView.shouldShowSuccessBadge(safetyState: .safeToErase, photographyJob: payload))
         #expect(
             ReportView.photographerVerificationNotice(for: payload) ==
                 "Photographer verification incomplete — this card is not locally safe."

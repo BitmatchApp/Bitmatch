@@ -25,6 +25,12 @@ enum ResultStatusTone: Equatable, Sendable {
     }
 }
 
+/// Successful UI plumbing is useful feedback, but is not verification.
+/// Connection and document-delivery messages must therefore stay neutral.
+enum NonVerificationSuccessPresentation {
+    static let tone: ResultStatusTone = .neutral
+}
+
 struct ResultStatusPresentation: Equatable, Sendable {
     let tone: ResultStatusTone
     let symbol: String

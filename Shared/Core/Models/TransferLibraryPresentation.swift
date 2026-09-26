@@ -1,10 +1,21 @@
 import Foundation
 import BitMatchEngine
 
-/// What the Transfers library shows for each journal record, and which
-/// records raise the "review in Transfers" banner on Mac, iPad and iPhone.
+/// What History shows for each journal record, and which records raise the
+/// "review in History" banner on Mac, iPad and iPhone.
 /// Pure values, so every platform shows the same state the same way.
 enum TransferLibraryPresentation {
+
+    struct AttentionNotice: Equatable, Sendable {
+        let recordID: UUID
+        let title: String
+        let detail: String
+        let systemImage: String
+        let tint: CardSafetyTint
+        /// Collapsed History rows never repeat the finish-screen erase
+        /// guidance; the pill already carries words, symbol and color.
+        let rowDetail: String?
+    }
 
     /// A record's state as a word, a symbol and a tint. Color is never the
     /// only signal, and green belongs only to checksum-verified completion.
@@ -13,6 +24,9 @@ enum TransferLibraryPresentation {
         let accessibilityLabel: String
         let systemImage: String
         let tint: CardSafetyTint
+        /// Collapsed History rows never repeat the finish-screen erase
+        /// guidance; the pill already carries words, symbol and color.
+        let rowDetail: String?
     }
 
     static func safetyState(for record: LocalTransferRecord) -> CardSafetyState {
@@ -52,7 +66,8 @@ enum TransferLibraryPresentation {
             title: safetyState.title,
             accessibilityLabel: accessibilityLabel,
             systemImage: safetyState.symbol,
-            tint: safetyState.tint
+            tint: safetyState.tint,
+            rowDetail: nil
         )
     }
 
@@ -126,6 +141,11 @@ enum TransferLibraryPresentation {
         }
     }
 
+    static func reviewTargetRecordID(requested: UUID?, visibleRecords: [LocalTransferRecord]) -> UUID? {
+        guard let requested, visibleRecords.contains(where: { $0.id == requested }) else { return nil }
+        return requested
+    }
+
     static func recent(_ records: [LocalTransferRecord], limit: Int) -> [LocalTransferRecord] {
         guard limit > 0 else { return [] }
         return Array(records
@@ -160,12 +180,46 @@ enum TransferLibraryPresentation {
         needsAttentionCount(states: records.map(\.state))
     }
 
+    /// A problem already named by the Queue pause banner is not announced a
+    /// second time above the screen. Other history problems still count.
+    static func needsAttentionCount(_ records: [LocalTransferRecord], excluding suppressedIDs: Set<UUID>) -> Int {
+        needsAttentionCount(records.filter { !suppressedIDs.contains($0.id) })
+    }
+
     /// Banner text, or nil when there is nothing to review.
     static func bannerTitle(needsAttentionCount count: Int) -> String? {
         switch count {
         case ..<1: return nil
-        case 1: return "Transfer needs attention — review in Transfers"
-        default: return "\(count) transfers need attention — review in Transfers"
+        case 1: return "Transfer needs attention — review in History"
+        default: return "\(count) transfers need attention — review in History"
         }
+    }
+
+    /// The most recent interrupted or failed transfer shown beneath the toolbar.
+    /// It takes precedence over the notification prompt until dismissed.
+    static func attentionNotice(
+        records: [LocalTransferRecord],
+        isTransferRunning: Bool,
+        dismissedIDs: Set<UUID>,
+        suppressedIDs: Set<UUID> = []
+    ) -> AttentionNotice? {
+        guard !isTransferRunning else { return nil }
+        guard let record = records
+                .filter({
+                    ($0.state == .interrupted || $0.state == .failed)
+                        && !dismissedIDs.contains($0.id)
+                        && !suppressedIDs.contains($0.id)
+                })
+                .max(by: { $0.createdAt < $1.createdAt }) else { return nil }
+        return AttentionNotice(
+            recordID: record.id,
+            title: record.state == .interrupted
+                ? "A previous transfer was interrupted."
+                : "A previous transfer failed.",
+            detail: "Do not erase the card.",
+            systemImage: "exclamationmark.triangle.fill",
+            tint: record.state == .failed ? .red : .amber,
+            rowDetail: nil
+        )
     }
 }

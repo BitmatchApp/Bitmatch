@@ -8,6 +8,12 @@ import BitMatchEngine
 /// names the one-line production change ("Plant:") that must turn it red.
 @MainActor
 struct TransferProgressPresentationTests {
+    @Test func generatedCardIdentifierDoesNotDominateTheProgressTitle() {
+        let full = "bitmatch_stress_src_7A63FAD7-6322-493D-80F3-5CACE6A9048D"
+        #expect(TransferProgressPresentation.compactSourceName(full) == "bitmatch_stress_src")
+        #expect(TransferProgressPresentation.compactSourceName("A001_CAMERA") == "A001_CAMERA")
+    }
+
     private let primary = URL(fileURLWithPath: "/Volumes/Primary", isDirectory: true)
     private let secondary = URL(fileURLWithPath: "/Volumes/Secondary", isDirectory: true)
 
@@ -75,7 +81,7 @@ struct TransferProgressPresentationTests {
         #expect(p.title != "Preparing")
         #expect((p.fraction ?? 0) > 0)
         #expect(p.percentText == "25%")
-        #expect(p.countText == "3 of 8 copied")
+        #expect(p.countText == "3 of 8")
     }
 
     /// Plant: in `TransferProgressPresentation.make`, pass
@@ -106,8 +112,43 @@ struct TransferProgressPresentationTests {
         #expect(p.destinations.count == 2)
         #expect(p.destinations[0].fraction == 1.0)
         #expect(p.destinations[1].fraction == 0.25)
-        #expect(p.destinations[0].countText == "4 of 4 copied")
+        #expect(p.destinations[0].countText == "4 of 4")
         #expect(p.destinations[1].state == .copying)
+        #expect(p.destinations.map(\.name) == ["Primary", "Secondary"])
+    }
+
+    @Test func destinationRowsReusePrecomputedVolumeNames() {
+        let internalFolder = URL(fileURLWithPath: "/Users/mike/Backups/Project", isDirectory: true)
+        let rows = TransferProgressPresentation.rows(
+            destinations: [internalFolder],
+            destinationNames: ["Macintosh HD"],
+            progress: nil,
+            phase: .preparing
+        )
+
+        #expect(rows.map(\.name) == ["Macintosh HD"])
+    }
+
+    @Test func fileCountsUseGroupedDigits() {
+        let p = make(
+            state: .inProgress,
+            progress: progress(stage: .copying, overall: 0.2, files: 1_369, total: 8_070)
+        )
+
+        #expect(p.countText == "1,369 of 8,070")
+    }
+
+    @Test func destinationRowsNameTheDriveAndKeepTheFullPathSecondary() {
+        let folder = URL(fileURLWithPath: "/Volumes/Samsung T7/Jobs/Smith", isDirectory: true)
+        let p = make(
+            state: .inProgress,
+            progress: progress(stage: .copying, overall: 0.25, totals: [8], completed: [2]),
+            destinations: [folder]
+        )
+
+        #expect(p.destinations.first?.name == "Samsung T7")
+        #expect(p.destinations.first?.path == "/Volumes/Samsung T7/Jobs/Smith")
+        #expect(p.destinations.first?.helpPath == folder.path)
     }
 
     /// Audit C1: a fully copied backup is "Copied", then "Verifying", and
@@ -173,7 +214,7 @@ struct TransferProgressPresentationTests {
 
     // MARK: Time left from observed copy speed (thesis decision, step 5)
 
-    /// Time left is not shown from a sliver of data: "Estimating…" until two
+    /// Time left is not shown from a sliver of data: "Estimating..." until two
     /// seconds of copying have been measured.
     /// Plant: in `ProgressPresentationModel.formattedTimeRemaining`, delete
     /// `observedCopySeconds >= Self.minimumObservedCopySeconds,` from the guard.
@@ -190,11 +231,13 @@ struct TransferProgressPresentationTests {
         now = now.addingTimeInterval(1)
         model.updateBytesProcessed(10_000_000) // one second measured
         #expect(model.formattedTimeRemaining == TransferProgressPresentation.estimatingTimeLeft)
+        #expect(model.formattedAverageDataRate == TransferProgressPresentation.estimating)
 
         now = now.addingTimeInterval(1)
         model.updateBytesProcessed(10_000_000) // two seconds at 10 MB/s
         // 970 MB left at 10 MB/s is 97 s.
         #expect(model.formattedTimeRemaining == "1 min")
+        #expect(model.formattedAverageDataRate?.hasSuffix("/s") == true)
     }
 
     /// The time before the first bytes (scanning, safety checks, opening

@@ -82,10 +82,60 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     var isInterrupted: Bool { safetyState == .interrupted }
 
     /// Spoken when the screen appears (audit C3).
-    var announcement: String { "\(verdict.title). \(verdict.detail)" }
+    var announcement: String { "\(finishTitle). \(verdict.detail)" }
 
     var canEject: Bool { safetyState.canEject }
     var showsBackupRowsInline: Bool { safetyState == .needsAttention && !destinations.isEmpty }
+
+    /// Guidance that is not already stated in the detail line. This is part
+    /// of the visible banner, so every unsafe finish explicitly tells the
+    /// user to keep the card without repeating the same sentence twice.
+    var bannerGuidance: String? {
+        // Quick, failed, and interrupted details already carry the warning.
+        // Safe and needs-attention states still benefit from one next-step
+        // sentence, but never repeat the source name.
+        switch safetyState {
+        case .safeToErase, .needsAttention: guidance
+        default: nil
+        }
+    }
+
+    /// Exactly the words visible in the verdict banner, kept testable apart
+    /// from SwiftUI rendering.
+    var visibleVerdictText: String {
+        [finishTitle, verdict.detail, bannerGuidance]
+            .compactMap { $0 }
+            .joined(separator: " ")
+    }
+
+    /// The single-line Finish title. The view lays the card and verdict out as
+    /// separate title-sized runs so only the card name can middle-truncate.
+    var finishTitle: String {
+        finishTitlePlacesCardFirst
+            ? "\(cardName) \(finishVerdictWords)"
+            : "\(finishVerdictWords) — \(cardName)"
+    }
+
+    var finishTitlePlacesCardFirst: Bool {
+        switch safetyState {
+        case .failed, .interrupted: false
+        default: true
+        }
+    }
+
+    var finishVerdictWords: String {
+        switch safetyState {
+        case .safeToErase: "is safe to erase"
+        case .copiedNotVerified: "copied, not verified"
+        case .needsAttention: "needs attention"
+        case .failed: "Transfer failed"
+        case .interrupted: "Transfer interrupted"
+        case .waiting: "is waiting"
+        case .preparing: "is preparing"
+        case .copying: "is copying"
+        case .verifying: "is verifying"
+        }
+    }
 
     static func shouldAutoEject(safetyState: CardSafetyState) -> Bool {
         safetyState.canEject
@@ -162,17 +212,24 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             title: baseVerdict.title,
             detail: bannerDetail(
                 safetyState: safetyState,
-                cardName: card,
                 sourceFileCount: sourceFileCount ?? sourceEvidence.fileCount,
                 sourceBytes: sourceBytes ?? sourceEvidence.bytes,
-                destinations: destinationNames,
+                destinations: destinationNames.map { shortenedDestinationName($0) },
                 algorithm: algorithm,
                 duration: duration,
                 reason: reason,
                 fallback: baseVerdict.detail
             ),
             symbol: safetyState.symbol,
-            sourceGuidance: baseVerdict.sourceGuidance
+            // The banner names the card once. All guidance comes from the
+            // nameless form, including Quick and needs-attention outcomes.
+            sourceGuidance: CompletionVerdictPresentation.make(
+                state: state,
+                rows: rows,
+                hasErrors: hasErrors,
+                hasCriticalErrors: hasCriticalErrors,
+                backupCount: destinations.count
+            ).sourceGuidance
         )
 
         return Self(
@@ -226,11 +283,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     /// Audit H12: one spoken stop per file result ("name, status, size,
     /// destination") instead of four or five separate VoiceOver stops per
     /// row, with no column names to say what "80 KB" means.
-    static func accessibilityLabel(for row: ResultRow) -> String {
+    static func accessibilityLabel(for row: ResultRow, destinationName: String? = nil) -> String {
         let name = URL(fileURLWithPath: row.path).lastPathComponent
         let status = statusLabel(for: row.status)
-        let size = ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file)
-        guard let destination = row.destination, !destination.isEmpty else {
+        let size = ByteCountPresentation.fileSize(row.size)
+        let destination = destinationName ?? row.destination
+        guard let destination, !destination.isEmpty else {
             return "\(name), \(status), \(size)"
         }
         return "\(name), \(status), \(size), \(destination)"
@@ -335,20 +393,29 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     }
 
     static func destinationDriveName(_ destination: URL) -> String {
-        let components = destination.standardizedFileURL.pathComponents
-        if let index = components.firstIndex(of: "Volumes"), index + 1 < components.count {
-            return components[index + 1]
-        }
-        return destination.lastPathComponent
+        DestinationIdentityPresentation.title(for: destination)
+    }
+
+    static func shortenedDestinationName(_ name: String, limit: Int = 28) -> String {
+        let characters = Array(name)
+        guard limit >= 5, characters.count > limit else { return name }
+        let visible = limit - 1
+        let leading = (visible + 1) / 2
+        let trailing = visible / 2
+        return String(characters.prefix(leading)) + "…" + String(characters.suffix(trailing))
     }
 
     static func destinationLabel(_ destination: URL) -> String {
         let components = destination.standardizedFileURL.pathComponents
-        guard let index = components.firstIndex(of: "Volumes"), index + 1 < components.count else {
-            return destination.lastPathComponent
+        guard components.count >= 3,
+              components[0] == "/",
+              components[1] == "Volumes" else {
+            let drive = destinationDriveName(destination)
+            let folder = destination.lastPathComponent
+            return folder.isEmpty || folder == drive ? drive : "\(drive) › \(folder)"
         }
-        let drive = components[index + 1]
-        let folderComponents = components.dropFirst(index + 2)
+        let drive = components[2]
+        let folderComponents = components.dropFirst(3)
         return folderComponents.isEmpty ? drive : "\(drive) › \(folderComponents.joined(separator: "/"))"
     }
 
@@ -379,7 +446,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 let summaries = DestinationResultSummary.make(rows: rows, destinations: destinations)
                     .filter { $0.issueCount > 0 }
                 if summaries.count == 1, let summary = summaries.first {
-                    let name = destinationDriveName(URL(fileURLWithPath: summary.id, isDirectory: true))
+                    let name = shortenedDestinationName(
+                        destinationDriveName(URL(fileURLWithPath: summary.id, isDirectory: true))
+                    )
                     let files = summary.issueCount == 1 ? "1 file failed" : "\(summary.issueCount) files failed"
                     return "\(files) on \(name)"
                 }
@@ -417,9 +486,10 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         }
         var parts = [cardName]
         if let sourceBytes {
-            parts.append(ByteCountFormatter.string(fromByteCount: sourceBytes, countStyle: .file))
+            parts.append(ByteCountPresentation.fileSize(sourceBytes))
         }
         parts.append(verdict)
+        if safetyState.eraseWarning != nil { parts.append("do not erase the card") }
         // The algorithm names a check that passed, so only a safe card lists it.
         if let algorithm, safetyState == .safeToErase { parts.append(algorithm) }
         if !destinations.isEmpty { parts.append(destinations.joined(separator: ", ")) }
@@ -428,7 +498,6 @@ struct TransferOutcomePresentation: Equatable, Sendable {
 
     private static func bannerDetail(
         safetyState: CardSafetyState,
-        cardName: String,
         sourceFileCount: Int,
         sourceBytes: Int64,
         destinations: [String],
@@ -441,21 +510,22 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         switch safetyState {
         case .safeToErase:
             let files = sourceFileCount == 1 ? "1 file" : "\(sourceFileCount) files"
-            let size = ByteCountFormatter.string(fromByteCount: sourceBytes, countStyle: .file)
+            let size = ByteCountPresentation.fileSize(sourceBytes)
             return ["\(files) · \(size) verified on \(destinationText)", algorithm, duration.map(durationText)]
                 .compactMap { $0 }
                 .joined(separator: " · ")
         case .copiedNotVerified:
-            return "Only file sizes were compared on \(destinationText). Do not erase the card."
+            return "Only file sizes were compared. Do not erase the card."
         case .needsAttention:
             return reason ?? fallback
         case .failed:
-            let card = cardName == "The card" ? "the card" : cardName
             let failure = reason ?? fallback
             let separator = failure.last.map { ".!?".contains($0) } == true ? " " : ". "
-            return "\(failure)\(separator)Do not erase \(card)."
+            return "\(failure)\(separator)Do not erase the card."
         case .interrupted:
-            return "The transfer stopped before every backup was verified."
+            // The interrupted headline carries the card warning itself, since
+            // `bannerGuidance` is suppressed for this state (no duplication).
+            return "The transfer stopped before every backup was verified. Do not erase the card."
         case .waiting, .preparing, .copying, .verifying:
             return fallback
         }

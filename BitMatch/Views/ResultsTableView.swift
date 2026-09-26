@@ -4,7 +4,6 @@ import BitMatchEngine
 struct ResultsTableView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var showOnlyIssues: Bool
-    @State private var scrollToBottom = false
     @State private var availableWidth: CGFloat = ResultTableLayoutPolicy.detailedThreshold
     // Removed caching @State to avoid mutating state during view updates
     
@@ -42,18 +41,18 @@ struct ResultsTableView: View {
     var body: some View {
         VStack(spacing: 0) {
             statsHeader
-            Divider().overlay(Color.white.opacity(0.1))
+            Divider()
             resultsList
         }
         .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.03))
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.03))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
+                    RoundedRectangle(cornerRadius: 10)
+                        .stroke(Color.primary.opacity(0.08), lineWidth: 0.5)
                 )
         )
-        .clipShape(RoundedRectangle(cornerRadius: 12))
+        .clipShape(RoundedRectangle(cornerRadius: 10))
         .frame(maxHeight: 600)
         .background(widthReader)
     }
@@ -69,7 +68,8 @@ struct ResultsTableView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
-        .background(Color.white.opacity(0.03))
+        .background(Color(nsColor: .controlBackgroundColor))
+        .zIndex(1)
     }
 
     private var detailedStatsHeader: some View {
@@ -101,11 +101,12 @@ struct ResultsTableView: View {
             if progress.reusedFileCopies > 0 {
                 HStack(spacing: 4) {
                     Image(systemName: "arrow.triangle.2.circlepath")
-                        .font(.system(size: 10))
-                    Text("Reused \(progress.reusedFileCopies)")
-                        .font(.system(size: 11, design: .monospaced))
+                        .font(.caption2)
+                    Text("Reused \(progress.reusedFileCopies.formatted())")
+                        .font(.caption)
+                        .monospacedDigit()
                 }
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundStyle(.secondary)
             }
         }
     }
@@ -116,12 +117,10 @@ struct ResultsTableView: View {
         HStack(spacing: 8) {
                 // Audit M12: a stable label (VoiceOver says "on"/"off",
                 // not a label that flips with its own state).
-                Toggle("Issues only", systemImage: "exclamationmark.triangle", isOn: $showOnlyIssues)
-                    .font(.system(size: 11))
-                    .foregroundColor(.white.opacity(0.6))
-                    .toggleStyle(.button)
+                Toggle("Issues only", isOn: $showOnlyIssues)
+                    .font(.caption)
+                    .toggleStyle(.checkbox)
                     .controlSize(.small)
-                    .buttonStyle(CustomButtonStyle())
         }
     }
 
@@ -129,11 +128,12 @@ struct ResultsTableView: View {
     private var fileCountView: some View {
         HStack(spacing: 4) {
             Image(systemName: "doc.fill")
-                .font(.system(size: 10))
-                .foregroundColor(.white.opacity(0.5))
-            Text("\(progress.fileCountCompleted)/\(progress.fileCountTotal)")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.white.opacity(0.7))
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Text("\(progress.fileCountCompleted.formatted()) of \(progress.fileCountTotal.formatted())")
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(.secondary)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(progress.fileCountCompleted) of \(progress.fileCountTotal) files processed")
@@ -147,8 +147,9 @@ struct ResultsTableView: View {
         let verified = LiveResultsCounts.make(rows: results).verified
         if verified > 0 {
             Label("\(verified)", systemImage: "checkmark.circle.fill")
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.green)
+                .font(.caption)
+                .monospacedDigit()
+                .foregroundStyle(ResultStatusTone.verified.color)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(verified) verified")
         }
@@ -159,31 +160,31 @@ struct ResultsTableView: View {
     @ViewBuilder
     private var issueCountView: some View {
         Label("\(issueCount)", systemImage: "exclamationmark.triangle.fill")
-            .font(.system(size: 11, design: .monospaced))
-            .foregroundColor(.orange)
+            .font(.caption)
+            .monospacedDigit()
+            .foregroundStyle(ResultStatusTone.warning.color)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(issueCount == 1 ? "1 issue" : "\(issueCount) issues")
     }
     
     @ViewBuilder
     private var resultsList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
+        ScrollView {
                 if filteredResults.isEmpty && showOnlyIssues {
                     // Empty state when filtering shows no issues
                     VStack(spacing: 14) {
                         Image(systemName: "checkmark.shield.fill")
                             .font(.system(size: 34))
-                            .foregroundColor(.green.opacity(0.65))
+                            .foregroundStyle(ResultStatusTone.verified.color.opacity(0.65))
                         
                         Text("No issues found")
                         .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white.opacity(0.6))
+                            .foregroundStyle(.secondary)
                         
                         if let message = LiveResultsCounts.make(rows: results).noIssuesMessage {
                             Text(message)
                                 .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundStyle(.tertiary)
                         }
 
                         Button("Show All Results") {
@@ -198,16 +199,16 @@ struct ResultsTableView: View {
                     VStack(spacing: 12) {
                         Image(systemName: "doc.text.magnifyingglass")
                             .font(.system(size: 32))
-                            .foregroundColor(.white.opacity(0.3))
+                            .foregroundStyle(.tertiary)
                         
                         Text(coordinator.isOperationInProgress ? "Waiting for first results..." : "No results yet")
                             .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white.opacity(0.5))
+                            .foregroundStyle(.secondary)
 
                         if coordinator.isOperationInProgress {
                             Text("Files will appear here as they are copied and verified.")
                                 .font(.system(size: 11))
-                                .foregroundColor(.white.opacity(0.4))
+                                .foregroundStyle(.tertiary)
                         }
                     }
                     .frame(maxWidth: .infinity)
@@ -228,35 +229,18 @@ struct ResultsTableView: View {
                                 Spacer()
                                 Text("Showing \(filteredResults.count) of \(results.count) results")
                                     .font(.system(size: 10))
-                                    .foregroundColor(.white.opacity(0.4))
+                                    .foregroundStyle(.tertiary)
                                     .padding(.horizontal, 12)
                                     .padding(.vertical, 4)
                                 Spacer()
                             }
                         }
                         
-                        // Auto-scroll anchor
-                        Color.clear
-                            .frame(height: 1)
-                            .id("bottom")
-                    }
-                    .onChange(of: filteredResults.count) { oldCount, newCount in
-                        // Auto-scroll to bottom when new results are added
-                        if newCount > oldCount && coordinator.isOperationInProgress {
-                            // Defer to next runloop to avoid state changes during update
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
                     }
                 }
             }
-            .frame(minHeight: 200, maxHeight: 550)  // FIX: Increased from 350 to 550
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.white.opacity(0.02))
-        )
+        .contentMargins(.top, 12, for: .scrollContent)
+        .frame(minHeight: 200, maxHeight: 550)
     }
     
     @ViewBuilder
@@ -275,7 +259,10 @@ struct ResultsTableView: View {
         )
         // Audit H12: one VoiceOver stop per row, not five.
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(TransferOutcomePresentation.accessibilityLabel(for: row))
+        .accessibilityLabel(TransferOutcomePresentation.accessibilityLabel(
+            for: row,
+            destinationName: destinationDriveName(for: row)
+        ))
     }
 
     @ViewBuilder
@@ -291,34 +278,39 @@ struct ResultsTableView: View {
             // File name
             Text(URL(fileURLWithPath: row.path).lastPathComponent)
                 .font(.system(size: 11, weight: .medium))
-                .foregroundColor(.white.opacity(0.85))
+                .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(minWidth: 120, maxWidth: .infinity, alignment: .leading)
 
             // File size
-            Text(ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file))
+            Text(ByteCountPresentation.fileSize(row.size))
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.white.opacity(0.6))
+                .foregroundStyle(.secondary)
                 .frame(width: 80, alignment: .trailing)
 
-            // Destination drive
-            HStack(spacing: 4) {
-                Image(systemName: "externaldrive.fill")
-                    .font(.system(size: 10))
-                    .foregroundColor(.blue.opacity(0.7))
-                Text(row.destination ?? "-")
-                    .font(.system(size: 10))
-                    .foregroundColor(.white.opacity(0.7))
-                    .lineLimit(1)
-            }
-            .frame(width: 120, alignment: .trailing)
-
-            // Status text
-            Text(TransferOutcomePresentation.statusLabel(for: row.status))
-                .font(.system(size: 10))
-                .foregroundColor(status.color.opacity(0.85))
+            if LiveResultDestinationPolicy.showsDestinationInEachRow(
+                backupCount: coordinator.destinationURLs.count
+            ) {
+                HStack(spacing: 4) {
+                    Image(systemName: "externaldrive.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(destinationDriveName(for: row) ?? "—")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 .frame(width: 120, alignment: .trailing)
+            }
+
+            if !row.isSuccessStatus {
+                Text(TransferOutcomePresentation.statusLabel(for: row.status))
+                    .font(.system(size: 10))
+                    .foregroundStyle(status.color)
+                    .lineLimit(1)
+                    .frame(width: 120, alignment: .trailing)
+            }
         }
     }
 
@@ -333,27 +325,39 @@ struct ResultsTableView: View {
             VStack(alignment: .leading, spacing: 3) {
                 Text(URL(fileURLWithPath: row.path).lastPathComponent)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.85))
+                    .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
-                    Text(ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file))
-                    if let destination = row.destination, !destination.isEmpty {
+                    Text(ByteCountPresentation.fileSize(row.size))
+                    if LiveResultDestinationPolicy.showsDestinationInEachRow(
+                        backupCount: coordinator.destinationURLs.count
+                    ), let destination = destinationDriveName(for: row) {
                         Label(destination, systemImage: "externaldrive.fill")
                             .lineLimit(1)
                     }
                 }
                 .font(.system(size: 10, design: .monospaced))
-                .foregroundColor(.white.opacity(0.54))
+                .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Text(TransferOutcomePresentation.statusLabel(for: row.status))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundColor(status.color.opacity(0.9))
-                .lineLimit(2)
-                .multilineTextAlignment(.trailing)
-                .frame(maxWidth: 86, alignment: .trailing)
+            if !row.isSuccessStatus {
+                Text(TransferOutcomePresentation.statusLabel(for: row.status))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(status.color)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 112, alignment: .trailing)
+            }
         }
+    }
+
+    private func destinationDriveName(for row: ResultRow) -> String? {
+        ResultPresentation.destinationDriveName(
+            for: row,
+            destinationRoots: coordinator.destinationURLs,
+            destinationNames: coordinator.destinationVolumeNames
+        )
     }
 
     private var widthReader: some View {
@@ -363,5 +367,5 @@ struct ResultsTableView: View {
                 .onChange(of: proxy.size.width) { _, width in availableWidth = width }
         }
     }
-    
+
 }

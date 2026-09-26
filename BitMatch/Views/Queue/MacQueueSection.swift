@@ -3,10 +3,23 @@ import UniformTypeIdentifiers
 import BitMatchEngine
 
 struct MacQueueSection: View {
+    private enum EditorFocus: Hashable { case addButton, source }
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject private var progress: LiveProgressFeed
+    @ObservedObject private var volumeMonitor = VolumeMonitorService.shared
     @State private var selectedID: UUID?
     @State private var errorMessage: String?
+    @State private var isAdding = false
+    @State private var draftSource: URL?
+    @State private var draftDestinations: [URL] = []
+    @State private var draftMode = VerificationMode.standard
+    @State private var draftASCMHL = true
+    @State private var choosingSource = false
+    @State private var choosingBackups = false
+    @State private var isDropTargeted = false
+    @State private var reauthorizeRecord: LocalTransferRecord?
+    @FocusState private var editorFocus: EditorFocus?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(coordinator: SharedAppCoordinator) {
         self.coordinator = coordinator
@@ -15,10 +28,15 @@ struct MacQueueSection: View {
 
     var body: some View {
         let presentation = coordinator.queuePresentation
-        if !presentation.rows.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
-                if let title = presentation.pausedTitle, coordinator.queuePausedRecordID != nil {
-                    pausedBanner(presentation, title: title)
+        VStack(alignment: .leading, spacing: 12) {
+            if !presentation.rows.isEmpty {
+                if presentation.pausedTitle != nil, coordinator.queuePausedRecordID != nil {
+                    QueuePauseBanner(
+                        presentation: presentation,
+                        review: coordinator.reviewQueuedTransfer,
+                        skipAndContinue: coordinator.skipPausedCardAndContinue,
+                        remove: removePausedCard
+                    )
                 }
                 HStack(alignment: .firstTextBaseline) {
                     VStack(alignment: .leading, spacing: 2) {
@@ -38,64 +56,216 @@ struct MacQueueSection: View {
                             .disabled(!coordinator.queueRunCommandEnabled)
                     }
                 }
-                ForEach(presentation.rows) { row in
-                    queueRow(row)
-                }
-                if let errorMessage {
-                    Text(errorMessage).font(.caption).foregroundStyle(.red)
-                }
+                queueRows(presentation.rows)
+            } else {
+                Text("Queue")
+                    .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
             }
-            .padding(12)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-            .focusable()
-            #if os(macOS)
-            .onDeleteCommand { removeSelectedWaitingRow(presentation) }
-            #endif
-        }
-    }
-
-    private func pausedBanner(_ presentation: QueueSessionPresentation, title: String) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title).font(.headline)
-            if let cause = presentation.pausedCause {
-                Text(cause).font(.callout).foregroundStyle(.secondary)
+            if coordinator.queueIsRunning || coordinator.isOperationInProgress {
+                addCardRow
             }
-            HStack {
-                if let id = presentation.pausedCardID,
-                   let card = presentation.rows.first(where: { $0.id == id })?.cardName {
-                    Button("Review \(card)") { coordinator.reviewQueuedTransfer(id) }
-                        .buttonStyle(.borderedProminent)
-                    Button("Skip \(card) and Continue") { coordinator.skipPausedCardAndContinue(id) }
-                        .buttonStyle(.bordered)
-                }
+            if let errorMessage {
+                Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color)
             }
         }
         .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .background(
+            RoundedRectangle(cornerRadius: 10)
+                .fill(Color.primary.opacity(0.03))
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+        )
+        .fileImporter(isPresented: $choosingSource, allowedContentTypes: [.folder], allowsMultipleSelection: false) {
+            choose($0, asSource: true)
+        }
+        .fileImporter(isPresented: $choosingBackups, allowedContentTypes: [.folder], allowsMultipleSelection: true) {
+            choose($0, asSource: false)
+        }
+        .sheet(item: $reauthorizeRecord) { record in
+            ReauthorizeLocationsView(
+                coordinator: coordinator,
+                journal: coordinator.transferJournal,
+                recordID: record.id
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var addCardRow: some View {
+        if isAdding {
+            inlineEditor
+                .transition(.opacity.combined(with: .move(edge: .top)))
+        } else {
+            Button {
+                openEditor()
+            } label: {
+                Label("Queue another card", systemImage: "plus")
+                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .focused($editorFocus, equals: .addButton)
+            .accessibilityHint("Adds a card that arrived while this queue is running")
+        }
+    }
+
+    private var inlineEditor: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 8) {
+                Image(systemName: "sdcard").foregroundStyle(.secondary).accessibilityHidden(true)
+                Picker("Card", selection: $draftSource) {
+                    Text("Choose a connected card").tag(nil as URL?)
+                    ForEach(connectedCardRows) { row in
+                        Text(row.displayName).tag(Optional(row.url))
+                    }
+                }
+                .pickerStyle(.menu)
+                .focused($editorFocus, equals: .source)
+                Button("Choose Folder…") { choosingSource = true }
+                    .controlSize(.small)
+            }
+
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Backups").font(.caption).foregroundStyle(.secondary)
+                ForEach(draftDestinations, id: \.self) { destination in
+                    HStack(spacing: 4) {
+                        Text(destination.lastPathComponent).lineLimit(1)
+                        Button {
+                            draftDestinations.removeAll { $0 == destination }
+                        } label: { Image(systemName: "xmark") }
+                            .buttonStyle(.plain)
+                            .accessibilityLabel("Remove \(destination.lastPathComponent)")
+                    }
+                    .font(.caption)
+                    .padding(.horizontal, 7).padding(.vertical, 4)
+                    .background(Color.primary.opacity(0.07), in: Capsule())
+                }
+                Button("Add Backup…") { choosingBackups = true }
+                    .controlSize(.small)
+                Spacer(minLength: 0)
+            }
+
+            HStack(spacing: 16) {
+                Picker("Verification", selection: $draftMode) {
+                    ForEach(VerificationMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
+                }
+                .pickerStyle(.menu)
+                Toggle("ASC MHL", isOn: $draftASCMHL)
+                    .disabled(draftMode == .quick)
+                Spacer(minLength: 0)
+                Button("Cancel", action: closeEditor)
+                    .keyboardShortcut(.cancelAction)
+                Button("Queue Card", action: enqueueDraft)
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(draftSource == nil || draftDestinations.isEmpty)
+            }
+            .controlSize(.small)
+        }
+        .padding(12)
+        .overlay(alignment: .leading) {
+            Rectangle().fill(Color.accentColor).frame(width: 2)
+        }
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(isDropTargeted ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDropTargeted ? 2 : 1)
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard let first = urls.first else { return false }
+            draftSource = first
+            return true
+        } isTargeted: { isDropTargeted = $0 }
+        .onExitCommand(perform: closeEditor)
+    }
+
+    private var connectedCardRows: [ConnectedDrivesPresentation.Row] {
+        let cardURLs = Set(volumeMonitor.connectedVolumes.filter { $0.cameraName != nil || $0.isRemovable }.map(\.url))
+        return ConnectedDrivesPresentation.make(
+            volumes: volumeMonitor.connectedVolumes,
+            sourceURL: coordinator.sourceURL,
+            destinationURLs: draftDestinations
+        ).filter { cardURLs.contains($0.url) && $0.state == .none }
+    }
+
+    private func openEditor() {
+        draftSource = nil
+        draftDestinations = coordinator.destinationURLs
+        draftMode = coordinator.verificationMode
+        draftASCMHL = coordinator.generateASCMHL
+        errorMessage = nil
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isAdding = true }
+        Task { @MainActor in
+            await Task.yield()
+            editorFocus = .source
+        }
+    }
+
+    private func closeEditor() {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isAdding = false }
+        Task { @MainActor in
+            await Task.yield()
+            editorFocus = .addButton
+        }
+    }
+
+    private func choose(_ result: Result<[URL], Error>, asSource: Bool) {
+        do {
+            for url in try result.get() {
+                if asSource { draftSource = url }
+                else if !draftDestinations.contains(url) { draftDestinations.append(url) }
+            }
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func enqueueDraft() {
+        guard let source = draftSource else { return }
+        do {
+            try coordinator.enqueueInlineCard(
+                source: source,
+                destinations: draftDestinations,
+                verificationMode: draftMode,
+                generateASCMHL: draftASCMHL && draftMode != .quick
+            )
+            closeEditor()
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    @ViewBuilder
+    private func queueRows(_ rows: [QueueSessionRow]) -> some View {
+        if rows.count > 2 {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(rows) { row in queueRow(row) }
+                }
+            }
+            .frame(maxHeight: 160)
+        } else {
+            VStack(spacing: 8) {
+                ForEach(rows) { row in queueRow(row) }
+            }
+        }
     }
 
     private func queueRow(_ row: QueueSessionRow) -> some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
                 Image(systemName: "sdcard").foregroundStyle(.secondary).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.cardName).lineLimit(1).truncationMode(.middle).help(row.cardName)
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         if let evidence = row.evidence { Text(evidence) }
                         Text(row.destinations).lineLimit(1).truncationMode(.middle)
                     }
                     .font(.caption).foregroundStyle(.secondary)
-                    if let fraction = row.progressFraction {
-                        ProgressView(value: fraction).progressViewStyle(.linear).tint(.blue)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Label(row.statusText, systemImage: row.safetyState.symbol)
                     .font(.caption.weight(.medium))
                     .foregroundStyle(row.safetyState.tint.color)
                     .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(row.safetyState.tint.color.opacity(0.12), in: Capsule())
+                    .background(row.safetyState.tint.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
@@ -104,12 +274,19 @@ struct MacQueueSection: View {
         }
         .frame(minHeight: 46)
         .padding(.horizontal, 8)
-        .background(selectedID == row.id ? Color.accentColor.opacity(0.12) : Color.clear, in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            selectedID == row.id || isRunning(row.safetyState)
+                ? Color.accentColor.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
         .contentShape(Rectangle())
         .onTapGesture { selectedID = row.id }
         .contextMenu {
             if row.safetyState == .waiting {
                 Button("Move to Top") { moveToTop(row.id) }
+                Button("Reconnect…") {
+                    reauthorizeRecord = coordinator.transferJournal.records.first { $0.id == row.id }
+                }
                 Button("Remove", role: .destructive) { remove(row.id) }
             }
         }
@@ -117,27 +294,30 @@ struct MacQueueSection: View {
 
     @ViewBuilder
     private func action(_ row: QueueSessionRow) -> some View {
-        switch row.action {
-        case .some(.eject):
-            Button("Eject") { eject(row.id) }.accessibilityLabel("Eject \(row.cardName)")
-        case .some(.review):
-            Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
-                .accessibilityLabel("Review \(row.cardName)")
-        case .some(.ejected):
-            Text("Ejected").font(.caption).foregroundStyle(.secondary)
-        case .none:
+        if coordinator.queuePausedRecordID == row.id {
             EmptyView()
+        } else {
+            switch row.action {
+            case .some(.eject):
+                Button("Eject") { eject(row.id) }.accessibilityLabel("Eject \(row.cardName)")
+            case .some(.review):
+                Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
+                    .accessibilityLabel("Review \(row.cardName)")
+            case .some(.ejected):
+                Text("Ejected").font(.caption).foregroundStyle(.secondary)
+            case .none:
+                EmptyView()
+            }
         }
-    }
-
-    private func removeSelectedWaitingRow(_ presentation: QueueSessionPresentation) {
-        guard let selectedID,
-              presentation.rows.first(where: { $0.id == selectedID })?.safetyState == .waiting else { return }
-        remove(selectedID)
     }
 
     private func remove(_ id: UUID) {
         do { try coordinator.removeQueuedTransfer(id) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func removePausedCard(_ id: UUID) {
+        do { try coordinator.removePausedCardFromQueue(id) }
         catch { errorMessage = error.localizedDescription }
     }
 
@@ -151,6 +331,13 @@ struct MacQueueSection: View {
             if let error = await coordinator.ejectQueueSource(id) { errorMessage = error }
         }
     }
+
+    private func isRunning(_ state: CardSafetyState) -> Bool {
+        switch state {
+        case .copying, .verifying, .preparing: true
+        default: false
+        }
+    }
 }
 
 struct MacQueueSummaryView: View {
@@ -162,11 +349,11 @@ struct MacQueueSummaryView: View {
 
     var body: some View {
         let presentation = coordinator.queuePresentation
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(presentation.summaryTitle ?? "Queue finished")
                 .font(.title2.weight(.semibold))
             Text(presentation.tally.text).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Button(presentation.ejectButtonTitle) { ejectAll(presentation.ejectableCardIDs) }
                         .buttonStyle(.borderedProminent)
@@ -188,7 +375,7 @@ struct MacQueueSummaryView: View {
                 }
                 Button("New Transfer") { coordinator.finishQueueSessionAndStartNewTransfer() }
             }
-            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
+            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .fileExporter(

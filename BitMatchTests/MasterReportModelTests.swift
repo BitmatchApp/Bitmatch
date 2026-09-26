@@ -62,6 +62,20 @@ struct MasterReportModelTests {
 
     // MARK: - Grouping
 
+    @Test func zeroByteMasterReportTotalsUseEmptyWording() {
+        let totals = MasterReportPresentation.totals([
+            card(camera: "FX6", roll: "A001", files: 1, bytes: 0)
+        ])
+        #expect(totals.sizeText == "Empty")
+        #expect(!totals.sizeText.contains("Zero KB"))
+    }
+
+    @Test func nonVerifiedMasterReportCardWarnsNotToErase() {
+        let unverified = card(camera: "FX6", roll: "A001", verified: false)
+        #expect(MasterReportPresentation.statusText(for: unverified) == "Not verified — do not erase the card")
+        #expect(MasterReportPresentation.statusText(for: card(camera: "FX6", roll: "A002")) == "Verified")
+    }
+
     /// Plant: in `MasterReportPresentation.groups`, return one flat group:
     /// `[MasterReportCameraGroup(name: "All", cards: cards)]`.
     @Test func groupsByCamera() throws {
@@ -117,7 +131,7 @@ struct MasterReportModelTests {
     @Test func generateNeedsASelection() async throws {
         let model = await scannedModel([card(camera: "FX6", roll: "A001")])
         #expect(model.presentation(deliverVerb: "Save").canGenerate)
-        #expect(model.presentation(deliverVerb: "Save").actionTitle == "Save Master Report (1 transfer)")
+        #expect(model.presentation(deliverVerb: "Save").actionTitle == "Create Master Report")
 
         model.setGroup(try #require(model.groups.first), included: false)
 

@@ -48,7 +48,7 @@ struct MasterReportScreen: View {
         Group {
             if layout == .sidebar && model.phase != .idle {
                 HStack(alignment: .top, spacing: 20) {
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 24) {
                         header
                         locationAndDay
                         if showsReportControls {
@@ -58,13 +58,13 @@ struct MasterReportScreen: View {
                         actionArea
                     }
                     .frame(maxWidth: 420, alignment: .topLeading)
-                    VStack(alignment: .leading, spacing: 16) {
+                    VStack(alignment: .leading, spacing: 24) {
                         found
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else {
-                VStack(alignment: .leading, spacing: 16) {
+                VStack(alignment: .leading, spacing: 24) {
                     header
                     locationAndDay
                     found
@@ -259,7 +259,7 @@ struct MasterReportScreen: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
     }
 
     /// The shared skipped-reports notice. A long list scrolls on every
@@ -288,7 +288,7 @@ struct MasterReportScreen: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
         .accessibilityElement(children: .combine)
     }
 
@@ -304,7 +304,7 @@ struct MasterReportScreen: View {
                 title: "Verified",
                 value: totals.verifiedText,
                 symbol: totals.allVerified ? "checkmark.shield.fill" : "exclamationmark.triangle.fill",
-                tint: totals.allVerified ? .green : .orange
+                tint: totals.allVerified ? ResultStatusTone.verified.color : ResultStatusTone.warning.color
             )
         ]
         return VStack(alignment: .leading, spacing: 8) {
@@ -328,7 +328,7 @@ struct MasterReportScreen: View {
         }
         .padding(14)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: Camera groups
@@ -352,7 +352,7 @@ struct MasterReportScreen: View {
                 )
             }
         }
-        .nextStepHighlight(presentation.nextStep == .selectTransfers, cornerRadius: 12)
+        .nextStepHighlight(presentation.nextStep == .selectTransfers, cornerRadius: 10)
     }
 
     // MARK: Report details
@@ -389,7 +389,7 @@ struct MasterReportScreen: View {
         .accessibilityHint("Shows the production, client, company and notes printed on the report")
         .disabled(model.isGenerating)
         .padding(14)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
     }
 
     // MARK: Action
@@ -402,16 +402,15 @@ struct MasterReportScreen: View {
                     presentation.actionTitle,
                     systemImage: presentation.nextStep == .chooseLocation ? "arrow.up" : "doc.richtext"
                 )
-                .frame(maxWidth: .infinity, minHeight: 32)
+                .frame(minWidth: 220, minHeight: 32)
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .controlSize(.regular)
             // Grey while waiting on a step, like Copy's Start button.
             .tint(presentation.canGenerate ? Color.accentColor : Color.gray)
             .disabled(!presentation.canGenerate)
         }
-        .padding(12)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 12))
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     /// Success appears only after the platform wrote or shared the report;
@@ -426,21 +425,21 @@ struct MasterReportScreen: View {
                 switch delivery {
                 case .saved(let url):
                     Label("Saved \(url.lastPathComponent)", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color.green)
+                        .foregroundStyle(NonVerificationSuccessPresentation.tone.color)
                     if let reveal = platform.reveal {
                         Button("Show in Finder") { reveal(url) }
                             .buttonStyle(.bordered)
                     }
                 case .shared:
                     Label("Master Report shared", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(Color.green)
+                        .foregroundStyle(NonVerificationSuccessPresentation.tone.color)
                 }
             }
             .font(.callout)
         case .failed(let message):
             Label("The Master Report wasn't saved. \(message)", systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
-                .foregroundStyle(Color.orange)
+                .foregroundStyle(ResultStatusTone.warning.color)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -526,7 +525,7 @@ private struct MasterReportCameraGroupView: View {
 
     private var summary: String {
         let count = group.cards.count == 1 ? "1 transfer" : "\(group.cards.count) transfers"
-        let size = ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file)
+        let size = ByteCountPresentation.fileSize(group.totalSize)
         return "\(count) · \(group.totalFiles.formatted()) files · \(size) · \(group.verifiedCount) verified"
     }
 }
@@ -572,7 +571,7 @@ private struct MasterReportTransferRow: View {
                         .lineLimit(2)
                     Label(status, systemImage: card.verified ? "checkmark.shield.fill" : "exclamationmark.triangle.fill")
                         .font(.caption.weight(.medium))
-                        .foregroundStyle(card.verified ? Color.green : Color.orange)
+                        .foregroundStyle(card.verified ? ResultStatusTone.verified.color : ResultStatusTone.warning.color)
                 }
             }
             .padding(.horizontal, 12)

@@ -59,6 +59,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     @State private var ejectError: String?
     @State private var ejected = false
     @AccessibilityFocusState private var verdictFocused: Bool
+    @Environment(\.colorSchemeContrast) private var colorSchemeContrast
 
     init(
         presentation: TransferOutcomePresentation,
@@ -118,31 +119,37 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
 
     // MARK: Verdict
 
-    /// The one state nobody can miss: a large icon and headline on a tinted
+    /// The one state nobody can miss: a clear icon and headline on a tinted
     /// banner, so "safe to erase" reads as a verdict, not a status line.
     private var verdictHeader: some View {
         HStack(alignment: .top, spacing: 14) {
             Image(systemName: presentation.verdict.symbol)
-                .font(.system(size: 40, weight: .semibold))
-                .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white : presentation.safetyState.tint.color)
+                .font(.system(size: 32, weight: .semibold))
+                .frame(width: 44, height: 44)
+                .foregroundStyle(presentation.safetyState.tint.color)
                 .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 6) {
-                Text(presentation.verdict.title)
-                    .font(.title.weight(.bold))
-                    .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 4) {
+                finishTitle
                 Text(presentation.verdict.detail)
                     .font(.subheadline)
-                    .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white.opacity(0.9) : Color.secondary)
+                    .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if let guidance = presentation.bannerGuidance {
+                    Text(guidance)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.primary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .accessibilityElement(children: .combine)
+            .accessibilityLabel(presentation.visibleVerdictText)
             .accessibilityAddTraits(.isHeader)
             .accessibilityFocused($verdictFocused)
             Spacer(minLength: 0)
             if let eject = actions.eject, presentation.canEject {
                 if ejected {
                     Label("Ejected", systemImage: "checkmark.circle")
-                        .foregroundStyle(.white)
+                        .foregroundStyle(presentation.safetyState.tint.color)
                 } else {
                     Button {
                         runEject(eject)
@@ -150,22 +157,50 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                         if isEjecting { ProgressView() } else { Label("Eject", systemImage: "eject.fill") }
                     }
                     .buttonStyle(.bordered)
-                    .tint(.white)
+                    .tint(presentation.safetyState.tint.color)
                     .disabled(isEjecting || isBusy)
                     .keyboardShortcut("e", modifiers: .command)
                     .accessibilityLabel("Eject \(presentation.cardName)")
                 }
             }
         }
-        .padding(16)
+        .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white : Color.primary)
+        .foregroundStyle(.primary)
         .background(
-            presentation.safetyState == .safeToErase
-                ? presentation.safetyState.tint.color
-                : presentation.safetyState.tint.color.opacity(0.12),
-            in: RoundedRectangle(cornerRadius: 14)
+            presentation.safetyState.tint.color.opacity(colorSchemeContrast == .increased ? 0.20 : 0.16),
+            in: RoundedRectangle(cornerRadius: 10)
         )
+    }
+
+    private var finishTitle: some View {
+        HStack(spacing: 5) {
+            if presentation.finishTitlePlacesCardFirst {
+                finishCardName
+                finishVerdictWords
+            } else {
+                finishVerdictWords
+                Text("—")
+                    .fixedSize()
+                finishCardName
+            }
+        }
+        .font(.title2.weight(.semibold))
+        .lineLimit(1)
+        .help(presentation.cardName)
+    }
+
+    private var finishCardName: some View {
+        Text(presentation.cardName)
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .layoutPriority(0)
+    }
+
+    private var finishVerdictWords: some View {
+        Text(presentation.finishVerdictWords)
+            .fixedSize(horizontal: true, vertical: false)
+            .layoutPriority(1)
     }
 
     /// Promise 2, gated a second time here (build step 4): even with the
@@ -213,17 +248,17 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     // MARK: Actions
 
     private var actionButtons: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             if let notice {
                 Label(notice, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(ResultStatusTone.warning.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let exportError {
                 Label(exportError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(ResultStatusTone.warning.color)
                     .fixedSize(horizontal: false, vertical: true)
             }
 
@@ -254,7 +289,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
             if let ejectError {
                 Label(ejectError, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
-                    .foregroundStyle(Color.orange)
+                    .foregroundStyle(ResultStatusTone.warning.color)
             }
         }
         .disabled(isBusy)
@@ -327,28 +362,30 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     // MARK: Details
 
     private var details: some View {
-        DisclosureGroup("Transfer details") {
-            VStack(alignment: .leading, spacing: 6) {
-                countLine("\(presentation.counts.verified) verified", systemImage: "checkmark.circle")
-                if presentation.counts.copiedNotVerified > 0 {
-                    countLine("\(presentation.counts.copiedNotVerified) copied, not verified", systemImage: "doc.on.doc")
+        VStack(alignment: .leading, spacing: 8) {
+            DisclosureGroup("Transfer details") {
+                VStack(alignment: .leading, spacing: 6) {
+                    countLine("\(presentation.counts.verified) verified", systemImage: "checkmark.circle")
+                    if presentation.counts.copiedNotVerified > 0 {
+                        countLine("\(presentation.counts.copiedNotVerified) copied, not verified", systemImage: "doc.on.doc")
+                    }
+                    if presentation.counts.needsAttention > 0 {
+                        countLine("\(presentation.counts.needsAttention) need attention", systemImage: "exclamationmark.triangle")
+                    }
+                    if let bytes = presentation.bytesVerified {
+                        countLine(
+                            "\(ByteCountPresentation.fileSize(bytes)) verified across all backups",
+                            systemImage: "externaldrive"
+                        )
+                    }
+                    if let mode = presentation.verificationModeLabel {
+                        countLine(mode, systemImage: "checklist")
+                    }
+                    projectEvidence
                 }
-                if presentation.counts.needsAttention > 0 {
-                    countLine("\(presentation.counts.needsAttention) need attention", systemImage: "exclamationmark.triangle")
-                }
-                if let bytes = presentation.bytesVerified {
-                    countLine(
-                        "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) verified across all backups",
-                        systemImage: "externaldrive"
-                    )
-                }
-                if let mode = presentation.verificationModeLabel {
-                    countLine(mode, systemImage: "checklist")
-                }
-                projectEvidence
+                .font(.callout)
+                .padding(.top, 8)
             }
-            .font(.callout)
-            .padding(.top, 8)
         }
     }
 
@@ -455,7 +492,7 @@ private struct OutcomeFileRow: View {
                     .font(.subheadline)
                     .lineLimit(2)
                     .truncationMode(.middle)
-                Text([row.destination, label, row.formattedSize].compactMap { $0 }.joined(separator: " · "))
+                Text([row.destination, label, ByteCountPresentation.fileSize(row.size)].compactMap { $0 }.joined(separator: " · "))
                     .font(.footnote)
                     .foregroundStyle(row.isSuccessStatus ? Color.secondary : status.color)
             }

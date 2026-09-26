@@ -12,6 +12,7 @@ struct ReadinessRuleTests {
     private let headroom = SafetyValidator.requiredHeadroomBytes
 
     private func assess(
+        sourceFileCount: Int? = 1,
         sourceBytes: Int64? = 1_000,
         analysing: Bool = false,
         destinations: [URL]? = nil,
@@ -19,6 +20,7 @@ struct ReadinessRuleTests {
     ) -> OperationReadinessAssessment {
         OperationReadinessAssessment.assess(
             source: source,
+            sourceFileCount: sourceFileCount,
             sourceBytes: sourceBytes,
             isAnalysingSource: analysing,
             destinations: destinations ?? [backup],
@@ -26,6 +28,12 @@ struct ReadinessRuleTests {
             verificationMode: .standard,
             availableBytes: { _ in available }
         )
+    }
+
+    @Test func analyzedEmptySourceBlocksEveryReadinessConsumer() {
+        let result = assess(sourceFileCount: 0, sourceBytes: 0)
+        #expect(!result.isReady)
+        #expect(result.blockingIssues == [TransferReadiness.emptySourceIssue])
     }
 
     /// Plant: in `TransferReadiness.assess`, delete the

@@ -10,6 +10,7 @@ struct ModularContentView: View {
     @State private var showingTransfers = false
     @State private var showingVolumeSelector = false
     @State private var showCancelToast = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     
     // Outcome logic lives on the coordinator so phone, pad, and Mac share
     // one definition of which states keep results visible.
@@ -27,8 +28,22 @@ struct ModularContentView: View {
             )
             .ignoresSafeArea()
             
-            // Main content area
-            mainContentArea
+            Group {
+                if showingTransfers {
+                    NavigationStack {
+                        TransferLibraryView(
+                            coordinator: coordinator,
+                            journal: coordinator.transferJournal,
+                            onBack: { showingTransfers = false }
+                        )
+                    }
+                } else {
+                    mainContentArea
+                }
+            }
+            .id(contentTransitionID)
+            .transition(.opacity)
+            .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: contentTransitionID)
             VStack {
                 if showCancelToast {
                     ToastView(
@@ -48,9 +63,6 @@ struct ModularContentView: View {
             if case .completed = newValue {
                 SharedLogger.info("Transfer completed, showing summary")
             }
-        }
-        .sheet(isPresented: $showingTransfers) {
-            TransferLibraryView(coordinator: coordinator, journal: coordinator.transferJournal)
         }
         .sheet(isPresented: $showingSettings) {
             SettingsSheetView(coordinator: coordinator)
@@ -78,17 +90,39 @@ struct ModularContentView: View {
 // MARK: - Main Content Area
 
 extension ModularContentView {
+    private var contentTransitionID: String {
+        if showingTransfers { return "history" }
+        if coordinator.currentMode == .compareFolders {
+            if coordinator.isOperationInProgress { return "compare-running" }
+            if coordinator.lastCompareEnd != nil { return "compare-finished" }
+            return "compare-setup"
+        }
+        if coordinator.currentMode == .masterReport { return "master-report" }
+        if coordinator.isOperationInProgress { return "copy-running" }
+        if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
+            return "copy-paused"
+        }
+        return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
+    }
+
     @ViewBuilder
     private var mainContentArea: some View {
         VStack(spacing: 0) {
             // Header with gear icon (always visible)  
             HeaderSectionView(showingSettings: $showingSettings, showingTransfers: $showingTransfers)
-            NotificationPermissionBanner(coordinator: coordinator)
-                .padding(.top, 8)
-            TransferAttentionBanner(
-                needsAttentionCount: TransferLibraryPresentation.needsAttentionCount(coordinator.transferJournal.records)
-            ) { showingTransfers = true }
-                .padding(.horizontal)
+            let attentionCount = TransferLibraryPresentation.needsAttentionCount(
+                coordinator.transferJournal.records,
+                excluding: Set([coordinator.queuePausedRecordID].compactMap { $0 })
+            )
+            if !coordinator.isOperationInProgress && !coordinator.queueIsRunning
+                && !coordinator.showsOutcomeSummary && attentionCount > 0 {
+                TransferAttentionBanner(needsAttentionCount: attentionCount) { showingTransfers = true }
+                    .padding(.horizontal)
+            } else if !coordinator.isOperationInProgress && !coordinator.queueIsRunning
+                && !coordinator.showsOutcomeSummary {
+                NotificationPermissionBanner(coordinator: coordinator)
+                    .padding(.top, 8)
+            }
             
             // Three-state architecture using components. Compare shows its own
             // progress and outcome inside CompareScreen, so it stays on the
@@ -98,19 +132,47 @@ extension ModularContentView {
             } else if coordinator.isOperationInProgress {
                 // OPERATION STATE: the shared progress screen, scrolled so
                 // many backups never clip in a short split view.
-                ScrollView { OperationProgressView(coordinator: coordinator) }
+                ScrollView {
+                    VStack(spacing: 16) {
+                        OperationProgressView(coordinator: coordinator)
+                        ActiveQueueSection(coordinator: coordinator)
+                    }
+                    .padding(.horizontal)
+                }
                     .onAppear {
                         SharedLogger.debug("UI switched to OPERATION view")
                     }
+            } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
+                // A queue problem belongs inside Queue. Setup remains the
+                // stable workbench until the person explicitly reviews it.
+                VStack(spacing: 16) {
+                    IdleStateView(
+                        coordinator: coordinator,
+                        navigationPresentation: navigationPresentation,
+                        showingTransfers: $showingTransfers
+                    )
+                    ActiveQueueSection(coordinator: coordinator)
+                        .padding(.horizontal)
+                }
             } else if coordinator.showsOutcomeSummary {
                 // COMPLETION STATE: Show transfer summary
-                ScrollView { CompletionSummaryView(coordinator: coordinator) }
+                ScrollView {
+                    VStack(spacing: 16) {
+                        CompletionSummaryView(coordinator: coordinator)
+                        ActiveQueueSection(coordinator: coordinator)
+                    }
+                    .padding(.horizontal)
+                }
                     .onAppear {
                         SharedLogger.debug("UI switched to COMPLETION view")
                     }
             } else {
                 // IDLE STATE: Show file selection interface
-                IdleStateView(coordinator: coordinator, navigationPresentation: navigationPresentation, showingTransfers: $showingTransfers)
+                VStack(spacing: 16) {
+                    IdleStateView(coordinator: coordinator, navigationPresentation: navigationPresentation, showingTransfers: $showingTransfers)
+                    ActiveQueueSection(coordinator: coordinator)
+                        .padding(.horizontal)
+                }
                     .onAppear {
                         SharedLogger.debug("UI switched to IDLE view")
                     }
@@ -128,7 +190,9 @@ struct HeaderSectionView: View {
     
     var body: some View {
         HStack {
-            Button("Transfers", systemImage: "clock.arrow.circlepath") { showingTransfers = true }
+            Button("History", systemImage: "clock.arrow.circlepath") {
+                showingTransfers = true
+            }
                 .frame(minHeight: 44)
             Spacer()
             

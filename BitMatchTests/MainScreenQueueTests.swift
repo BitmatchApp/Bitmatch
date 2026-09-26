@@ -6,6 +6,24 @@ import BitMatchEngine
 @MainActor
 @Suite(.serialized)
 struct MainScreenQueueTests {
+    @Test func pausedQueueKeepsSetupAsTheMainContent() {
+        #expect(MacCopyMainContentPolicy.make(
+            isOperationInProgress: false,
+            hasPausedQueue: true,
+            queueSessionEnded: false,
+            showsQueueSummary: false,
+            isReviewingQueueRecord: false
+        ) == .pausedSetup)
+    }
+
+    @Test func buttonAndCommandRouteAStagedBatchThroughSetupFirst() {
+        let buttonRoute = SetupStartPolicy.startsSetupBatch(stagedCardCount: 1, isOperationInProgress: false)
+        let commandRoute = SetupStartPolicy.startsSetupBatch(stagedCardCount: 1, isOperationInProgress: false)
+        #expect(buttonRoute)
+        #expect(commandRoute)
+        #expect(!SetupStartPolicy.startsSetupBatch(stagedCardCount: 0, isOperationInProgress: false))
+    }
+
     @Test func selectionKeepsBackupsAndSnapshotsCurrentSettings() async throws {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
@@ -33,6 +51,32 @@ struct MainScreenQueueTests {
         let access = try coordinator.transferJournal.prepareToRun(id: record.id)
         defer { access.release() }
         #expect(access.sourceURL.resolvingSymlinksInPath() == fixture.folders.source.resolvingSymlinksInPath())
+    }
+
+    @Test func setupStartStagesTheFinalCardAndRunsSeparateTransfers() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+
+        try coordinator.enqueueSelection()
+        let secondCard = fixture.folders.root.appendingPathComponent("second-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondCard, withIntermediateDirectories: true)
+        try Data("second card".utf8).write(to: secondCard.appendingPathComponent("B.ARW"))
+        coordinator.sourceURL = secondCard
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+
+        try coordinator.startSetupTransfers()
+
+        #expect(coordinator.transferJournal.records.count == 2)
+        #expect(Set(coordinator.transferJournal.records.map { $0.source.url.resolvingSymlinksInPath() }) ==
+            Set([fixture.folders.source.resolvingSymlinksInPath(), secondCard.resolvingSymlinksInPath()]))
+        #expect(coordinator.sourceURL == nil)
+        #expect(coordinator.queueIsRunning)
+        coordinator.cancelOperation()
+        await fixture.operations.gate.release()
+        #expect(await waitUntil { !coordinator.isOperationInProgress })
     }
 
     @Test func formOverridesModeAndMHLThroughTheSamePath() async throws {
@@ -93,6 +137,9 @@ struct MainScreenQueueTests {
         coordinator.generateASCMHL = false
         let live = Task { await coordinator.startOperation() }
         #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+        // Empty sources are refused by design; the next card needs a file to
+        // exercise cancellation, not the refusal path.
+        try Data("next card".utf8).write(to: fixture.folders.secondary.appendingPathComponent("B.ARW"))
         try coordinator.enqueueNext(source: fixture.folders.secondary)
         coordinator.cancelOperation()
         await live.value

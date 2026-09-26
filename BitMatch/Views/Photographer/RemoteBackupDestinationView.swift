@@ -94,65 +94,51 @@ struct RemoteBackupDestinationManager: View {
     @State private var host = ""
     @State private var port = "22"
     @State private var username = ""
-    @State private var root = "Backups"
+    @State private var root = ""
     @State private var verification: RemoteVerificationMode = .sha256
     @State private var editingID: UUID?
     @State private var validationMessage: String?
-    @State private var availableWidth: CGFloat = RemoteDestinationLayoutPolicy.twoColumnThreshold
 
     var body: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
-                HStack(alignment: .top, spacing: 10) {
-                    Image(systemName: "externaldrive.connected.to.line.below")
-                        .foregroundStyle(.tint)
-                        .font(.title3)
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text("SFTP destinations").font(.headline)
-                        Text("Saved destinations can be reused from any project.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if showsDoneButton { Button("Done") { dismiss() } }
-                }
-
+        Form {
+            Section {
                 if viewModel.remoteProfiles.isEmpty {
-                    ContentUnavailableView(
-                        "No saved destinations",
-                        systemImage: "externaldrive.badge.plus",
-                        description: Text("Add an SFTP destination below. BitMatch will use your SSH agent when it connects.")
-                    )
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 10)
+                    Label("No saved destinations", systemImage: "externaldrive.badge.plus")
+                        .foregroundStyle(.secondary)
                 } else {
-                    VStack(spacing: 6) {
-                        ForEach(viewModel.remoteProfiles) { profile in
-                            destinationRow(profile)
-                        }
+                    ForEach(viewModel.remoteProfiles) { profile in
+                        destinationRow(profile)
                     }
                 }
+            } header: {
+                Text("Saved destinations")
+            } footer: {
+                Text("Save an off-site destination once, then use it in any project.")
+            }
 
-                Divider()
-
-                VStack(alignment: .leading, spacing: 12) {
-                    Text(editingID == nil ? "Add destination" : "Edit destination")
-                        .font(.headline)
-                    destinationFields
-                    field("Relative root", text: $root, prompt: "Backups/2026")
+            Section {
+                field("Name", text: $name, prompt: "Studio archive")
+                field("Host", text: $host, prompt: "backup.example.com")
+                field("Port", text: $port, prompt: "22")
+                field("Username", text: $username, prompt: "Username")
+                field("Folder", text: $root, prompt: "Backups/2026")
+                LabeledContent("Verification") {
                     Picker("Verification", selection: $verification) {
                         Text("SHA-256 read-back").tag(RemoteVerificationMode.sha256)
                         Text("Upload only").tag(RemoteVerificationMode.uploadOnly)
                     }
                     .pickerStyle(.menu)
+                    .labelsHidden()
+                    .frame(width: 320, alignment: .leading)
+                }
 
-                    if let validationMessage {
-                        Label(validationMessage, systemImage: "exclamationmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.red)
-                    }
+                if let validationMessage {
+                    Label(validationMessage, systemImage: "exclamationmark.circle.fill")
+                        .foregroundStyle(.red)
+                }
 
-                    HStack {
+                LabeledContent {
+                    HStack(spacing: 8) {
                         Button(editingID == nil ? "Save destination" : "Save changes", action: save)
                             .buttonStyle(.borderedProminent)
                             .disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
@@ -162,48 +148,28 @@ struct RemoteBackupDestinationManager: View {
                             Button("Cancel", action: clearForm)
                         }
                     }
+                } label: {
+                    EmptyView()
                 }
-
-                Label("Authentication uses your macOS SSH agent. BitMatch never stores or displays your password, private key, or passphrase.", systemImage: "lock.shield")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            } header: {
+                Text(editingID == nil ? "Add destination" : "Edit destination")
+            } footer: {
+                Text("Authentication uses your Mac's SSH agent. Passwords, private keys, and passphrases are never stored or shown.")
             }
-            .padding()
-            .background(widthReader)
+
+            if showsDoneButton {
+                Section {
+                    HStack {
+                        Spacer()
+                        Button("Done") { dismiss() }
+                            .keyboardShortcut(.defaultAction)
+                    }
+                }
+            }
         }
+        .formStyle(.grouped)
         .frame(minWidth: 460, idealWidth: 560, maxWidth: .infinity)
         .animation(.easeInOut(duration: 0.2), value: editingID)
-    }
-
-    @ViewBuilder
-    private var destinationFields: some View {
-        if RemoteDestinationLayoutPolicy.presentation(for: availableWidth) == .twoColumn {
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
-                GridRow {
-                    field("Name", text: $name, prompt: "Studio archive")
-                    field("Host", text: $host, prompt: "backup.example.com")
-                }
-                GridRow {
-                    field("Port", text: $port, prompt: "22")
-                    field("Username", text: $username, prompt: "mike")
-                }
-            }
-        } else {
-            VStack(alignment: .leading, spacing: 10) {
-                field("Name", text: $name, prompt: "Studio archive")
-                field("Host", text: $host, prompt: "backup.example.com")
-                field("Port", text: $port, prompt: "22")
-                field("Username", text: $username, prompt: "mike")
-            }
-        }
-    }
-
-    private var widthReader: some View {
-        GeometryReader { proxy in
-            Color.clear
-                .onAppear { availableWidth = proxy.size.width }
-                .onChange(of: proxy.size.width) { _, width in availableWidth = width }
-        }
     }
 
     private func destinationRow(_ profile: RemoteDestinationProfile) -> some View {
@@ -238,18 +204,14 @@ struct RemoteBackupDestinationManager: View {
             // Audit H4: an icon-only Menu has no accessible name otherwise.
             .accessibilityLabel("More actions for \(profile.name)")
         }
-        .padding(10)
-        .background(RoundedRectangle(cornerRadius: 9).fill(.quaternary.opacity(0.55)))
     }
 
     private func field(_ label: String, text: Binding<String>, prompt: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(label).font(.caption).foregroundStyle(.secondary)
-            TextField(prompt, text: text)
+        LabeledContent(label) {
+            TextField("", text: text, prompt: Text(prompt))
                 .textFieldStyle(.roundedBorder)
+                .frame(width: 320)
                 .onChange(of: text.wrappedValue) { _, _ in validationMessage = nil }
-                // Audit H4: the visible title is a separate Text, so
-                // without this VoiceOver reads only the example text.
                 .accessibilityLabel(label)
         }
     }
@@ -298,7 +260,7 @@ struct RemoteBackupDestinationManager: View {
         host = ""
         port = "22"
         username = ""
-        root = "Backups"
+        root = ""
         verification = .sha256
         editingID = nil
         validationMessage = nil

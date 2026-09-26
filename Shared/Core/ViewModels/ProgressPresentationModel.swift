@@ -279,6 +279,9 @@ extension ProgressPresentationModel {
 
     var formattedAverageDataRate: String? {
         guard let rate = averageBytesPerSecond else { return nil }
+        guard observedCopySeconds >= Self.minimumObservedCopySeconds else {
+            return TransferProgressPresentation.estimating
+        }
         let formatter = ByteCountFormatter()
         formatter.allowedUnits = [.useMB, .useGB]
         formatter.countStyle = .decimal

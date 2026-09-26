@@ -40,10 +40,7 @@ struct ReportView: View {
     
     private var averageFileSize: String {
         guard let average = reportStatistics.averageFileSizeBytes else { return "—" }
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useGB, .useMB, .useKB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: average)
+        return ByteCountPresentation.fileSize(average)
     }
     
     private var largestFile: ResultRow? {
@@ -67,18 +64,17 @@ struct ReportView: View {
     }
     
     private var verifiedFileCount: Int {
-        integritySummary.successfulRows.count
+        rows.filter(TransferOutcomePresentation.isVerified).count
     }
     
     private var issueCount: Int {
         integritySummary.issueRows.count
     }
+
+    private var isFullyVerified: Bool { s.safetyState == .safeToErase }
     
     private var totalSizeFormatted: String {
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useGB, .useMB]
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: s.totalBytesProcessed)
+        ByteCountPresentation.fileSize(s.totalBytesProcessed)
     }
     
     var body: some View {
@@ -162,12 +158,10 @@ struct ReportView: View {
 
     @ViewBuilder
     private var outcomeSection: some View {
-        if Self.shouldShowSuccessBadge(issueCount: issueCount, photographyJob: s.photographyJob) {
+        if Self.shouldShowSuccessBadge(safetyState: s.safetyState, photographyJob: s.photographyJob) {
             successBadge
-        } else if let notice = Self.photographerVerificationNotice(for: s.photographyJob) {
-            incompletePhotographerVerificationSummary(notice: notice)
         } else {
-            issuesSummaryTable
+            unsafeSummary
         }
     }
 
@@ -533,11 +527,11 @@ struct ReportView: View {
             
             HStack(spacing: 40) {
                 StatBox(title: "Files", value: "\(reportStatistics.totalFiles)", color: .blue)
-                StatBox(title: "Matched", value: "\(verifiedFileCount)", color: .green)
+                StatBox(title: "Verified", value: "\(verifiedFileCount)", color: isFullyVerified ? .green : .orange)
                 StatBox(title: "Issues", value: "\(issueCount)", color: issueCount > 0 ? .orange : .gray)
                 StatBox(title: "Success Rate",
                        value: String(format: "%.1f%%", rows.isEmpty ? 100 : (Double(verifiedFileCount) / Double(rows.count) * 100)),
-                       color: issueCount == 0 ? .green : .orange)
+                       color: isFullyVerified ? .green : .orange)
             }
         }
     }
@@ -639,7 +633,7 @@ struct ReportView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(width: compact ? 132 : 140, alignment: .leading)
-            Text(row.formattedSize)
+            Text(ByteCountPresentation.fileSize(row.size))
                 .font(.system(size: 10, weight: .medium))
                 .frame(width: compact ? 72 : 65, alignment: .trailing)
         }
@@ -749,10 +743,33 @@ struct ReportView: View {
     }
 
     static func shouldShowSuccessBadge(
-        issueCount: Int,
+        safetyState: CardSafetyState,
         photographyJob: PhotographerReportPayload?
     ) -> Bool {
-        issueCount == 0 && (photographyJob?.isLocallySafe ?? true)
+        safetyState == .safeToErase && (photographyJob?.isLocallySafe ?? true)
+    }
+
+    static func unsafeReportReason(
+        safetyState: CardSafetyState,
+        photographyJob: PhotographerReportPayload?
+    ) -> String {
+        if let notice = photographerVerificationNotice(for: photographyJob) {
+            return "The card is not safe to erase because \(notice.lowercased())"
+        }
+        switch safetyState {
+        case .copiedNotVerified:
+            return "The card is not safe to erase because Quick mode copied the files without verifying their contents."
+        case .needsAttention:
+            return "The card is not safe to erase because one or more files need attention."
+        case .failed:
+            return "The card is not safe to erase because the transfer failed."
+        case .interrupted:
+            return "The card is not safe to erase because the transfer was interrupted."
+        case .waiting, .preparing, .copying, .verifying:
+            return "The card is not safe to erase because verification did not finish."
+        case .safeToErase:
+            return "Every file on every backup was verified."
+        }
     }
 
     static func photographerVerificationNotice(
@@ -783,6 +800,35 @@ struct ReportView: View {
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
                         .stroke(Color.orange.opacity(0.2), lineWidth: 1)
+                )
+        )
+    }
+
+    private var unsafeSummary: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: s.safetyState == .failed ? "xmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundColor(s.safetyState == .failed ? .red : .orange)
+            VStack(alignment: .leading, spacing: 4) {
+                Text("NOT SAFE TO ERASE")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(s.safetyState == .failed ? .red : .orange)
+                Text(Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob))
+                    .font(.system(size: 11, weight: .medium))
+                if issueCount > 0 {
+                    Text("Review the \(issueCount) file \(issueCount == 1 ? "issue" : "issues") in this report before trying again.")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                }
+            }
+            Spacer()
+        }
+        .padding(16)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill((s.safetyState == .failed ? Color.red : Color.orange).opacity(0.05))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke((s.safetyState == .failed ? Color.red : Color.orange).opacity(0.2))
                 )
         )
     }
@@ -916,7 +962,7 @@ private struct StatChip: View {
 
 private func formattedFileSize(_ row: ResultRow?) -> String {
     guard let row else { return "—" }
-    return ByteCountFormatter.string(fromByteCount: row.size, countStyle: .file)
+    return ByteCountPresentation.fileSize(row.size)
 }
 
 @ViewBuilder

@@ -79,6 +79,36 @@ struct TransferPipelineTests {
     }
 
     @Test
+    func emptySourceIsRejectedBeforeAnyCopy() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fm = FileManager.default
+            let root = fm.temporaryDirectory.appendingPathComponent("bitmatch_empty_\(UUID().uuidString)")
+            let source = root.appendingPathComponent("source")
+            let destination = root.appendingPathComponent("destination")
+            try fm.createDirectory(at: source, withIntermediateDirectories: true)
+            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: root) }
+
+            let sut = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            do {
+                _ = try await sut.performFileOperation(
+                    sourceURL: source,
+                    destinationURLs: [destination],
+                    verificationMode: .standard,
+                    settings: CameraLabelSettings(),
+                    estimatedTotalBytes: 0,
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+                Issue.record("An empty source must never enter the copy phase")
+            } catch {
+                #expect(error.localizedDescription.contains("Source folder is empty"))
+            }
+            #expect((try fm.contentsOfDirectory(atPath: destination.path)).isEmpty)
+        }
+    }
+
+    @Test
     func testStalePauseDoesNotBlockNextOperation() async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)

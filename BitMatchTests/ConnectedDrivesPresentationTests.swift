@@ -13,6 +13,10 @@ struct ConnectedDrivesPresentationTests {
         )
     }
 
+    @Test func emptyStateUsesCompactOtherDriveWording() {
+        #expect(Presentation.emptyTitle == "No other drives connected")
+    }
+
     @Test func queueCandidatesExcludeActiveBackupAndQueuedVolumes() {
         let rows = Presentation.queueCandidates(
             volumes: [volume("Card"), volume("Backup"), volume("Waiting"), volume("Waiting 2"),
@@ -99,6 +103,16 @@ struct ConnectedDrivesPresentationTests {
         let rows = Presentation.make(volumes: [volume("Backup"), card], sourceURL: nil, destinationURLs: [])
         #expect(rows[0].subtitle == "Sony FX6 card · 128 GB")
         #expect(rows[1].subtitle == "412 GB free of 2 TB")
+    }
+
+    @Test func zeroCapacityUsesPlainCapacityWording() {
+        let empty = Presentation.Volume(
+            name: "Full", url: URL(fileURLWithPath: "/Volumes/Full"),
+            totalBytes: 128_000_000_000, freeBytes: 0, isRemovable: true, isInternal: false
+        )
+        let row = Presentation.make(volumes: [empty], sourceURL: nil, destinationURLs: []).first
+        #expect(row?.subtitle == "No space free of 128 GB")
+        #expect(row?.subtitle.contains("Zero KB") == false)
     }
 
     @Test func unknownAndInternalDrivesRemainVisible() {

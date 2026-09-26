@@ -61,7 +61,8 @@ public struct ResultRow: Identifiable, Sendable {
     }
 
     public var formattedSize: String {
-        ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
+        guard size > 0 else { return "Empty" }
+        return ByteCountFormatter.string(fromByteCount: size, countStyle: .file)
     }
 
     public var isSuccessStatus: Bool {

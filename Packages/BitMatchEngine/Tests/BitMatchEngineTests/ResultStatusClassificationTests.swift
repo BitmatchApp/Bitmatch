@@ -52,4 +52,10 @@ final class ResultStatusClassificationTests: XCTestCase {
         XCTAssertFalse(ResultRow.isSuccessStatus("Unknown"))
         XCTAssertFalse(ResultRow.isSuccessStatus("Copied"))
     }
+
+    func testZeroByteResultUsesEmptyWording() {
+        let row = ResultRow(path: "empty.mov", status: "✅ Verified", size: 0, checksum: "abc", destination: "Backup")
+        XCTAssertEqual(row.formattedSize, "Empty")
+        XCTAssertFalse(row.formattedSize.contains("Zero KB"))
+    }
 }
