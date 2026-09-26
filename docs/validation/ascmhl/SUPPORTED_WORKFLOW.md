@@ -23,7 +23,7 @@ it is refused or reported, never silently claimed.
   histories. Existing destination histories are preserved and reported as
   unsupported; retries can recheck copies without creating new ones.
 - Chain-of-custody tracking across handoffs. BitMatch does not claim it.
-- Acceptance by receiving tools (Hedge/OffShoot, ShotPut Pro, Silverstack),
+- Acceptance by receiving tools (other offload and DIT applications),
   production camera media, or physical iOS storage. Those checks are
   outstanding; see the validation register before relying on this workflow
   for paid work.
