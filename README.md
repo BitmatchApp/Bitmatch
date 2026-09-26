@@ -51,7 +51,7 @@ Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now
   💾 A   💾 B
 ```
 
-Plug in your card and drives. Choose what you're copying and where the backups go. Check the transfer plan, hit copy, and let BitMatch verify the results. **Standard SHA-256 verification is the default.** Review every destination and keep the report before clearing the card.
+Plug in your card and drives. BitMatch picks up the card as the source, you choose where the backups go, check the plan, and hit Start. **Standard SHA-256 verification is the default**, and the verify pass reads the backup drive itself, not a copy sitting in memory. The card is only called **Safe to erase** (in green, with an Eject button) when every file on every backup has been checksum-verified. Anything less says so, in amber or red.
 
 One card to dump? Use **One-time transfer**. A whole shoot with several cards and cameras? Use **Project transfer**.
 
@@ -67,7 +67,8 @@ One card to dump? Use **One-time transfer**. A whole shoot with several cards an
 - **PDF, CSV, and JSON reports** for producers who want documentation, or you when you want to check what happened. The per-transfer PDF is written the same way on Mac, iPad, and iPhone. The Master Report (one PDF for a day's transfers) works everywhere.
 - **Transfer preflight on Mac, iPad, and iPhone** shows the source, backups, options, and anything that needs fixing before Start.
 - **ASC MHL handoff records** after verified copies, with the details tucked under Advanced. This first version creates new inventories; it preserves existing histories and flags them for review. [Scope and validation](docs/validation/ascmhl/README.md).
-- **Transfer queue and history** on Mac, iPad, and iPhone. Queue cards with their own settings, review interrupted attempts, retry, and export the results.
+- **Transfer queue and history** on Mac, iPad, and iPhone. Plug in the next card while one is copying and hit **Add another card**. Each card keeps its own settings, and interrupted attempts can be reviewed and retried.
+- **Notifications** when a card is safe to erase, when something needs you, and when the queue is done. Change them in Settings.
 - **Optional SFTP backup on Mac** if you want an off-site copy after the local one is verified.
 
 ## Verification Modes
@@ -83,11 +84,11 @@ Quick means copy only. It does **not** prove the contents match. A finished copy
 
 ## Queue, Recovery, and Handoff
 
-Open **Transfers** to queue another card or check what happened earlier. Each queued transfer keeps its own source, backups, and settings. The queue stops when something needs attention. A retry keeps the old attempt in history and checks the original folders before starting again; verified existing files can be reused after checking them.
+Use **Add another card** under the source to queue the next card, right on the main screen. Open **History** from the toolbar to see what happened earlier. Each queued transfer keeps its own source, backups, and settings. The queue stops when something needs attention. A retry keeps the old attempt in history and checks the original folders before starting again; verified existing files can be reused after checking them.
 
 On iPhone and iPad, keep BitMatch open while it works. iOS can interrupt a transfer; the saved attempt will be marked interrupted when you reopen the app. Project cards stay with their project and need review there before another ingest.
 
-ASC MHL is on by default for verified copies. It adds another full read of each backup to create a compatible inventory. Existing ASC histories are left alone, with an issue shown instead of pretending they were extended. You can turn it off under **Advanced** when you don't need the handoff record. If a retry encounters an existing history, **Transfers → Details → Retry without ASC MHL** rechecks the copies without replacing that history. The one workflow BitMatch supports — verify locally, hand over an initial inventory, receiver validates — is written down in [SUPPORTED_WORKFLOW.md](docs/validation/ascmhl/SUPPORTED_WORKFLOW.md); there is no chain-of-custody claim.
+ASC MHL is on by default for verified copies. It adds another full read of each backup to create a compatible inventory. Existing ASC histories are left alone, with an issue shown instead of pretending they were extended. You can turn it off under **Advanced** when you don't need the handoff record. If a retry encounters an existing history, **History → the transfer's details → Retry without ASC MHL** rechecks the copies without replacing that history. The one workflow BitMatch supports — verify locally, hand over an initial inventory, receiver validates — is written down in [SUPPORTED_WORKFLOW.md](docs/validation/ascmhl/SUPPORTED_WORKFLOW.md); there is no chain-of-custody claim.
 
 ## Photographer Jobs
 
@@ -176,7 +177,11 @@ The CI workflow is included, but GitHub Actions is currently disabled. Run `mac-
 
 ## Contributing
 
-PRs welcome. Build both the Mac and iPad schemes before submitting. Shared code means changes can break one platform silently.
+PRs welcome. For anything big, start a thread in [Discussions](https://github.com/mikecerisano/Bitmatch/discussions) first so we can talk it through before you sink time into it. BitMatch is supposed to stay simple, and I'd hate for you to build something that doesn't fit.
+
+Build both the Mac and iPad schemes before submitting. Shared code means changes can break one platform silently.
+
+Not a coder? Testing on your own cameras, cards, readers, and drives helps just as much. So does telling me what confused you.
 
 Found a transfer problem? Include your app and OS versions, drives and filesystems, verification mode, and what you did. Strip private filenames and client info from shared reports. Hardware test results are especially useful; here's [how to record them](docs/HARDWARE_TESTING.md).
 
@@ -192,4 +197,4 @@ I might eventually put a compiled version on the App Store for the price of a co
 
 ---
 
-Built over six months of "I'll just add one more feature." MIT License, be a good person. See [LICENSE](LICENSE) for the legal text.
+Built over a year of "I'll just add one more feature." MIT License, be a good person. See [LICENSE](LICENSE) for the legal text.
