@@ -9,6 +9,106 @@ import BitMatchEngine
 /// pages tall used to start low on page 1 under a blank gap.
 @MainActor
 struct ReportPDFLayoutTests {
+    @Test func quickReportWarnsThatTheCardIsNotSafeToErase() {
+        #expect(!ReportView.shouldShowSuccessBadge(safetyState: .copiedNotVerified, photographyJob: nil))
+        let reason = ReportView.unsafeReportReason(safetyState: .copiedNotVerified, photographyJob: nil)
+        #expect(reason == "The card is not safe to erase because Quick mode copied the files without verifying their contents.")
+    }
+
+    @Test func failedAndPartialReportsWarnWithTheirActualReason() {
+        #expect(ReportView.unsafeReportReason(safetyState: .failed, photographyJob: nil)
+            == "The card is not safe to erase because the transfer failed.")
+        #expect(ReportView.unsafeReportReason(safetyState: .needsAttention, photographyJob: nil)
+            == "The card is not safe to erase because one or more files need attention.")
+        #expect(!ReportView.shouldShowSuccessBadge(safetyState: .failed, photographyJob: nil))
+        #expect(!ReportView.shouldShowSuccessBadge(safetyState: .needsAttention, photographyJob: nil))
+    }
+
+    @Test func onlyFullyVerifiedReportUsesTheSuccessBadge() {
+        #expect(ReportView.shouldShowSuccessBadge(safetyState: .safeToErase, photographyJob: nil))
+        #expect(!ReportView.shouldShowSuccessBadge(safetyState: .interrupted, photographyJob: nil))
+    }
+
+    @Test func renderedQuickFailedAndVerifiedReportsUseSafetyVerdicts() throws {
+        let cases: [(CardSafetyState, ResultRow, String)] = [
+            (.copiedNotVerified,
+             ResultRow(path: "/card/quick.mov", status: ResultOutcome.copiedUnverified.statusText,
+                       size: 10, checksum: nil, destination: "/Volumes/Backup"),
+             "NOT SAFE TO ERASE"),
+            (.failed,
+             ResultRow(path: "/card/failed.mov", status: ResultOutcome.failed.statusText,
+                       size: 10, checksum: nil, destination: "/Volumes/Backup"),
+             "NOT SAFE TO ERASE"),
+            (.safeToErase,
+             ResultRow(path: "/card/verified.mov", status: ResultOutcome.verified.statusText,
+                       size: 10, checksum: "abc", destination: "/Volumes/Backup"),
+             "VERIFICATION SUCCESSFUL")
+        ]
+        for (state, row, expected) in cases {
+            let summary = ReportSummary(
+                jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1), mode: .copyAndVerify,
+                source: "/Volumes/CARD", destinations: ["/Volumes/Backup"], totalFiles: 1,
+                matched: state == .safeToErase ? 1 : 0, issues: state == .failed ? 1 : 0,
+                workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
+                verificationMethod: state == .copiedNotVerified ? "Size check only" : "SHA-256",
+                totalBytesProcessed: 10, averageSpeed: 1, clientLogoData: nil, companyLogoData: nil,
+                photographyJob: nil, safetyState: state
+            )
+            let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: [row])))
+            let text = (0..<document.pageCount).compactMap { document.page(at: $0)?.string }.joined(separator: " ")
+            #expect(text.contains(expected))
+            #expect((state == .safeToErase) == text.contains("VERIFICATION SUCCESSFUL"))
+        }
+    }
+
+    @Test func missingExpectedDestinationRowRendersNotSafeToErase() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-report-coverage-\(UUID())", isDirectory: true)
+        let source = root.appendingPathComponent("Card", isDirectory: true)
+        let destination = root.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let sourceA = source.appendingPathComponent("A.mov")
+        let sourceB = source.appendingPathComponent("B.mov")
+        try Data("A".utf8).write(to: sourceA)
+        try Data("B".utf8).write(to: sourceB)
+        let destinationA = destination.appendingPathComponent("A.mov")
+        try Data("A".utf8).write(to: destinationA)
+        let rows = [ResultRow(
+            path: sourceA.path, status: ResultOutcome.verified.statusText, size: 1,
+            checksum: "abc", destination: destination.lastPathComponent,
+            destinationPath: destinationA.path
+        )]
+        let verdict = TransferCompletion.verdict(
+            rows: rows,
+            sourceFiles: [sourceA, sourceB],
+            destinations: [destination],
+            source: source,
+            settings: CameraLabelSettings(),
+            mode: .standard,
+            generateASCMHL: false,
+            handoffIssues: [],
+            reportIssue: nil,
+            project: .init(didPersist: true, locallySafe: nil)
+        )
+        let safetyState = ReportExporter.safetyState(authoritativeVerdict: verdict, rows: rows)
+        #expect(safetyState == .needsAttention)
+
+        let summary = ReportSummary(
+            jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1), mode: .copyAndVerify,
+            source: source.path, destinations: [destination.path], totalFiles: 2, matched: 1, issues: 0,
+            workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
+            verificationMethod: "SHA-256", totalBytesProcessed: 1, averageSpeed: 1,
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: safetyState
+        )
+        let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
+        let text = (0..<document.pageCount).compactMap { document.page(at: $0)?.string }.joined(separator: " ")
+        #expect(text.contains("NOT SAFE TO ERASE"))
+        #expect(!text.contains("VERIFICATION SUCCESSFUL"))
+    }
+
     @Test func reportStartsAtTheTopOfPageOne() throws {
         let rows = [ResultRow(path: "/card/A001C001.MXF", status: "✅ Match", size: 1_000,
                               checksum: "abc", destination: "/Volumes/Backup")]
@@ -17,7 +117,7 @@ struct ReportPDFLayoutTests {
             source: "/Volumes/CARD1", destinations: ["/Volumes/Backup"], totalFiles: 1, matched: 1,
             issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: 1_000, averageSpeed: 1,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil)
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
 
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
         let firstPage = try #require(document.page(at: 0))
@@ -63,7 +163,7 @@ struct ReportPDFLayoutTests {
             source: "/Volumes/CARD1", destinations: ["/Volumes/Backup"], totalFiles: rows.count, matched: rows.count,
             issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: 300_000, averageSpeed: 1,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil)
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
         let blocks = ReportView(s: summary, rows: rows).pdfBlocks
         let heights = ReportPDFRenderer.blockHeights(blocks)
         let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight)

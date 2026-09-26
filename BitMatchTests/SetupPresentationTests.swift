@@ -43,6 +43,7 @@ struct SetupPresentationTests {
             projectUnit: "Card",
             isOperationInProgress: running,
             isQueuePaused: queuePaused,
+            hasCurrentSource: plan.nextStep != .chooseSource,
             sourceFileCount: 12,
             sourceBytes: 4_000,
             destinationCount: plan.destinationTitles.count
@@ -77,6 +78,25 @@ struct SetupPresentationTests {
         #expect(presentation.nextStep == .chooseSource)
         #expect(presentation.title == "Choose a source to start")
         #expect(presentation.blocker == nil)
+    }
+
+    @Test func incompleteSetupStillReservesTheStartArea() {
+        let presentation = SetupPresentation.make(
+            plan: plan(source: nil, backups: []),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasCurrentSource: false,
+            sourceFileCount: nil,
+            sourceBytes: nil,
+            destinationCount: 0,
+            hasProjectEvidence: false
+        )
+
+        #expect(presentation.showsStartArea)
+        #expect(!presentation.start.canStart)
     }
 
     /// A real problem (from the one readiness rule) gets a line under Start.
@@ -117,11 +137,82 @@ struct SetupPresentationTests {
     }
 
     @Test func pausedQueueDisablesSetupStart() {
-        let presentation = start(
-            plan(source: source, backups: [backup]), queuePaused: true
+        let presentation = SetupPresentation.make(
+            plan: plan(source: source, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            isQueuePaused: true,
+            hasCurrentSource: true,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 1,
+            hasProjectEvidence: false
         )
-        #expect(!presentation.canStart)
-        #expect(presentation.title == "Review the paused queue")
+        #expect(!presentation.start.canStart)
+        #expect(presentation.start.title == "Start")
+        #expect(presentation.showsStartArea)
+    }
+
+    @Test func sourceAnalysisAppearsOnlyInTheSourceCard() {
+        let analyzing = TransferPlanPresentation.make(
+            sourceURL: source,
+            sourceInfo: nil,
+            destinationURLs: [backup],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(),
+            isAnalyzing: true,
+            blockingIssues: [],
+            warnings: []
+        )
+        let presentation = start(analyzing)
+
+        #expect(analyzing.sourceDetail == "Analyzing…")
+        #expect(!analyzing.showsStatusBanner)
+        #expect(presentation.blocker == nil)
+    }
+
+    @Test func severalReadyCardsUseOneBatchStartLabel() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: source, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasCurrentSource: true,
+            stagedCardCount: 2,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 1
+        )
+
+        #expect(presentation.canStart)
+        #expect(presentation.title == "Start 3 Cards")
+        #expect(presentation.accessibilityHint.contains("source unchanged"))
+    }
+
+    @Test func stagedCardsCanStartAfterTheNextPickerIsCancelled() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: nil, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasCurrentSource: false,
+            stagedCardCount: 2,
+            sourceFileCount: nil,
+            sourceBytes: nil,
+            destinationCount: 1
+        )
+
+        #expect(presentation.canStart)
+        #expect(presentation.title == "Start 2 Cards")
+        #expect(presentation.readyLine == "2 cards will run as separate verified transfers to 1 backup.")
     }
 
     @Test func emptySourceDisablesStartWithAReason() {
@@ -133,6 +224,7 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
+            hasCurrentSource: true,
             sourceFileCount: 0,
             sourceBytes: 0,
             destinationCount: 1
@@ -155,6 +247,7 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
+            hasCurrentSource: true,
             sourceFileCount: 1,
             sourceBytes: 4,
             destinationCount: 1,

@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The "review in Transfers" banner shown above the main screen on Mac, iPad
+/// The "review in History" banner shown above the main screen on Mac, iPad
 /// and iPhone. Shows nothing when no transfer needs review.
 struct TransferAttentionBanner: View {
     let needsAttentionCount: Int
@@ -8,19 +8,19 @@ struct TransferAttentionBanner: View {
 
     var body: some View {
         if let title = TransferLibraryPresentation.bannerTitle(needsAttentionCount: needsAttentionCount) {
-            Button(action: openTransfers) {
+            HStack(spacing: 10) {
                 Label(title, systemImage: "exclamationmark.triangle.fill")
                     .font(.callout)
                     .multilineTextAlignment(.leading)
                     .fixedSize(horizontal: false, vertical: true)
-                    #if os(iOS)
-                    .frame(minHeight: 44)
-                    #endif
-                    .contentShape(Rectangle())
+                Spacer(minLength: 8)
+                Button("Review", action: openTransfers)
+                    .buttonStyle(.bordered)
             }
-            .buttonStyle(.borderless)
             .foregroundStyle(.orange)
-            .accessibilityHint("Opens Transfers")
+            .padding(12)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .accessibilityElement(children: .contain)
         }
     }
 }

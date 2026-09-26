@@ -2,14 +2,11 @@ import SwiftUI
 import UniformTypeIdentifiers
 import BitMatchEngine
 
-/// One shared queue/history surface; choosing another card never mutates the active transfer.
+/// Finished transfers in the same window as the operational workflow.
 struct TransferLibraryView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject var journal: LocalTransferJournal
-    @Environment(\.dismiss) private var dismiss
     @State private var search = ""
-    @State private var showAddTransfer = false
-    @State private var showHistory = false
     @State private var errorMessage: String?
     @State private var exportDocument: TransferHistoryDocument?
     @State private var showExport = false
@@ -17,21 +14,23 @@ struct TransferLibraryView: View {
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
     private let initialRecordID: UUID?
+    private let onBack: (() -> Void)?
 
     init(
         coordinator: SharedAppCoordinator,
         journal: LocalTransferJournal,
-        initialRecordID: UUID? = nil
+        initialRecordID: UUID? = nil,
+        onBack: (() -> Void)? = nil
     ) {
         self.initialRecordID = initialRecordID
+        self.onBack = onBack
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _journal = ObservedObject(wrappedValue: journal)
-        _showHistory = State(initialValue: initialRecordID != nil)
         _expandedIDs = State(initialValue: initialRecordID.map { Set([$0]) } ?? [])
     }
 
     private var visibleRecords: [LocalTransferRecord] {
-        TransferLibraryPresentation.visibleRecords(journal.records, showHistory: showHistory, search: showHistory ? search : "")
+        TransferLibraryPresentation.visibleRecords(journal.records, showHistory: true, search: search)
     }
 
     private var tabCounts: (queue: Int, history: Int) {
@@ -41,83 +40,62 @@ struct TransferLibraryView: View {
     /// Search only makes sense once History has something to search, and it
     /// never grabs focus on its own — `.searchable` never autofocuses.
     private var searchIsAvailable: Bool {
-        showHistory && tabCounts.history > 0
+        tabCounts.history > 0
     }
 
     var body: some View {
-        NavigationStack {
-            listContent
-                #if os(macOS)
-                .navigationTitle("")
-                #else
-                .navigationTitle("Transfers")
-                .navigationBarTitleDisplayMode(.inline)
-                #endif
-                .toolbar { toolbarContent }
-                .modifier(OptionalSearchable(isActive: searchIsAvailable, text: $search))
-                .sheet(isPresented: $showAddTransfer) { AddQueuedTransferView(coordinator: coordinator) }
-                .sheet(item: $reauthorizeRecord) { record in
-                    ReauthorizeLocationsView(coordinator: coordinator, journal: journal, recordID: record.id)
-                }
-                .fileExporter(isPresented: $showExport, document: exportDocument, contentType: exportType,
-                              defaultFilename: "BitMatch-transfer") { result in
-                    if case .failure(let error) = result { errorMessage = error.localizedDescription }
-                }
-        }
+        listContent
+            #if os(macOS)
+            .navigationTitle("History")
+            #else
+            .navigationTitle("History")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar { toolbarContent }
+            #endif
+            .modifier(OptionalSearchable(isActive: searchIsAvailable, text: $search))
+            .sheet(item: $reauthorizeRecord) { record in
+                ReauthorizeLocationsView(coordinator: coordinator, journal: journal, recordID: record.id)
+            }
+            .fileExporter(isPresented: $showExport, document: exportDocument, contentType: exportType,
+                          defaultFilename: "BitMatch-transfer") { result in
+                if case .failure(let error) = result { errorMessage = error.localizedDescription }
+            }
         #if os(macOS)
-        .frame(minWidth: 560, idealWidth: 700, minHeight: 480, idealHeight: 650)
+        .onExitCommand { onBack?() }
         #endif
     }
 
     @ViewBuilder
     private var listContent: some View {
         VStack(spacing: 0) {
-            VStack(alignment: .leading, spacing: 12) {
-                #if os(macOS)
-                Text("Transfers")
-                    .font(.title3.weight(.semibold))
-                    .accessibilityAddTraits(.isHeader)
-                #endif
-                Picker("Transfers", selection: $showHistory) {
-                    Text("Queue (\(tabCounts.queue))").tag(false)
-                    Text("History (\(tabCounts.history))").tag(true)
-                }
-                .pickerStyle(.segmented)
-                .tint(.secondary)
-                .labelsHidden()
-
-                if let message = coordinator.queueMessage ?? journal.persistenceError ?? errorMessage {
+            if let message = coordinator.queueMessage ?? journal.persistenceError ?? errorMessage {
+                VStack(alignment: .leading, spacing: 8) {
                     Label(message, systemImage: "exclamationmark.triangle")
                         .font(.callout)
                         .foregroundStyle(ResultStatusTone.warning.color)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-                if !showHistory {
-                    Text("Queued transfers keep their own folders and settings. The queue stops when a transfer needs attention.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    #if os(iOS)
-                    Text("Keep BitMatch open. If iOS interrupts a transfer, reconnect the original folders and retry here.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    #endif
-                }
+                .padding(.horizontal)
+                .padding(.vertical, 12)
             }
-            .padding(.horizontal)
-            .padding(.vertical, 12)
 
             if visibleRecords.isEmpty {
                 ContentUnavailableView(
-                    showHistory ? "No transfers yet" : "Queue is empty",
-                    systemImage: showHistory ? "clock" : "tray",
-                    description: Text(showHistory
-                        ? "Finished transfers show up here."
-                        : "Add a transfer to get started.")
+                    "No finished transfers yet",
+                    systemImage: "clock",
+                    description: Text("Finished transfers show up here.")
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollViewReader { proxy in
                     List {
                         ForEach(visibleRecords) { record in
-                            rowView(record).id(record.id)
+                            rowView(record)
+                                .id(record.id)
+                                .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
+                                .listRowSeparator(.visible)
+                                .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
+                                .alignmentGuide(.listRowSeparatorTrailing) { dimensions in dimensions.width }
                         }
                     }
                     .task(id: reviewTargetID) {
@@ -142,23 +120,17 @@ struct TransferLibraryView: View {
         )
     }
 
+    #if os(iOS)
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
-        if !showHistory {
-            ToolbarItem {
-                Button("Add Transfer", systemImage: "plus") { showAddTransfer = true }
-            }
-            ToolbarItem {
-                if coordinator.queueIsRunning {
-                    Button("Stop After Current") { coordinator.stopQueueAfterCurrentTransfer() }
-                } else {
-                    Button("Run Queue", systemImage: "play.fill") { coordinator.startQueue() }
-                        .disabled(journal.persistenceError != nil || !coordinator.queueRunCommandEnabled)
-                }
+        if let onBack {
+            ToolbarItem(placement: .navigation) {
+                Button(action: onBack) { Label("Back", systemImage: "chevron.left") }
+                    .accessibilityHint("Returns to the transfer screen")
             }
         }
-        ToolbarItem(placement: .confirmationAction) { Button("Done") { dismiss() } }
     }
+    #endif
 
     private func rowView(_ record: LocalTransferRecord) -> some View {
         let actions = TransferLibraryPresentation.actions(for: record)
@@ -188,7 +160,7 @@ struct TransferLibraryView: View {
                 }
             }
             if actions.retry {
-                Button("Retry") { coordinator.retryTransfer(record.id) }.tint(.blue)
+                Button("Retry") { retry(record.id) }.tint(.blue)
             }
         }
         #endif
@@ -206,16 +178,16 @@ struct TransferLibraryView: View {
     @ViewBuilder
     private func menuItems(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
         if actions.retry {
-            Button("Retry") { coordinator.retryTransfer(record.id) }
+            Button("Retry") { retry(record.id) }
         }
         if actions.retryWithoutASCMHL {
-            Button("Retry without ASC MHL") { coordinator.retryTransfer(record.id, generateASCMHL: false) }
+            Button("Retry without ASC MHL") { retry(record.id, generateASCMHL: false) }
         }
         if actions.reconnect {
             Button("Reconnect…") { reauthorizeRecord = record }
         }
         if actions.export {
-            Menu("Export") {
+            Menu("Export report") {
                 Button("JSON report") { export(record, asCSV: false) }
                 Button("CSV results") { export(record, asCSV: true) }
             }
@@ -235,8 +207,14 @@ struct TransferLibraryView: View {
 
     @ViewBuilder
     private func detailsView(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
+        let safetyState = TransferLibraryPresentation.safetyState(for: record)
         VStack(alignment: .leading, spacing: 8) {
             Text(record.summary).fixedSize(horizontal: false, vertical: true)
+            if let warning = safetyState.eraseWarning {
+                Label(warning, systemImage: safetyState.symbol)
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(safetyState.tint.color)
+            }
             if actions.showsProjectReviewNote {
                 Text("Review this card in its project before preparing another ingest.")
                     .foregroundStyle(.secondary)
@@ -247,7 +225,7 @@ struct TransferLibraryView: View {
             }
             if actions.retryWithoutASCMHL {
                 Button("Retry without ASC MHL") {
-                    coordinator.retryTransfer(record.id, generateASCMHL: false)
+                    retry(record.id, generateASCMHL: false)
                 }
                 .modifier(TouchTarget())
                 Text("Rechecks copies and retries unfinished work. Existing ASC MHL histories are preserved; this attempt won’t create new ones.")
@@ -274,6 +252,11 @@ struct TransferLibraryView: View {
             exportType = asCSV ? .commaSeparatedText : .json
             showExport = true
         } catch { errorMessage = error.localizedDescription }
+    }
+
+    private func retry(_ id: UUID, generateASCMHL: Bool? = nil) {
+        coordinator.retryTransfer(id, generateASCMHL: generateASCMHL)
+        onBack?()
     }
 }
 
@@ -307,7 +290,7 @@ private struct TouchTarget: ViewModifier {
 /// Reconnects expired transfer locations to their identical original folders.
 /// A different drive or folder is rejected, never substituted; earlier attempts
 /// and their evidence stay untouched.
-private struct ReauthorizeLocationsView: View {
+struct ReauthorizeLocationsView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject var journal: LocalTransferJournal
     let recordID: UUID
@@ -444,101 +427,5 @@ private struct ReauthorizeLocationsView: View {
             message = error.localizedDescription
             messageIsError = true
         }
-    }
-}
-
-private struct AddQueuedTransferView: View {
-    @ObservedObject var coordinator: SharedAppCoordinator
-    @Environment(\.dismiss) private var dismiss
-    @State private var source: URL?
-    @State private var destinations: [URL] = []
-    @State private var mode = VerificationMode.standard
-    @State private var generateASCMHL = true
-    @State private var showSourcePicker = false
-    @State private var showDestinationPicker = false
-    @State private var scopedURLs: [URL] = []
-    @State private var errorMessage: String?
-
-    var body: some View {
-        NavigationStack {
-            Form {
-                Section("Source") {
-                    if let source { Text(source.lastPathComponent).font(.headline) }
-                    Button("Choose card or folder") { showSourcePicker = true }
-                }
-                Section("Backups") {
-                    ForEach(destinations, id: \.self) { destination in
-                        HStack {
-                            Text(destination.lastPathComponent)
-                            Spacer()
-                            Button("Remove", role: .destructive) { destinations.removeAll { $0 == destination } }
-                        }
-                    }
-                    Button("Add backup folder") { showDestinationPicker = true }
-                }
-                Section {
-                    Text(verificationSummary)
-                    DisclosureGroup("Advanced") {
-                        Picker("Verification", selection: $mode) {
-                            ForEach(VerificationMode.allCases) { Text($0.rawValue).tag($0) }
-                        }
-                        Text(mode.description).font(.callout)
-                        Toggle("ASC MHL handoff record", isOn: $generateASCMHL).disabled(mode == .quick)
-                    }
-                    Text("Creates a one-time transfer using the current report settings. Locations and free space are checked again before copying.")
-                        .font(.callout).foregroundStyle(.secondary)
-                }
-                if let errorMessage { Text(errorMessage).foregroundStyle(ResultStatusTone.warning.color) }
-            }
-            .formStyle(.grouped)
-            .navigationTitle("Add transfer")
-            #if os(iOS)
-            .navigationBarTitleDisplayMode(.inline)
-            #endif
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
-                ToolbarItem(placement: .confirmationAction) {
-                    Button("Add to Queue") { enqueue() }.disabled(source == nil || destinations.isEmpty)
-                }
-            }
-            .fileImporter(isPresented: $showSourcePicker, allowedContentTypes: [.folder], allowsMultipleSelection: false) { result in
-                select(result, isSource: true)
-            }
-            .fileImporter(isPresented: $showDestinationPicker, allowedContentTypes: [.folder], allowsMultipleSelection: true) { result in
-                select(result, isSource: false)
-            }
-        }
-        .onDisappear { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
-        #if os(macOS)
-        .frame(minWidth: 480, idealWidth: 560, minHeight: 440)
-        #endif
-    }
-
-    private var verificationSummary: String {
-        switch mode {
-        case .quick: return "Copy only · size check"
-        case .standard: return "Verified copy · SHA-256"
-        case .thorough: return "Verified copy · SHA-256 and MD5"
-        case .paranoid: return "Verified copy · checksums and byte comparison"
-        }
-    }
-
-    private func select(_ result: Result<[URL], Error>, isSource: Bool) {
-        do {
-            for url in try result.get() {
-                if url.startAccessingSecurityScopedResource() { scopedURLs.append(url) }
-                if isSource { source = url }
-                else if !destinations.contains(url) { destinations.append(url) }
-            }
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func enqueue() {
-        guard let source else { return }
-        do {
-            try coordinator.enqueue(source: source, destinations: destinations,
-                verificationMode: mode, generateASCMHL: generateASCMHL)
-            dismiss()
-        } catch { errorMessage = error.localizedDescription }
     }
 }

@@ -397,6 +397,107 @@ struct BackupAddPathTests {
         #expect(shared.destinationURLs.map(\.path) == ["/Volumes/T7"])
     }
 
+    @Test func discoveryCannotAddOrRemoveBackupsAfterACardIsStaged() async throws {
+        let (model, shared) = makeModel()
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-staged-lock-\(UUID())", isDirectory: true)
+        let source = root.appendingPathComponent("Card", isDirectory: true)
+        let planned = root.appendingPathComponent("Planned Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: planned, withIntermediateDirectories: true)
+        try Data("card".utf8).write(to: source.appendingPathComponent("A.mov"))
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        shared.sourceURL = source
+        shared.destinationURLs = [planned]
+        #expect(await waitUntil { !shared.isAnalysingSource })
+        try shared.enqueueSelection()
+        #expect(!shared.stagedSetupTransfers.isEmpty)
+
+        // Simulate the planned drive disappearing and a new external drive
+        // appearing in the same discovery update. Neither mutation is legal
+        // while staged cards share the locked route.
+        try FileManager.default.removeItem(at: planned)
+        model.volumeFacts = { url in
+            guard url.path == "/Volumes/New Backup" else { return nil }
+            return BackupTargetPolicy.VolumeFacts(
+                volumeRootPath: url.path, volumeID: "NEW", volumeName: "New Backup",
+                isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: true
+            )
+        }
+        model.handleBackupDrivesUpdate([drive("/Volumes/New Backup")])
+
+        #expect(shared.destinationURLs == [planned])
+        #expect(shared.stagedSetupTransfers.first?.destinations.map(\.url) == [planned])
+    }
+
+    @Test func coordinatorMutationBoundaryUnlocksWhenStagedCardIsRemoved() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        let original = coordinator.destinationURLs
+        let extra = fixture.folders.root.appendingPathComponent("extra", isDirectory: true)
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+
+        try coordinator.enqueueSelection()
+        let stagedID = try #require(coordinator.stagedSetupTransfers.first?.id)
+        #expect(coordinator.isDestinationSelectionLocked)
+        #expect(coordinator.addDestination(extra) != nil)
+        coordinator.removeDestinationFolder(original[0])
+        coordinator.replaceDestinations(with: [extra])
+        #expect(coordinator.destinationURLs == original)
+
+        try coordinator.removeQueuedTransfer(stagedID)
+        #expect(!coordinator.isDestinationSelectionLocked)
+        #expect(coordinator.addDestination(extra) == nil)
+        coordinator.removeDestinationFolder(original[0])
+        #expect(coordinator.destinationURLs == [original[1], extra])
+    }
+
+    @Test func finalRunningCardLocksDirectMutationsAndDiscoveryUntilItEnds() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.generateASCMHL = false
+        coordinator.reportSettings.makeReport = false
+        let original = coordinator.destinationURLs
+        let extra = fixture.folders.root.appendingPathComponent("running-extra", isDirectory: true)
+        try FileManager.default.createDirectory(at: extra, withIntermediateDirectories: true)
+
+        try coordinator.startSetupTransfers()
+        #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+        #expect(coordinator.stagedSetupTransfers.isEmpty)
+        #expect(coordinator.isDestinationSelectionLocked)
+        // The running queue reissues the route through security-scoped URLs,
+        // which resolve the /var symlink to /private/var. Later assertions use
+        // this canonical form; the lock behavior is what this test guards.
+        let lockedRoute = coordinator.destinationURLs
+        #expect(lockedRoute.map { $0.resolvingSymlinksInPath().path }
+            == original.map { $0.resolvingSymlinksInPath().path })
+
+        #expect(coordinator.addDestination(extra) != nil)
+        coordinator.removeDestinationFolder(original[0])
+        coordinator.replaceDestinations(with: [extra])
+
+        let model = MacVolumeAccessModel(shared: coordinator, enableVolumeMonitoring: false)
+        model.volumeFacts = { url in
+            guard url == extra else { return nil }
+            return BackupTargetPolicy.VolumeFacts(
+                volumeRootPath: url.path, volumeID: "EXTRA", volumeName: "Running extra",
+                isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: true
+            )
+        }
+        model.handleBackupDrivesUpdate([drive(extra.path)])
+        #expect(coordinator.destinationURLs == lockedRoute)
+
+        await fixture.operations.release()
+        #expect(await waitUntil { !coordinator.isOperationInProgress })
+        #expect(!coordinator.isDestinationSelectionLocked)
+        #expect(coordinator.addDestination(extra) == nil)
+        coordinator.removeDestinationFolder(lockedRoute[0])
+        #expect(coordinator.destinationURLs == [lockedRoute[1], extra])
+    }
+
     /// The stress test's temp backup is saved as last-used; at the next
     /// launch it must not come back, and (all or nothing) neither does the
     /// real backup saved with it.

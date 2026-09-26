@@ -21,6 +21,7 @@ enum ReportExporter {
                        prefs: ReportPrefs,
                        workers: Int,
                        totalBytesProcessed: Int64,
+                       safetyState: CardSafetyState,
                        generateFullReport: Bool = true,
                        photographerContext: PhotographerReportContext? = nil) async throws {
 
@@ -62,7 +63,8 @@ enum ReportExporter {
             clientLogoData: nil,
             companyLogoData: nil,
             photographyJob: photographerPayload,
-            notes: EvidenceWriter.normalizedNotes(prefs.notes)
+            notes: EvidenceWriter.normalizedNotes(prefs.notes),
+            safetyState: safetyState
         )
 
         let shouldGenerateFullReport = generateFullReport && prefs.makeReport
@@ -100,6 +102,29 @@ enum ReportExporter {
                                        generateFullReport: shouldGenerateFullReport,
                                        projectCSV: projectCSV,
                                        projectJSON: projectJSON)
+    }
+
+    /// Converts the engine's authoritative verdict into the one safety state
+    /// used by the outcome and PDF. The exporter never infers completeness
+    /// from the subset of result rows it happens to receive.
+    static func safetyState(
+        authoritativeVerdict verdict: TransferCompletion.Verdict,
+        rows: [ResultRow]
+    ) -> CardSafetyState {
+        let state = OperationState.completed(.init(
+            success: verdict.success,
+            message: verdict.message,
+            copiedNotVerified: verdict.copiedNotVerified
+        ))
+        return CardSafetyState.make(
+            state: state,
+            verdict: CompletionVerdict.resolve(
+                state: state,
+                rows: rows,
+                hasErrors: false,
+                hasCriticalErrors: false
+            )
+        )
     }
 
     /// The CSV with the photographer project's columns and summary rows.

@@ -75,6 +75,13 @@ struct SetupLocationsPresentation: Equatable {
         let cameraName: String?
     }
 
+    struct StagedSource: Equatable, Identifiable {
+        let id: UUID
+        let title: String
+        let path: String
+        let detail: String
+    }
+
     struct Backup: Equatable, Identifiable {
         var id: URL { url }
         let url: URL
@@ -85,9 +92,13 @@ struct SetupLocationsPresentation: Equatable {
     }
 
     let source: Source?
+    let stagedSources: [StagedSource]
     let backups: [Backup]
     /// False while a transfer runs: no clearing, removing, adding or drops.
     let canEdit: Bool
+    /// Once a card is staged, its backups are the shared route for this run.
+    /// Remove the staged cards before changing that route.
+    let canEditBackups: Bool
     /// The empty source box receives neutral next-step emphasis.
     let highlightsSource: Bool
     /// The empty backups box receives neutral next-step emphasis.
@@ -95,6 +106,9 @@ struct SetupLocationsPresentation: Equatable {
     /// Source and backups side by side, from the Setup screen's own width
     /// (toolbar and sidebar widths); stacked when compact.
     let sideBySide: Bool
+    let showsAddAnotherCard: Bool
+    let canAddAnotherCard: Bool
+    let addAnotherCardDisabledReason: String?
 
     static func make(
         sourceURL: URL?,
@@ -102,9 +116,13 @@ struct SetupLocationsPresentation: Equatable {
         sourceBytes: Int64?,
         isAnalysingSource: Bool,
         cameraName: String?,
+        stagedSources: [StagedSource] = [],
         destinationURLs: [URL],
         capacity: (URL) -> Capacity?,
         isOperationInProgress: Bool,
+        showsAddAnotherCard: Bool = false,
+        canAddAnotherCard: Bool? = nil,
+        addAnotherCardDisabledReason: String? = nil,
         nextStep: TransferPlanPresentation.NextStep?,
         layout: AdaptiveNavigationPresentation
     ) -> Self {
@@ -118,6 +136,7 @@ struct SetupLocationsPresentation: Equatable {
         }
         return Self(
             source: source,
+            stagedSources: stagedSources,
             backups: destinationURLs.map { url in
                 Backup(
                     url: url,
@@ -127,9 +146,14 @@ struct SetupLocationsPresentation: Equatable {
                 )
             },
             canEdit: !isOperationInProgress,
+            canEditBackups: !isOperationInProgress && stagedSources.isEmpty,
             highlightsSource: sourceURL == nil && nextStep == .chooseSource,
             highlightsBackups: destinationURLs.isEmpty && nextStep == .addBackup,
-            sideBySide: layout != .compact
+            sideBySide: layout != .compact,
+            showsAddAnotherCard: showsAddAnotherCard,
+            canAddAnotherCard: canAddAnotherCard
+                ?? (!isOperationInProgress && sourceURL != nil && !destinationURLs.isEmpty),
+            addAnotherCardDisabledReason: addAnotherCardDisabledReason
         )
     }
 
@@ -160,7 +184,7 @@ struct SetupLocationsPresentation: Equatable {
     private static func sourceDetail(fileCount: Int?, bytes: Int64?, isAnalysing: Bool) -> String? {
         if isAnalysing { return "Analyzing…" }
         guard let fileCount, let bytes else { return nil }
-        if fileCount == 0 { return "Empty folder" }
+        if fileCount == 0 { return nil }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         let count = formatter.string(from: NSNumber(value: fileCount)) ?? "\(fileCount)"

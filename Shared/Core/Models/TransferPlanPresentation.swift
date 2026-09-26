@@ -60,12 +60,12 @@ struct TransferPlanPresentation: Equatable {
         case addBackup
     }
 
-    /// The status banner is for real blockers, warnings and analysis. Steps
-    /// not taken yet are shown by `nextStep`, and "ready" needs no banner.
+    /// The status banner is for real blockers and warnings. Source analysis
+    /// already appears in the source card, so it is not repeated here.
     var showsStatusBanner: Bool {
         switch status {
-        case .incomplete, .ready: false
-        case .analyzing, .warning, .blocked: true
+        case .incomplete, .analyzing, .ready: false
+        case .warning, .blocked: true
         }
     }
 

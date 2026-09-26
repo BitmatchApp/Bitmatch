@@ -5,6 +5,7 @@ struct PhoneContentView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @State private var showSettings = false
     @State private var showingTransfers = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         NavigationStack {
@@ -18,37 +19,57 @@ struct PhoneContentView: View {
                     endPoint: .bottomTrailing
                 ).ignoresSafeArea()
 
-                ScrollView {
-                    VStack(spacing: 16) {
-                        NotificationPermissionBanner(coordinator: coordinator)
-                        TransferAttentionBanner(
-                            needsAttentionCount: TransferLibraryPresentation.needsAttentionCount(coordinator.transferJournal.records)
-                        ) { showingTransfers = true }
-                            .padding(.horizontal)
-                        // Tabs
-                        AdaptiveModeNavigation(coordinator: coordinator, presentation: .compact)
+                Group {
+                    if showingTransfers {
+                        TransferLibraryView(
+                            coordinator: coordinator,
+                            journal: coordinator.transferJournal,
+                            onBack: { showingTransfers = false }
+                        )
+                    } else {
+                        ScrollView {
+                            VStack(spacing: 16) {
+                                let attentionCount = TransferLibraryPresentation.needsAttentionCount(
+                                    coordinator.transferJournal.records,
+                                    excluding: Set([coordinator.queuePausedRecordID].compactMap { $0 })
+                                )
+                                if !coordinator.isOperationInProgress && !coordinator.queueIsRunning
+                                    && !coordinator.showsOutcomeSummary && attentionCount > 0 {
+                                    TransferAttentionBanner(needsAttentionCount: attentionCount) { showingTransfers = true }
+                                        .padding(.horizontal)
+                                } else if !coordinator.isOperationInProgress && !coordinator.queueIsRunning
+                                    && !coordinator.showsOutcomeSummary {
+                                    NotificationPermissionBanner(coordinator: coordinator)
+                                }
+                                AdaptiveModeNavigation(coordinator: coordinator, presentation: .compact)
 
-                        switch coordinator.currentMode {
-                        case .copyAndVerify:
-                            copyAndVerifyStack
-                        case .compareFolders:
-                            // Reuse iPad Compare component in a phone-friendly stack
-                            CompareFoldersView(coordinator: coordinator)
-                                .padding(.horizontal, 16)
-                        case .masterReport:
-                            MasterReportView(coordinator: coordinator)
-                                .padding(.horizontal, 16)
+                                switch coordinator.currentMode {
+                                case .copyAndVerify:
+                                    copyAndVerifyStack
+                                case .compareFolders:
+                                    CompareFoldersView(coordinator: coordinator)
+                                        .padding(.horizontal, 16)
+                                case .masterReport:
+                                    MasterReportView(coordinator: coordinator)
+                                        .padding(.horizontal, 16)
+                                }
+                            }
+                            .padding(.bottom, 20)
                         }
                     }
-                    .padding(.bottom, 20)
                 }
+                .id(contentTransitionID)
+                .transition(.opacity)
+                .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: contentTransitionID)
             }
             .navigationTitle("BitMatch")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) {
-                    Button { showingTransfers = true } label: {
-                        Label("Transfers", systemImage: "clock.arrow.circlepath")
+                    if !showingTransfers {
+                        Button { showingTransfers = true } label: {
+                            Label("History", systemImage: "clock.arrow.circlepath")
+                        }
                     }
                 }
                 ToolbarItem(placement: .topBarTrailing) {
@@ -59,9 +80,6 @@ struct PhoneContentView: View {
                     .accessibilityLabel("Settings")
                 }
             }
-            .sheet(isPresented: $showingTransfers) {
-                TransferLibraryView(coordinator: coordinator, journal: coordinator.transferJournal)
-            }
             .sheet(isPresented: $showSettings) {
                 SettingsSheetView(coordinator: coordinator)
             }
@@ -69,14 +87,43 @@ struct PhoneContentView: View {
         }
     }
 
+    private var contentTransitionID: String {
+        if showingTransfers { return "history" }
+        if coordinator.currentMode == .compareFolders {
+            if coordinator.isOperationInProgress { return "compare-running" }
+            if coordinator.lastCompareEnd != nil { return "compare-finished" }
+            return "compare-setup"
+        }
+        if coordinator.currentMode == .masterReport { return "master-report" }
+        if coordinator.isOperationInProgress { return "copy-running" }
+        if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
+            return "copy-paused"
+        }
+        return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
+    }
+
     @ViewBuilder
     private var copyAndVerifyStack: some View {
         if coordinator.isOperationInProgress {
-            OperationProgressView(coordinator: coordinator)
+            VStack(spacing: 16) {
+                OperationProgressView(coordinator: coordinator)
+                ActiveQueueSection(coordinator: coordinator)
+            }
+        } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
+            VStack(spacing: 16) {
+                CopyAndVerifyView(coordinator: coordinator)
+                ActiveQueueSection(coordinator: coordinator)
+            }
         } else if coordinator.showsOutcomeSummary {
-            CompletionSummaryView(coordinator: coordinator)
+            VStack(spacing: 16) {
+                CompletionSummaryView(coordinator: coordinator)
+                ActiveQueueSection(coordinator: coordinator)
+            }
         } else {
-            CopyAndVerifyView(coordinator: coordinator)
+            VStack(spacing: 16) {
+                CopyAndVerifyView(coordinator: coordinator)
+                ActiveQueueSection(coordinator: coordinator)
+            }
         }
     }
 }

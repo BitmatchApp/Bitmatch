@@ -10,39 +10,43 @@ struct TransferRecordRow<Trailing: View>: View {
         let detail = TransferLibraryPresentation.detailLine(destinationCount: record.destinations.count, fileCount: record.results.count)
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(record.title)
+                Text(primaryTitle)
                     .font(.body.weight(.semibold))
+                    .lineLimit(1)
+                Text("\(record.title) · \(detail)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                     .help(record.title)
-                (Text(record.createdAt, style: .date) + Text(" · \(detail)"))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             }
             Spacer(minLength: 8)
-            VStack(alignment: .trailing, spacing: 2) {
-                statePill(state)
-                if let warning = state.eraseWarning {
-                    Text(warning)
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(state.tint.color)
-                }
-            }
+            stateLabel(state)
             trailing()
         }
-        .padding(.vertical, 4)
+        .padding(.vertical, 8)
     }
 
-    private func statePill(_ state: TransferLibraryPresentation.StateLabel) -> some View {
+    private var primaryTitle: String {
+        let project = record.reportSettings.projectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        return project.isEmpty
+            ? record.createdAt.formatted(date: .abbreviated, time: .shortened)
+            : project
+    }
+
+    private func stateLabel(_ state: TransferLibraryPresentation.StateLabel) -> some View {
         Label(state.title, systemImage: state.systemImage)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(state.tint.color)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 3)
-            .background(state.tint.color.opacity(0.15), in: Capsule())
+            .font(.caption)
+            .foregroundStyle(needsAction || state.tint == .green ? state.tint.color : Color.secondary)
             .accessibilityLabel(state.accessibilityLabel)
             .help(state.accessibilityLabel)
+    }
+
+    private var needsAction: Bool {
+        switch record.state {
+        case .failed, .interrupted, .cancelled, .issues: true
+        case .queued, .running, .completed: false
+        }
     }
 }

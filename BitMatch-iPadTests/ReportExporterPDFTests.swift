@@ -38,7 +38,8 @@ struct ReportExporterPDFTests {
             matchCount: 1,
             prefs: ReportPrefs(makeReport: true),
             workers: 1,
-            totalBytesProcessed: 4096
+            totalBytesProcessed: 4096,
+            safetyState: .safeToErase
         )
 
         let reportsDir = destination.appendingPathComponent("Reports", isDirectory: true)

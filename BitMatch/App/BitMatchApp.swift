@@ -87,7 +87,7 @@ struct BitMatchApp: App {
                 setupWindow()
             }
         }
-        .windowToolbarStyle(.unified)
+        .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
             OperationCommands()
             
@@ -173,7 +173,7 @@ struct BitMatchApp: App {
                 // Configure window appearance
                 window.title = "BitMatch"
                 window.titlebarAppearsTransparent = false
-                window.titleVisibility = .visible
+                window.titleVisibility = .hidden
                 if WindowPresentationPolicy.allowsManualResizing {
                     window.styleMask.insert(.resizable)
                 }
@@ -232,11 +232,6 @@ struct OperationCommands: Commands {
                 NotificationCenter.default.post(name: .startVerification, object: nil)
             }
             .keyboardShortcut(.return, modifiers: .command)
-
-            Button("Add to Queue") {
-                NotificationCenter.default.post(name: .addToQueue, object: nil)
-            }
-            .keyboardShortcut("n", modifiers: [.command, .shift])
 
             Divider()
 

@@ -1,6 +1,15 @@
 import Foundation
 import BitMatchEngine
 
+enum SetupStartPolicy {
+    /// A staged setup batch owns the idle Start action before the generic
+    /// queue command. This keeps the final, currently selected card in the
+    /// same run for both the button and Command-Return.
+    static func startsSetupBatch(stagedCardCount: Int, isOperationInProgress: Bool) -> Bool {
+        stagedCardCount > 0 && !isOperationInProgress
+    }
+}
+
 /// The Start button on Setup, on every platform (UI plan step 4.8): its
 /// title, whether it can be pressed, and the one line under it.
 ///
@@ -42,23 +51,39 @@ struct StartButtonPresentation: Equatable, Sendable {
         projectUnit: String,
         isOperationInProgress: Bool,
         isQueuePaused: Bool = false,
+        hasCurrentSource: Bool,
+        stagedCardCount: Int = 0,
         sourceFileCount: Int?,
         sourceBytes: Int64?,
         destinationCount: Int
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard
         let unit = projectUnit.lowercased()
+        let cardCount = stagedCardCount + (hasCurrentSource ? 1 : 0)
 
-        if isOperationInProgress || isQueuePaused {
+        if isOperationInProgress {
             return Self(
-                title: isQueuePaused ? "Review the paused queue" : "Transfer in progress",
-                symbol: isQueuePaused ? "exclamationmark.triangle.fill" : "hourglass",
+                title: "Transfer in progress",
+                symbol: "hourglass",
                 canStart: false,
                 startsProject: isProject,
                 nextStep: nil,
                 blocker: nil,
                 readyLine: nil,
-                accessibilityHint: isQueuePaused ? "Review or skip the paused card first" : "A transfer is already running"
+                accessibilityHint: "A transfer is already running"
+            )
+        }
+
+        if isQueuePaused {
+            return Self(
+                title: "Start",
+                symbol: "play.fill",
+                canStart: false,
+                startsProject: isProject,
+                nextStep: nil,
+                blocker: nil,
+                readyLine: nil,
+                accessibilityHint: "Review, skip, or remove the paused card first"
             )
         }
 
@@ -76,6 +101,18 @@ struct StartButtonPresentation: Equatable, Sendable {
         }
 
         if let step = plan.nextStep {
+            if step == .chooseSource, stagedCardCount > 0, !isProject {
+                return Self(
+                    title: startTitle(cardCount: stagedCardCount, fallback: "Start Card"),
+                    symbol: "play.fill",
+                    canStart: true,
+                    startsProject: false,
+                    nextStep: nil,
+                    blocker: nil,
+                    readyLine: readyCardsLine(cardCount: stagedCardCount, destinationCount: destinationCount),
+                    accessibilityHint: "Starts each staged card as its own verified transfer"
+                )
+            }
             return Self(
                 title: plan.actionTitle,
                 symbol: "arrow.up",
@@ -90,7 +127,12 @@ struct StartButtonPresentation: Equatable, Sendable {
             )
         }
 
-        let planBlocker = plan.canStart ? nil : TransferPlanStatusDisplay.make(plan.status).detail
+        let planBlocker: String?
+        if case .analyzing = plan.status {
+            planBlocker = nil
+        } else {
+            planBlocker = plan.canStart ? nil : TransferPlanStatusDisplay.make(plan.status).detail
+        }
 
         if isProject && !hasPreparedCard {
             return Self(
@@ -117,7 +159,7 @@ struct StartButtonPresentation: Equatable, Sendable {
         } else {
             canStart = plan.canStart
             blocker = planBlocker
-            title = plan.actionTitle
+            title = startTitle(cardCount: cardCount, fallback: plan.actionTitle)
         }
 
         return Self(
@@ -128,12 +170,26 @@ struct StartButtonPresentation: Equatable, Sendable {
             nextStep: nil,
             blocker: blocker,
             readyLine: canStart
-                ? readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount)
+                ? (cardCount > 1
+                    ? readyCardsLine(cardCount: cardCount, destinationCount: destinationCount)
+                    : readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount))
                 : nil,
             accessibilityHint: canStart
-                ? "Copies files to each backup and leaves the source unchanged"
+                ? (cardCount > 1
+                    ? "Starts each card as its own verified transfer and leaves every source unchanged"
+                    : "Copies files to each backup and leaves the source unchanged")
                 : (blocker ?? "Not ready to start")
         )
+    }
+
+    private static func startTitle(cardCount: Int, fallback: String) -> String {
+        cardCount > 1 ? "Start \(cardCount) Cards" : fallback
+    }
+
+    private static func readyCardsLine(cardCount: Int, destinationCount: Int) -> String {
+        let cards = cardCount == 1 ? "1 card" : "\(cardCount) cards"
+        let backups = destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"
+        return "\(cards) will run as separate verified transfers to \(backups)."
     }
 
     private static func readyLine(fileCount: Int?, bytes: Int64?, destinationCount: Int) -> String {
@@ -160,6 +216,9 @@ struct SetupPresentation: Equatable {
     let isWorkflowLocked: Bool
     let showsProjectSetup: Bool
     let showsProjectEvidence: Bool
+    /// Setup always reserves its Start row. A paused queue keeps a disabled
+    /// Start while its inline card owns all recovery actions.
+    let showsStartArea: Bool
 
     static func make(
         plan: TransferPlanPresentation,
@@ -169,6 +228,8 @@ struct SetupPresentation: Equatable {
         projectUnit: String,
         isOperationInProgress: Bool,
         isQueuePaused: Bool = false,
+        hasCurrentSource: Bool,
+        stagedCardCount: Int = 0,
         sourceFileCount: Int?,
         sourceBytes: Int64?,
         destinationCount: Int,
@@ -185,6 +246,8 @@ struct SetupPresentation: Equatable {
                 projectUnit: projectUnit,
                 isOperationInProgress: isOperationInProgress,
                 isQueuePaused: isQueuePaused,
+                hasCurrentSource: hasCurrentSource,
+                stagedCardCount: stagedCardCount,
                 sourceFileCount: sourceFileCount,
                 sourceBytes: sourceBytes,
                 destinationCount: destinationCount
@@ -192,7 +255,8 @@ struct SetupPresentation: Equatable {
             workflow: isProject ? .project : .quick,
             isWorkflowLocked: hasPreparedCard,
             showsProjectSetup: isProject,
-            showsProjectEvidence: hasProjectEvidence
+            showsProjectEvidence: hasProjectEvidence,
+            showsStartArea: true
         )
     }
 }

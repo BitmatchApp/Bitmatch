@@ -4,7 +4,6 @@ import BitMatchEngine
 struct ResultsTableView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var showOnlyIssues: Bool
-    @State private var scrollToBottom = false
     @State private var availableWidth: CGFloat = ResultTableLayoutPolicy.detailedThreshold
     // Removed caching @State to avoid mutating state during view updates
     
@@ -170,8 +169,7 @@ struct ResultsTableView: View {
     
     @ViewBuilder
     private var resultsList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
+        ScrollView {
                 if filteredResults.isEmpty && showOnlyIssues {
                     // Empty state when filtering shows no issues
                     VStack(spacing: 14) {
@@ -238,25 +236,11 @@ struct ResultsTableView: View {
                             }
                         }
                         
-                        // Auto-scroll anchor
-                        Color.clear
-                            .frame(height: 1)
-                            .id("bottom")
-                    }
-                    .onChange(of: filteredResults.count) { oldCount, newCount in
-                        // Auto-scroll to bottom when new results are added
-                        if newCount > oldCount && coordinator.isOperationInProgress {
-                            // Defer to next runloop to avoid state changes during update
-                            DispatchQueue.main.async {
-                                proxy.scrollTo("bottom", anchor: .bottom)
-                            }
-                        }
                     }
                 }
             }
-            .contentMargins(.top, 12, for: .scrollContent)
-            .frame(minHeight: 200, maxHeight: 550)  // FIX: Increased from 350 to 550
-        }
+        .contentMargins(.top, 12, for: .scrollContent)
+        .frame(minHeight: 200, maxHeight: 550)
     }
     
     @ViewBuilder
@@ -305,24 +289,28 @@ struct ResultsTableView: View {
                 .foregroundStyle(.secondary)
                 .frame(width: 80, alignment: .trailing)
 
-            // Destination drive
-            HStack(spacing: 4) {
-                Image(systemName: "externaldrive.fill")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                Text(destinationDriveName(for: row) ?? "—")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-            .frame(width: 120, alignment: .trailing)
-
-            // Status text
-            Text(TransferOutcomePresentation.statusLabel(for: row.status))
-                .font(.system(size: 10))
-                .foregroundStyle(status.color)
-                .lineLimit(1)
+            if LiveResultDestinationPolicy.showsDestinationInEachRow(
+                backupCount: coordinator.destinationURLs.count
+            ) {
+                HStack(spacing: 4) {
+                    Image(systemName: "externaldrive.fill")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                    Text(destinationDriveName(for: row) ?? "—")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
                 .frame(width: 120, alignment: .trailing)
+            }
+
+            if !row.isSuccessStatus {
+                Text(TransferOutcomePresentation.statusLabel(for: row.status))
+                    .font(.system(size: 10))
+                    .foregroundStyle(status.color)
+                    .lineLimit(1)
+                    .frame(width: 120, alignment: .trailing)
+            }
         }
     }
 
@@ -342,7 +330,9 @@ struct ResultsTableView: View {
                     .truncationMode(.middle)
                 HStack(spacing: 6) {
                     Text(ByteCountPresentation.fileSize(row.size))
-                    if let destination = destinationDriveName(for: row) {
+                    if LiveResultDestinationPolicy.showsDestinationInEachRow(
+                        backupCount: coordinator.destinationURLs.count
+                    ), let destination = destinationDriveName(for: row) {
                         Label(destination, systemImage: "externaldrive.fill")
                             .lineLimit(1)
                     }
@@ -351,12 +341,14 @@ struct ResultsTableView: View {
                 .foregroundStyle(.secondary)
             }
             Spacer(minLength: 8)
-            Text(TransferOutcomePresentation.statusLabel(for: row.status))
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(status.color)
-                .lineLimit(1)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 112, alignment: .trailing)
+            if !row.isSuccessStatus {
+                Text(TransferOutcomePresentation.statusLabel(for: row.status))
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(status.color)
+                    .lineLimit(1)
+                    .multilineTextAlignment(.trailing)
+                    .frame(width: 112, alignment: .trailing)
+            }
         }
     }
 

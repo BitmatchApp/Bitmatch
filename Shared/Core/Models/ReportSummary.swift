@@ -26,4 +26,7 @@ struct ReportSummary {
     let companyLogoData: Data?
     let photographyJob: PhotographerReportPayload?
     var notes: String? = nil
+    /// The same fail-safe card verdict shown by the outcome screen. Report
+    /// rendering must never infer safety from an empty issue list alone.
+    var safetyState: CardSafetyState = .needsAttention
 }

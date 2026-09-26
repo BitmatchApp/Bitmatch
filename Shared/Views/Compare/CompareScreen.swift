@@ -127,24 +127,25 @@ struct CompareScreen: View {
     @ViewBuilder
     private var controls: some View {
         if !presentation.isRunning {
-            TransferOptionsSection(
-                isExpanded: $advancedExpanded,
-                verificationMode: $verificationMode
-            )
-            .padding(12)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+            VStack(alignment: .leading, spacing: 24) {
+                TransferOptionsSection(
+                    isExpanded: $advancedExpanded,
+                    verificationMode: $verificationMode
+                )
 
-            VStack(alignment: .leading, spacing: 8) {
-                compareButton
-                if let message = presentation.blockMessage {
-                    Label(message, systemImage: "exclamationmark.triangle.fill")
-                        .font(.footnote)
-                        .foregroundStyle(ResultStatusTone.warning.color)
-                        .fixedSize(horizontal: false, vertical: true)
+                VStack(alignment: .center, spacing: 8) {
+                    compareButton
+                    if let message = presentation.blockMessage {
+                        Label(message, systemImage: "exclamationmark.triangle.fill")
+                            .font(.footnote)
+                            .foregroundStyle(ResultStatusTone.warning.color)
+                            .multilineTextAlignment(.center)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
+                .frame(maxWidth: 380)
+                .frame(maxWidth: .infinity, alignment: .center)
             }
-            .padding(12)
-            .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
         }
     }
 
@@ -157,7 +158,7 @@ struct CompareScreen: View {
             .frame(maxWidth: .infinity, minHeight: 32)
         }
         .buttonStyle(.borderedProminent)
-        .controlSize(.large)
+        .controlSize(.regular)
         // Grey while waiting on a step, like Copy's Start button: a button
         // that cannot be pressed should not look pressable.
         .tint(presentation.readiness.canStart ? Color.accentColor : Color.gray)

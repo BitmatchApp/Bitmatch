@@ -12,7 +12,6 @@ import SwiftUI
 /// Needs `MacRemoteBackupController` as an environment object
 /// (`macCompanions`, applied at the window root).
 struct MacTransferProgressView: View {
-    @EnvironmentObject private var volumeAccess: MacVolumeAccessModel
     private let coordinator: SharedAppCoordinator
     @ObservedObject private var jobs: PhotographerJobViewModel
     @Binding private var confirmingCancel: Bool
@@ -31,7 +30,6 @@ struct MacTransferProgressView: View {
                 Button("Stop After This Card") { coordinator.stopQueueAfterCurrentTransfer() }
                     .buttonStyle(.bordered)
             }
-            MacQueueNextCards(coordinator: coordinator, monitor: volumeAccess.volumeMonitor)
             if let job = jobs.dashboardJob, !job.cardIngests.isEmpty {
                 PhotographerSessionDashboard(
                     viewModel: jobs,

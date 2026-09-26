@@ -1,0 +1,216 @@
+import SwiftUI
+import UniformTypeIdentifiers
+import BitMatchEngine
+
+/// Active queue controls shared by iPhone and iPad. The Mac uses the denser
+/// `MacQueueSection`, but both surfaces call the same coordinator actions and
+/// preserve Add, Run/Stop, Move, Remove, Review, and Reconnect.
+struct ActiveQueueSection: View {
+    @ObservedObject var coordinator: SharedAppCoordinator
+    @State private var choosingSource = false
+    @State private var errorMessage: String?
+    @State private var reauthorizeRecord: LocalTransferRecord?
+
+    var body: some View {
+        Group {
+            if isAvailable {
+                queueContent
+            }
+        }
+    }
+
+    private var queueContent: some View {
+        let presentation = coordinator.queuePresentation
+        return VStack(alignment: .leading, spacing: 12) {
+            if presentation.pausedCardID != nil {
+                QueuePauseBanner(
+                    presentation: presentation,
+                    review: coordinator.reviewQueuedTransfer,
+                    skipAndContinue: coordinator.skipPausedCardAndContinue,
+                    remove: removePausedCard
+                )
+            }
+            HStack {
+                Text(presentation.headerTitle ?? "Queue")
+                    .font(.headline)
+                Spacer()
+                if coordinator.queueIsRunning {
+                    Button("Stop Queue") { coordinator.stopQueueAfterCurrentTransfer() }
+                        .buttonStyle(.bordered)
+                } else if presentation.rows.contains(where: { $0.safetyState == .waiting }) {
+                    Button("Run Queue") { coordinator.startQueue() }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!coordinator.queueRunCommandEnabled)
+                }
+            }
+
+            ForEach(presentation.rows) { row in
+                queueRow(row)
+                if row.id != presentation.rows.last?.id { Divider() }
+            }
+
+            Button { choosingSource = true } label: {
+                Label("Add Card", systemImage: "plus")
+                    .frame(maxWidth: .infinity, minHeight: 44)
+            }
+            .buttonStyle(.bordered)
+            .disabled(!canAddCard)
+            .accessibilityHint("Choose another card to run with the current backups")
+
+            if let errorMessage {
+                Text(errorMessage)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+            }
+        }
+        .padding(12)
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        .fileImporter(
+            isPresented: $choosingSource,
+            allowedContentTypes: [.folder],
+            allowsMultipleSelection: false
+        ) { result in
+            do {
+                guard let source = try result.get().first else { return }
+                try coordinator.enqueueInlineCard(
+                    source: source,
+                    destinations: queueDestinations,
+                    verificationMode: queueTemplate?.verificationMode ?? coordinator.verificationMode,
+                    generateASCMHL: queueTemplate?.generateASCMHL ?? coordinator.generateASCMHL
+                )
+            } catch {
+                errorMessage = error.localizedDescription
+            }
+        }
+        .sheet(item: $reauthorizeRecord) { record in
+            ReauthorizeLocationsView(
+                coordinator: coordinator,
+                journal: coordinator.transferJournal,
+                recordID: record.id
+            )
+        }
+    }
+
+    private var isAvailable: Bool {
+        coordinator.runningOneTimeTransfer != nil
+            || coordinator.queueIsRunning
+            || coordinator.queuePausedRecordID != nil
+            || coordinator.queuePresentation.rows.contains { $0.safetyState == .waiting }
+    }
+
+    private var queueTemplate: LocalTransferRecord? {
+        coordinator.runningOneTimeTransfer
+            ?? coordinator.transferJournal.records.first(where: {
+                coordinator.queueSessionRecordIDs.contains($0.id) && $0.projectID == nil
+            })
+    }
+
+    private var queueDestinations: [URL] {
+        queueTemplate?.destinations.map(\.url) ?? coordinator.destinationURLs
+    }
+
+    private var canAddCard: Bool {
+        ActiveQueuePresentation.canAddCard(
+            isOperationInProgress: coordinator.runningOneTimeTransfer != nil,
+            queueIsRunning: coordinator.queueIsRunning,
+            destinationCount: queueDestinations.count
+        )
+    }
+
+    private func queueRow(_ row: QueueSessionRow) -> some View {
+        HStack(alignment: .center, spacing: 10) {
+            Image(systemName: "sdcard").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(row.cardName).lineLimit(1).truncationMode(.middle)
+                Text(row.destinations).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            }
+            Spacer(minLength: 8)
+            Label(row.statusText, systemImage: row.safetyState.symbol)
+                .font(.caption)
+                .foregroundStyle(row.safetyState.tint.color)
+            if coordinator.queuePausedRecordID != row.id {
+                Menu {
+                    rowActions(row)
+                } label: {
+                    Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Actions for \(row.cardName)")
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func rowActions(_ row: QueueSessionRow) -> some View {
+        if row.safetyState == .waiting {
+            Button("Move to Top") {
+                perform { try coordinator.moveQueuedTransferToTop(row.id) }
+            }
+            Button("Reconnect…") {
+                reauthorizeRecord = coordinator.transferJournal.records.first { $0.id == row.id }
+            }
+            Button("Remove", role: .destructive) {
+                perform { try coordinator.removeQueuedTransfer(row.id) }
+            }
+        }
+        if row.action == .review {
+            Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
+        }
+    }
+
+    private func perform(_ action: () throws -> Void) {
+        do { try action(); errorMessage = nil }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func removePausedCard(_ id: UUID) {
+        perform { try coordinator.removePausedCardFromQueue(id) }
+    }
+}
+
+/// The queue owns the interruption announcement and its recovery actions.
+/// Button labels stay short because the title already names the card.
+struct QueuePauseBanner: View {
+    let presentation: QueueSessionPresentation
+    let review: (UUID) -> Void
+    let skipAndContinue: (UUID) -> Void
+    let remove: (UUID) -> Void
+
+    var body: some View {
+        if let id = presentation.pausedCardID,
+           let title = presentation.pausedTitle,
+           let cardName = presentation.rows.first(where: { $0.id == id })?.cardName {
+            VStack(alignment: .leading, spacing: 8) {
+                Text(title)
+                    .font(.headline)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(cardName)
+                if let cause = presentation.pausedCause {
+                    Text(cause)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: 8) { buttons(id: id) }
+                    VStack(alignment: .leading, spacing: 8) { buttons(id: id) }
+                }
+            }
+            .padding(12)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(CardSafetyTint.amber.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+            .accessibilityElement(children: .contain)
+        }
+    }
+
+    @ViewBuilder
+    private func buttons(id: UUID) -> some View {
+        Button("Review") { review(id) }
+            .buttonStyle(.borderedProminent)
+        Button("Skip and Continue") { skipAndContinue(id) }
+            .buttonStyle(.bordered)
+        Button("Remove from Queue", role: .destructive) { remove(id) }
+            .buttonStyle(.bordered)
+    }
+}

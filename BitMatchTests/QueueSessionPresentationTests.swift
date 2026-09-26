@@ -113,6 +113,21 @@ struct QueueSessionPresentationTests {
         #expect(presentation.pausedCause == "Cancelled")
     }
 
+    @Test func pausedCauseRemovesRepeatedEvidenceSentence() {
+        let sentence = "ASC MHL history already exists"
+        #expect(QueueSessionPresentation.deduplicatedCause(
+            "\(sentence); \(sentence); \(sentence)"
+        ) == sentence)
+    }
+
+    @Test func repeatedDestinationDriveNamesCollapseToACount() {
+        #expect(QueueSessionPresentation.destinationSummary(
+            ["Macintosh HD", "Macintosh HD", "Macintosh HD"]
+        ) == "3 backups on Macintosh HD")
+        #expect(QueueSessionPresentation.destinationSummary(["RAID A", "RAID B"])
+            == "2 backups: RAID A, RAID B")
+    }
+
     @Test func stoppedAndUnfinishedCopySummaryUseTheirActualTitles() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -137,7 +152,7 @@ struct QueueSessionPresentationTests {
         let row = try #require(QueueSessionPresentation.make(
             records: [failed], sessionIDs: [failed.id], progress: nil, mountedSourceIDs: []
         ).rows.first)
-        #expect(row.accessibilityStatus == "A004, Failed — do not erase, not safe to erase, Card disconnected")
+        #expect(row.accessibilityStatus == "A004, Failed, not safe to erase, Card disconnected")
     }
 
     @Test func zeroByteQueueEvidenceUsesEmptyWording() throws {

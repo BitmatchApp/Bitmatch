@@ -240,6 +240,25 @@ final class CopyVerifyExecutor {
         )
         try checkCancellation()
         let handoffIssues = try await createASCMHLHistories(operation: operation, config: config, callbacks: callbacks)
+        let preReportVerdict = TransferCompletion.verdict(
+            rows: allResults,
+            sourceFiles: operation.sourceManifest,
+            destinations: config.destinationURLs,
+            source: config.sourceURL,
+            settings: config.cameraLabelSettings,
+            mode: config.verificationMode,
+            generateASCMHL: config.generateASCMHL,
+            handoffIssues: handoffIssues,
+            reportIssue: nil,
+            project: TransferCompletion.ProjectGate(
+                didPersist: photographerLifecycle.didPersist,
+                locallySafe: photographerLifecycle.locallySafe
+            )
+        )
+        let preReportSafetyState = ReportExporter.safetyState(
+            authoritativeVerdict: preReportVerdict,
+            rows: allResults
+        )
         // A failed requested report is a structured outcome, not a silent side effect:
         // verified media stays described as verified, but completion is issues.
         let reportIssue: String?
@@ -249,7 +268,8 @@ final class CopyVerifyExecutor {
                 results: allResults,
                 config: config,
                 photographerContext: photographerLifecycle.context,
-                handoffSummary: handoffIssues.isEmpty ? nil : handoffIssues.joined(separator: "; ")
+                handoffSummary: handoffIssues.isEmpty ? nil : handoffIssues.joined(separator: "; "),
+                safetyState: preReportSafetyState
             )
         } else {
             reportIssue = nil
@@ -355,7 +375,8 @@ final class CopyVerifyExecutor {
         results: [ResultRow],
         config: CopyVerifyConfig,
         photographerContext: PhotographerReportContext?,
-        handoffSummary: String? = nil
+        handoffSummary: String? = nil,
+        safetyState: CardSafetyState
     ) async throws -> String? {
         try checkCancellation()
         // Matches are verified files only; a Quick copy is not a match.
@@ -391,6 +412,7 @@ final class CopyVerifyExecutor {
                 prefs: reportSettings,
                 workers: workers,
                 totalBytesProcessed: totalBytesProcessed,
+                safetyState: safetyState,
                 generateFullReport: reportSettings.makeReport,
                 photographerContext: reportContext
             )

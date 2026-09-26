@@ -7,7 +7,6 @@ import BitMatchEngine
 struct SetupActions {
     var chooseWorkflow: (TransferWorkflowPresentation) -> Void
     var start: () -> Void
-    var enqueue: (() -> Void)? = nil
 }
 
 /// What the locations slot needs from the screen: how wide it is, and which
@@ -55,6 +54,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     private let projectEvidence: ProjectEvidence
 
     @State private var width: CGFloat = 0
+    @State private var readyGlowPulse = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
@@ -96,7 +96,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                         workflowPicker
                         preflight
                         advanced
-                        startArea
+                        if presentation.showsStartArea { startArea }
                     }
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                     VStack(alignment: .leading, spacing: 24) {
@@ -110,7 +110,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                 projectSection
                 preflight
                 advanced
-                startArea
+                if presentation.showsStartArea { startArea }
                 evidenceSection
             }
         }
@@ -206,7 +206,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         if presentation.showsProjectSetup {
             projectSetup
                 .nextStepHighlight(presentation.start.nextStep == .prepareCard, cornerRadius: 10)
-                .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                .transition(.opacity)
         }
     }
 
@@ -223,7 +223,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     /// the glow and the button title, never a banner.
     @ViewBuilder
     private var preflight: some View {
-        if presentation.plan.showsStatusBanner {
+        if presentation.plan.showsStatusBanner && presentation.start.blocker == nil {
             let display = TransferPlanStatusDisplay.make(presentation.plan.status)
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: display.symbol)
@@ -259,53 +259,62 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         ) {
             labelContent
         }
-        .padding(12)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        .frame(minHeight: 44)
     }
 
     // MARK: Start
 
     private var startArea: some View {
         let start = presentation.start
-        return VStack(alignment: .leading, spacing: 8) {
-            HStack(spacing: 8) {
-                Button(action: actions.start) {
-                    Label(start.title, systemImage: start.symbol)
-                        .frame(maxWidth: .infinity, minHeight: 44)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .buttonBorderShape(.roundedRectangle(radius: 8))
-                // Grey while waiting on a step or a problem: a button that
-                // cannot be pressed should not look pressable.
-                .tint(start.canStart ? Color.accentColor : Color.gray)
-                .disabled(!start.canStart)
-                .accessibilityLabel(start.title)
-                .accessibilityHint(start.accessibilityHint)
-                if let enqueue = actions.enqueue {
-                    Button(action: enqueue) {
-                        Text("Add to Queue")
-                            .frame(minHeight: 44)
-                    }
-                        .buttonStyle(.bordered)
-                        .controlSize(.large)
-                        .buttonBorderShape(.roundedRectangle(radius: 8))
-                }
+        return VStack(alignment: .center, spacing: 8) {
+            Button(action: actions.start) {
+                Label(start.title, systemImage: start.symbol)
+                    .frame(maxWidth: .infinity, minHeight: 32)
             }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .buttonBorderShape(.roundedRectangle(radius: 8))
+            // Grey while waiting on a step or a problem: a button that
+            // cannot be pressed should not look pressable.
+            .tint(start.canStart ? Color.accentColor : Color.gray)
+            .disabled(!start.canStart)
+            .shadow(
+                color: start.canStart ? Color.accentColor.opacity(0.38) : .clear,
+                radius: start.canStart ? 8 : 0
+            )
+            .shadow(
+                color: start.canStart && readyGlowPulse ? Color.accentColor.opacity(0.32) : .clear,
+                radius: readyGlowPulse ? 16 : 0
+            )
+            .accessibilityLabel(start.title)
+            .accessibilityHint(start.accessibilityHint)
             if let blocker = start.blocker {
                 Text(blocker)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             } else if let ready = start.readyLine {
                 Text(ready)
                     .font(.footnote)
                     .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
         }
-        .padding(12)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: 380)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .onChange(of: start.canStart) { wasReady, isReady in
+            guard isReady, !wasReady, !reduceMotion else {
+                if !isReady { readyGlowPulse = false }
+                return
+            }
+            withAnimation(.easeOut(duration: 0.25)) { readyGlowPulse = true }
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                withAnimation(.easeInOut(duration: 0.35)) { readyGlowPulse = false }
+            }
+        }
     }
 }
 

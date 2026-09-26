@@ -19,10 +19,9 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let copySummary: String
 
     var statusText: String {
-        let status = safetyState == .copiedNotVerified
+        safetyState == .copiedNotVerified
             ? "Copied, not verified: size check only"
             : safetyState.title
-        return safetyState.eraseWarning == nil ? status : "\(status) — do not erase"
     }
 
     var accessibilityStatus: String {
@@ -158,7 +157,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 }
                 return "Queue paused — \(row.cardName) \(state)"
             },
-            pausedCause: paused?.cause
+            pausedCause: paused?.cause.map(deduplicatedCause)
         )
     }
 
@@ -204,7 +203,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             id: record.id,
             cardName: record.title,
             evidence: evidence,
-            destinations: "→ " + destinationNames.joined(separator: ", "),
+            destinations: destinationSummary(destinationNames),
             safetyState: state,
             progressFraction: record.state == .running ? progress?.stageProgress ?? progress?.overallProgress : nil,
             action: action,
@@ -239,6 +238,29 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let summary = record.summary.trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? nil : summary
     }
+
+    static func destinationSummary(_ names: [String]) -> String {
+        guard let first = names.first else { return "No backups" }
+        let allOnOneDrive = names.allSatisfy {
+            $0.compare(first, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
+        }
+        if allOnOneDrive {
+            return names.count == 1 ? "1 backup on \(first)" : "\(names.count) backups on \(first)"
+        }
+        return "\(names.count) backups: \(names.joined(separator: ", "))"
+    }
+
+    static func deduplicatedCause(_ cause: String) -> String {
+        var seen: Set<String> = []
+        let clauses = cause.split(separator: ";", omittingEmptySubsequences: true).compactMap { clause -> String? in
+            let value = clause.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !value.isEmpty else { return nil }
+            let key = value.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            guard seen.insert(key).inserted else { return nil }
+            return value
+        }
+        return clauses.joined(separator: "; ")
+    }
 }
 
 private extension CardSafetyState {
@@ -253,6 +275,16 @@ private extension CardSafetyState {
 enum QueueCommandPolicy {
     static func canRunQueue(isPausedOnProblem: Bool, waitingCount: Int) -> Bool {
         !isPausedOnProblem && waitingCount > 0
+    }
+}
+
+enum ActiveQueuePresentation {
+    static func canAddCard(isOperationInProgress: Bool, queueIsRunning: Bool, destinationCount: Int) -> Bool {
+        (isOperationInProgress || queueIsRunning) && destinationCount > 0
+    }
+
+    static func showsReconnect(for state: LocalTransferState) -> Bool {
+        state == .queued
     }
 }
 

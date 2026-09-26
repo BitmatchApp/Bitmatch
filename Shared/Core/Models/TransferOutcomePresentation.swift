@@ -82,7 +82,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     var isInterrupted: Bool { safetyState == .interrupted }
 
     /// Spoken when the screen appears (audit C3).
-    var announcement: String { "\(verdict.title). \(verdict.detail)" }
+    var announcement: String { "\(finishTitle). \(verdict.detail)" }
 
     var canEject: Bool { safetyState.canEject }
     var showsBackupRowsInline: Bool { safetyState == .needsAttention && !destinations.isEmpty }
@@ -91,19 +91,39 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     /// of the visible banner, so every unsafe finish explicitly tells the
     /// user to keep the card without repeating the same sentence twice.
     var bannerGuidance: String? {
-        verdict.detail.localizedCaseInsensitiveContains("erase") ? nil : guidance
+        // Quick, failed, and interrupted details already carry the warning.
+        // Safe and needs-attention states still benefit from one next-step
+        // sentence, but never repeat the source name.
+        switch safetyState {
+        case .safeToErase, .needsAttention: guidance
+        default: nil
+        }
     }
 
     /// Exactly the words visible in the verdict banner, kept testable apart
     /// from SwiftUI rendering.
     var visibleVerdictText: String {
-        [cardName, finishTitle, verdict.detail, bannerGuidance]
+        [finishTitle, verdict.detail, bannerGuidance]
             .compactMap { $0 }
             .joined(separator: " ")
     }
 
-    /// The verdict words shown separately from the card name on Finish.
+    /// The single-line Finish title. The view lays the card and verdict out as
+    /// separate title-sized runs so only the card name can middle-truncate.
     var finishTitle: String {
+        finishTitlePlacesCardFirst
+            ? "\(cardName) \(finishVerdictWords)"
+            : "\(finishVerdictWords) — \(cardName)"
+    }
+
+    var finishTitlePlacesCardFirst: Bool {
+        switch safetyState {
+        case .failed, .interrupted: false
+        default: true
+        }
+    }
+
+    var finishVerdictWords: String {
         switch safetyState {
         case .safeToErase: "is safe to erase"
         case .copiedNotVerified: "copied, not verified"
@@ -192,7 +212,6 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             title: baseVerdict.title,
             detail: bannerDetail(
                 safetyState: safetyState,
-                cardName: card,
                 sourceFileCount: sourceFileCount ?? sourceEvidence.fileCount,
                 sourceBytes: sourceBytes ?? sourceEvidence.bytes,
                 destinations: destinationNames.map { shortenedDestinationName($0) },
@@ -202,7 +221,15 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 fallback: baseVerdict.detail
             ),
             symbol: safetyState.symbol,
-            sourceGuidance: baseVerdict.sourceGuidance
+            // The banner names the card once. All guidance comes from the
+            // nameless form, including Quick and needs-attention outcomes.
+            sourceGuidance: CompletionVerdictPresentation.make(
+                state: state,
+                rows: rows,
+                hasErrors: hasErrors,
+                hasCriticalErrors: hasCriticalErrors,
+                backupCount: destinations.count
+            ).sourceGuidance
         )
 
         return Self(
@@ -471,7 +498,6 @@ struct TransferOutcomePresentation: Equatable, Sendable {
 
     private static func bannerDetail(
         safetyState: CardSafetyState,
-        cardName: String,
         sourceFileCount: Int,
         sourceBytes: Int64,
         destinations: [String],
@@ -489,16 +515,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 .compactMap { $0 }
                 .joined(separator: " · ")
         case .copiedNotVerified:
-            return "Only file sizes were compared on \(destinationText). Do not erase the card."
+            return "Only file sizes were compared. Do not erase the card."
         case .needsAttention:
             return reason ?? fallback
         case .failed:
-            let card = cardName == "The card" ? "the card" : cardName
             let failure = reason ?? fallback
             let separator = failure.last.map { ".!?".contains($0) } == true ? " " : ". "
-            return "\(failure)\(separator)Do not erase \(card)."
+            return "\(failure)\(separator)Do not erase the card."
         case .interrupted:
-            return "The transfer stopped before every backup was verified."
+            // The interrupted headline carries the card warning itself, since
+            // `bannerGuidance` is suppressed for this state (no duplication).
+            return "The transfer stopped before every backup was verified. Do not erase the card."
         case .waiting, .preparing, .copying, .verifying:
             return fallback
         }

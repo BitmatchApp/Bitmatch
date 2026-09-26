@@ -3,6 +3,10 @@ import XCTest
 import BitMatchEngine
 
 final class ResultPresentationTests: XCTestCase {
+    func testLiveRowsNameDestinationOnlyWhenBackupsAreMixed() {
+        XCTAssertFalse(LiveResultDestinationPolicy.showsDestinationInEachRow(backupCount: 1))
+        XCTAssertTrue(LiveResultDestinationPolicy.showsDestinationInEachRow(backupCount: 2))
+    }
     func testDestinationSummariesKeepSameNamedBackupsSeparate() {
         let first = URL(fileURLWithPath: "/Volumes/A/Backup")
         let second = URL(fileURLWithPath: "/Volumes/B/Backup")

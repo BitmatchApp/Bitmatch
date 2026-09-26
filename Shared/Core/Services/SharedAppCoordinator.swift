@@ -608,6 +608,9 @@ class SharedAppCoordinator: ObservableObject {
         origin: BackupTargetPolicy.Origin = .userChoice,
         facts: (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
     ) -> String? {
+        guard !isDestinationSelectionLocked else {
+            return Self.destinationSelectionLockedMessage
+        }
         if let refusal = BackupTargetPolicy.refusal(for: url, origin: origin, source: sourceURL, facts: facts) {
             SharedLogger.info("Backup refused (\(origin)): \(url.path): \(refusal)", category: .transfer)
             return refusal
@@ -621,6 +624,10 @@ class SharedAppCoordinator: ObservableObject {
     /// Replaces every backup at once (the debug tools), keeping only what
     /// `BackupTargetPolicy` allows for a user's own pick.
     func replaceDestinations(with urls: [URL]) {
+        guard !isDestinationSelectionLocked else {
+            SharedLogger.info(Self.destinationSelectionLockedMessage, category: .transfer)
+            return
+        }
         destinationURLs = urls.filter { url in
             guard let refusal = BackupTargetPolicy.refusal(for: url, origin: .userChoice, source: sourceURL) else {
                 return true
@@ -631,7 +638,25 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     func removeDestinationFolder(_ url: URL) {
+        guard !isDestinationSelectionLocked else {
+            SharedLogger.info(Self.destinationSelectionLockedMessage, category: .transfer)
+            return
+        }
         destinationURLs.removeAll { $0 == url }
+    }
+
+    private static let destinationSelectionLockedMessage =
+        "Backups are locked while staged or running queue cards use them. Remove those cards or let the batch finish first."
+
+    /// The route is immutable for the lifetime of a staged batch, including
+    /// the interval when its final card is running and there are no queued
+    /// records left. Failed/completed history does not keep Setup locked.
+    var isDestinationSelectionLocked: Bool {
+        transferJournal.records.contains { record in
+            queueSessionRecordIDs.contains(record.id)
+                && record.projectID == nil
+                && (record.state == .queued || record.state == .running)
+        }
     }
 
     private static func resolvedPath(_ url: URL) -> String {
@@ -696,6 +721,15 @@ class SharedAppCoordinator: ObservableObject {
         transferJournal.records.filter { $0.state == .queued && $0.projectID == nil }.count
     }
 
+    /// One-time cards staged from Setup, in the order they will run. Setup
+    /// presents these as sources rather than duplicating them in Queue.
+    var stagedSetupTransfers: [LocalTransferRecord] {
+        let recordsByID = Dictionary(uniqueKeysWithValues: transferJournal.records.map { ($0.id, $0) })
+        return queueSessionRecordOrder.compactMap { recordsByID[$0] }.filter {
+            $0.state == .queued && $0.projectID == nil
+        }
+    }
+
     var canEnqueueSelection: Bool {
         operationReadinessAssessment.isReady && !isOperationInProgress
             && !usesProjectWorkflow && !photographerJobViewModel.hasPreparedIngestAwaitingStart
@@ -745,6 +779,22 @@ class SharedAppCoordinator: ObservableObject {
         }
         try enqueue(source: sourceURL, destinations: destinationURLs)
         self.sourceURL = nil
+    }
+
+    /// Starts the cards assembled on Setup. If more than one card is ready,
+    /// the current selection first enters the same validated journal path as
+    /// every other queued card, then the existing serial queue runs them.
+    func startSetupTransfers() throws {
+        guard !usesProjectWorkflow, !photographerJobViewModel.hasPreparedIngestAwaitingStart else {
+            throw FileOperationError.unsafeOperation("Finish setting up the project card before starting.")
+        }
+        if sourceURL != nil {
+            try enqueueSelection()
+        }
+        guard !stagedSetupTransfers.isEmpty else {
+            throw FileOperationError.unsafeOperation("Choose a source and backups first.")
+        }
+        startQueue()
     }
 
     var runningOneTimeTransfer: LocalTransferRecord? {
@@ -804,6 +854,29 @@ class SharedAppCoordinator: ObservableObject {
         persistQueueSession()
         // startQueue waits for executeOperation to unwind before advancing.
         startQueue()
+    }
+
+    /// Adds the inline Queue editor's draft through the same validated path
+    /// as every other queued transfer. When a one-time transfer is already
+    /// running, it becomes the first item in the queue session and the new
+    /// card follows it automatically.
+    func enqueueInlineCard(
+        source: URL,
+        destinations: [URL],
+        verificationMode: VerificationMode,
+        generateASCMHL: Bool
+    ) throws {
+        if let running = runningOneTimeTransfer {
+            addQueueSessionRecord(running.id)
+            if let volumeID = running.source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+        }
+        try enqueue(
+            source: source,
+            destinations: destinations,
+            verificationMode: verificationMode,
+            generateASCMHL: generateASCMHL
+        )
+        if isOperationInProgress { startQueue() }
     }
 
     func enqueueAutomaticallyDetectedCard(source: URL) throws {
@@ -873,6 +946,35 @@ class SharedAppCoordinator: ObservableObject {
         queueSessionRecordIDs.remove(id)
         queueSessionRecordOrder.removeAll { $0 == id }
         persistQueueSession()
+    }
+
+    /// Removes a stale failed/interrupted card from this queue without
+    /// deleting its History record. Unlike Skip and Continue, this does not
+    /// start waiting cards automatically.
+    func removePausedCardFromQueue(_ expectedID: UUID) throws {
+        guard queuePausedRecordID == expectedID,
+              let record = transferJournal.records.first(where: { $0.id == expectedID }),
+              Self.isQueueProblemState(record.state) else {
+            throw FileOperationError.unsafeOperation("Only the card pausing this queue can be removed.")
+        }
+        queueSessionRecordIDs.remove(expectedID)
+        queueSessionRecordOrder.removeAll { $0 == expectedID }
+        skippedQueueAttentionIDs.remove(expectedID)
+        reviewedQueueAttentionIDs.remove(expectedID)
+        queuePausedRecordID = nil
+        reviewedQueueRecordID = nil
+        queueMessage = nil
+        queueIsRunning = false
+        queueSessionEnded = false
+        if activeJournalRecordID == expectedID {
+            resetForNewOperation()
+            sourceURL = nil
+        }
+        if queueSessionRecordIDs.isEmpty {
+            clearQueueSessionState()
+        } else {
+            persistQueueSession()
+        }
     }
 
     func moveQueuedTransferToTop(_ id: UUID) throws {

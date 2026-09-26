@@ -402,16 +402,15 @@ struct MasterReportScreen: View {
                     presentation.actionTitle,
                     systemImage: presentation.nextStep == .chooseLocation ? "arrow.up" : "doc.richtext"
                 )
-                .frame(maxWidth: .infinity, minHeight: 32)
+                .frame(minWidth: 220, minHeight: 32)
             }
             .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .controlSize(.regular)
             // Grey while waiting on a step, like Copy's Start button.
             .tint(presentation.canGenerate ? Color.accentColor : Color.gray)
             .disabled(!presentation.canGenerate)
         }
-        .padding(12)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 
     /// Success appears only after the platform wrote or shared the report;

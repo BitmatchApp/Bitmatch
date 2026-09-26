@@ -114,6 +114,7 @@ enum NotificationAuthorizationPresentation: Equatable, Sendable {
     }
 
     var showsSettingsButton: Bool { self == .denied }
+    var showsEnableButton: Bool { self == .notAsked }
 
     static func make(status: UNAuthorizationStatus) -> Self {
         switch status {

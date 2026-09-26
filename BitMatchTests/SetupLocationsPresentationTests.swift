@@ -69,7 +69,7 @@ struct SetupLocationsPresentationTests {
         #expect(make(source: card).source?.cameraName == nil)
     }
 
-    @Test func emptySourceUsesPlainWording() {
+    @Test func emptySourceLeavesTheSingleReasonToTheDisabledStartControl() {
         let presentation = SetupLocationsPresentation.make(
             sourceURL: card,
             sourceFileCount: 0,
@@ -83,8 +83,7 @@ struct SetupLocationsPresentationTests {
             layout: .compact
         )
 
-        #expect(presentation.source?.detail == "Empty folder")
-        #expect(presentation.source?.detail?.contains("Zero KB") == false)
+        #expect(presentation.source?.detail == nil)
     }
 
     @Test func zeroByteFilesUseEmptyInsteadOfAZeroUnit() {
@@ -102,6 +101,35 @@ struct SetupLocationsPresentationTests {
         )
 
         #expect(presentation.source?.detail == "2 files · Empty")
+    }
+
+    @Test func stagedSourcesStaySeparateAndAddingRequiresAReadyCurrentCard() {
+        let staged = SetupLocationsPresentation.StagedSource(
+            id: UUID(), title: "A_CAM", path: "/Volumes/A_CAM", detail: "2 backups · Ready"
+        )
+        let presentation = SetupLocationsPresentation.make(
+            sourceURL: card,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            isAnalysingSource: false,
+            cameraName: nil,
+            stagedSources: [staged],
+            destinationURLs: [raid],
+            capacity: { _ in nil },
+            isOperationInProgress: false,
+            showsAddAnotherCard: true,
+            canAddAnotherCard: false,
+            addAnotherCardDisabledReason: "Source folder is empty",
+            nextStep: nil,
+            layout: .toolbar
+        )
+
+        #expect(presentation.stagedSources == [staged])
+        #expect(presentation.source?.title == "DCIM")
+        #expect(presentation.showsAddAnotherCard)
+        #expect(!presentation.canAddAnotherCard)
+        #expect(presentation.addAnotherCardDisabledReason == "Source folder is empty")
+        #expect(!presentation.canEditBackups)
     }
 
     /// Plant: in `SetupLocationsPresentation.make`, pass

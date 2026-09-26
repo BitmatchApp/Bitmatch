@@ -20,9 +20,7 @@ struct HeaderTabsView: View {
         HStack(spacing: 0) {
             ForEach([AppMode.copyAndVerify, AppMode.compareFolders, AppMode.masterReport], id: \.self) { appMode in
                 Button {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.8)) {
-                        coordinator.switchMode(to: appMode)
-                    }
+                    coordinator.switchMode(to: appMode)
                 } label: {
                     HStack(spacing: 6) {
                         Image(systemName: appMode.systemImage)
@@ -73,9 +71,7 @@ struct AdaptiveModeNavigation: View {
                 Menu {
                     ForEach(AppMode.allCases, id: \.self) { mode in
                         Button {
-                            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                                coordinator.switchMode(to: mode)
-                            }
+                            coordinator.switchMode(to: mode)
                         } label: {
                             Label(mode.shortTitle, systemImage: mode.systemImage)
                         }
@@ -109,9 +105,7 @@ struct AdaptiveModeNavigation: View {
                     .padding(.bottom, 8)
                 ForEach(AppMode.allCases, id: \.self) { mode in
                     Button {
-                        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                            coordinator.switchMode(to: mode)
-                        }
+                        coordinator.switchMode(to: mode)
                     } label: {
                         Label(mode.shortTitle, systemImage: mode.systemImage)
                             .font(.system(size: 13, weight: .semibold))

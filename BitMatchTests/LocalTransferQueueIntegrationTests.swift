@@ -188,6 +188,36 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(journal.records.isEmpty)
     }
 
+    func testInlineEditorUsesValidatedEnqueueAndKeepsPerCardOptions() throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+
+        try coordinator.enqueueInlineCard(
+            source: f.source,
+            destinations: [f.destination],
+            verificationMode: .thorough,
+            generateASCMHL: false
+        )
+
+        let record = try XCTUnwrap(journal.records.first)
+        XCTAssertEqual(record.source.url.resolvingSymlinksInPath(), f.source.resolvingSymlinksInPath())
+        XCTAssertEqual(record.destinations.map { $0.url.resolvingSymlinksInPath() }, [f.destination.resolvingSymlinksInPath()])
+        XCTAssertEqual(record.verificationMode, .thorough)
+        XCTAssertFalse(record.generateASCMHL)
+        XCTAssertEqual(record.state, .queued)
+        XCTAssertThrowsError(try coordinator.enqueueInlineCard(
+            source: f.source,
+            destinations: [f.source],
+            verificationMode: .standard,
+            generateASCMHL: true
+        ))
+    }
+
     func testQueueUsesSavedSnapshotAndStopsWhenResultsAreEmpty() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -504,6 +534,34 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(advanced)
         let startsAfterSkip = await service.starts
         XCTAssertEqual(startsAfterSkip.count, 1)
+    }
+
+    func testRemovingPausedCardClearsQueueButKeepsHistoryEvidence() throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let interruptedID: UUID
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journalURL)
+            interruptedID = try journal.enqueue(
+                sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+            )
+            try journal.markRunning(id: interruptedID)
+        }
+
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+        XCTAssertEqual(coordinator.queuePausedRecordID, interruptedID)
+
+        try coordinator.removePausedCardFromQueue(interruptedID)
+
+        XCTAssertNil(coordinator.queuePausedRecordID)
+        XCTAssertTrue(coordinator.queuePresentation.rows.isEmpty)
+        XCTAssertNotNil(journal.records.first(where: { $0.id == interruptedID }))
+        XCTAssertEqual(journal.records.first(where: { $0.id == interruptedID })?.state, .interrupted)
     }
 
     func testCleanRelaunchRestoresEndedFailureRowAndSkipGate() async throws {

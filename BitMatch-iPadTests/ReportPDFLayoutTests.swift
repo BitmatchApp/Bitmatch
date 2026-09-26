@@ -17,7 +17,7 @@ struct ReportPDFLayoutTests {
             source: "/Volumes/CARD1", destinations: ["/Volumes/Backup"], totalFiles: 1, matched: 1,
             issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: 1_000, averageSpeed: 1,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil)
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
 
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
         let firstPage = try #require(document.page(at: 0))
@@ -63,7 +63,7 @@ struct ReportPDFLayoutTests {
             source: "/Volumes/CARD1", destinations: ["/Volumes/Backup"], totalFiles: rows.count, matched: rows.count,
             issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: 300_000, averageSpeed: 1,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil)
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
         let blocks = ReportView(s: summary, rows: rows).pdfBlocks
         let heights = ReportPDFRenderer.blockHeights(blocks)
         let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight)

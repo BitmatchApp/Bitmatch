@@ -8,6 +8,12 @@ import BitMatchEngine
 /// names the one-line production change ("Plant:") that must turn it red.
 @MainActor
 struct TransferProgressPresentationTests {
+    @Test func generatedCardIdentifierDoesNotDominateTheProgressTitle() {
+        let full = "bitmatch_stress_src_7A63FAD7-6322-493D-80F3-5CACE6A9048D"
+        #expect(TransferProgressPresentation.compactSourceName(full) == "bitmatch_stress_src")
+        #expect(TransferProgressPresentation.compactSourceName("A001_CAMERA") == "A001_CAMERA")
+    }
+
     private let primary = URL(fileURLWithPath: "/Volumes/Primary", isDirectory: true)
     private let secondary = URL(fileURLWithPath: "/Volumes/Secondary", isDirectory: true)
 
@@ -106,7 +112,7 @@ struct TransferProgressPresentationTests {
         #expect(p.destinations.count == 2)
         #expect(p.destinations[0].fraction == 1.0)
         #expect(p.destinations[1].fraction == 0.25)
-        #expect(p.destinations[0].countText == "4 of 4 copied")
+        #expect(p.destinations[0].countText == "4 of 4")
         #expect(p.destinations[1].state == .copying)
         #expect(p.destinations.map(\.name) == ["Primary", "Secondary"])
     }

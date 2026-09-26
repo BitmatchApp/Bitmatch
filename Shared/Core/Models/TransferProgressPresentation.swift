@@ -111,6 +111,8 @@ enum ProgressDevice: Equatable, Sendable {
 struct TransferProgressPresentation: Equatable, Sendable {
     let phase: ProgressPhase
     let title: String
+    let sourceName: String
+    let destinationNames: [String]
     let symbol: String
     /// "A001 to 2 backups", or why the run is paused.
     let detail: String?
@@ -136,6 +138,10 @@ struct TransferProgressPresentation: Equatable, Sendable {
     let controls: ProgressControls
     let deviceNotes: [ProgressDeviceNote]
 
+    var displaySourceName: String {
+        Self.compactSourceName(sourceName)
+    }
+
     /// What VoiceOver reads for the bar.
     var accessibilityValue: String {
         [title, percentText, countText].compactMap { $0 }.joined(separator: ", ")
@@ -150,6 +156,21 @@ struct TransferProgressPresentation: Equatable, Sendable {
         "Copying and verifying stop now. The card is not changed, but the backups will be incomplete, so do not erase the card."
     static let cancelConfirmationAction = "Cancel transfer"
     static let cancelKeepAction = "Keep going"
+
+    static func compactSourceName(_ name: String, limit: Int = 32) -> String {
+        let ns = name as NSString
+        let stem = ns.deletingPathExtension
+        let suffix = stem.split(separator: "_").last.map(String.init)
+        let withoutGeneratedID: String
+        if let suffix, UUID(uuidString: suffix) != nil {
+            withoutGeneratedID = String(stem.dropLast(suffix.count)).trimmingCharacters(in: CharacterSet(charactersIn: "_- "))
+        } else {
+            withoutGeneratedID = stem
+        }
+        let value = withoutGeneratedID.isEmpty ? name : withoutGeneratedID
+        guard value.count > limit else { return value }
+        return String(value.prefix(max(1, limit - 1))) + "…"
+    }
 
     static func make(
         state: OperationState,
@@ -176,6 +197,8 @@ struct TransferProgressPresentation: Equatable, Sendable {
         return Self(
             phase: phase,
             title: Self.title(for: phase),
+            sourceName: sourceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the card",
+            destinationNames: destinationNames ?? destinations.map { DestinationVolumeLabel.name(for: $0) },
             symbol: Self.symbol(for: phase),
             detail: Self.detail(state: state, sourceName: sourceName, backupCount: destinations.count),
             tone: tone,
@@ -308,7 +331,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
                 let total = totals[index]
                 let done = min(completed[index], total)
                 fraction = total > 0 ? Double(done) / Double(total) : nil
-                countText = total > 0 ? "\(done.formatted()) of \(total.formatted()) copied" : nil
+                countText = total > 0 ? "\(done.formatted()) of \(total.formatted())" : nil
                 if total > 0 && done >= total {
                     state = phase == .verifying ? .verifying : .copied
                 } else if done > 0 {
@@ -334,7 +357,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
         switch device {
         case .mac:
             return [ProgressDeviceNote(
-                text: "This Mac stays awake until the transfer ends.",
+                text: "Mac stays awake during this transfer.",
                 symbol: "moon.zzz",
                 isWarning: false
             )]

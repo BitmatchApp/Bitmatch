@@ -9,6 +9,14 @@ enum CardSafetyTint: Equatable, Sendable {
     case red
 }
 
+enum LiveResultDestinationPolicy {
+    /// One backup is already named in the progress header. Rows need a
+    /// destination label only when results can belong to different backups.
+    static func showsDestinationInEachRow(backupCount: Int) -> Bool {
+        backupCount > 1
+    }
+}
+
 /// One presentation state for a card everywhere BitMatch names its safety.
 /// Only `.safeToErase` can be green, claim verified safety, or permit Eject.
 enum CardSafetyState: Equatable, Sendable {
