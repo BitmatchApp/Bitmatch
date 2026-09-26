@@ -58,7 +58,7 @@ struct CameraLabelView: View {
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             // Header
             Text("Camera Labeling")
                 .font(.system(size: 14, weight: .semibold))
@@ -78,22 +78,22 @@ struct CameraLabelView: View {
             }
             
             // Quick Presets and Custom Camera Label - side by side
-            HStack(alignment: .top, spacing: 20) {
+            HStack(alignment: .top, spacing: 24) {
                 // Quick Presets on the left
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Quick Presets")
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.5))
                     
-                    VStack(spacing: 6) { // Increased vertical spacing for iPad
-                        HStack(spacing: 6) { // Increased horizontal spacing for iPad
+                    VStack(spacing: 8) {
+                        HStack(spacing: 8) {
                             ForEach(presets.prefix(4), id: \.self) { preset in
                                 presetButton(for: preset)
                             }
                         }
                         
                         if presets.count > 4 {
-                            HStack(spacing: 6) { // Increased horizontal spacing for iPad
+                            HStack(spacing: 8) {
                                 ForEach(presets.dropFirst(4), id: \.self) { preset in
                                     presetButton(for: preset)
                                 }
@@ -131,7 +131,7 @@ struct CameraLabelView: View {
             }
             
             // Position Toggle and Separator in one row to save space
-            HStack(spacing: 20) {
+            HStack(spacing: 24) {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Label Position")
                         .font(.system(size: 11))
@@ -154,7 +154,7 @@ struct CameraLabelView: View {
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.5))
                     
-                    HStack(spacing: 4) {
+                    HStack(spacing: 8) {
                         ForEach(CameraLabelSettings.Separator.allCases, id: \.self) { sep in
                             Button {
                                 settings.separator = sep
@@ -168,7 +168,7 @@ struct CameraLabelView: View {
                                     .background(
                                         RoundedRectangle(cornerRadius: 5)
                                             .fill(settings.separator == sep ?
-                                                Color.green :
+                                                Color.accentColor :
                                                 Color.white.opacity(0.1))
                                     )
                             }
@@ -182,7 +182,7 @@ struct CameraLabelView: View {
 
             // Live Preview - adaptive width
             if !settings.label.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
+                VStack(alignment: .leading, spacing: 8) {
                     Text("Preview")
                         .font(.system(size: 11))
                         .foregroundColor(.white.opacity(0.5))
@@ -190,14 +190,14 @@ struct CameraLabelView: View {
                     HStack {
                         Text(previewText)
                             .font(.system(size: 12, design: .monospaced))
-                            .foregroundColor(.green)
+                            .foregroundColor(.accentColor)
                             .padding(10)
                             .background(
                                 RoundedRectangle(cornerRadius: 6)
-                                    .fill(Color.green.opacity(0.1))
+                                    .fill(Color.accentColor.opacity(0.1))
                                     .overlay(
                                         RoundedRectangle(cornerRadius: 6)
-                                            .stroke(Color.green.opacity(0.3), lineWidth: 0.5)
+                                            .stroke(Color.accentColor.opacity(0.3), lineWidth: 0.5)
                                     )
                             )
                             .fixedSize(horizontal: true, vertical: false)
@@ -214,24 +214,24 @@ struct CameraLabelView: View {
             // Auto-numbering toggle
             Toggle("Auto-number if folder exists", isOn: $settings.autoNumber)
                 .toggleStyle(.switch)
-                .tint(.green)
+                .tint(.accentColor)
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.7))
             
             // Camera grouping toggle
             Toggle("Group files by camera type in subfolders", isOn: $settings.groupByCamera)
                 .toggleStyle(.switch)
-                .tint(.blue)
+                .tint(.accentColor)
                 .font(.system(size: 11))
                 .foregroundColor(.white.opacity(0.7))
         }
         .padding(.horizontal, 12)  // Reduced horizontal padding to eliminate red box space
-        .padding(.vertical, 14)
+        .padding(.vertical, 12)
         .background(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Color.white.opacity(0.03))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 12)
+                    RoundedRectangle(cornerRadius: 10)
                         .stroke(Color.white.opacity(0.1), lineWidth: 0.5)
                 )
         )
@@ -263,7 +263,7 @@ struct CameraLabelView: View {
                 .background(
                     RoundedRectangle(cornerRadius: 6)  // Slightly larger corner radius
                         .fill(settings.label == preset ?
-                            Color.green :
+                            Color.accentColor :
                             Color.white.opacity(0.1))
                 )
         }

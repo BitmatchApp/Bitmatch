@@ -91,7 +91,11 @@ struct QueueSessionPresentationTests {
         #expect(lines[0].hasPrefix("Queue finished 18:42 ·"))
         #expect(lines[0].contains(presentation.tally.text))
         #expect(lines[1].contains("A001") && lines[1].contains("safe to erase"))
-        #expect(lines[3].contains("needs attention: 1 file failed on Shuttle A"))
+        // Backup identity deliberately prefers the volume over a temporary-folder
+        // path (see backupIdentityPrefersTheVolumeAndNeverATemporaryPath), so a
+        // fixture backup under the temp directory reports its volume name here.
+        let expectedDrive = DestinationIdentityPresentation.title(for: fixture.backup)
+        #expect(lines[3].contains("needs attention: 1 file failed on \(expectedDrive)"))
     }
 
     @Test func pauseBannerUsesOnlyThePausedRecordAndNamesItsState() throws {
@@ -133,7 +137,18 @@ struct QueueSessionPresentationTests {
         let row = try #require(QueueSessionPresentation.make(
             records: [failed], sessionIDs: [failed.id], progress: nil, mountedSourceIDs: []
         ).rows.first)
-        #expect(row.accessibilityStatus == "A004, Failed, not safe to erase, Card disconnected")
+        #expect(row.accessibilityStatus == "A004, Failed — do not erase, not safe to erase, Card disconnected")
+    }
+
+    @Test func zeroByteQueueEvidenceUsesEmptyWording() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(name: "A001", state: .completed, outcome: .verified, size: 0, at: 1)
+        let row = try #require(QueueSessionPresentation.make(
+            records: [record], sessionIDs: [record.id], progress: nil, mountedSourceIDs: [record.id]
+        ).rows.first)
+        #expect(row.evidence == "Empty · 1 file")
+        #expect(!row.evidence!.contains("Zero KB"))
     }
 
     @Test func pauseCommandAndDockResolutionPoliciesAreFailSafe() throws {
@@ -202,6 +217,7 @@ private final class QueuePresentationFixture {
         state: LocalTransferState,
         mode: VerificationMode = .standard,
         outcome: ResultOutcome? = nil,
+        size: Int64 = 64,
         summary: String = "Ready",
         at seconds: TimeInterval
     ) throws -> LocalTransferRecord {
@@ -217,7 +233,7 @@ private final class QueuePresentationFixture {
         if let outcome {
             record.results = [ResultRow(
                 path: source.appendingPathComponent("clip.mov").path,
-                status: outcome.statusText, size: 64, checksum: outcome == .verified ? "abc" : nil,
+                status: outcome.statusText, size: size, checksum: outcome == .verified ? "abc" : nil,
                 destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip.mov").path
             )]
         }

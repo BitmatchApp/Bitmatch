@@ -29,4 +29,21 @@ struct SharedReportGenerationSmokeTests {
         #expect(result.pdfData.count > 0)
         #expect(result.jsonData.count > 0)
     }
+
+    @Test @MainActor
+    func zeroByteReportUsesEmptyWording() async throws {
+        let source = FolderInfo(
+            url: URL(fileURLWithPath: "/tmp/empty-file-card"), fileCount: 1, totalSize: 0,
+            lastModified: Date(), isInternalDrive: false
+        )
+        let transfer = TransferCard(
+            source: source, destinations: [], cameraCard: nil, metadata: nil, progress: 1,
+            state: .completed(.init(success: true, message: "Verified"))
+        )
+        let result = try await SharedReportGenerationService().generateMasterReport(
+            transfers: [transfer], configuration: .default()
+        )
+        #expect(result.reportData.summary.formattedSize == "Empty")
+        #expect(!String(decoding: result.jsonData, as: UTF8.self).contains("Zero KB"))
+    }
 }

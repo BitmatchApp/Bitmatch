@@ -14,6 +14,12 @@ struct CardSafetyStateTests {
         }
     }
 
+    @Test func everyNonSafeFinishStateWarnsNotToErase() {
+        let nonSafeFinishes: [CardSafetyState] = [.copiedNotVerified, .needsAttention, .failed, .interrupted]
+        #expect(nonSafeFinishes.allSatisfy { $0.eraseWarning == "Do not erase the card." })
+        #expect(CardSafetyState.safeToErase.eraseWarning == nil)
+    }
+
     @Test func operationStatesUseTheSharedSafetyVocabulary() {
         #expect(CardSafetyState.make(state: .inProgress, verdict: .issues) == .preparing)
         #expect(CardSafetyState.make(state: .copying, verdict: .issues, progress: 0.426) == .copying(progress: 42))

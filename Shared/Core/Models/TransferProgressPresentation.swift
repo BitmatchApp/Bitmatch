@@ -58,7 +58,10 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
 
     let id: String
     let name: String
+    /// Compact selected-folder label shown beneath the drive name.
     let path: String
+    /// Complete path, available on hover without crowding the row.
+    let helpPath: String
     let state: State
     /// This backup's own copied fraction, or nil when the engine has not
     /// reported per-backup counts yet. Never the overall fraction.
@@ -269,9 +272,13 @@ struct TransferProgressPresentation: Equatable, Sendable {
         let total = progress.totalFiles
         if phase == .verifying, let stage = progress.stageProgress {
             let verified = min(total, Int((stage * Double(total)).rounded(.down)))
-            return "\(verified) of \(total) verified"
+            return "\(formatted(verified)) / \(formatted(total))"
         }
-        return "\(min(progress.filesProcessed, total)) of \(total) copied"
+        return "\(formatted(min(progress.filesProcessed, total))) / \(formatted(total))"
+    }
+
+    private static func formatted(_ value: Int) -> String {
+        value.formatted(.number.grouping(.automatic))
     }
 
     private static func issueLine(_ count: Int) -> String? {
@@ -296,17 +303,19 @@ struct TransferProgressPresentation: Equatable, Sendable {
                 let total = totals[index]
                 let done = min(completed[index], total)
                 fraction = total > 0 ? Double(done) / Double(total) : nil
-                countText = total > 0 ? "\(done) of \(total) copied" : nil
+                countText = total > 0 ? "\(formatted(done)) / \(formatted(total))" : nil
                 if total > 0 && done >= total {
                     state = phase == .verifying ? .verifying : .copied
                 } else if done > 0 {
                     state = .copying
                 }
             }
+            let name = DestinationIdentityPresentation.title(for: url)
             return DestinationProgressRow(
                 id: url.path,
-                name: url.lastPathComponent.isEmpty ? url.path : url.lastPathComponent,
-                path: url.path,
+                name: name,
+                path: DestinationIdentityPresentation.folderLabel(for: url, driveName: name),
+                helpPath: url.path,
                 state: state,
                 fraction: fraction,
                 countText: countText

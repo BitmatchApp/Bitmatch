@@ -62,6 +62,20 @@ struct MasterReportModelTests {
 
     // MARK: - Grouping
 
+    @Test func zeroByteMasterReportTotalsUseEmptyWording() {
+        let totals = MasterReportPresentation.totals([
+            card(camera: "FX6", roll: "A001", files: 1, bytes: 0)
+        ])
+        #expect(totals.sizeText == "Empty")
+        #expect(!totals.sizeText.contains("Zero KB"))
+    }
+
+    @Test func nonVerifiedMasterReportCardWarnsNotToErase() {
+        let unverified = card(camera: "FX6", roll: "A001", verified: false)
+        #expect(MasterReportPresentation.statusText(for: unverified) == "Not verified — do not erase the card")
+        #expect(MasterReportPresentation.statusText(for: card(camera: "FX6", roll: "A002")) == "Verified")
+    }
+
     /// Plant: in `MasterReportPresentation.groups`, return one flat group:
     /// `[MasterReportCameraGroup(name: "All", cards: cards)]`.
     @Test func groupsByCamera() throws {

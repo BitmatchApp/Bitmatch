@@ -197,6 +197,7 @@ class OperationTimingService: ObservableObject {
     }
     
     private func formatSpeed(_ bytesPerSecond: Double) -> String {
+        guard bytesPerSecond > 0 else { return "—" }
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(bytesPerSecond)) + "/s"
@@ -331,10 +332,11 @@ struct OperationHistoryStats {
     }
     
     var formattedTotalSize: String {
-        ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file)
+        ByteCountPresentation.fileSize(totalBytes)
     }
     
     var formattedAverageSpeed: String {
+        guard averageSpeed > 0 else { return "—" }
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: Int64(averageSpeed)) + "/s"

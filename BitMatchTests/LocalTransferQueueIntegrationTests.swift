@@ -51,6 +51,32 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(onDisk.allSatisfy { $0.state == .completed && $0.results.count == 1 })
     }
 
+    func testQueuedEmptySourceIsRejectedAndNeverLooksComplete() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        try FileManager.default.removeItem(at: f.source.appendingPathComponent("clip.mov"))
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), generateASCMHL: false
+        )
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal
+        )
+
+        coordinator.startQueue()
+        let finished = await waitUntil(timeout: .seconds(5)) { @MainActor in
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(finished)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertNotEqual(record.state, .completed)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase)
+        XCTAssertTrue(record.summary.contains("Source folder is empty"))
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.destination.path).isEmpty)
+    }
+
     func testCompletionExportUsesRetainedRecordWithProvenance() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -132,6 +158,36 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         coordinator.isOperationInProgress = false
     }
 
+    func testAnalyzedEmptySourceCannotStartOrEnterTheQueue() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        try FileManager.default.removeItem(at: f.source.appendingPathComponent("clip.mov"))
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let service = QueueRecordingOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: service),
+            transferJournal: journal
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        let sourceScanned = await waitUntil { @MainActor in
+            !coordinator.isAnalysingSource && coordinator.isSelectedSourceKnownEmpty
+        }
+        XCTAssertTrue(sourceScanned)
+
+        XCTAssertFalse(coordinator.canStartOperation)
+        XCTAssertFalse(coordinator.canEnqueueSelection)
+        XCTAssertThrowsError(try coordinator.enqueueSelection())
+        XCTAssertThrowsError(try coordinator.enqueue(source: f.source, destinations: [f.destination])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("Source folder is empty"))
+        }
+        await coordinator.startCurrentMode()
+        await coordinator.startOperation()
+        let starts = await service.starts
+        XCTAssertTrue(starts.isEmpty)
+        XCTAssertTrue(journal.records.isEmpty)
+    }
+
     func testQueueUsesSavedSnapshotAndStopsWhenResultsAreEmpty() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -209,6 +265,83 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(starts.count, 1)
         XCTAssertEqual(journal.records.first(where: { $0.id == firstID })?.state, .cancelled)
         XCTAssertEqual(journal.records.first(where: { $0.id == secondID })?.state, .queued)
+    }
+
+    func testExitCancellationWaitsForJournalSettlementAndLeavesNoLaterWrites() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let service = QueueRecordingOperations(blocked: true)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: service),
+            transferJournal: journal
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        let run = Task { await coordinator.startOperation() }
+        let operationStarted = await waitUntil { await service.starts.count == 1 }
+        XCTAssertTrue(operationStarted)
+
+        let settlement = Task { try await coordinator.cancelOperationAndWaitForSettlement() }
+        await Task.yield()
+        XCTAssertTrue(coordinator.isOperationInProgress, "Exit must wait while the executor is still unwinding")
+        await service.release()
+        try await settlement.value
+        await run.value
+
+        let record = try XCTUnwrap(journal.records.first)
+        XCTAssertEqual(record.state, .cancelled)
+        let settledData = try Data(contentsOf: f.journalURL)
+        try await Task.sleep(for: .milliseconds(50))
+        XCTAssertEqual(try Data(contentsOf: f.journalURL), settledData, "No journal write may trail the exit reply")
+    }
+
+    func testExitCancellationReportsPersistenceFailureAndLeavesRunningRecordVisible() async throws {
+        struct SaveFailed: Error {}
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeCancel: { _ in throw SaveFailed() })
+        let service = QueueRecordingOperations(blocked: true)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: service),
+            transferJournal: journal
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        let run = Task { await coordinator.startOperation() }
+        let operationStarted = await waitUntil { await service.starts.count == 1 }
+        XCTAssertTrue(operationStarted)
+
+        let settlement = Task { try await coordinator.cancelOperationAndWaitForSettlement() }
+        await service.release()
+        do {
+            try await settlement.value
+            XCTFail("Exit must stay open when the interrupted state could not be persisted")
+        } catch {
+            XCTAssertTrue(error.localizedDescription.contains("could not save it as interrupted"))
+        }
+        await run.value
+        XCTAssertEqual(journal.records.first?.state, .running)
+        XCTAssertNotNil(coordinator.queueMessage)
+    }
+
+    func testExitSettlementDoesNotCancelATransferThatFinishedNaturally() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let service = QueueRecordingOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        await coordinator.startOperation()
+        let stateBeforeExitRequest = try XCTUnwrap(journal.records.first?.state)
+
+        try await coordinator.cancelOperationAndWaitForSettlement()
+
+        XCTAssertEqual(journal.records.first?.state, stateBeforeExitRequest)
+        XCTAssertFalse(coordinator.isOperationInProgress)
     }
 
     func testQueueDoesNotReplayProjectRecord() async throws {

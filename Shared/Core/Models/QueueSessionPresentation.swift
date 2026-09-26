@@ -19,9 +19,10 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let copySummary: String
 
     var statusText: String {
-        safetyState == .copiedNotVerified
+        let status = safetyState == .copiedNotVerified
             ? "Copied, not verified: size check only"
             : safetyState.title
+        return safetyState.eraseWarning == nil ? status : "\(status) — do not erase"
     }
 
     var accessibilityStatus: String {
@@ -181,10 +182,12 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let paths = Dictionary(grouping: record.results, by: \.path)
         let recordedBytes = paths.values.compactMap { $0.first }.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
         let count = paths.isEmpty ? max(0, progress?.totalFiles ?? 0) : paths.count
-        let bytes = recordedBytes > 0 ? recordedBytes : progress?.totalBytes
+        // Recorded results are authoritative: a zero-byte total names genuinely
+        // empty content ("Empty"), it never falls back to live progress.
+        let bytes: Int64? = paths.isEmpty ? progress?.totalBytes : recordedBytes
         let evidence: String?
         if count > 0, let bytes {
-            evidence = "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) · \(count) \(count == 1 ? "file" : "files")"
+            evidence = "\(ByteCountPresentation.fileSize(bytes)) · \(count) \(count == 1 ? "file" : "files")"
         } else if count > 0 {
             evidence = "\(count) \(count == 1 ? "file" : "files")"
         } else {

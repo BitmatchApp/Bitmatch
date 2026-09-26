@@ -1,4 +1,5 @@
 // BitMatchApp.swift - Main app with dark theme configuration
+import AppKit
 import SwiftUI
 import UserNotifications
 
@@ -65,7 +66,9 @@ struct BitMatchApp: App {
     }()
 
     init() {
-        _environment = StateObject(wrappedValue: MacAppEnvironment.make())
+        let environment = MacAppEnvironment.make()
+        _environment = StateObject(wrappedValue: environment)
+        appDelegate.coordinator = environment.coordinator
         UNUserNotificationCenter.current().delegate = notifDelegate
     }
 
@@ -79,9 +82,12 @@ struct BitMatchApp: App {
                 ContentView(environment: environment).preferredColorScheme(.dark)
 #endif
             }
-            .onAppear { setupWindow() }
+            .onAppear {
+                appDelegate.coordinator = environment.coordinator
+                setupWindow()
+            }
         }
-        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unified)
         .commands {
             OperationCommands()
             
@@ -163,16 +169,16 @@ struct BitMatchApp: App {
     
     private func setupWindow() {
         DispatchQueue.main.async {
-            if let window = NSApplication.shared.windows.first {
+            if let window = AppDelegate.contentWindowCandidate() {
                 // Configure window appearance
-                window.titlebarAppearsTransparent = true
-                window.titleVisibility = .hidden
-                window.styleMask.insert(.fullSizeContentView)
+                window.title = "BitMatch"
+                window.titlebarAppearsTransparent = false
+                window.titleVisibility = .visible
                 if WindowPresentationPolicy.allowsManualResizing {
                     window.styleMask.insert(.resizable)
                 }
                 window.isMovableByWindowBackground = true
-                window.backgroundColor = NSColor.black
+                window.backgroundColor = .windowBackgroundColor
                 
                 // Start compact, then let the workbench grow into a proper review surface.
                 window.setContentSize(NSSize(width: WindowPresentationPolicy.initialWidth, height: WindowPresentationPolicy.initialHeight))
@@ -186,6 +192,8 @@ struct BitMatchApp: App {
                 
                 // Set window level
                 window.level = .normal
+                window.delegate = appDelegate
+                appDelegate.registerContentWindow(window)
                 
                 let savedFrame = UserDefaults.standard.dictionary(forKey: "BitMatch.windowFrame")
                 let hasSavedPlacement = savedFrame?["x"] as? CGFloat != nil
@@ -280,7 +288,14 @@ extension FocusedValues {
 }
 
 // App Delegate for early setup
-class AppDelegate: NSObject, NSApplicationDelegate {
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    var coordinator: SharedAppCoordinator?
+    private weak var contentWindow: NSWindow?
+    private weak var windowAllowedToClose: NSWindow?
+    private var exitGuard = TransferExitGuardStateMachine()
+    private var exitGuardAlert: NSAlert?
+
     func applicationWillFinishLaunching(_ notification: Notification) {
         NSWindow.allowsAutomaticWindowTabbing = false
         // Disable window restoration to avoid className=(null) warnings
@@ -289,6 +304,160 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        switch exitGuard.request(needsGuard: shouldAskToStopTransfer) {
+        case .allowNow:
+            return .terminateNow
+        case .presentPrompt:
+            presentExitGuard(for: .quit(sender))
+            return .terminateLater
+        case .keepWaiting:
+            NSSound.beep()
+            exitGuardAlert?.window.makeKeyAndOrderFront(nil)
+            return .terminateCancel
+        }
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        if windowAllowedToClose === sender {
+            windowAllowedToClose = nil
+            return true
+        }
+        switch exitGuard.request(needsGuard: shouldAskToStopTransfer) {
+        case .allowNow:
+            return true
+        case .presentPrompt:
+            presentExitGuard(for: .close(sender))
+            return false
+        case .keepWaiting:
+            NSSound.beep()
+            exitGuardAlert?.window.makeKeyAndOrderFront(nil)
+            return false
+        }
+    }
+
+    private var shouldAskToStopTransfer: Bool {
+        guard let coordinator else {
+            assertionFailure("The app delegate must receive the shared coordinator before a window can close or the app can quit.")
+            return true
+        }
+        return TransferExitGuardPolicy.shouldAsk(
+            isOperationInProgress: coordinator.isOperationInProgress,
+            queueIsRunning: coordinator.queueIsRunning,
+            isCopyAndVerifyMode: coordinator.currentMode == .copyAndVerify,
+            lastOperationWasCompare: coordinator.lastOperationWasCompare
+        )
+    }
+
+    private enum ExitAction {
+        case close(NSWindow)
+        case quit(NSApplication)
+    }
+
+    private func presentExitGuard(for action: ExitAction) {
+        let alert = NSAlert()
+        alert.messageText = TransferExitGuardPolicy.title
+        alert.informativeText = TransferExitGuardPolicy.message
+        alert.addButton(withTitle: TransferExitGuardPolicy.keepCopyingTitle)
+        let stopButton = alert.addButton(withTitle: TransferExitGuardPolicy.stopTransferTitle)
+        stopButton.hasDestructiveAction = true
+        exitGuardAlert = alert
+
+        let finish: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self else { return }
+            self.exitGuardAlert = nil
+            let choice: TransferExitGuardStateMachine.Choice = response == .alertSecondButtonReturn
+                ? .stopTransfer : .keepCopying
+            let actionKind: TransferExitGuardStateMachine.Action
+            switch action {
+            case .quit: actionKind = .quit
+            case .close: actionKind = .closeWindow
+            }
+            switch self.exitGuard.resolve(choice, for: actionKind) {
+            case .denyExit:
+                if case .quit(let application) = action {
+                    application.reply(toApplicationShouldTerminate: false)
+                }
+            case .allowExit:
+                self.finish(action: action, allowExit: true)
+            case .requestCancellation:
+                self.cancelAndSettle(action: action)
+            }
+        }
+
+        let window = contentWindow ?? Self.contentWindowCandidate()
+        if let window {
+            alert.beginSheetModal(for: window, completionHandler: finish)
+        } else {
+            finish(alert.runModal())
+        }
+    }
+
+    private func cancelAndSettle(action: ExitAction) {
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                guard let coordinator else {
+                    throw SharedAppCoordinator.CancellationSettlementError.journalRecordMissing
+                }
+                try await coordinator.cancelOperationAndWaitForSettlement()
+                _ = exitGuard.settlementFinished(success: true)
+                finish(action: action, allowExit: true)
+            } catch {
+                _ = exitGuard.settlementFinished(success: false)
+                finish(action: action, allowExit: false)
+                presentSettlementError(error.localizedDescription)
+            }
+        }
+    }
+
+    private func finish(action: ExitAction, allowExit: Bool) {
+        switch action {
+        case .quit(let application):
+            application.reply(toApplicationShouldTerminate: allowExit)
+        case .close(let window):
+            guard allowExit else { return }
+            close(window)
+        }
+    }
+
+    private func close(_ window: NSWindow) {
+        windowAllowedToClose = window
+        window.performClose(nil)
+        // `performClose` normally re-enters `windowShouldClose` synchronously.
+        // Clear defensively if AppKit declines before asking the delegate.
+        DispatchQueue.main.async { [weak self, weak window] in
+            guard let self, let window, self.windowAllowedToClose === window else { return }
+            self.windowAllowedToClose = nil
+        }
+    }
+
+    private func presentSettlementError(_ message: String) {
+        let alert = NSAlert()
+        alert.messageText = "Could Not Save the Interrupted Transfer"
+        alert.informativeText = message
+        alert.addButton(withTitle: "OK")
+        if let window = contentWindow ?? Self.contentWindowCandidate() {
+            alert.beginSheetModal(for: window)
+        } else {
+            alert.runModal()
+        }
+    }
+
+    func registerContentWindow(_ window: NSWindow) {
+        contentWindow = window
+    }
+
+    static func contentWindowCandidate() -> NSWindow? {
+        if let key = NSApplication.shared.keyWindow, isContentWindow(key) { return key }
+        if let main = NSApplication.shared.mainWindow, isContentWindow(main) { return main }
+        return NSApplication.shared.windows.first(where: isContentWindow)
+    }
+
+    private static func isContentWindow(_ window: NSWindow) -> Bool {
+        !(window is NSPanel) && window.canBecomeMain && window.contentViewController != nil
     }
 }
 

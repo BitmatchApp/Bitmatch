@@ -52,7 +52,7 @@ struct CompareFolderSlot: Equatable, Sendable {
     }
 
     var sizeText: String? {
-        totalSize.map { ByteCountFormatter.string(fromByteCount: $0, countStyle: .file) }
+        totalSize.map(ByteCountPresentation.fileSize)
     }
 
     /// Shown when a folder is chosen but its details could not be read.

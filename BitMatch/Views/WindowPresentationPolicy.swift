@@ -23,10 +23,9 @@ enum WindowPresentationPolicy {
 ///
 /// Widths: the shared screens pick their layout from their own width
 /// (`AdaptiveNavigationPolicy`: compact below 600 pt, sidebar from 960 pt).
-/// The main scroll view pads 20 pt on each side, and Setup pads another
-/// 20 pt, so Setup stacks its boxes below a 680 pt window (the default
-/// width) and Progress, Outcome and Master Report go compact below 640 pt.
-/// At the 580 pt minimum every screen is compact.
+/// The main scroll view pads 20 pt on each side. Setup uses the same width as
+/// Queue, Progress, Outcome and Master Report. At the 580 pt minimum every
+/// screen is compact.
 ///
 /// The numbers are measured from each screen's layout code (fonts at the
 /// default size, Mac control heights); see the constants.
@@ -34,7 +33,12 @@ enum MacWindowHeightPolicy {
     enum Screen: Equatable {
         case setup(Setup)
         case progress(backups: Int, queueCandidates: Int = 0, queueCards: Int = 0)
-        case outcome(backups: Int, needsAttention: Bool, queueCards: Int = 0)
+        case outcome(
+            backups: Int,
+            needsAttention: Bool,
+            queueCards: Int = 0,
+            showsInterruptedNotice: Bool = false
+        )
         case compare(advancedExpanded: Bool)
         case masterReport
     }
@@ -50,15 +54,16 @@ enum MacWindowHeightPolicy {
         var showsQueueStrip = false
         var queueCards: Int = 0
         var showsProjectSetup: Bool
+        var showsInterruptedNotice = false
     }
 
-    /// Window header (68) plus the scroll view's top (16) and bottom (20)
-    /// padding.
-    static let chrome: CGFloat = 104
-    /// Setup adds 4 pt above and 8 pt below (`MacSetupView`).
-    static let setupChrome: CGFloat = chrome + 12
+    /// Unified toolbar/titlebar (52), plus the scroll view's top (24) and
+    /// bottom (20) padding. The policy returns a window-frame height, so it
+    /// includes the toolbar even though the toolbar is outside SwiftUI content.
+    static let chrome: CGFloat = 96
+    static let setupChrome: CGFloat = chrome
     /// Gap between sections in every shared screen.
-    static let gap: CGFloat = 16
+    static let gap: CGFloat = 24
 
     /// The window height for `screen`, between the window's minimum and the
     /// smaller of its maximum and `available` (the screen's visible height
@@ -78,9 +83,10 @@ enum MacWindowHeightPolicy {
             return progressHeight(backups: backups, windowWidth: windowWidth)
                 + (queueCandidates > 0 ? 20 + CGFloat(queueCandidates) * 28 - 8 : 0)
                 + queueHeight(cards: queueCards)
-        case .outcome(let backups, let needsAttention, let queueCards):
+        case .outcome(let backups, let needsAttention, let queueCards, let showsInterruptedNotice):
             return outcomeHeight(backups: backups, needsAttention: needsAttention, windowWidth: windowWidth)
                 + queueHeight(cards: queueCards)
+                + (showsInterruptedNotice ? interruptedNoticeHeight : 0)
         case .compare(let advancedExpanded):
             let compact = AdaptiveNavigationPolicy.presentation(for: windowWidth - 40) == .compact
             // Folder labels and roles (40), then each 120 pt picker, inside
@@ -100,8 +106,10 @@ enum MacWindowHeightPolicy {
     }
 
     private static func queueHeight(cards: Int) -> CGFloat {
-        cards > 0 ? 56 + CGFloat(cards) * 50 : 0
+        cards > 0 ? 56 + CGFloat(min(cards, 3)) * 50 : 0
     }
+
+    private static let interruptedNoticeHeight: CGFloat = 58
 
     // MARK: Setup
 
@@ -109,8 +117,8 @@ enum MacWindowHeightPolicy {
         // The project form is long and open-ended: take the full height.
         if setup.showsProjectSetup { return nil }
         let sideBySide = windowWidth >= 680
-        // Title and one-line subtitle.
-        let title: CGFloat = 42
+        // One-line subtitle; the toolbar already names the mode.
+        let title: CGFloat = 18
         // Box title (16) + 8, then an empty 120 pt drop box or the chosen
         // folder's card (padding 24, name, path, size: 97).
         let source: CGFloat = 24 + (setup.hasSource ? 97 : 120)
@@ -118,21 +126,24 @@ enum MacWindowHeightPolicy {
         let backups: CGFloat = setup.backups == 0
             ? 24 + 120
             : 24 + CGFloat(setup.backups) * 81 + CGFloat(setup.backups - 1) * 8 + 52
-        // The card around the boxes pads 14 pt.
-        let locations: CGFloat = 28 + (sideBySide ? max(source, backups) : source + gap + backups)
+        // The card around the boxes pads 12 pt.
+        let locations: CGFloat = 24 + (sideBySide ? max(source, backups) : source + gap + backups)
         // Two 60 pt workflow choices, side by side or stacked 8 apart.
         let workflow: CGFloat = sideBySide ? 60 : 128
         let banner: CGFloat = setup.showsProblemBanner ? 77 + gap : 0
         // Collapsed Advanced (44 + 24 padding); open adds the label editor
         // and the records options.
         let advanced: CGFloat = 68 + (setup.optionsExpanded ? 330 : 0)
-        // Start (34 + 24 padding), plus the line under it once both are
+        // Start (44 + 24 padding), plus the line under it once both are
         // chosen (it wraps to two lines when stacked).
-        let start: CGFloat = 58 + (setup.hasSource && setup.backups > 0 ? (sideBySide ? 24 : 40) : 0)
-        let drives: CGFloat = 12 + 24 + 16 + 8 + (setup.connectedDrives == 0 ? 14 : CGFloat(setup.connectedDrives) * 40 + CGFloat(setup.connectedDrives - 1) * 8)
+        let start: CGFloat = 68 + (setup.hasSource && setup.backups > 0 ? (sideBySide ? 24 : 40) : 0)
+        let drives: CGFloat = setup.connectedDrives == 0
+            ? 40
+            : 24 + 17 + 12 + CGFloat(setup.connectedDrives) * 40 + CGFloat(setup.connectedDrives - 1) * 8
         let queueCount = max(setup.queueCards, setup.showsQueueStrip ? 1 : 0)
         let queue = queueHeight(cards: queueCount)
-        return queue + setupChrome + title + locations + drives + workflow + banner + advanced + start + 4 * gap
+        let notice = setup.showsInterruptedNotice ? interruptedNoticeHeight : 0
+        return notice + queue + setupChrome + title + locations + drives + workflow + banner + advanced + start + 5 * gap
     }
 
     // MARK: Progress

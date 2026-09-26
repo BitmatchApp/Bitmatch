@@ -87,6 +87,20 @@ struct TransferOutcomePresentationTests {
         #expect(!outcome.guidance.contains("failed"))
     }
 
+    @Test func everyNonSafeOutcomeExplicitlySaysNotToErase() {
+        let outcomes = [
+            make(state: .cancelled, rows: partialRows),
+            make(state: .failed, rows: []),
+            make(state: .completed(.init(success: false, message: "Copied, not verified", copiedNotVerified: true)),
+                 rows: [row("A001.mov", .copiedUnverified, backup: backupA)]),
+            make(state: .completed(.init(success: false, message: "1 file failed")),
+                 rows: [row("A001.mov", .failed, backup: backupA)])
+        ]
+        #expect(outcomes.allSatisfy { $0.safetyState != .safeToErase })
+        #expect(outcomes.allSatisfy { $0.guidance.localizedCaseInsensitiveContains("do not erase") })
+        #expect(outcomes.allSatisfy { !$0.canEject && $0.safetyState.tint != .green })
+    }
+
     // Plant: in `TransferOutcomePresentation.make`, call
     // `makeDestinationLines(…, cancelled: false)`.
     @Test func interruptedBackupLinesSayInterrupted() {
@@ -192,7 +206,7 @@ struct TransferOutcomePresentationTests {
         )
 
         #expect(safe.copySummary == "The card · 100 bytes · safe to erase · SHA-256 · A, B")
-        #expect(quick.copySummary == "The card · 100 bytes · copied, not verified (size check only) · A, B")
+        #expect(quick.copySummary == "The card · 100 bytes · copied, not verified (size check only) · do not erase the card · A, B")
     }
 
     @Test func needsAttentionUsesNeutralFactualBackupRows() {
@@ -254,7 +268,7 @@ struct TransferOutcomePresentationTests {
             sourceBytes: nil
         )
 
-        #expect(outcome.copySummary == "The card · interrupted · A, B")
+        #expect(outcome.copySummary == "The card · interrupted · do not erase the card · A, B")
     }
 
     @Test func unknownCardFailureBannerUsesSentenceCorrectCardName() {
@@ -390,5 +404,20 @@ struct ResultRowAccessibilityLabelTests {
         let label = TransferOutcomePresentation.accessibilityLabel(for: row(status: .copiedUnverified, destination: "Backup B"))
         #expect(!label.contains("✅"))
         #expect(label.contains("Copied, not verified"))
+    }
+
+    @Test func zeroByteResultRowAndSummaryUseEmptyWording() {
+        let result = row(status: .verified, size: 0, destination: "Backup A")
+        #expect(TransferOutcomePresentation.accessibilityLabel(for: result).contains("Empty"))
+        let summary = TransferOutcomePresentation.makeCopySummary(
+            safetyState: .safeToErase,
+            cardName: "A001",
+            sourceBytes: 0,
+            destinations: ["Backup A"],
+            algorithm: "SHA-256",
+            reason: nil
+        )
+        #expect(summary.contains("Empty"))
+        #expect(!summary.contains("Zero KB"))
     }
 }

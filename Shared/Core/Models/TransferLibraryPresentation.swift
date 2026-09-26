@@ -6,6 +6,14 @@ import BitMatchEngine
 /// Pure values, so every platform shows the same state the same way.
 enum TransferLibraryPresentation {
 
+    struct AttentionNotice: Equatable, Sendable {
+        let recordID: UUID
+        let title: String
+        let detail: String
+        let systemImage: String
+        let tint: CardSafetyTint
+    }
+
     /// A record's state as a word, a symbol and a tint. Color is never the
     /// only signal, and green belongs only to checksum-verified completion.
     struct StateLabel: Equatable, Sendable {
@@ -13,6 +21,7 @@ enum TransferLibraryPresentation {
         let accessibilityLabel: String
         let systemImage: String
         let tint: CardSafetyTint
+        let eraseWarning: String?
     }
 
     static func safetyState(for record: LocalTransferRecord) -> CardSafetyState {
@@ -52,7 +61,8 @@ enum TransferLibraryPresentation {
             title: safetyState.title,
             accessibilityLabel: accessibilityLabel,
             systemImage: safetyState.symbol,
-            tint: safetyState.tint
+            tint: safetyState.tint,
+            eraseWarning: safetyState.eraseWarning
         )
     }
 
@@ -126,6 +136,11 @@ enum TransferLibraryPresentation {
         }
     }
 
+    static func reviewTargetRecordID(requested: UUID?, visibleRecords: [LocalTransferRecord]) -> UUID? {
+        guard let requested, visibleRecords.contains(where: { $0.id == requested }) else { return nil }
+        return requested
+    }
+
     static func recent(_ records: [LocalTransferRecord], limit: Int) -> [LocalTransferRecord] {
         guard limit > 0 else { return [] }
         return Array(records
@@ -167,5 +182,27 @@ enum TransferLibraryPresentation {
         case 1: return "Transfer needs attention — review in Transfers"
         default: return "\(count) transfers need attention — review in Transfers"
         }
+    }
+
+    /// The most recent interrupted or failed transfer shown beneath the Mac toolbar.
+    /// A running transfer takes precedence, and a dismissed record stays quiet.
+    static func attentionNotice(
+        records: [LocalTransferRecord],
+        isTransferRunning: Bool,
+        dismissedIDs: Set<UUID>
+    ) -> AttentionNotice? {
+        guard !isTransferRunning,
+              let record = records
+                .filter({ ($0.state == .interrupted || $0.state == .failed) && !dismissedIDs.contains($0.id) })
+                .max(by: { $0.createdAt < $1.createdAt }) else { return nil }
+        return AttentionNotice(
+            recordID: record.id,
+            title: record.state == .interrupted
+                ? "A previous transfer was interrupted."
+                : "A previous transfer failed.",
+            detail: "Do not erase the card.",
+            systemImage: "exclamationmark.triangle.fill",
+            tint: record.state == .failed ? .red : .amber
+        )
     }
 }

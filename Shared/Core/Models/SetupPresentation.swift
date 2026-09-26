@@ -62,6 +62,19 @@ struct StartButtonPresentation: Equatable, Sendable {
             )
         }
 
+        if sourceFileCount == 0 {
+            return Self(
+                title: "Source is empty",
+                symbol: "tray",
+                canStart: false,
+                startsProject: isProject,
+                nextStep: nil,
+                blocker: "Choose a source that contains files.",
+                readyLine: nil,
+                accessibilityHint: "The selected source folder is empty"
+            )
+        }
+
         if let step = plan.nextStep {
             return Self(
                 title: plan.actionTitle,
@@ -132,7 +145,7 @@ struct StartButtonPresentation: Equatable, Sendable {
         formatter.numberStyle = .decimal
         let count = formatter.string(from: NSNumber(value: fileCount)) ?? "\(fileCount)"
         let files = fileCount == 1 ? "1 file" : "\(count) files"
-        let size = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        let size = ByteCountPresentation.fileSize(bytes)
         return "Ready to copy \(files) (\(size)) to \(backups). Source files stay in place."
     }
 }

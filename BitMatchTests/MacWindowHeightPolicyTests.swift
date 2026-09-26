@@ -61,6 +61,16 @@ struct MacWindowHeightPolicyTests {
         #expect(three == one + 100)
     }
 
+    @Test func queueHeightStopsGrowingAfterThreeVisibleRows() throws {
+        let three = Policy.Setup(hasSource: true, backups: 1, showsProblemBanner: false,
+                                 optionsExpanded: false, queueCards: 3, showsProjectSetup: false)
+        var six = three
+        six.queueCards = 6
+        let threeRows = try #require(Policy.contentHeight(for: .setup(three), windowWidth: 680))
+        let sixRows = try #require(Policy.contentHeight(for: .setup(six), windowWidth: 680))
+        #expect(threeRows == sixRows)
+    }
+
     @Test func progressMakesRoomForQueueNextCards() throws {
         let before = try #require(Policy.contentHeight(for: .progress(backups: 1), windowWidth: 680))
         let after = try #require(Policy.contentHeight(for: .progress(backups: 1, queueCandidates: 2), windowWidth: 680))
@@ -90,6 +100,24 @@ struct MacWindowHeightPolicyTests {
         let before = Policy.idealHeight(for: .setup(empty), windowWidth: 680, available: 2000)
         let after = Policy.idealHeight(for: .setup(connected), windowWidth: 680, available: 2000)
         #expect(after > before + 100)
+    }
+
+    @Test func interruptedNoticeAddsItsInlineRow() throws {
+        let plain = Policy.Setup(hasSource: false, backups: 0, showsProblemBanner: false,
+                                 optionsExpanded: false, showsProjectSetup: false)
+        var noticed = plain
+        noticed.showsInterruptedNotice = true
+        let plainHeight = try #require(Policy.contentHeight(for: .setup(plain), windowWidth: 680))
+        let noticeHeight = try #require(Policy.contentHeight(for: .setup(noticed), windowWidth: 680))
+        #expect(noticeHeight == plainHeight + 58)
+
+        let outcome = try #require(Policy.contentHeight(
+            for: .outcome(backups: 1, needsAttention: false), windowWidth: 680
+        ))
+        let outcomeWithNotice = try #require(Policy.contentHeight(
+            for: .outcome(backups: 1, needsAttention: false, showsInterruptedNotice: true), windowWidth: 680
+        ))
+        #expect(outcomeWithNotice == outcome + 58)
     }
 
     @Test func compareMakesRoomForStackedFoldersAndAdvanced() throws {

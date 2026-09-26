@@ -16,7 +16,7 @@ struct MacQueueSection: View {
     var body: some View {
         let presentation = coordinator.queuePresentation
         if !presentation.rows.isEmpty {
-            VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 12) {
                 if let title = presentation.pausedTitle, coordinator.queuePausedRecordID != nil {
                     pausedBanner(presentation, title: title)
                 }
@@ -38,19 +38,33 @@ struct MacQueueSection: View {
                             .disabled(!coordinator.queueRunCommandEnabled)
                     }
                 }
-                ForEach(presentation.rows) { row in
-                    queueRow(row)
-                }
+                queueRows(presentation.rows)
                 if let errorMessage {
-                    Text(errorMessage).font(.caption).foregroundStyle(.red)
+                    Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color)
                 }
             }
             .padding(12)
-            .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 12))
-            .focusable()
-            #if os(macOS)
-            .onDeleteCommand { removeSelectedWaitingRow(presentation) }
-            #endif
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.primary.opacity(0.03))
+                    .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+            )
+        }
+    }
+
+    @ViewBuilder
+    private func queueRows(_ rows: [QueueSessionRow]) -> some View {
+        if rows.count > 2 {
+            ScrollView {
+                LazyVStack(spacing: 8) {
+                    ForEach(rows) { row in queueRow(row) }
+                }
+            }
+            .frame(maxHeight: 160)
+        } else {
+            VStack(spacing: 8) {
+                ForEach(rows) { row in queueRow(row) }
+            }
         }
     }
 
@@ -72,16 +86,16 @@ struct MacQueueSection: View {
         }
         .padding(12)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
+        .background(CardSafetyTint.amber.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func queueRow(_ row: QueueSessionRow) -> some View {
-        HStack(spacing: 10) {
-            HStack(spacing: 10) {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
                 Image(systemName: "sdcard").foregroundStyle(.secondary).accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(row.cardName).lineLimit(1).truncationMode(.middle).help(row.cardName)
-                    HStack(spacing: 6) {
+                    HStack(spacing: 8) {
                         if let evidence = row.evidence { Text(evidence) }
                         Text(row.destinations).lineLimit(1).truncationMode(.middle)
                     }
@@ -95,7 +109,7 @@ struct MacQueueSection: View {
                     .font(.caption.weight(.medium))
                     .foregroundStyle(row.safetyState.tint.color)
                     .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(row.safetyState.tint.color.opacity(0.12), in: Capsule())
+                    .background(row.safetyState.tint.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
@@ -130,12 +144,6 @@ struct MacQueueSection: View {
         }
     }
 
-    private func removeSelectedWaitingRow(_ presentation: QueueSessionPresentation) {
-        guard let selectedID,
-              presentation.rows.first(where: { $0.id == selectedID })?.safetyState == .waiting else { return }
-        remove(selectedID)
-    }
-
     private func remove(_ id: UUID) {
         do { try coordinator.removeQueuedTransfer(id) }
         catch { errorMessage = error.localizedDescription }
@@ -162,11 +170,11 @@ struct MacQueueSummaryView: View {
 
     var body: some View {
         let presentation = coordinator.queuePresentation
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 12) {
             Text(presentation.summaryTitle ?? "Queue finished")
                 .font(.title2.weight(.semibold))
             Text(presentation.tally.text).foregroundStyle(.secondary)
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 VStack(alignment: .leading, spacing: 3) {
                     Button(presentation.ejectButtonTitle) { ejectAll(presentation.ejectableCardIDs) }
                         .buttonStyle(.borderedProminent)
@@ -188,7 +196,7 @@ struct MacQueueSummaryView: View {
                 }
                 Button("New Transfer") { coordinator.finishQueueSessionAndStartNewTransfer() }
             }
-            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(.red) }
+            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color) }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .fileExporter(

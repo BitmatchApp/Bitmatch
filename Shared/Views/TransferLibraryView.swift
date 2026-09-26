@@ -16,6 +16,19 @@ struct TransferLibraryView: View {
     @State private var reauthorizeRecord: LocalTransferRecord?
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
+    private let initialRecordID: UUID?
+
+    init(
+        coordinator: SharedAppCoordinator,
+        journal: LocalTransferJournal,
+        initialRecordID: UUID? = nil
+    ) {
+        self.initialRecordID = initialRecordID
+        _coordinator = ObservedObject(wrappedValue: coordinator)
+        _journal = ObservedObject(wrappedValue: journal)
+        _showHistory = State(initialValue: initialRecordID != nil)
+        _expandedIDs = State(initialValue: initialRecordID.map { Set([$0]) } ?? [])
+    }
 
     private var visibleRecords: [LocalTransferRecord] {
         TransferLibraryPresentation.visibleRecords(journal.records, showHistory: showHistory, search: showHistory ? search : "")
@@ -94,16 +107,32 @@ struct TransferLibraryView: View {
                 )
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List {
-                    ForEach(visibleRecords) { record in rowView(record) }
+                ScrollViewReader { proxy in
+                    List {
+                        ForEach(visibleRecords) { record in
+                            rowView(record).id(record.id)
+                        }
+                    }
+                    .task(id: reviewTargetID) {
+                        guard let reviewTargetID else { return }
+                        await Task.yield()
+                        proxy.scrollTo(reviewTargetID, anchor: .center)
+                    }
+                    #if os(macOS)
+                    .listStyle(.inset)
+                    #else
+                    .listStyle(.plain)
+                    #endif
                 }
-                #if os(macOS)
-                .listStyle(.inset)
-                #else
-                .listStyle(.plain)
-                #endif
             }
         }
+    }
+
+    private var reviewTargetID: UUID? {
+        TransferLibraryPresentation.reviewTargetRecordID(
+            requested: initialRecordID,
+            visibleRecords: visibleRecords
+        )
     }
 
     @ToolbarContentBuilder

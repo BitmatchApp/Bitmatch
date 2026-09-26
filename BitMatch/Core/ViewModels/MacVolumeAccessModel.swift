@@ -399,17 +399,6 @@ final class MacVolumeAccessModel: ObservableObject {
         }
     }
     
-    // MARK: - Volume Space Helpers
-    func formattedAvailableSpace(for url: URL) -> String? {
-        do {
-            let rv = try url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
-            if let available = rv.volumeAvailableCapacity {
-                return ByteCountFormatter.string(fromByteCount: Int64(available), countStyle: .file)
-            }
-        } catch { }
-        return nil
-    }
-    
     // MARK: - Recent Folders Management
     private func saveRecentFolder(_ url: URL?, key: String) {
         guard let url = url, !StressTestScratch.isScratch(url) else { return }

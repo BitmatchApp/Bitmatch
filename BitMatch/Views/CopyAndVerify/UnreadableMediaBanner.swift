@@ -8,12 +8,12 @@ struct UnreadableMediaBanner: View {
     var body: some View {
         VStack(spacing: 8) {
             ForEach(monitor.notices) { notice in
-                HStack(alignment: .top, spacing: 10) {
+                HStack(alignment: .top, spacing: 8) {
                     Image(systemName: "sdcard.fill")
                         .font(.system(size: 16))
-                        .foregroundColor(.orange)
+                        .foregroundStyle(CardSafetyTint.amber.color)
                         .accessibilityHidden(true)
-                    VStack(alignment: .leading, spacing: 4) {
+                    VStack(alignment: .leading, spacing: 8) {
                         Text(notice.title)
                             .font(.system(size: 13, weight: .semibold))
                         Text(notice.detail)
@@ -29,9 +29,9 @@ struct UnreadableMediaBanner: View {
                 }
                 .padding(12)
                 .background(
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.orange.opacity(0.08))
-                        .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.orange.opacity(0.35)))
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(CardSafetyTint.amber.color.opacity(0.08))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(CardSafetyTint.amber.color.opacity(0.35)))
                 )
                 .accessibilityElement(children: .combine)
             }

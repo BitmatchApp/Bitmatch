@@ -526,7 +526,7 @@ private struct MasterReportCameraGroupView: View {
 
     private var summary: String {
         let count = group.cards.count == 1 ? "1 transfer" : "\(group.cards.count) transfers"
-        let size = ByteCountFormatter.string(fromByteCount: group.totalSize, countStyle: .file)
+        let size = ByteCountPresentation.fileSize(group.totalSize)
         return "\(count) · \(group.totalFiles.formatted()) files · \(size) · \(group.verifiedCount) verified"
     }
 }

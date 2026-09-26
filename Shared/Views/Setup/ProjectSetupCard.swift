@@ -84,12 +84,12 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
                 setupAction
             }
         }
-        .padding(14)
+        .padding(12)
         .background(
-            RoundedRectangle(cornerRadius: 14)
+            RoundedRectangle(cornerRadius: 10)
                 .fill(Color.primary.opacity(0.04))
                 .overlay(
-                    RoundedRectangle(cornerRadius: 14)
+                    RoundedRectangle(cornerRadius: 10)
                         .strokeBorder(Color.primary.opacity(0.08))
                 )
         )
@@ -116,7 +116,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
         Button {
             isExpanded.toggle()
         } label: {
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                     .font(.caption2.weight(.bold))
                     .foregroundStyle(.secondary)
@@ -140,7 +140,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
                         .foregroundStyle(Color.accentColor)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
-                        .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                        .background(RoundedRectangle(cornerRadius: 6).fill(Color.accentColor.opacity(0.12)))
                 }
             }
             .frame(minHeight: 44)
@@ -171,7 +171,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
 
     private var setupFields: some View {
         let examples = viewModel.selectedWorkflow.fieldExamples
-        let stack = AnyLayout(VStackLayout(alignment: .leading, spacing: 10))
+        let stack = AnyLayout(VStackLayout(alignment: .leading, spacing: 12))
         return ViewThatFits(in: .horizontal) {
             Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 10) {
                 GridRow {
@@ -197,7 +197,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     }
 
     private var dateField: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             fieldLabel("Date")
             DatePicker("Date", selection: $eventDate, displayedComponents: .date)
                 .labelsHidden()
@@ -208,7 +208,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     }
 
     private var cardNumberField: some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             fieldLabel(viewModel.selectedWorkflow.sourceUnitLabel)
             Text(String(format: "%03d", cardNumber))
                 .font(.system(.body, design: .monospaced).weight(.semibold))
@@ -223,9 +223,9 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     // MARK: Layers and presets
 
     private var layerDisclosure: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 12) {
             ViewThatFits(in: .horizontal) {
-                HStack(spacing: 10) {
+                HStack(spacing: 8) {
                     layersToggleButton
                     Spacer()
                     presetMenu
@@ -242,7 +242,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
                     ForEach(Array(viewModel.draftRecipe.layers.enumerated()), id: \.element.id) { index, layer in
                         layerRow(layer, index: index)
                     }
-                    HStack(spacing: 10) {
+                    HStack(spacing: 8) {
                         TextField("Preset name", text: $presetName)
                             .textFieldStyle(.roundedBorder)
                             .accessibilityLabel("Preset name")
@@ -292,7 +292,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     }
 
     private func layerRow(_ layer: FolderLayer, index: Int) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             Toggle(layerTitle(layer.kind), isOn: Binding(
                 get: { viewModel.draftRecipe.layers.first { $0.id == layer.id }?.isEnabled ?? false },
                 set: { viewModel.setDraftLayer(layer.id, isEnabled: $0) }
@@ -306,6 +306,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
             .buttonStyle(.plain)
             .disabled(index == 0)
             .accessibilityLabel("Move \(layerTitle(layer.kind)) layer up")
+            .help("Move layer up")
             Button {
                 viewModel.moveDraftLayer(layer.id, direction: .down)
             } label: {
@@ -314,6 +315,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
             .buttonStyle(.plain)
             .disabled(index == viewModel.draftRecipe.layers.count - 1)
             .accessibilityLabel("Move \(layerTitle(layer.kind)) layer down")
+            .help("Move layer down")
         }
         .font(.subheadline)
     }
@@ -347,7 +349,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
         if let setupError = viewModel.preparationError ?? viewModel.lastError {
             Label(setupError, systemImage: "exclamationmark.circle.fill")
                 .font(.caption)
-                .foregroundStyle(.red)
+                .foregroundStyle(CardSafetyTint.red.color)
         } else if let blockerSentence = presentation.blockerSentence {
             Text(blockerSentence)
                 .font(.caption)
@@ -405,7 +407,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     }
 
     private func setupField(_ label: String, text: Binding<String>, prompt: String) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
+        VStack(alignment: .leading, spacing: 8) {
             fieldLabel(label)
             TextField(prompt, text: text)
                 .textFieldStyle(.roundedBorder)

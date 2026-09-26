@@ -1,6 +1,8 @@
 import Foundation
 
 nonisolated enum ConnectedDrivesPresentation {
+    static let emptyTitle = "No other drives connected"
+
     struct Volume: Equatable, Sendable {
         let name: String
         let url: URL
@@ -50,8 +52,8 @@ nonisolated enum ConnectedDrivesPresentation {
             let state: State = contains(sourceURL, in: volume.url) ? .isSource
                 : destinationURLs.contains(where: { contains($0, in: volume.url) }) ? .isBackup : .none
             let role: Role = cameraName != nil ? .card : volume.isInternal ? .other : .backup
-            let total = ByteCountFormatter.string(fromByteCount: max(0, volume.totalBytes), countStyle: .file)
-            let free = ByteCountFormatter.string(fromByteCount: max(0, volume.freeBytes), countStyle: .file)
+            let total = ByteCountPresentation.capacity(max(0, volume.totalBytes))
+            let free = ByteCountPresentation.capacity(max(0, volume.freeBytes))
             return Row(
                 url: volume.url,
                 displayName: nameCounts[volume.name, default: 0] > 1 ? volume.url.lastPathComponent : volume.name,

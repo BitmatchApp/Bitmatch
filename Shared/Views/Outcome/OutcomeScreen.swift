@@ -134,6 +134,12 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                     .font(.subheadline)
                     .foregroundStyle(presentation.safetyState == .safeToErase ? Color.white.opacity(0.9) : Color.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                if !presentation.safetyState.isSafe {
+                    Text(presentation.guidance)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(presentation.safetyState.tint.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .accessibilityElement(children: .combine)
             .accessibilityAddTraits(.isHeader)
@@ -338,7 +344,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                 }
                 if let bytes = presentation.bytesVerified {
                     countLine(
-                        "\(ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)) verified across all backups",
+                        "\(ByteCountPresentation.fileSize(bytes)) verified across all backups",
                         systemImage: "externaldrive"
                     )
                 }
@@ -455,7 +461,7 @@ private struct OutcomeFileRow: View {
                     .font(.subheadline)
                     .lineLimit(2)
                     .truncationMode(.middle)
-                Text([row.destination, label, row.formattedSize].compactMap { $0 }.joined(separator: " · "))
+                Text([row.destination, label, ByteCountPresentation.fileSize(row.size)].compactMap { $0 }.joined(separator: " · "))
                     .font(.footnote)
                     .foregroundStyle(row.isSuccessStatus ? Color.secondary : status.color)
             }

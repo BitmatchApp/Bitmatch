@@ -21,7 +21,14 @@ struct TransferRecordRow<Trailing: View>: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 8)
-            statePill(state)
+            VStack(alignment: .trailing, spacing: 2) {
+                statePill(state)
+                if let warning = state.eraseWarning {
+                    Text(warning)
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(state.tint.color)
+                }
+            }
             trailing()
         }
         .padding(.vertical, 4)

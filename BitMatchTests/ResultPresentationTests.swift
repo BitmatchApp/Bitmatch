@@ -145,7 +145,7 @@ final class ResultPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.title, "Transfer failed")
-        XCTAssertEqual(presentation.sourceGuidance, "Keep the card. Nothing here has been confirmed safe.")
+        XCTAssertEqual(presentation.sourceGuidance, "Do not erase the card. Nothing here has been confirmed safe.")
     }
 
     func testVisibleRowsCapsMoreThanOneThousandIssuesWithoutTrapping() {

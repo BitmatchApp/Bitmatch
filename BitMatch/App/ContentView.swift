@@ -26,6 +26,8 @@ struct MacMainView: View {
     @ObservedObject private var volumeMonitor = VolumeMonitorService.shared
     @ObservedObject private var errorHandler = GlobalErrorHandler.shared
     @State private var showingTransfers = false
+    @State private var transferToReviewID: UUID?
+    @State private var dismissedAttentionIDs: Set<UUID> = []
     @State private var showOnlyIssues = false
     
     // Dynamic window height management
@@ -71,17 +73,19 @@ struct MacMainView: View {
                     backups: coordinator.destinationURLs.count,
                     showsProblemBanner: showsProblemBanner,
                     optionsExpanded: transferOptionsExpanded,
-                    connectedDrives: volumeMonitor.connectedVolumes.count,
+                    connectedDrives: unselectedConnectedDriveCount,
                     showsQueueStrip: coordinator.queuedCardCount > 0,
                     queueCards: coordinator.queuePresentation.rows.count,
-                    showsProjectSetup: setup.showsProjectSetup
+                    showsProjectSetup: setup.showsProjectSetup,
+                    showsInterruptedNotice: activeAttentionNotice != nil
                 ))
             default:
                 let outcome = TransferOutcomePresentation.make(coordinator: coordinator)
                 return .outcome(
                     backups: coordinator.destinationURLs.count,
                     needsAttention: outcome.counts.needsAttention > 0,
-                    queueCards: coordinator.queuePresentation.rows.count
+                    queueCards: coordinator.queuePresentation.rows.count,
+                    showsInterruptedNotice: activeAttentionNotice != nil
                 )
             }
         }
@@ -114,9 +118,14 @@ struct MacMainView: View {
             .focusedSceneValue(\.canCancelOperation, coordinator.isOperationInProgress)
             .focusedSceneValue(\.canStartNewTransfer, menuPresentation.newTransferEnabled)
             .focusedSceneValue(\.ejectCardTitle, menuPresentation.ejectTitle)
-            .sheet(isPresented: $showingTransfers) {
-                TransferLibraryView(coordinator: coordinator, journal: coordinator.transferJournal)
+            .sheet(isPresented: $showingTransfers, onDismiss: { transferToReviewID = nil }) {
+                TransferLibraryView(
+                    coordinator: coordinator,
+                    journal: coordinator.transferJournal,
+                    initialRecordID: transferToReviewID
+                )
             }
+            .toolbar { mainToolbar }
             .onAppear {
                 restoreWindowFrame()
                 updateWindowSize(width: compactWindowWidth, height: idealWindowHeight(forWidth: compactWindowWidth))
@@ -189,11 +198,7 @@ struct MacMainView: View {
     @ViewBuilder
     private var mainContentArea: some View {
         VStack(spacing: 0) {
-            headerView
-            TransferAttentionBanner(
-                needsAttentionCount: TransferLibraryPresentation.needsAttentionCount(coordinator.transferJournal.records)
-            ) { showingTransfers = true }
-                .padding(.bottom, 8)
+            transferAttentionNotice
             mainScrollView
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -203,8 +208,11 @@ struct MacMainView: View {
     @ViewBuilder
     private var mainScrollView: some View {
         ScrollView {
-            VStack(spacing: 16) {
-                NotificationPermissionBanner(coordinator: coordinator)
+            VStack(spacing: 24) {
+                if coordinator.showsNotificationPermissionPrompt {
+                    NotificationPermissionBanner(coordinator: coordinator)
+                        .padding(.horizontal, -16)
+                }
                 mainContentSwitch
                 if coordinator.currentMode == .copyAndVerify && !coordinator.lastOperationWasCompare {
                     MacQueueSection(coordinator: coordinator)
@@ -212,6 +220,7 @@ struct MacMainView: View {
                 resultsArea
             }
             .padding(.horizontal, 20)
+            .padding(.top, 24)
             .padding(.bottom, 20)
         }
     }
@@ -222,12 +231,10 @@ struct MacMainView: View {
         // a finished compare is never shown as the transfer completion.
         if coordinator.currentMode == .compareFolders || coordinator.lastOperationWasCompare {
             modeSpecificView
-                .padding(.top, 16)
         } else if showsTransferProgress {
             // The shared progress screen (UI plan 4.9); it observes progress
             // ticks itself, so this shell does not redraw on each one.
             MacTransferProgressView(coordinator: coordinator, confirmingCancel: $confirmingTransferCancel)
-                .padding(.top, 16)
         } else if coordinator.queueIsRunning {
             EmptyView()
         } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
@@ -235,7 +242,6 @@ struct MacMainView: View {
         } else if coordinator.queueSessionEnded && coordinator.queuePresentation.showsQueueSummary
                     && coordinator.reviewedQueueRecordID == nil {
             MacQueueSummaryView(coordinator: coordinator)
-                .padding(.top, 16)
         } else {
             transferContentSwitch
         }
@@ -248,7 +254,6 @@ struct MacMainView: View {
             // A running transfer never reaches here: `mainContentSwitch` shows
             // `MacTransferProgressView` first.
             modeSpecificView
-                .padding(.top, 16)
         default:
             completionView
         }
@@ -269,50 +274,77 @@ struct MacMainView: View {
     }
     
     // MARK: - View Components
+
+    @ToolbarContentBuilder
+    private var mainToolbar: some ToolbarContent {
+        ToolbarItem(placement: .principal) {
+            Picker("Mode", selection: Binding(
+                get: { coordinator.currentMode },
+                set: { coordinator.switchMode(to: $0) }
+            )) {
+                ForEach(AppMode.allCases) { mode in
+                    Text(mode.rawValue).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .frame(width: 330)
+            .disabled(isModeSwitchLocked)
+            .accessibilityLabel("Mode")
+        }
+        ToolbarItemGroup(placement: .primaryAction) {
+            Button {
+                transferToReviewID = nil
+                showingTransfers = true
+            } label: {
+                Image(systemName: "clock.arrow.circlepath")
+            }
+            .accessibilityLabel("Transfers and history")
+            .help("Transfers and history")
+
+            Button { openSettings() } label: {
+                Image(systemName: "gearshape")
+            }
+            .accessibilityLabel("Settings")
+            .help("Settings")
+        }
+    }
+
     @ViewBuilder
-    private var headerView: some View {
-        GeometryReader { proxy in
-            HStack(spacing: 12) {
-                Text("BitMatch")
-                    .font(.system(size: 20, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white.opacity(0.9))
-                Spacer(minLength: 8)
-                // Decision C-2: no mode switch while anything runs.
-                if !isModeSwitchLocked {
-                    if HeaderPresentationPolicy.presentation(for: proxy.size.width) == .expanded {
-                        ModeSelectorView(mode: $coordinator.currentMode)
-                            .transition(.opacity)
-                    } else {
-                        CompactModeSelectorView(mode: $coordinator.currentMode)
-                            .transition(.opacity)
-                    }
+    private var transferAttentionNotice: some View {
+        if coordinator.currentMode == .copyAndVerify,
+           let notice = activeAttentionNotice {
+            HStack(spacing: 8) {
+                Image(systemName: notice.systemImage)
+                    .foregroundStyle(notice.tint.color)
+                    .accessibilityHidden(true)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(notice.title).font(.callout)
+                    Text(notice.detail).font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 8)
-                Button { showingTransfers = true } label: {
-                    Image(systemName: "clock.arrow.circlepath").frame(width: 36, height: 36)
+                Button("Review") {
+                    transferToReviewID = notice.recordID
+                    showingTransfers = true
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Transfers and history")
-                .help("Transfers and history")
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.roundedRectangle(radius: 6))
                 Button {
-                    openSettings()
+                    dismissedAttentionIDs.insert(notice.recordID)
                 } label: {
-                    Image(systemName: "gearshape")
-                        .font(.system(size: 16))
-                        .foregroundColor(.white.opacity(0.7))
-                        .frame(width: 28, height: 28)
+                    Image(systemName: "xmark")
+                        .frame(width: 24, height: 24)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .help("Settings")
-                // Audit M8: a tooltip alone is not a reliable accessible name.
-                .accessibilityLabel("Settings")
+                .accessibilityLabel("Dismiss transfer notice")
+                .help("Dismiss")
             }
             .padding(.horizontal, 20)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .padding(.vertical, 8)
+            .background(.regularMaterial)
+            .overlay(alignment: .bottom) { Divider() }
         }
-        .frame(height: 68)
-        .background(Color.black.opacity(0.4))
     }
     
     @ViewBuilder
@@ -369,7 +401,6 @@ struct MacMainView: View {
                 )
             }
         })
-        .padding(.top, 16)
         .transition(.asymmetric(
             insertion: .scale(scale: 0.95).combined(with: .opacity),
             removal: .scale(scale: 1.05).combined(with: .opacity)
@@ -377,17 +408,7 @@ struct MacMainView: View {
     }
     
     private var darkBackground: some View {
-        ZStack {
-            Color.black
-            LinearGradient(
-                colors: [
-                    Color(red: 0.11, green: 0.11, blue: 0.12),
-                    Color(red: 0.07, green: 0.07, blue: 0.08)
-                ],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-        }
+        Color(nsColor: .windowBackgroundColor)
     }
     
     // MARK: - Helpers
@@ -416,6 +437,22 @@ struct MacMainView: View {
 
     private var showsTransferProgress: Bool {
         coordinator.currentMode == .copyAndVerify && coordinator.isOperationInProgress
+    }
+
+    private var activeAttentionNotice: TransferLibraryPresentation.AttentionNotice? {
+        TransferLibraryPresentation.attentionNotice(
+            records: coordinator.transferJournal.records,
+            isTransferRunning: coordinator.isOperationInProgress || coordinator.queueIsRunning,
+            dismissedIDs: dismissedAttentionIDs
+        )
+    }
+
+    private var unselectedConnectedDriveCount: Int {
+        ConnectedDrivesPresentation.make(
+            volumes: volumeMonitor.connectedVolumes,
+            sourceURL: coordinator.sourceURL?.standardizedFileURL.resolvingSymlinksInPath(),
+            destinationURLs: coordinator.destinationURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        ).filter { $0.state == .none }.count
     }
 
     private var isModeSwitchLocked: Bool {
@@ -531,6 +568,7 @@ struct MacMainView: View {
                         coordinator.startQueue()
                     } else {
                         // The shared Start: refuses what the Start button would.
+                        guard SetupPresentation.make(coordinator: coordinator).start.canStart else { return }
                         Task { await coordinator.startCurrentMode() }
                     }
                 case .compareFolders:

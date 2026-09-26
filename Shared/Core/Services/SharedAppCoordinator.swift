@@ -19,6 +19,19 @@ import BackgroundTasks
 
 @MainActor
 class SharedAppCoordinator: ObservableObject {
+    enum CancellationSettlementError: LocalizedError, Equatable {
+        case journalRecordMissing
+        case journalStillRunning(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .journalRecordMissing:
+                return "The transfer stopped, but BitMatch could not confirm its saved history. Keep the app open and review Transfers."
+            case .journalStillRunning(let detail):
+                return "The transfer stopped, but BitMatch could not save it as interrupted. \(detail)"
+            }
+        }
+    }
     
     // MARK: - Platform Manager
     private let platformManager: PlatformManager
@@ -626,6 +639,11 @@ class SharedAppCoordinator: ObservableObject {
         return folderInfoService.isAwaitingSourceInfo(for: sourceURL)
     }
 
+    var isSelectedSourceKnownEmpty: Bool {
+        guard let sourceURL, !isAnalysingSource, let info = sourceFolderInfo else { return false }
+        return info.url.standardizedFileURL == sourceURL.standardizedFileURL && info.fileCount == 0
+    }
+
     /// True while the left compare folder has not finished its scan.
     var isAnalysingLeft: Bool {
         guard let leftURL else { return false }
@@ -673,7 +691,7 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     var canEnqueueSelection: Bool {
-        sourceURL != nil && !destinationURLs.isEmpty && !isOperationInProgress
+        operationReadinessAssessment.isReady && !isOperationInProgress
             && !usesProjectWorkflow && !photographerJobViewModel.hasPreparedIngestAwaitingStart
     }
 
@@ -695,6 +713,9 @@ class SharedAppCoordinator: ObservableObject {
             throw FileOperationError.unsafeOperation(refusal)
         }
         try SafetyValidator.validateResolvedDestinationRoots(source: source, destinations: destinations, settings: settings)
+        guard try CardSource.containsRegularFile(base: source) else {
+            throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
+        }
         if queueSessionEnded && !hasWaitingQueueSessionRecord {
             clearQueueSessionState()
         }
@@ -1065,6 +1086,15 @@ class SharedAppCoordinator: ObservableObject {
             )
             return
         }
+        guard !isSelectedSourceKnownEmpty else {
+            operationState = .failed
+            updateProjectLifecycle(for: .failed)
+            await platformManager.presentAlert(
+                title: "Empty Source",
+                message: "Choose a source that contains files."
+            )
+            return
+        }
 
         let startID = UUID()
         activeStartID = startID
@@ -1153,7 +1183,21 @@ class SharedAppCoordinator: ObservableObject {
             return
         }
 
-        guard activeStartID == startID, !startCancellationRequested else { return }
+        guard activeStartID == startID, !startCancellationRequested else {
+            queueIsRunning = false
+            do {
+                try transferJournal.cancel(id: recordID, results: results)
+                handleAttemptTerminal(
+                    recordID: recordID,
+                    belongsToQueueSession: isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID)
+                )
+            } catch {
+                let message = "Could not save transfer results: \(error.localizedDescription)"
+                queueMessage = message
+                operationState = .failed
+            }
+            return
+        }
 
         // A new run starts its smoothed progress from zero, even if the last
         // run never reached a terminal state.
@@ -1464,6 +1508,48 @@ class SharedAppCoordinator: ObservableObject {
         
         operationState = .cancelled
         updateProjectLifecycle(for: .cancelled)
+    }
+
+    /// Requests cancellation, then waits until the running task has unwound,
+    /// released its security scopes and durably moved its journal record out
+    /// of `.running`. App termination and window closure must await this.
+    func cancelOperationAndWaitForSettlement() async throws {
+        let startID = activeStartID
+        let recordID = activeJournalRecordID
+
+        guard startID != nil || isOperationInProgress || queueIsRunning else { return }
+        // The queue can be between records: stopping it is already settled,
+        // and no journal record is currently running.
+        guard startID != nil || isOperationInProgress else {
+            queueIsRunning = false
+            return
+        }
+        cancelOperation()
+
+        if let startID {
+            while activeStartID == startID || isOperationInProgress {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        } else {
+            while isOperationInProgress {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+
+        guard let recordID else {
+            // A natural finish can win the race before cancellation observes
+            // the active record. In that case there is no running record left.
+            if !transferJournal.records.contains(where: { $0.state == .running }) { return }
+            throw CancellationSettlementError.journalRecordMissing
+        }
+        guard let record = transferJournal.records.first(where: { $0.id == recordID }) else {
+            throw CancellationSettlementError.journalRecordMissing
+        }
+        guard record.state != .running else {
+            throw CancellationSettlementError.journalStillRunning(
+                transferJournal.persistenceError ?? queueMessage ?? "The journal still marks the transfer as running."
+            )
+        }
     }
     
     func pauseOperation(reason: PauseInfo.PauseReason = .userRequested) async {
@@ -1832,7 +1918,7 @@ class SharedAppCoordinator: ObservableObject {
         }.reduce(0, +)
         
         if totalCapacity > 0 {
-            let formattedCapacity = ByteCountFormatter.string(fromByteCount: totalCapacity, countStyle: .file)
+            let formattedCapacity = ByteCountPresentation.capacity(totalCapacity)
             return "\(destinationURLs.count) destination\(destinationURLs.count == 1 ? "" : "s") • ~\(formattedCapacity) available"
         } else {
             return "\(destinationURLs.count) destination\(destinationURLs.count == 1 ? "" : "s")"
@@ -1841,11 +1927,16 @@ class SharedAppCoordinator: ObservableObject {
     
     private func getDriveCapacity(for url: URL) -> Int64? {
         do {
-            let values = try url.resourceValues(forKeys: [.volumeAvailableCapacityKey])
-            if let cap = values.volumeAvailableCapacity {
-                return Int64(cap)
-            }
-            return nil
+            let values = try url.resourceValues(forKeys: [
+                .volumeAvailableCapacityForImportantUsageKey,
+                .volumeAvailableCapacityKey,
+            ])
+            guard values.volumeAvailableCapacityForImportantUsage != nil
+                    || values.volumeAvailableCapacity != nil else { return nil }
+            return SafetyValidator.resolvedAvailableSpace(
+                importantUsage: values.volumeAvailableCapacityForImportantUsage,
+                standardCapacity: values.volumeAvailableCapacity
+            )
         } catch {
             return nil
         }
@@ -1938,6 +2029,7 @@ class SharedAppCoordinator: ObservableObject {
     var transferReadiness: TransferReadiness {
         TransferReadiness.assess(
             source: sourceURL,
+            sourceFileCount: sourceFolderInfo?.fileCount,
             sourceBytes: sourceFolderInfo?.totalSize,
             isAnalysingSource: isAnalysingSource,
             destinations: destinationURLs,
@@ -2018,6 +2110,7 @@ extension OperationReadinessAssessment {
     /// the rest of the rule.
     static func assess(
         source: URL?,
+        sourceFileCount: Int? = nil,
         sourceBytes: Int64?,
         isAnalysingSource: Bool,
         destinations: [URL],
@@ -2028,6 +2121,7 @@ extension OperationReadinessAssessment {
     ) -> OperationReadinessAssessment {
         let readiness = TransferReadiness.assess(
             source: source,
+            sourceFileCount: sourceFileCount,
             sourceBytes: sourceBytes,
             isAnalysingSource: isAnalysingSource,
             destinations: destinations,
@@ -2074,16 +2168,16 @@ struct FolderMetadataSummary {
     let lastModified: Date
     
     var formattedTotalSize: String {
-        ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+        ByteCountPresentation.fileSize(totalSize)
     }
     
     var formattedAverageSize: String {
-        ByteCountFormatter.string(fromByteCount: averageFileSize, countStyle: .file)
+        ByteCountPresentation.fileSize(averageFileSize)
     }
     
     var formattedLargestFile: String? {
         guard let largest = largestFile else { return nil }
-        let size = ByteCountFormatter.string(fromByteCount: largest.size, countStyle: .file)
+        let size = ByteCountPresentation.fileSize(largest.size)
         return "\(largest.name) (\(size))"
     }
     

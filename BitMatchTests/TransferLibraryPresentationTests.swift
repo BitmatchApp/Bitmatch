@@ -138,6 +138,43 @@ struct TransferLibraryPresentationTests {
         #expect(TransferLibraryPresentation.bannerTitle(needsAttentionCount: count) == nil)
     }
 
+    @Test func interruptedNoticeUsesTheLatestUndismissedRecord() {
+        let older = PresentationTestSupport.record(state: .interrupted, createdAt: .distantPast)
+        let latest = PresentationTestSupport.record(state: .interrupted, createdAt: .distantFuture)
+
+        let notice = TransferLibraryPresentation.attentionNotice(
+            records: [older, latest], isTransferRunning: false, dismissedIDs: []
+        )
+        #expect(notice?.recordID == latest.id)
+        #expect(notice?.title == "A previous transfer was interrupted.")
+        #expect(notice?.detail == "Do not erase the card.")
+        #expect(TransferLibraryPresentation.attentionNotice(
+            records: [older, latest], isTransferRunning: true, dismissedIDs: []
+        ) == nil)
+        #expect(TransferLibraryPresentation.attentionNotice(
+            records: [latest], isTransferRunning: false, dismissedIDs: [latest.id]
+        ) == nil)
+    }
+
+    @Test func failedTransferKeepsACalmVisibleNotice() {
+        let failed = PresentationTestSupport.record(state: .failed)
+        let notice = TransferLibraryPresentation.attentionNotice(
+            records: [failed], isTransferRunning: false, dismissedIDs: []
+        )
+        #expect(notice?.recordID == failed.id)
+        #expect(notice?.title == "A previous transfer failed.")
+        #expect(notice?.detail == "Do not erase the card.")
+        #expect(notice?.tint == .red)
+    }
+
+    @Test func reviewTargetUsesTheRequestedVisibleStableID() {
+        let older = PresentationTestSupport.record(state: .interrupted, createdAt: .distantPast)
+        let newer = PresentationTestSupport.record(state: .completed, createdAt: .distantFuture)
+        let visible = TransferLibraryPresentation.visibleRecords([newer, older], showHistory: true, search: "")
+        #expect(TransferLibraryPresentation.reviewTargetRecordID(requested: older.id, visibleRecords: visible) == older.id)
+        #expect(TransferLibraryPresentation.reviewTargetRecordID(requested: UUID(), visibleRecords: visible) == nil)
+    }
+
     // MARK: - Tab counts
 
     /// The Queue/History segmented control's counts (UI plan step: compact

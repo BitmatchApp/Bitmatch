@@ -124,6 +124,25 @@ struct SetupPresentationTests {
         #expect(presentation.title == "Review the paused queue")
     }
 
+    @Test func emptySourceDisablesStartWithAReason() {
+        let ready = plan(source: source, backups: [backup])
+        let presentation = StartButtonPresentation.make(
+            plan: ready,
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            sourceFileCount: 0,
+            sourceBytes: 0,
+            destinationCount: 1
+        )
+
+        #expect(!presentation.canStart)
+        #expect(presentation.title == "Source is empty")
+        #expect(presentation.blocker == "Choose a source that contains files.")
+    }
+
     /// A prepared card shows Project and locks One-time, whatever the
     /// remembered choice.
     /// Plant: in `SetupPresentation.make`, use

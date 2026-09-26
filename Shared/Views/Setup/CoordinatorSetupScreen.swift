@@ -98,6 +98,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
             },
             start: {
                 // The one Start: the same rule as ⌘R, including S-2.
+                guard SetupPresentation.make(coordinator: coordinator).start.canStart else { return }
                 coordinator.switchMode(to: .copyAndVerify)
                 Task { await coordinator.startCurrentMode() }
             },
