@@ -1000,7 +1000,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 results: [ResultRow(
                     path: "clip.mov",
                     status: isSafe ? ResultOutcome.verified.statusText : ResultOutcome.failed.statusText,
-                    size: 4, checksum: isSafe ? "abc" : nil, destination: "backup"
+                    size: 4, checksum: isSafe ? "abc" : nil, destination: "backup",
+                    destinationPath: f.destination.appendingPathComponent("clip.mov").path
                 )],
                 summary: isSafe ? "Verified" : "Mismatch", hadIssues: !isSafe
             )
