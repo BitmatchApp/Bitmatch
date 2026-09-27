@@ -39,6 +39,7 @@ public struct ResultRow: Identifiable, Sendable {
     public let checksum: String?
     public let destination: String?
     public let destinationPath: String?
+    public let clipIntegrity: ClipIntegrityFinding?
     
     public init(id: UUID = UUID(),
          path: String,
@@ -46,7 +47,8 @@ public struct ResultRow: Identifiable, Sendable {
          size: Int64,
          checksum: String?,
          destination: String?,
-         destinationPath: String? = nil) {
+         destinationPath: String? = nil,
+         clipIntegrity: ClipIntegrityFinding? = nil) {
         self.id = id
         self.path = path
         self.status = status
@@ -54,6 +56,7 @@ public struct ResultRow: Identifiable, Sendable {
         self.checksum = checksum
         self.destination = destination
         self.destinationPath = destinationPath
+        self.clipIntegrity = clipIntegrity
     }
     
     public var fileName: String {
@@ -140,7 +143,7 @@ public struct ReportPrefs: Codable, Sendable {
 
 extension ResultRow: Codable {
     public enum CodingKeys: String, CodingKey, Sendable {
-        case id, path, status, size, checksum, destination, destinationPath
+        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity
     }
 
     public init(from decoder: Decoder) throws {
@@ -152,8 +155,9 @@ extension ResultRow: Codable {
         let checksum = try container.decodeIfPresent(String.self, forKey: .checksum)
         let destination = try container.decodeIfPresent(String.self, forKey: .destination)
         let destinationPath = try container.decodeIfPresent(String.self, forKey: .destinationPath)
+        let clipIntegrity = try container.decodeIfPresent(ClipIntegrityFinding.self, forKey: .clipIntegrity)
 
-        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath)
+        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -165,5 +169,6 @@ extension ResultRow: Codable {
         try container.encodeIfPresent(checksum, forKey: .checksum)
         try container.encodeIfPresent(destination, forKey: .destination)
         try container.encodeIfPresent(destinationPath, forKey: .destinationPath)
+        try container.encodeIfPresent(clipIntegrity, forKey: .clipIntegrity)
     }
 }

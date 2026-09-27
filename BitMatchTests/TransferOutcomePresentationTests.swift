@@ -63,6 +63,134 @@ struct TransferOutcomePresentationTests {
         [row("A001.mov", .verified, backup: backupA), row("A001.mov", .verified, backup: backupB)]
     }
 
+    @Test func incompleteClipIsAmberAdvisoryWithoutChangingSafeVerdict() {
+        let rows = [ResultRow(
+            path: "/Card/C0001.MP4", status: ResultOutcome.verified.statusText,
+            size: 100, checksum: "abc", destination: backupA.lastPathComponent,
+            destinationPath: backupA.appendingPathComponent("C0001.MP4").path,
+            clipIntegrity: .incomplete
+        )]
+
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.safetyState == .safeToErase)
+        #expect(outcome.canEject)
+        #expect(outcome.advisoryLines == [
+            "1 clip looks incomplete — the camera may have stopped recording early. The copies match the card."
+        ])
+    }
+
+    @Test func incompleteClipCountDeduplicatesDestinationCopies() {
+        let rows = [backupA, backupB].map { backup in
+            ResultRow(
+                path: "/Card/C0001.MP4", status: ResultOutcome.verified.statusText,
+                size: 100, checksum: "abc", destination: backup.lastPathComponent,
+                destinationPath: backup.appendingPathComponent("C0001.MP4").path,
+                clipIntegrity: .incomplete
+            )
+        }
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.advisoryLines.first?.hasPrefix("1 clip looks incomplete") == true)
+    }
+
+    @Test func oneIncompleteDestinationCopyStillReportsOneSourceClip() {
+        let rows = [
+            ResultRow(
+                path: "/Card/C0001.MP4", status: ResultOutcome.verified.statusText,
+                size: 100, checksum: "abc", destination: backupA.lastPathComponent,
+                destinationPath: backupA.appendingPathComponent("C0001.MP4").path,
+                clipIntegrity: .incomplete
+            ),
+            ResultRow(
+                path: "/Card/C0001.MP4", status: ResultOutcome.verified.statusText,
+                size: 100, checksum: "abc", destination: backupB.lastPathComponent,
+                destinationPath: backupB.appendingPathComponent("C0001.MP4").path,
+                clipIntegrity: .complete
+            ),
+        ]
+
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.advisoryLines.first?.hasPrefix("1 clip looks incomplete") == true)
+        #expect(outcome.safetyState == .safeToErase)
+    }
+
+    @Test func completeAndUnsupportedFilesHaveNoIntegrityAdvisory() {
+        let rows = [
+            ResultRow(
+                path: "/Card/C0001.MP4", status: ResultOutcome.verified.statusText,
+                size: 100, checksum: "abc", destination: backupA.lastPathComponent,
+                destinationPath: backupA.appendingPathComponent("C0001.MP4").path,
+                clipIntegrity: .complete
+            ),
+            ResultRow(
+                path: "/Card/A001.MXF", status: ResultOutcome.verified.statusText,
+                size: 100, checksum: "def", destination: backupA.lastPathComponent,
+                destinationPath: backupA.appendingPathComponent("A001.MXF").path
+            ),
+        ]
+
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.advisoryLines.isEmpty)
+    }
+
+    @Test func unknownIntegrityResultHasNoAdvisoryAndKeepsSafeVerdict() {
+        let rows = [ResultRow(
+            path: "/Card/C0001.MP4", status: ResultOutcome.verified.statusText,
+            size: 100, checksum: "abc", destination: backupA.lastPathComponent,
+            destinationPath: backupA.appendingPathComponent("C0001.MP4").path,
+            clipIntegrity: .unknown
+        )]
+
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.advisoryLines.isEmpty)
+        #expect(outcome.safetyState == .safeToErase)
+        #expect(outcome.canEject)
+    }
+
+    @Test func absentIntegrityResultHasNoAdvisoryAndKeepsSafeVerdict() {
+        let rows = [row("C0001.MP4", .verified, backup: backupA)]
+
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.advisoryLines.isEmpty)
+        #expect(outcome.safetyState == .safeToErase)
+        #expect(outcome.canEject)
+    }
+
+    @Test func failedClipWordingListsSonySidecar() {
+        let rows = [
+            row("C0001.MP4", .checksumMismatch, backup: backupA),
+            row("C0001M01.XML", .verified, backup: backupA),
+        ]
+        let outcome = make(
+            state: .completed(.init(success: false, message: "1 file failed")), rows: rows
+        )
+
+        #expect(outcome.clipFailureLines.contains(
+            "Clip C0001 failed (2 files): C0001.MP4, C0001M01.XML"
+        ))
+        #expect(!outcome.issueLines.contains { $0.hasPrefix("Clip ") })
+        #expect(ResultPresentation.automaticReportNotes(rows).contains(
+            "Clip C0001 failed (2 files): C0001.MP4, C0001M01.XML"
+        ))
+    }
+
     @Test func phaseDurationLineUsesCompactUnitsAndQuickNamesMissingVerify() {
         #expect(TransferOutcomePresentation.phaseDurationText(
             copySeconds: 252, verifySeconds: 238, verificationMode: .standard
@@ -85,6 +213,28 @@ struct TransferOutcomePresentationTests {
         // Cancelling logs a warning and leaves unverified rows: neither is a failure.
         let outcome = make(state: .cancelled, rows: partialRows, hasErrors: true, warningCount: 1)
         #expect(outcome.issueLines.isEmpty)
+    }
+
+    @Test func interruptedRunStillNamesClipThatFailedBeforeTheStop() {
+        let rows = [
+            row("C0001.MP4", .checksumMismatch, backup: backupA),
+            row("C0001M01.XML", .verified, backup: backupA),
+        ]
+        let outcome = make(state: .cancelled, rows: rows, hasErrors: true, warningCount: 1)
+
+        #expect(outcome.issueLines.isEmpty)
+        #expect(outcome.clipFailureLines == [
+            "Clip C0001 failed (2 files): C0001.MP4, C0001M01.XML"
+        ])
+    }
+
+    @Test func noFailedRowsProduceNoClipFailureLines() {
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: cleanRows
+        )
+
+        #expect(outcome.clipFailureLines.isEmpty)
+        #expect(ResultPresentation.clipFailureDescriptions(cleanRows).isEmpty)
     }
 
     // Plant: in `TransferOutcomePresentation.make`, set
