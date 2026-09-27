@@ -410,6 +410,40 @@ public final class TransferJournal: Sendable {
         }
     }
 
+    /// Replaces a waiting transfer's complete setup snapshot while preserving
+    /// its identity and position in the queue. A running or finished record is
+    /// immutable evidence and can never be edited through this path.
+    public func replaceQueued(
+        id: UUID,
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        cameraSettings: CameraLabelSettings,
+        reportSettings: ReportPrefs,
+        generateASCMHL: Bool
+    ) throws {
+        guard !destinationURLs.isEmpty else { throw LocalTransferJournalError.missingDestinations }
+        let source = try LocalTransferResource(url: sourceURL)
+        let destinations = try destinationURLs.map(LocalTransferResource.init(url:))
+        try commit { records in
+            try Self.updated(records, id: id) { record in
+                guard record.state == .queued, record.projectID == nil else {
+                    throw LocalTransferJournalError.invalidState
+                }
+                record = LocalTransferRecord(
+                    id: record.id,
+                    createdAt: record.createdAt,
+                    source: source,
+                    destinations: destinations,
+                    verificationMode: verificationMode,
+                    cameraSettings: cameraSettings,
+                    reportSettings: reportSettings,
+                    generateASCMHL: generateASCMHL
+                )
+            }
+        }
+    }
+
     public func moveQueuedToTop(id: UUID) throws {
         try commit { records in
             guard let selected = records.first(where: { $0.id == id && $0.state == .queued }) else {

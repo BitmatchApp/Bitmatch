@@ -23,4 +23,33 @@ struct DriveAccessPolicyTests {
         #expect(!DriveAccessPolicy.grantsAccess(chosenPath: "/Volumes", hasActiveVolumesScope: false))
         #expect(!DriveAccessPolicy.grantsAccess(chosenPath: nil, hasActiveVolumesScope: true))
     }
+
+    @MainActor
+    @Test func connectedMenuChoiceRunsOnlyAfterDriveAccessIsGranted() {
+        var requests = 0
+        var allowed: [Bool] = []
+        DriveAccessPolicy.resolveMenuChoice(
+            needsAccess: true,
+            requestAccess: { completion in requests += 1; completion(false) },
+            completion: { allowed.append($0) }
+        )
+        #expect(requests == 1)
+        #expect(allowed == [false])
+
+        DriveAccessPolicy.resolveMenuChoice(
+            needsAccess: true,
+            requestAccess: { completion in requests += 1; completion(true) },
+            completion: { allowed.append($0) }
+        )
+        #expect(requests == 2)
+        #expect(allowed == [false, true])
+
+        DriveAccessPolicy.resolveMenuChoice(
+            needsAccess: false,
+            requestAccess: { _ in requests += 1 },
+            completion: { allowed.append($0) }
+        )
+        #expect(requests == 2)
+        #expect(allowed == [false, true, true])
+    }
 }

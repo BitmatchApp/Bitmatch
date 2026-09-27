@@ -29,10 +29,11 @@ struct TransferOptionsPresentation: Equatable, Sendable {
         generateASCMHL: Bool?,
         makeReport: Bool?,
         cameraLabel: String?,
+        includesVerificationNote: Bool = true,
         writesPDF: Bool = TransferOptionsPresentation.platformWritesPDF
     ) -> TransferOptionsPresentation {
         var notes: [String] = []
-        if verificationMode != defaultVerificationMode {
+        if includesVerificationNote && verificationMode != defaultVerificationMode {
             notes.append("\(verificationMode.rawValue) mode")
         }
         if generateASCMHL == false, ascMHLEnabled(for: verificationMode) {

@@ -1,463 +1,380 @@
 import SwiftUI
 import UniformTypeIdentifiers
-#if os(iOS)
-import UIKit
-#endif
+import BitMatchEngine
 
-/// What the boxes can ask for. Picking opens the platform's picker (Mac:
-/// the open panel; iOS: the Files picker); what was picked then goes through
-/// `DestinationSelectionPolicy` and `BackupTargetPolicy`.
 struct SetupLocationsActions {
     var pickSource: () -> Void
     var clearSource: () -> Void
     var addAnotherCard: () -> Void
+    var chooseConnectedSource: (URL) -> Void
+    var chooseConnectedBackup: (URL) -> Void
+    var chooseFolderOnBackup: (URL) -> Void
+    var editStagedCard: (UUID) -> Void
+    var cancelEdit: () -> Void
+    var moveStagedCard: (UUID, Int) -> Void
     var removeStagedCard: (UUID) -> Void
     var pickBackups: () -> Void
     var removeBackup: (URL) -> Void
 }
 
-/// Dropping folders onto the boxes (the Mac). Each returns whether it took
-/// the drop. iPad and iPhone pass none: a folder dragged from Files does not
-/// bring lasting access with it, so picking is the one way in there.
 struct SetupLocationsDrops {
     var source: ([NSItemProvider]) -> Bool
     var addBackups: ([NSItemProvider]) -> Bool
-    /// Replaces the backup at the index (a drop onto an existing box).
     var replaceBackup: (Int, [NSItemProvider]) -> Bool
 }
 
-/// The source and backup boxes on Setup, one view for Mac, iPad and iPhone
-/// (it replaces the Mac `HorizontalFlowView` and the iOS
-/// `ProfessionalSourceCard` / `DestinationsFlowView`). It shows a
-/// `SetupLocationsPresentation` and decides nothing itself.
-///
-/// The empty box that is the next step receives neutral emphasis instead of
-/// showing a banner. Every control is at least 44 pt tall and works
-/// without hover. Selection is shown in the accent colour, never green:
-/// green means verified.
+/// The shared transfer composer. Accent colour means selected; green remains
+/// reserved for fully verified transfer outcomes.
 struct SetupLocationsView: View {
     let presentation: SetupLocationsPresentation
     let actions: SetupLocationsActions
+    @Binding var verificationMode: VerificationMode
+    let connectedSources: [SetupConnectedVolume]
+    let connectedDestinations: [SetupConnectedVolume]
+    let editingID: UUID?
+    let stacksVertically: Bool
+    let advanced: AnyView
     var drops: SetupLocationsDrops? = nil
 
     @State private var isSourceTargeted = false
     @State private var isAddTargeted = false
-    @State private var isAddMoreTargeted = false
     @State private var targetedBackup: Int?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @FocusState private var focusedQueueID: UUID?
 
-    private let pickerMinimumHeight: CGFloat = 120
+    private var cardCount: Int {
+        presentation.stagedSources.count + (presentation.source != nil && editingID == nil ? 1 : 0)
+    }
 
     var body: some View {
-        Group {
-            if presentation.sideBySide {
-                ViewThatFits(in: .horizontal) {
-                    HStack(alignment: .top, spacing: 12) {
-                        sourceBox
-                            .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
-                        Image(systemName: "arrow.right")
-                            .font(.body.weight(.semibold))
-                            .foregroundStyle(.tertiary)
-                            .padding(.top, 52)
-                            .accessibilityHidden(true)
-                        backupsBox
-                            .frame(minWidth: 260, maxWidth: .infinity, alignment: .topLeading)
-                    }
-                    stacked
-                }
-            } else {
-                stacked
+        VStack(alignment: .leading, spacing: 12) {
+            composer
+            composerAction
+            advanced
+            if cardCount >= 2 { setupQueue }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var composer: some View {
+        if presentation.sideBySide && !stacksVertically {
+            HStack(alignment: .top, spacing: 10) {
+                sourceBox.frame(minWidth: 180, maxWidth: .infinity)
+                arrow
+                verificationBox.frame(minWidth: 145, maxWidth: 170)
+                arrow
+                destinationsBox.frame(minWidth: 250, maxWidth: .infinity)
             }
+        } else {
+            VStack(alignment: .leading, spacing: 12) {
+                sourceBox
+                verificationBox
+                destinationsBox
+            }
+        }
+    }
+
+    private var arrow: some View {
+        Image(systemName: "arrow.right")
+            .font(.body.weight(.semibold))
+            .foregroundStyle(.tertiary)
+            .padding(.top, 55)
+            .accessibilityHidden(true)
+    }
+
+    private func box<Content: View>(
+        title: String,
+        accessibilityLabel: String,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .accessibilityAddTraits(.isHeader)
+            content()
         }
         .padding(12)
-        .background(
-            SetupLocationsPanelBackground()
-        )
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isSourceTargeted)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: isAddTargeted)
-        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: targetedBackup)
+        .frame(maxWidth: .infinity, minHeight: 124, alignment: .topLeading)
+        .background(SetupLocationsPanelBackground())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(accessibilityLabel)
     }
 
-    private var stacked: some View {
-        VStack(alignment: .leading, spacing: 24) {
-            sourceBox
-            backupsBox
-        }
+    private var sourceAccessibilityLabel: String {
+        guard let source = presentation.source else { return "Source: not selected" }
+        return ["Source: \(source.title)", source.cameraName, source.detail].compactMap { $0 }.joined(separator: ", ")
     }
-
-    // MARK: Source
 
     private var sourceBox: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle(sourceSectionTitle)
-            if !presentation.stagedSources.isEmpty {
-                stagedSourceList
-            }
-            if let source = presentation.source {
-                selectedSource(source)
-                if presentation.showsAddAnotherCard {
-                    addAnotherCardButton
+        box(title: "Source", accessibilityLabel: sourceAccessibilityLabel) {
+            Menu {
+                ForEach(connectedSources) { volume in
+                    Button { actions.chooseConnectedSource(volume.url) } label: {
+                        if contains(presentation.source?.path, in: volume.url) {
+                            Label("\(volume.title) — \(volume.detail)", systemImage: "checkmark")
+                        } else { Text("\(volume.title) — \(volume.detail)") }
+                    }
                 }
-            } else {
-                SetupLocationPicker(
-                    symbol: "sdcard",
-                    title: presentation.stagedSources.isEmpty ? "Choose source…" : "Add another card…",
-                    detail: presentation.stagedSources.isEmpty ? (drops == nil
-                        ? "The card or folder to copy, from Files"
-                        : "The card or folder to copy, or drag it here") : "Each card runs as its own verified transfer",
-                    isTargeted: isSourceTargeted,
-                    isHighlighted: presentation.highlightsSource,
-                    isEnabled: presentation.canEdit,
-                    action: actions.pickSource,
-                    minimumHeight: presentation.stagedSources.isEmpty ? pickerMinimumHeight : 44
-                )
-                .accessibilityLabel(presentation.stagedSources.isEmpty ? "Choose source" : "Add another card")
-                .accessibilityHint("Opens a folder picker for the card or folder to copy")
-            }
+                if !connectedSources.isEmpty { Divider() }
+                Button("Choose a folder…", action: actions.pickSource)
+                if presentation.source != nil {
+                    Divider()
+                    Button("Remove", role: .destructive, action: actions.clearSource)
+                }
+            } label: { sourceMenuLabel }
+            .buttonStyle(.plain)
+            .disabled(!presentation.canEdit)
+            .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
+            .accessibilityHint("Lists connected cards or opens a folder picker")
         }
         .fileDrop(isTargeted: $isSourceTargeted, enabled: presentation.canEdit, perform: drops?.source)
     }
 
-    private var sourceSectionTitle: String {
-        let count = presentation.stagedSources.count + (presentation.source == nil ? 0 : 1)
-        return count > 1 ? "Sources (\(count))" : "Source"
-    }
-
-    @ViewBuilder
-    private var stagedSourceList: some View {
-        let visibleStagedRows = presentation.source == nil ? 4 : 3
-        if presentation.stagedSources.count > visibleStagedRows {
-            ScrollView {
-                LazyVStack(spacing: 8) { stagedSourceRows }
-            }
-            .frame(maxHeight: CGFloat(visibleStagedRows) * 72 + CGFloat(visibleStagedRows - 1) * 8)
-        } else {
-            VStack(spacing: 8) { stagedSourceRows }
-        }
-    }
-
-    @ViewBuilder
-    private var stagedSourceRows: some View {
-        ForEach(presentation.stagedSources) { source in
-            sourceRow(
-                title: source.title,
-                path: source.path,
-                detail: source.detail,
-                cameraName: nil,
-                removeLabel: "Remove staged card \(source.title)",
-                removeAction: { actions.removeStagedCard(source.id) }
-            )
-        }
-    }
-
-    private func selectedSource(_ source: SetupLocationsPresentation.Source) -> some View {
-        sourceRow(
-            title: source.title,
-            path: source.path,
-            detail: source.detail,
-            cameraName: source.cameraName,
-            removeLabel: "Clear source \(source.title)",
-            removeAction: actions.clearSource
-        )
-    }
-
-    private func sourceRow(
-        title: String,
-        path: String,
-        detail: String?,
-        cameraName: String?,
-        removeLabel: String,
-        removeAction: @escaping () -> Void
-    ) -> some View {
-        HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "folder.fill")
+    private var sourceMenuLabel: some View {
+        HStack(spacing: 9) {
+            Image(systemName: "sdcard")
                 .font(.title3)
-                .foregroundStyle(Color.accentColor)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let detail {
-                    Text(detail)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                if let camera = cameraName {
-                    Label(camera, systemImage: "camera")
-                        .font(.footnote.weight(.medium))
-                        .foregroundStyle(Color.accentColor)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(["Source: \(title)", detail, cameraName].compactMap { $0 }.joined(separator: ", "))
-            if presentation.canEdit {
-                removeButton(
-                    label: removeLabel,
-                    hint: "Removes this card from the transfers",
-                    action: removeAction
-                )
-            }
-        }
-        .padding(12)
-        .frame(
-            maxWidth: .infinity,
-            minHeight: 72,
-            alignment: .topLeading
-        )
-        .background(
-            SetupSelectedLocationBackground(isTargeted: isSourceTargeted)
-        )
-        .help(path)
-    }
-
-    private var addAnotherCardButton: some View {
-        Button(action: actions.addAnotherCard) {
-            Label("Add another card…", systemImage: "plus.circle")
-                .font(.subheadline.weight(.medium))
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .contentShape(RoundedRectangle(cornerRadius: 10))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
-        .disabled(!presentation.canAddAnotherCard)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(Color.primary.opacity(0.12), style: StrokeStyle(lineWidth: 1, dash: [5, 4]))
-        )
-        .accessibilityHint(presentation.canAddAnotherCard
-            ? "Stages this card as its own verified transfer, then chooses another card"
-            : presentation.addAnotherCardDisabledReason ?? "This card is not ready to add")
-        .help(presentation.canAddAnotherCard
-            ? "Stage this card and choose another"
-            : presentation.addAnotherCardDisabledReason ?? "This card is not ready to add")
-    }
-
-    // MARK: Backups
-
-    private var backupsBox: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Destinations")
-            if presentation.backups.isEmpty {
-                SetupLocationPicker(
-                    symbol: "externaldrive.badge.plus",
-                    title: "Add destination…",
-                    detail: drops == nil
-                        ? "A folder on each destination drive, from Files"
-                        : "A folder on each destination drive, or drag them here",
-                    isTargeted: isAddTargeted,
-                    isHighlighted: presentation.highlightsBackups,
-                    isEnabled: presentation.canEditBackups,
-                    action: actions.pickBackups,
-                    minimumHeight: pickerMinimumHeight
-                )
-                .accessibilityLabel("Add destination")
-                .accessibilityHint("Opens a folder picker for one or more destinations")
-                .fileDrop(isTargeted: $isAddTargeted, enabled: presentation.canEditBackups, perform: drops?.addBackups)
-            } else {
-                VStack(alignment: .leading, spacing: 8) {
-                    ForEach(Array(presentation.backups.enumerated()), id: \.element.id) { index, backup in
-                        backupRow(backup, index: index)
+                .foregroundStyle(isSourceTargeted ? Color.accentColor : Color.secondary)
+            if let source = presentation.source {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(source.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                    if let camera = source.cameraName {
+                        Text(camera).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                    if let detail = source.detail {
+                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                     }
                 }
-                if presentation.canEditBackups {
-                    addMoreButton
+            } else {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Choose source…").font(.headline)
+                    Text(drops == nil ? "Connected card or folder" : "Connected card, folder, or drop here")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            Spacer(minLength: 0)
+            Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+        .contentShape(RoundedRectangle(cornerRadius: 9))
+        .background(SetupSelectedLocationBackground(isTargeted: isSourceTargeted))
+    }
+
+    private var verificationBox: some View {
+        box(title: "Verification", accessibilityLabel: "Verification: \(verificationMode.rawValue). \(shortVerificationDetail)") {
+            Menu {
+                ForEach(VerificationMode.allCases) { mode in
+                    Button { verificationMode = mode } label: {
+                        if verificationMode == mode { Label(mode.rawValue, systemImage: "checkmark") }
+                        else { Text(mode.rawValue) }
+                    }
+                }
+            } label: {
+                HStack {
+                    Text(verificationMode.rawValue).font(.headline)
+                    Spacer()
+                    Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
+                }
+                .frame(minHeight: 28).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Verification mode")
+            Text(shortVerificationDetail)
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
-    private func backupRow(_ backup: SetupLocationsPresentation.Backup, index: Int) -> some View {
-        let isTargeted = targetedBackup == index
-        return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: "externaldrive.fill")
-                .font(.title3)
-                .foregroundStyle(Color.accentColor)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 3) {
-                Text(backup.title)
-                    .font(.headline)
-                    .lineLimit(2)
-                    .truncationMode(.middle)
-                Text(backup.path)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if let capacity = backup.capacity {
-                    Text(capacity)
-                        .font(.footnote)
-                        .foregroundStyle(capacity.hasPrefix("Needs ") ? Color.orange : Color.secondary)
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel(["Destination: \(backup.title)", backup.capacity].compactMap { $0 }.joined(separator: ", "))
-            if presentation.canEditBackups {
-                removeButton(
-                    label: "Remove destination \(backup.title)",
-                    hint: "Removes \(backup.title) from the destinations",
-                    action: { actions.removeBackup(backup.url) }
-                )
-            }
+    private var shortVerificationDetail: String {
+        switch verificationMode {
+        case .quick: "File sizes only; contents are not checksum-verified"
+        case .standard: "SHA-256, read back from each drive"
+        case .thorough: "SHA-256 and MD5, read back from each drive"
+        case .paranoid: "SHA-256 plus byte-by-byte comparison"
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(SetupSelectedLocationBackground(isTargeted: isTargeted))
+    }
+
+    private var destinationsAccessibilityLabel: String {
+        let values = presentation.backups.map { [$0.title, $0.capacity].compactMap { $0 }.joined(separator: ", ") }
+        return values.isEmpty ? "Destinations: none selected" : "Destinations: " + values.joined(separator: "; ")
+    }
+
+    private var destinationsBox: some View {
+        box(title: "Destinations", accessibilityLabel: destinationsAccessibilityLabel) {
+            ForEach(Array(presentation.backups.enumerated()), id: \.element.id) { index, backup in
+                destinationRow(backup, index: index)
+            }
+            addDestinationMenu
+        }
+        .fileDrop(isTargeted: $isAddTargeted, enabled: presentation.canEditBackups, perform: drops?.addBackups)
+    }
+
+    private func destinationRow(_ backup: SetupLocationsPresentation.Backup, index: Int) -> some View {
+        HStack(spacing: 7) {
+            Image(systemName: "checkmark").foregroundStyle(.secondary).accessibilityHidden(true)
+            Text(backup.title).font(.subheadline.weight(.medium)).lineLimit(1).truncationMode(.middle)
+            Spacer(minLength: 4)
+            if let capacity = backup.capacity {
+                Text(capacity).font(.caption)
+                    .foregroundStyle(capacity.hasPrefix("Needs ") ? Color.orange : Color.secondary)
+                    .lineLimit(1)
+            }
+            Menu {
+                Button("Choose folder on \(backup.title)…") { actions.chooseFolderOnBackup(backup.url) }
+                Divider()
+                Button("Remove", role: .destructive) { actions.removeBackup(backup.url) }
+            } label: { Image(systemName: "ellipsis.circle").frame(width: 24, height: 24) }
+            .buttonStyle(.plain)
+            .accessibilityLabel("Options for destination \(backup.title)")
+        }
         .help(backup.path)
         .fileDrop(
-            isTargeted: Binding(
-                get: { targetedBackup == index },
-                set: { targetedBackup = $0 ? index : (targetedBackup == index ? nil : targetedBackup) }
-            ),
+            isTargeted: Binding(get: { targetedBackup == index }, set: { targetedBackup = $0 ? index : nil }),
             enabled: presentation.canEditBackups,
-            perform: replaceDrop(at: index)
+            perform: drops.map { drops in { providers in drops.replaceBackup(index, providers) } }
         )
     }
 
-    private func replaceDrop(at index: Int) -> (([NSItemProvider]) -> Bool)? {
-        guard let drops else { return nil }
-        return { providers in drops.replaceBackup(index, providers) }
-    }
-
-    private var addMoreButton: some View {
-        Button(action: actions.pickBackups) {
-            Label("Add destination…", systemImage: "plus.circle")
+    private var addDestinationMenu: some View {
+        Menu {
+            ForEach(connectedDestinations) { volume in
+                let selected = presentation.backups.contains { contains($0.path, in: volume.url) }
+                Button {
+                    if selected, let backup = presentation.backups.first(where: { contains($0.path, in: volume.url) }) {
+                        actions.removeBackup(backup.url)
+                    } else { actions.chooseConnectedBackup(volume.url) }
+                } label: {
+                    if selected { Label("\(volume.title) — \(volume.detail)", systemImage: "checkmark") }
+                    else { Text("\(volume.title) — \(volume.detail)") }
+                }
+            }
+            if !connectedDestinations.isEmpty { Divider() }
+            Button("Choose a folder…", action: actions.pickBackups)
+        } label: {
+            Label("Add destination", systemImage: "plus")
                 .font(.subheadline.weight(.medium))
-                .frame(maxWidth: .infinity, minHeight: 44)
-                .contentShape(RoundedRectangle(cornerRadius: 10))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .strokeBorder(
-                    isAddMoreTargeted ? Color.accentColor : Color.primary.opacity(0.12),
-                    style: StrokeStyle(lineWidth: isAddMoreTargeted ? 2 : 1, dash: isAddMoreTargeted ? [] : [5, 4])
-                )
-        )
-        .accessibilityLabel("Add another destination")
-        .accessibilityHint("Opens a folder picker for one or more destinations")
-        .fileDrop(isTargeted: $isAddMoreTargeted, enabled: presentation.canEdit, perform: drops?.addBackups)
-    }
-
-    // MARK: Parts
-
-    private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .accessibilityAddTraits(.isHeader)
-    }
-
-    private func removeButton(label: String, hint: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: "xmark.circle.fill")
-                .font(.title3)
-                .foregroundStyle(.secondary)
-                .frame(width: removeTarget, height: removeTarget)
+                .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .accessibilityLabel(label)
-        .accessibilityHint(hint)
-        .help(hint)
+        .disabled(!presentation.canEditBackups)
+        .foregroundStyle(Color.accentColor)
+        .accessibilityLabel("Add destination")
+        .accessibilityHint("Lists connected destination drives or opens a folder picker")
     }
 
-    private var removeTarget: CGFloat {
+    @ViewBuilder
+    private var composerAction: some View {
+        if presentation.showsAddAnotherCard || editingID != nil {
+            HStack {
+                Spacer()
+                if editingID != nil {
+                    Button("Cancel", action: actions.cancelEdit).keyboardShortcut(.cancelAction)
+                }
+                Button(editingID == nil ? "Add to queue" : "Update", action: actions.addAnotherCard)
+                    .buttonStyle(.bordered)
+                    .disabled(!presentation.canAddAnotherCard)
+                    .accessibilityHint(presentation.canAddAnotherCard
+                        ? "Saves this card and its current destinations and settings"
+                        : presentation.addAnotherCardDisabledReason ?? "This card is not ready")
+            }
+        }
+    }
+
+    private var setupQueue: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Queue").font(.headline).accessibilityAddTraits(.isHeader)
+            ForEach(Array(presentation.stagedSources.enumerated()), id: \.element.id) { index, item in
+                reorderableQueueRow(item, index: index)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func reorderableQueueRow(_ item: SetupLocationsPresentation.StagedSource, index: Int) -> some View {
+        let row = queueRow(item)
+            .focusable()
+            .focused($focusedQueueID, equals: item.id)
+            .draggable(item.id.uuidString)
+            .dropDestination(for: String.self) { values, _ in
+                guard let value = values.first, let id = UUID(uuidString: value) else { return false }
+                actions.moveStagedCard(id, index)
+                return true
+            }
+            .accessibilityAction(named: "Move up") { if index > 0 { actions.moveStagedCard(item.id, index - 1) } }
+            .accessibilityAction(named: "Move down") {
+                if index + 1 < presentation.stagedSources.count { actions.moveStagedCard(item.id, index + 1) }
+            }
         #if os(macOS)
-        return 28
+        row
+            .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+                guard press.modifiers.contains(.option), index > 0 else { return .ignored }
+                actions.moveStagedCard(item.id, index - 1)
+                return .handled
+            }
+            .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+                guard press.modifiers.contains(.option), index + 1 < presentation.stagedSources.count else { return .ignored }
+                actions.moveStagedCard(item.id, index + 1)
+                return .handled
+            }
         #else
-        return 44
+        row
         #endif
+    }
+
+    private func queueRow(_ item: SetupLocationsPresentation.StagedSource) -> some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Text(item.title + " → ").lineLimit(1)
+                Text(item.destinationNames.joined(separator: " + "))
+                    .lineLimit(1).truncationMode(.middle)
+                    .foregroundStyle(item.destinationsDiffer ? Color.orange : Color.primary)
+                Text("· \(item.verificationMode.rawValue)")
+                    .foregroundStyle(item.modeDiffers ? Color.orange : Color.secondary)
+                if item.differs {
+                    Label("differs", systemImage: "arrow.triangle.branch")
+                        .font(.caption.weight(.medium)).foregroundStyle(.orange)
+                }
+                Spacer(minLength: 8)
+                Text("Ready").font(.caption).foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(item.sentence + (item.differs ? ", differs from the first transfer" : ", ready"))
+            Button("Edit") { actions.editStagedCard(item.id) }.disabled(editingID != nil)
+            Button("Remove") { actions.removeStagedCard(item.id) }.disabled(editingID == item.id)
+        }
+        .font(.subheadline)
+        .frame(minHeight: 36)
+        .padding(.horizontal, 8)
+        .background(item.differs ? Color.orange.opacity(0.08) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func contains(_ path: String?, in volume: URL) -> Bool {
+        guard let path else { return false }
+        let root = volume.standardizedFileURL.path
+        let selected = URL(fileURLWithPath: path).standardizedFileURL.path
+        return selected == root || selected.hasPrefix(root + "/")
     }
 }
 
 private extension View {
-    /// Accepts dropped files and folders when there is a handler (the Mac)
-    /// and editing is allowed; otherwise the view is not a drop target.
     @ViewBuilder
-    func fileDrop(
-        isTargeted: Binding<Bool>,
-        enabled: Bool,
-        perform: (([NSItemProvider]) -> Bool)?
-    ) -> some View {
-        if let perform, enabled {
-            onDrop(of: [.fileURL], isTargeted: isTargeted) { providers in
-                perform(providers)
-            }
-        } else {
-            self
-        }
-    }
-}
-
-/// The shared empty location box; its entire area opens the picker.
-struct SetupLocationPicker: View {
-    let symbol: String
-    let title: String
-    let detail: String
-    let isTargeted: Bool
-    let isHighlighted: Bool
-    let isEnabled: Bool
-    let action: () -> Void
-    var minimumHeight: CGFloat = 120
-
-    var body: some View {
-        Button(action: action) {
-            VStack(spacing: 8) {
-                Image(systemName: symbol)
-                    .font(.title2)
-                    .foregroundStyle(isTargeted ? Color.accentColor : Color.secondary)
-                    .accessibilityHidden(true)
-                Text(title)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.horizontal, 12)
-            .frame(maxWidth: .infinity, minHeight: minimumHeight)
-            .contentShape(RoundedRectangle(cornerRadius: 10))
-        }
-        .buttonStyle(.plain)
-        .disabled(!isEnabled)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.primary.opacity(isHighlighted ? 0.05 : 0.03))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10)
-                        .strokeBorder(
-                            isTargeted ? Color.accentColor : Color.primary.opacity(0.15),
-                            style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: isTargeted ? [] : [6, 4])
-                        )
-                )
-        )
-        .nextStepHighlight(isHighlighted && isEnabled && !isTargeted, cornerRadius: 10)
-        .opacity(isEnabled ? 1 : 0.65)
+    func fileDrop(isTargeted: Binding<Bool>, enabled: Bool, perform: (([NSItemProvider]) -> Bool)?) -> some View {
+        if let perform, enabled { onDrop(of: [.fileURL], isTargeted: isTargeted, perform: perform) }
+        else { self }
     }
 }
 
 struct SetupSelectedLocationBackground: View {
     var isTargeted = false
-
     var body: some View {
         RoundedRectangle(cornerRadius: 10)
             .fill(Color.accentColor.opacity(0.06))
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .stroke(isTargeted ? Color.accentColor : Color.accentColor.opacity(0.3), lineWidth: isTargeted ? 2 : 1)
-            )
+            .overlay(RoundedRectangle(cornerRadius: 10)
+                .stroke(isTargeted ? Color.accentColor : Color.accentColor.opacity(0.3), lineWidth: isTargeted ? 2 : 1))
     }
 }
 

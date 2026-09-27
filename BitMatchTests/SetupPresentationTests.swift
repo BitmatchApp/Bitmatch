@@ -191,7 +191,7 @@ struct SetupPresentationTests {
         )
 
         #expect(presentation.canStart)
-        #expect(presentation.title == "Start 3 Cards")
+        #expect(presentation.title == "Start 3 transfers")
         #expect(presentation.accessibilityHint.contains("source unchanged"))
     }
 
@@ -211,8 +211,26 @@ struct SetupPresentationTests {
         )
 
         #expect(presentation.canStart)
-        #expect(presentation.title == "Start 2 Cards")
+        #expect(presentation.title == "Start 2 transfers")
         #expect(presentation.readyLine == "2 cards will run as separate verified transfers to 1 destination.")
+    }
+
+    @Test func oneQueuedCardKeepsTheModeSpecificStartWording() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: nil, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasCurrentSource: false,
+            stagedCardCount: 1,
+            sourceFileCount: nil,
+            sourceBytes: nil,
+            destinationCount: 1
+        )
+
+        #expect(presentation.title == "Start verified copy")
     }
 
     @Test func emptySourceDisablesStartWithAReason() {

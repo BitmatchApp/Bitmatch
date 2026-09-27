@@ -19,9 +19,9 @@ struct MacSetupView: View {
         CoordinatorSetupScreen(
             coordinator: coordinator,
             optionsExpanded: $optionsExpanded
-        ) { context in
+        ) { context, advanced in
             // The shared boxes, with the Mac's open panel and drag and drop.
-            MacSetupLocations(coordinator: coordinator, context: context)
+            MacSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
         } problems: {
             // A card macOS cannot read is a real, actionable problem.
             UnreadableMediaBanner()

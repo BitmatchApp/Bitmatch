@@ -16,8 +16,8 @@ struct CopyAndVerifyView: View {
         CoordinatorSetupScreen(
             coordinator: coordinator,
             optionsExpanded: $optionsExpanded
-        ) { context in
-            IOSSetupLocations(coordinator: coordinator, context: context)
+        ) { context, advanced in
+            IOSSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
         } problems: {
             EmptyView()
         } projectSetup: {
@@ -142,17 +142,20 @@ private struct IOSRemoteBackupSummary: View {
 private struct IOSSetupLocations: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     let context: SetupLocationsContext
+    let advanced: AnyView
 
     var body: some View {
         let coordinator = self.coordinator
         CoordinatorSetupLocations(
             coordinator: coordinator,
             context: context,
+            advanced: advanced,
             platform: SetupLocationsPlatform(
                 pickSource: { await coordinator.pickFolderForSource() },
                 pickBackups: { await coordinator.pickFoldersForBackups() },
                 addBackup: { coordinator.addDestination($0) },
                 removeBackup: { coordinator.removeDestinationFolder($0) },
+                stacksComposerVertically: true,
                 capacity: SetupLocationsPresentation.capacity,
                 showRefusals: { reasons in
                     Task {

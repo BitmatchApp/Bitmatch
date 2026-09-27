@@ -106,6 +106,16 @@ final class CameraLabelModel: ObservableObject {
         SharedLogger.debug("Cleared camera label - no source selected", category: .transfer)
     }
 
+    /// A setup snapshot clears only its source. Stop the old card's detection
+    /// without clearing the camera label and folder settings being reused for
+    /// the next composer card.
+    func clearDetectionPreservingSettings() {
+        supersedeDetection()
+        detectedCamera = .generic
+        currentFingerprint = nil
+        detectedCameraName = nil
+    }
+
     /// Cancels the in-flight detection and returns the generation a new one
     /// must match to publish.
     @discardableResult

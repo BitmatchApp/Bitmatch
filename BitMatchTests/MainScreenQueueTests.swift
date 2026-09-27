@@ -47,6 +47,9 @@ struct MainScreenQueueTests {
         #expect(coordinator.destinationURLs == backups)
         #expect(coordinator.verificationMode == .paranoid)
         #expect(!coordinator.generateASCMHL)
+        #expect(coordinator.cameraLabelSettings.label == "Camera B")
+        #expect(coordinator.reportSettings.projectName == "Night shoot")
+        #expect(!coordinator.reportSettings.makeReport)
         #expect(coordinator.queuedCardCount == 1)
         let access = try coordinator.transferJournal.prepareToRun(id: record.id)
         defer { access.release() }
@@ -77,6 +80,59 @@ struct MainScreenQueueTests {
         coordinator.cancelOperation()
         await fixture.operations.gate.release()
         #expect(await waitUntil { !coordinator.isOperationInProgress })
+    }
+
+    @Test func editCancelRestoresComposerAndUpdateReplacesSnapshotInPlace() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.verificationMode = .standard
+        coordinator.cameraLabelSettings.label = "Original label"
+        try coordinator.enqueueSelection()
+        let id = try #require(coordinator.stagedSetupTransfers.first?.id)
+        let originalDestinations = coordinator.destinationURLs
+        let secondSource = fixture.folders.root.appendingPathComponent("second-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: secondSource, withIntermediateDirectories: true)
+        try Data("second".utf8).write(to: secondSource.appendingPathComponent("C.ARW"))
+        coordinator.sourceURL = secondSource
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+        try coordinator.enqueueSelection()
+        let originalOrder = coordinator.stagedSetupTransfers.map(\.id)
+
+        try coordinator.editSetupTransfer(id)
+        coordinator.destinationURLs = [fixture.folders.primary]
+        coordinator.verificationMode = .paranoid
+        coordinator.cancelSetupTransferEdit()
+        #expect(coordinator.editingSetupTransferID == nil)
+        #expect(coordinator.sourceURL == nil)
+        #expect(coordinator.destinationURLs == originalDestinations)
+        #expect(coordinator.verificationMode == .standard)
+
+        let replacementSource = fixture.folders.root.appendingPathComponent("replacement-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: replacementSource, withIntermediateDirectories: true)
+        try Data("replacement".utf8).write(to: replacementSource.appendingPathComponent("B.ARW"))
+        try coordinator.editSetupTransfer(id)
+        coordinator.sourceURL = replacementSource
+        coordinator.destinationURLs = [fixture.folders.secondary]
+        coordinator.verificationMode = .thorough
+        coordinator.generateASCMHL = false
+        coordinator.cameraLabelSettings.label = "Camera C"
+        coordinator.reportSettings.makeReport = false
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+
+        try coordinator.enqueueSelection()
+
+        #expect(coordinator.stagedSetupTransfers.count == 2)
+        #expect(coordinator.stagedSetupTransfers.map(\.id) == originalOrder)
+        let updated = try #require(coordinator.stagedSetupTransfers.first { $0.id == id })
+        #expect(updated.id == id)
+        #expect(updated.source.url == replacementSource)
+        #expect(updated.destinations.map(\.url) == [fixture.folders.secondary])
+        #expect(updated.verificationMode == .thorough)
+        #expect(!updated.generateASCMHL)
+        #expect(updated.cameraSettings.label == "Camera C")
+        #expect(!updated.reportSettings.makeReport)
+        #expect(coordinator.sourceURL == nil)
     }
 
     @Test func formOverridesModeAndMHLThroughTheSamePath() async throws {

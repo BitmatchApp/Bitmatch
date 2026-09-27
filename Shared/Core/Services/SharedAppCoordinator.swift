@@ -84,12 +84,23 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var queuePausedRecordID: UUID?
     @Published private(set) var reviewedQueueRecordID: UUID?
     @Published private(set) var queueSessionEnded = false
+    @Published private(set) var editingSetupTransferID: UUID?
     private var queueSessionRecordOrder: [UUID] = []
     private var isProcessingQueue = false
     private var activeJournalRecordID: UUID?
     private var queueFinishNotificationWasPosted = false
     private var queueStopWasRequested = false
     private var queueSessionSourceVolumeIDs: Set<String> = []
+    private var isClearingSnapshottedComposerSource = false
+    private struct SetupComposerSnapshot {
+        let source: URL?
+        let destinations: [URL]
+        let verificationMode: VerificationMode
+        let cameraSettings: CameraLabelSettings
+        let reportSettings: ReportPrefs
+        let generateASCMHL: Bool
+    }
+    private var composerBeforeEditing: SetupComposerSnapshot?
     private struct ReviewedSelectionSnapshot {
         let destinations: [URL]
         let verificationMode: VerificationMode
@@ -385,7 +396,8 @@ class SharedAppCoordinator: ObservableObject {
                 self.photographerJobViewModel.sourceDidChange(to: url)
                 // Suggest (or clear) the label for the new card. A queued
                 // transfer's replay brings its own label.
-                guard !self.isReplayingQueuedTransfer else { return }
+                guard !self.isReplayingQueuedTransfer,
+                      !self.isClearingSnapshottedComposerSource else { return }
                 if let url {
                     self.cameraLabels.detectCameraWithMemory(at: url)
                 } else {
@@ -650,18 +662,13 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     private static let destinationSelectionLockedMessage =
-        "Destinations are locked while staged or running queue cards use them. Remove those cards or let the batch finish first."
+        "Destinations are locked while a transfer is running or its outcome is being reviewed."
 
-    /// The route is immutable for the lifetime of a staged batch, including
-    /// the interval when its final card is running and there are no queued
-    /// records left. The current Finish screen also freezes its run context;
-    /// older completed History records do not keep Setup locked.
+    /// Waiting setup cards own complete snapshots, so the composer remains
+    /// editable between cards. A running transfer and its outcome freeze the
+    /// visible run context; older History records do not keep Setup locked.
     var isDestinationSelectionLocked: Bool {
-        isOperationInProgress || showsOutcomeSummary || transferJournal.records.contains { record in
-            queueSessionRecordIDs.contains(record.id)
-                && record.projectID == nil
-                && (record.state == .queued || record.state == .running)
-        }
+        isOperationInProgress || showsOutcomeSummary
     }
 
     private static func resolvedPath(_ url: URL) -> String {
@@ -728,8 +735,8 @@ class SharedAppCoordinator: ObservableObject {
         }.count
     }
 
-    /// One-time cards staged from Setup, in the order they will run. Setup
-    /// presents these as sources rather than duplicating them in Queue.
+    /// One-time composer snapshots, in the order they will run. Each record
+    /// owns its source, destinations and settings independently.
     var stagedSetupTransfers: [LocalTransferRecord] {
         let recordsByID = Dictionary(uniqueKeysWithValues: transferJournal.records.map { ($0.id, $0) })
         return queueSessionRecordOrder.compactMap { recordsByID[$0] }.filter {
@@ -784,8 +791,79 @@ class SharedAppCoordinator: ObservableObject {
         guard canEnqueueSelection, let sourceURL else {
             throw FileOperationError.unsafeOperation("Choose a source and destinations for a one-time transfer first.")
         }
-        try enqueue(source: sourceURL, destinations: destinationURLs)
+        if let id = editingSetupTransferID {
+            let scopedURLs = ([sourceURL] + destinationURLs).filter { $0.startAccessingSecurityScopedResource() }
+            defer { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+            if let refusal = destinationURLs.lazy.compactMap({
+                BackupTargetPolicy.refusal(for: $0, origin: .userChoice, source: sourceURL)
+            }).first {
+                throw FileOperationError.unsafeOperation(refusal)
+            }
+            try SafetyValidator.validateResolvedDestinationRoots(
+                source: sourceURL, destinations: destinationURLs, settings: cameraLabelSettings
+            )
+            guard try CardSource.containsRegularFile(base: sourceURL) else {
+                throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
+            }
+            try transferJournal.replaceQueued(
+                id: id,
+                sourceURL: sourceURL,
+                destinationURLs: destinationURLs,
+                verificationMode: verificationMode,
+                cameraSettings: cameraLabelSettings,
+                reportSettings: reportSettings,
+                generateASCMHL: generateASCMHL
+            )
+            editingSetupTransferID = nil
+            composerBeforeEditing = nil
+        } else {
+            try enqueue(source: sourceURL, destinations: destinationURLs)
+        }
+        isClearingSnapshottedComposerSource = true
+        cameraLabels.clearDetectionPreservingSettings()
         self.sourceURL = nil
+        isClearingSnapshottedComposerSource = false
+    }
+
+    func editSetupTransfer(_ id: UUID) throws {
+        guard !isOperationInProgress,
+              editingSetupTransferID == nil,
+              let record = stagedSetupTransfers.first(where: { $0.id == id }) else {
+            throw FileOperationError.unsafeOperation("Only a waiting setup transfer can be edited.")
+        }
+        composerBeforeEditing = SetupComposerSnapshot(
+            source: sourceURL,
+            destinations: destinationURLs,
+            verificationMode: verificationMode,
+            cameraSettings: cameraLabelSettings,
+            reportSettings: reportSettings,
+            generateASCMHL: generateASCMHL
+        )
+        editingSetupTransferID = id
+        cameraLabels.clearDetectionPreservingSettings()
+        isReplayingQueuedTransfer = true
+        sourceURL = record.source.url
+        isReplayingQueuedTransfer = false
+        destinationURLs = record.destinations.map(\.url)
+        verificationMode = record.verificationMode
+        cameraLabelSettings = record.cameraSettings
+        reportSettings = record.reportSettings
+        generateASCMHL = record.generateASCMHL
+    }
+
+    func cancelSetupTransferEdit() {
+        guard let snapshot = composerBeforeEditing else { return }
+        cameraLabels.clearDetectionPreservingSettings()
+        isReplayingQueuedTransfer = true
+        sourceURL = snapshot.source
+        isReplayingQueuedTransfer = false
+        destinationURLs = snapshot.destinations
+        verificationMode = snapshot.verificationMode
+        cameraLabelSettings = snapshot.cameraSettings
+        reportSettings = snapshot.reportSettings
+        generateASCMHL = snapshot.generateASCMHL
+        editingSetupTransferID = nil
+        composerBeforeEditing = nil
     }
 
     /// Starts the cards assembled on Setup. If more than one card is ready,
@@ -959,6 +1037,7 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     func removeQueuedTransfer(_ id: UUID) throws {
+        if editingSetupTransferID == id { cancelSetupTransferEdit() }
         try transferJournal.removeQueued(id: id)
         queueSessionRecordIDs.remove(id)
         queueSessionRecordOrder.removeAll { $0 == id }

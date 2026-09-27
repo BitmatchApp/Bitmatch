@@ -9,6 +9,7 @@ struct HeaderPresentationPolicyTests {
 
     @Test func theWindowCanGrowIntoAnExpandedWorkbench() {
         #expect(WindowPresentationPolicy.maximumWidth >= 1200)
+        #expect(WindowPresentationPolicy.initialWidth == 900)
     }
 
     @Test func minimumWindowAlwaysKeepsThePrincipalModePickerVisible() {

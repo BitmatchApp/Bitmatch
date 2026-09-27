@@ -396,7 +396,7 @@ struct BackupAddPathTests {
         #expect(shared.destinationURLs.isEmpty)
     }
 
-    @Test func discoveryCannotAddOrRemoveBackupsAfterACardIsStaged() async throws {
+    @Test func discoveryDoesNotRewriteAWaitingSnapshotOrComposerRoute() async throws {
         let (model, shared) = makeModel()
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("bitmatch-staged-lock-\(UUID())", isDirectory: true)
@@ -413,9 +413,8 @@ struct BackupAddPathTests {
         try shared.enqueueSelection()
         #expect(!shared.stagedSetupTransfers.isEmpty)
 
-        // Simulate the planned drive disappearing and a new external drive
-        // appearing in the same discovery update. Neither mutation is legal
-        // while staged cards share the locked route.
+        // Discovery only reports availability. It changes neither the saved
+        // snapshot nor the next card's composer route.
         try FileManager.default.removeItem(at: planned)
         model.volumeFacts = { url in
             guard url.path == "/Volumes/New Backup" else { return nil }
@@ -430,7 +429,7 @@ struct BackupAddPathTests {
         #expect(shared.stagedSetupTransfers.first?.destinations.map(\.url) == [planned])
     }
 
-    @Test func coordinatorMutationBoundaryUnlocksWhenStagedCardIsRemoved() async throws {
+    @Test func waitingSnapshotKeepsItsRouteWhileComposerDestinationsChange() async throws {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
@@ -440,16 +439,14 @@ struct BackupAddPathTests {
 
         try coordinator.enqueueSelection()
         let stagedID = try #require(coordinator.stagedSetupTransfers.first?.id)
-        #expect(coordinator.isDestinationSelectionLocked)
-        #expect(coordinator.addDestination(extra) != nil)
-        coordinator.removeDestinationFolder(original[0])
-        coordinator.replaceDestinations(with: [extra])
-        #expect(coordinator.destinationURLs == original)
-
-        try coordinator.removeQueuedTransfer(stagedID)
         #expect(!coordinator.isDestinationSelectionLocked)
         #expect(coordinator.addDestination(extra) == nil)
         coordinator.removeDestinationFolder(original[0])
+        #expect(coordinator.destinationURLs == [original[1], extra])
+        #expect(coordinator.stagedSetupTransfers.first?.destinations.map(\.url) == original)
+
+        try coordinator.removeQueuedTransfer(stagedID)
+        #expect(!coordinator.isDestinationSelectionLocked)
         #expect(coordinator.destinationURLs == [original[1], extra])
     }
 

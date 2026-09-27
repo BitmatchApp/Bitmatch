@@ -80,6 +80,17 @@ struct SetupLocationsPresentation: Equatable {
         let title: String
         let path: String
         let detail: String
+        var destinationNames: [String] = []
+        var verificationMode: VerificationMode = .standard
+        var destinationsDiffer = false
+        var modeDiffers = false
+
+        var sentence: String {
+            let destinations = destinationNames.isEmpty ? "No destinations" : destinationNames.joined(separator: " + ")
+            return "\(title) → \(destinations) · \(verificationMode.rawValue)"
+        }
+
+        var differs: Bool { destinationsDiffer || modeDiffers }
     }
 
     struct Backup: Equatable, Identifiable {
@@ -96,8 +107,8 @@ struct SetupLocationsPresentation: Equatable {
     let backups: [Backup]
     /// False while a transfer runs: no clearing, removing, adding or drops.
     let canEdit: Bool
-    /// Once a card is staged, its backups are the shared route for this run.
-    /// Remove the staged cards before changing that route.
+    /// Waiting cards own snapshots, so backups remain editable for the next
+    /// composer card. Only a running operation locks them.
     let canEditBackups: Bool
     /// The empty source box receives neutral next-step emphasis.
     let highlightsSource: Bool
@@ -116,6 +127,7 @@ struct SetupLocationsPresentation: Equatable {
         sourceBytes: Int64?,
         isAnalysingSource: Bool,
         cameraName: String?,
+        connectedSourceDetail: String? = nil,
         stagedSources: [StagedSource] = [],
         destinationURLs: [URL],
         capacity: (URL) -> Capacity?,
@@ -130,8 +142,10 @@ struct SetupLocationsPresentation: Equatable {
             Source(
                 title: url.lastPathComponent,
                 path: url.path,
-                detail: sourceDetail(fileCount: sourceFileCount, bytes: sourceBytes, isAnalysing: isAnalysingSource),
-                cameraName: cameraName.flatMap { $0.isEmpty ? nil : $0 }
+                detail: connectedSourceDetail
+                    ?? sourceDetail(fileCount: sourceFileCount, bytes: sourceBytes, isAnalysing: isAnalysingSource),
+                cameraName: connectedSourceDetail == nil
+                    ? cameraName.flatMap { $0.isEmpty ? nil : $0 } : nil
             )
         }
         return Self(
@@ -146,7 +160,7 @@ struct SetupLocationsPresentation: Equatable {
                 )
             },
             canEdit: !isOperationInProgress,
-            canEditBackups: !isOperationInProgress && stagedSources.isEmpty,
+            canEditBackups: !isOperationInProgress,
             highlightsSource: sourceURL == nil && nextStep == .chooseSource,
             highlightsBackups: destinationURLs.isEmpty && nextStep == .addBackup,
             sideBySide: layout != .compact,
@@ -204,5 +218,28 @@ struct SetupLocationsPresentation: Equatable {
         let available = ByteCountPresentation.capacity(capacity.availableBytes)
         guard let total = capacity.totalBytes else { return "\(available) free" }
         return "\(available) free of \(ByteCountPresentation.capacity(total))"
+    }
+}
+
+struct SetupQueueDifference: Equatable, Sendable {
+    let destinations: Bool
+    let verificationMode: Bool
+    var any: Bool { destinations || verificationMode }
+}
+
+enum SetupQueueDifferencePolicy {
+    /// Destination order is presentation-only; the physical/folder route is
+    /// the same when its canonical URL set is the same.
+    static func compare(
+        firstDestinations: [URL],
+        firstMode: VerificationMode,
+        destinations: [URL],
+        mode: VerificationMode
+    ) -> SetupQueueDifference {
+        SetupQueueDifference(
+            destinations: Set(firstDestinations.map(BackupTargetPolicy.canonicalPath))
+                != Set(destinations.map(BackupTargetPolicy.canonicalPath)),
+            verificationMode: firstMode != mode
+        )
     }
 }

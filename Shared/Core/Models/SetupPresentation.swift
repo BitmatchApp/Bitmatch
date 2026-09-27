@@ -103,7 +103,11 @@ struct StartButtonPresentation: Equatable, Sendable {
         if let step = plan.nextStep {
             if step == .chooseSource, stagedCardCount > 0, !isProject {
                 return Self(
-                    title: startTitle(cardCount: stagedCardCount, fallback: "Start Card"),
+                    title: startTitle(
+                        cardCount: stagedCardCount,
+                        fallback: plan.verificationMode == .quick
+                            ? "Start copy without checksum verification" : "Start verified copy"
+                    ),
                     symbol: "play.fill",
                     canStart: true,
                     startsProject: false,
@@ -183,7 +187,7 @@ struct StartButtonPresentation: Equatable, Sendable {
     }
 
     private static func startTitle(cardCount: Int, fallback: String) -> String {
-        cardCount > 1 ? "Start \(cardCount) Cards" : fallback
+        cardCount > 1 ? "Start \(cardCount) transfers" : fallback
     }
 
     private static func readyCardsLine(cardCount: Int, destinationCount: Int) -> String {

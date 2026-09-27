@@ -139,4 +139,20 @@ struct ConnectedDrivesPresentationTests {
         #expect(rows.first { $0.displayName == "Work" }?.role == .other)
         #expect(rows.first { $0.displayName == "USB" }?.role == .backup)
     }
+
+    @Test func setupDestinationMenuExcludesCardsSourceDriveAndSystemVolumes() {
+        let source = URL(fileURLWithPath: "/Volumes/SOURCE DRIVE/Footage")
+        let rows = Presentation.make(
+            volumes: [
+                volume("A004", camera: "Sony"), volume("SOURCE DRIVE"), volume("SHUTTLE A"),
+                volume("Recovery"), volume("Macintosh HD")
+            ],
+            sourceURL: source,
+            destinationURLs: []
+        )
+        let choices = SetupConnectedMenuPolicy.destinationRows(
+            rows, sourceURL: source, selectedURLs: []
+        )
+        #expect(choices.map(\.displayName) == ["SHUTTLE A"])
+    }
 }

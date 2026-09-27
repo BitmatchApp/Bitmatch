@@ -50,6 +50,7 @@ struct TransferPlanPresentation: Equatable {
     let status: Status
     let optionSummary: [String]
     let actionTitle: String
+    let verificationMode: VerificationMode
     let canStart: Bool
     /// The step the user has not taken yet. Its box is highlighted instead of
     /// showing a banner: a missing choice is not an error ("red means real").
@@ -103,6 +104,7 @@ struct TransferPlanPresentation: Equatable {
                 reportSettings: reportSettings
             ),
             actionTitle: actionTitle(nextStep: nextStep, verificationMode: verificationMode),
+            verificationMode: verificationMode,
             canStart: canStart(for: status),
             nextStep: nextStep
         )

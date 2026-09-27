@@ -49,7 +49,7 @@ extension SetupPresentation {
 struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelContent: View, ProjectEvidence: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var optionsExpanded: Bool
-    private let locations: (SetupLocationsContext) -> Locations
+    private let locations: (SetupLocationsContext, AnyView) -> Locations
     private let problems: Problems
     private let projectSetup: ProjectSetup
     private let labelContent: LabelContent
@@ -58,7 +58,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     init(
         coordinator: SharedAppCoordinator,
         optionsExpanded: Binding<Bool>,
-        @ViewBuilder locations: @escaping (SetupLocationsContext) -> Locations,
+        @ViewBuilder locations: @escaping (SetupLocationsContext, AnyView) -> Locations,
         @ViewBuilder problems: () -> Problems,
         @ViewBuilder projectSetup: () -> ProjectSetup,
         @ViewBuilder labelContent: () -> LabelContent,

@@ -47,7 +47,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     let presentation: SetupPresentation
     let options: SetupOptionsBindings
     let actions: SetupActions
-    private let locations: (SetupLocationsContext) -> Locations
+    private let locations: (SetupLocationsContext, AnyView) -> Locations
     private let problems: Problems
     private let projectSetup: ProjectSetup
     private let labelContent: LabelContent
@@ -61,7 +61,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         presentation: SetupPresentation,
         options: SetupOptionsBindings,
         actions: SetupActions,
-        @ViewBuilder locations: @escaping (SetupLocationsContext) -> Locations,
+        @ViewBuilder locations: @escaping (SetupLocationsContext, AnyView) -> Locations,
         @ViewBuilder problems: () -> Problems,
         @ViewBuilder projectSetup: () -> ProjectSetup,
         @ViewBuilder labelContent: () -> LabelContent,
@@ -133,7 +133,10 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     }
 
     private var locationsCard: some View {
-        locations(SetupLocationsContext(layout: layout, nextStep: presentation.plan.nextStep))
+        locations(
+            SetupLocationsContext(layout: layout, nextStep: presentation.plan.nextStep),
+            AnyView(advanced)
+        )
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -261,7 +264,6 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            advanced
             if presentation.showsStartArea { startArea }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

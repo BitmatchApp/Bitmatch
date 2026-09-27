@@ -2,7 +2,7 @@ import CoreGraphics
 
 enum WindowPresentationPolicy {
     static let allowsManualResizing = true
-    static let initialWidth: CGFloat = 760
+    static let initialWidth: CGFloat = 900
     static let initialHeight: CGFloat = 650
     /// Leaves room for the principal mode picker, traffic lights, and both
     /// trailing toolbar actions without an overflow chevron.

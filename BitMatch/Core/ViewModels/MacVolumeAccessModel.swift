@@ -29,6 +29,16 @@ enum DriveAccessPolicy {
         let volumes = URL(fileURLWithPath: "/Volumes").standardizedFileURL.resolvingSymlinksInPath().path
         return chosen == volumes
     }
+
+    @MainActor
+    static func resolveMenuChoice(
+        needsAccess: Bool,
+        requestAccess: (@escaping (Bool) -> Void) -> Void,
+        completion: @escaping (Bool) -> Void
+    ) {
+        guard needsAccess else { completion(true); return }
+        requestAccess(completion)
+    }
 }
 
 @MainActor

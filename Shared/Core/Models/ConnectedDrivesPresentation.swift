@@ -89,3 +89,20 @@ nonisolated enum ConnectedDrivesPresentation {
         return selected == path || selected.hasPrefix(path + "/")
     }
 }
+
+enum SetupConnectedMenuPolicy {
+    static func destinationRows(
+        _ rows: [ConnectedDrivesPresentation.Row],
+        sourceURL: URL?,
+        selectedURLs: [URL]
+    ) -> [ConnectedDrivesPresentation.Row] {
+        rows.filter { row in
+            if case .card = row.role { return false }
+            let rowPath = BackupTargetPolicy.canonicalPath(row.url)
+            if selectedURLs.contains(where: { BackupTargetPolicy.canonicalPath($0) == rowPath }) { return true }
+            guard let sourceURL else { return true }
+            let sourcePath = BackupTargetPolicy.canonicalPath(sourceURL)
+            return sourcePath != rowPath && !sourcePath.hasPrefix(rowPath + "/")
+        }
+    }
+}

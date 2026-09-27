@@ -1,8 +1,8 @@
 import SwiftUI
 import BitMatchEngine
 
-/// The collapsed "Advanced" options on Setup (and, with only the verification
-/// picker, on Compare), shared by Mac, iPad and iPhone.
+/// The collapsed "Advanced" options on Setup (handoff, reports and camera
+/// label) and the verification disclosure on Compare.
 ///
 /// It takes bindings, not a coordinator, so each platform keeps its own state
 /// owner. Changing the mode persists through `SharedAppCoordinator`'s existing
@@ -14,9 +14,11 @@ struct TransferOptionsSection<LabelContent: View>: View {
     private let makeReport: Binding<Bool>?
     private let cameraLabel: String?
     private let showsLabelContent: Bool
+    private let showsVerificationPicker: Bool
     private let labelContent: LabelContent
 
-    /// Setup: camera label (a platform slot), verification, ASC MHL and reports.
+    /// Setup: camera label (a platform slot), ASC MHL and reports. Verification
+    /// lives in the middle composer box.
     init(
         isExpanded: Binding<Bool>,
         verificationMode: Binding<VerificationMode>,
@@ -31,6 +33,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
         self.makeReport = makeReport
         self.cameraLabel = cameraLabel
         self.showsLabelContent = true
+        self.showsVerificationPicker = false
         self.labelContent = labelContent()
     }
 
@@ -39,7 +42,8 @@ struct TransferOptionsSection<LabelContent: View>: View {
             verificationMode: verificationMode,
             generateASCMHL: generateASCMHL?.wrappedValue,
             makeReport: makeReport?.wrappedValue,
-            cameraLabel: cameraLabel
+            cameraLabel: cameraLabel,
+            includesVerificationNote: showsVerificationPicker
         )
     }
 
@@ -72,14 +76,15 @@ struct TransferOptionsSection<LabelContent: View>: View {
             .touchTarget()
         }
         .accessibilityHint(showsLabelContent
-            ? "Shows verification, handoff, report, and camera label settings"
+            ? "Shows handoff, report, and camera label settings"
             : "Shows verification settings")
     }
 
     @ViewBuilder
     private func recordsColumn(_ presentation: TransferOptionsPresentation) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-            VStack(alignment: .leading, spacing: 8) {
+            if showsVerificationPicker {
+                VStack(alignment: .leading, spacing: 8) {
                 LabeledContent("Verification") {
                     Picker("Verification", selection: $verificationMode) {
                         ForEach(VerificationMode.allCases) { Text($0.rawValue).tag($0) }
@@ -94,6 +99,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
                     .font(.optionsDetail)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                }
             }
 
             if let generateASCMHL {
@@ -130,6 +136,7 @@ extension TransferOptionsSection where LabelContent == EmptyView {
         self.makeReport = nil
         self.cameraLabel = nil
         self.showsLabelContent = false
+        self.showsVerificationPicker = true
         self.labelContent = EmptyView()
     }
 }

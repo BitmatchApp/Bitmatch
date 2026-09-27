@@ -115,6 +115,27 @@ final class LocalTransferJournal: ObservableObject {
         try store.removeQueued(id: id)
     }
 
+    func replaceQueued(
+        id: UUID,
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        cameraSettings: CameraLabelSettings,
+        reportSettings: ReportPrefs,
+        generateASCMHL: Bool
+    ) throws {
+        defer { refresh() }
+        try store.replaceQueued(
+            id: id,
+            sourceURL: sourceURL,
+            destinationURLs: destinationURLs,
+            verificationMode: verificationMode,
+            cameraSettings: cameraSettings,
+            reportSettings: reportSettings,
+            generateASCMHL: generateASCMHL
+        )
+    }
+
     func moveQueuedToTop(id: UUID) throws {
         defer { refresh() }
         try store.moveQueuedToTop(id: id)

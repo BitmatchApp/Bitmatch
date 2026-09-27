@@ -129,7 +129,20 @@ struct SetupLocationsPresentationTests {
         #expect(presentation.showsAddAnotherCard)
         #expect(!presentation.canAddAnotherCard)
         #expect(presentation.addAnotherCardDisabledReason == "Source folder is empty")
-        #expect(!presentation.canEditBackups)
+        #expect(presentation.canEditBackups)
+    }
+
+    @Test func queueDifferencesIgnoreDestinationOrderButDetectRouteAndMode() {
+        let a = URL(fileURLWithPath: "/Volumes/A/Job")
+        let b = URL(fileURLWithPath: "/Volumes/B/Job")
+        #expect(SetupQueueDifferencePolicy.compare(
+            firstDestinations: [a, b], firstMode: .standard,
+            destinations: [b, a], mode: .standard
+        ) == SetupQueueDifference(destinations: false, verificationMode: false))
+        #expect(SetupQueueDifferencePolicy.compare(
+            firstDestinations: [a, b], firstMode: .standard,
+            destinations: [a], mode: .thorough
+        ) == SetupQueueDifference(destinations: true, verificationMode: true))
     }
 
     /// Plant: in `SetupLocationsPresentation.make`, pass

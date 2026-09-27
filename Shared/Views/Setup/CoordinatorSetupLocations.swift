@@ -1,6 +1,13 @@
 import SwiftUI
 import BitMatchEngine
 
+struct SetupConnectedVolume: Identifiable, Equatable {
+    var id: URL { url }
+    let url: URL
+    let title: String
+    let detail: String
+}
+
 /// What differs per platform in the source and backup boxes: how a folder
 /// is picked, how a backup is added and removed, and how a refusal is shown.
 ///
@@ -13,6 +20,11 @@ struct SetupLocationsPlatform {
     var pickBackups: @MainActor () async -> [URL]
     var addBackup: @MainActor (URL) -> String?
     var removeBackup: @MainActor (URL) -> Void
+    var connectedSources: [SetupConnectedVolume] = []
+    var connectedDestinations: [SetupConnectedVolume] = []
+    var stacksComposerVertically = false
+    var pickFolderOnDrive: @MainActor (URL) async -> URL? = { _ in nil }
+    var ensureDriveAccess: @MainActor () async -> Bool = { true }
     /// Available and total capacity for a backup, or nil.
     var capacity: (URL) -> SetupLocationsPresentation.Capacity?
     /// Shows refusals of the user's own pick or drop (Mac: the toast; iOS:
@@ -39,6 +51,7 @@ struct SetupLocationSelection {
         guard !coordinator.isOperationInProgress else { return [] }
         let path = BackupTargetPolicy.canonicalPath(url)
         if coordinator.stagedSetupTransfers.contains(where: {
+            $0.id != coordinator.editingSetupTransferID &&
             BackupTargetPolicy.canonicalPath($0.source.url) == path
         }) {
             return ["This card is already staged."]
@@ -56,9 +69,6 @@ struct SetupLocationSelection {
 
     func addBackups(_ urls: [URL]) -> [String] {
         guard !coordinator.isOperationInProgress else { return [] }
-        guard coordinator.stagedSetupTransfers.isEmpty else {
-            return ["Remove the staged cards before changing destinations."]
-        }
         let coordinator = self.coordinator
         return DestinationSelectionPolicy.addBackups(
             urls,
@@ -77,7 +87,6 @@ struct SetupLocationSelection {
     /// keeps discovery from adding the old drive straight back).
     func replaceBackup(at index: Int, with url: URL) -> [String] {
         guard !coordinator.isOperationInProgress,
-              coordinator.stagedSetupTransfers.isEmpty,
               coordinator.destinationURLs.indices.contains(index) else { return [] }
         let old = coordinator.destinationURLs[index]
         let decision = DestinationSelectionPolicy.evaluateBackup(
@@ -113,12 +122,19 @@ struct CoordinatorSetupLocations: View {
     /// Observed directly so the detected camera name stays current.
     @ObservedObject private var cameraLabels: CameraLabelModel
     let context: SetupLocationsContext
+    let advanced: AnyView
     let platform: SetupLocationsPlatform
 
-    init(coordinator: SharedAppCoordinator, context: SetupLocationsContext, platform: SetupLocationsPlatform) {
+    init(
+        coordinator: SharedAppCoordinator,
+        context: SetupLocationsContext,
+        advanced: AnyView,
+        platform: SetupLocationsPlatform
+    ) {
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _cameraLabels = ObservedObject(wrappedValue: coordinator.cameraLabels)
         self.context = context
+        self.advanced = advanced
         self.platform = platform
     }
 
@@ -126,8 +142,25 @@ struct CoordinatorSetupLocations: View {
         SetupLocationsView(
             presentation: presentation,
             actions: actions,
+            verificationMode: $coordinator.verificationMode,
+            connectedSources: platform.connectedSources,
+            connectedDestinations: eligibleConnectedDestinations,
+            editingID: coordinator.editingSetupTransferID,
+            stacksVertically: platform.stacksComposerVertically,
+            advanced: advanced,
             drops: platform.acceptsDrops ? drops : nil
         )
+    }
+
+    private var eligibleConnectedDestinations: [SetupConnectedVolume] {
+        platform.connectedDestinations.filter { volume in
+            guard !coordinator.destinationURLs.contains(where: {
+                BackupTargetPolicy.canonicalPath($0) == BackupTargetPolicy.canonicalPath(volume.url)
+            }) else { return true }
+            return BackupTargetPolicy.refusal(
+                for: volume.url, origin: .userChoice, source: coordinator.sourceURL
+            ) == nil
+        }
     }
 
     private var presentation: SetupLocationsPresentation {
@@ -137,14 +170,8 @@ struct CoordinatorSetupLocations: View {
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
             isAnalysingSource: coordinator.isAnalysingSource,
             cameraName: cameraLabels.detectedCameraName ?? coordinator.detectedCamera?.displayName,
-            stagedSources: coordinator.stagedSetupTransfers.map { record in
-                SetupLocationsPresentation.StagedSource(
-                    id: record.id,
-                    title: record.title,
-                    path: record.source.url.path,
-                    detail: record.destinations.count == 1 ? "1 destination · Ready" : "\(record.destinations.count) destinations · Ready"
-                )
-            },
+            connectedSourceDetail: connectedSourceDetail,
+            stagedSources: stagedPresentations,
             destinationURLs: coordinator.destinationURLs,
             capacity: platform.capacity,
             isOperationInProgress: coordinator.isOperationInProgress,
@@ -156,6 +183,41 @@ struct CoordinatorSetupLocations: View {
             nextStep: context.nextStep,
             layout: context.layout
         )
+    }
+
+    private var connectedSourceDetail: String? {
+        guard let source = coordinator.sourceURL else { return nil }
+        let sourcePath = BackupTargetPolicy.canonicalPath(source)
+        return platform.connectedSources.first { volume in
+            let root = BackupTargetPolicy.canonicalPath(volume.url)
+            return sourcePath == root || sourcePath.hasPrefix(root + "/")
+        }?.detail.replacingOccurrences(of: " card ·", with: " ·")
+    }
+
+    private var stagedPresentations: [SetupLocationsPresentation.StagedSource] {
+        let records = coordinator.stagedSetupTransfers
+        let first = records.first
+        return records.map { record in
+            let destinations = record.destinations.map { DestinationIdentityPresentation.title(for: $0.url) }
+            let difference = first.map {
+                SetupQueueDifferencePolicy.compare(
+                    firstDestinations: $0.destinations.map(\.url),
+                    firstMode: $0.verificationMode,
+                    destinations: record.destinations.map(\.url),
+                    mode: record.verificationMode
+                )
+            } ?? SetupQueueDifference(destinations: false, verificationMode: false)
+            return SetupLocationsPresentation.StagedSource(
+                id: record.id,
+                title: record.title,
+                path: record.source.url.path,
+                detail: "\(record.destinations.count) destination\(record.destinations.count == 1 ? "" : "s") · Ready",
+                destinationNames: destinations,
+                verificationMode: record.verificationMode,
+                destinationsDiffer: difference.destinations,
+                modeDiffers: difference.verificationMode
+            )
+        }
     }
 
     private var addAnotherCardDisabledReason: String? {
@@ -196,12 +258,36 @@ struct CoordinatorSetupLocations: View {
                     try coordinator.enqueueSelection()
                 } catch {
                     platform.showRefusals([error.localizedDescription])
-                    return
                 }
+            },
+            chooseConnectedSource: { url in
                 Task { @MainActor in
-                    guard let url = await platform.pickSource() else { return }
+                    guard await platform.ensureDriveAccess() else { return }
                     presentRefusals(selection.chooseSource(url), platform: platform)
                 }
+            },
+            chooseConnectedBackup: { url in
+                Task { @MainActor in
+                    guard await platform.ensureDriveAccess() else { return }
+                    presentRefusals(selection.addBackups([url]), platform: platform)
+                }
+            },
+            chooseFolderOnBackup: { oldURL in
+                Task { @MainActor in
+                    guard await platform.ensureDriveAccess(),
+                          let url = await platform.pickFolderOnDrive(oldURL),
+                          let index = coordinator.destinationURLs.firstIndex(of: oldURL) else { return }
+                    presentRefusals(selection.replaceBackup(at: index, with: url), platform: platform)
+                }
+            },
+            editStagedCard: { id in
+                do { try coordinator.editSetupTransfer(id) }
+                catch { platform.showRefusals([error.localizedDescription]) }
+            },
+            cancelEdit: { coordinator.cancelSetupTransferEdit() },
+            moveStagedCard: { id, index in
+                do { try coordinator.moveQueuedTransfer(id: id, to: index) }
+                catch { platform.showRefusals([error.localizedDescription]) }
             },
             removeStagedCard: { id in
                 do { try coordinator.removeQueuedTransfer(id) }
