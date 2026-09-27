@@ -48,7 +48,7 @@ struct ModularContentView: View {
                 if showCancelToast {
                     ToastView(
                         icon: "xmark.circle",
-                        message: coordinator.currentMode == .compareFolders ? "Compare cancelled" : "Transfer cancelled",
+                        message: coordinator.currentMode == .compareFolders ? "Check cancelled" : "Transfer cancelled",
                         tint: .red
                     )
                         .transition(.move(edge: .top).combined(with: .opacity))
@@ -76,7 +76,7 @@ struct ModularContentView: View {
             }
             // Audit M10: this toast is gone in 1.8s and was otherwise silent.
             AccessibilityNotification.Announcement(
-                coordinator.currentMode == .compareFolders ? "Compare cancelled" : "Transfer cancelled"
+                coordinator.currentMode == .compareFolders ? "Check cancelled" : "Transfer cancelled"
             ).post()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
                 withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
@@ -317,6 +317,8 @@ struct CompareFoldersView: View {
         ComparePresentation.make(
             left: slot(url: coordinator.leftURL, info: coordinator.leftFolderInfo, coordinator: coordinator),
             right: slot(url: coordinator.rightURL, info: coordinator.rightFolderInfo, coordinator: coordinator),
+            choice: coordinator.checkAgainst,
+            savedAvailability: coordinator.savedChecksumAvailability,
             mode: coordinator.verificationMode,
             isRunning: coordinator.isOperationInProgress,
             progress: coordinator.progress.map {
@@ -328,6 +330,7 @@ struct CompareFoldersView: View {
                 )
             },
             stats: coordinator.lastCompareStats,
+            savedResult: coordinator.lastSavedChecksumResult,
             end: coordinator.lastCompareEnd
         )
     }
@@ -351,6 +354,7 @@ struct CompareFoldersView: View {
     var body: some View {
         CompareScreen(
             presentation: Self.presentation(for: coordinator),
+            checkAgainst: $coordinator.checkAgainst,
             verificationMode: $coordinator.verificationMode,
             advancedExpanded: $advancedExpanded,
             actions: CompareActions(

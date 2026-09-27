@@ -39,7 +39,7 @@ struct InterfaceLabNavigationTests {
 
     @Test func labCopyUsesClearProductLanguage() {
         #expect(InterfaceLabCopy.setupTitle == "Transfer setup")
-        #expect(InterfaceLabCopy.compareTitle == "Compare folders")
+        #expect(InterfaceLabCopy.compareTitle == "Check")
         #expect(InterfaceLabCopy.navigationLabel == "Preview screen")
     }
 }

@@ -193,7 +193,12 @@ class SharedAppCoordinator: ObservableObject {
     /// Resolved once per selection change, never once per progress tick.
     private(set) var destinationVolumeNames: [String] = []
     @Published var leftURL: URL? { // For folder comparison
-        didSet { if oldValue != leftURL { clearCompareOutcome() } }
+        didSet {
+            if oldValue != leftURL {
+                clearCompareOutcome()
+                beginSavedChecksumDiscovery(at: leftURL)
+            }
+        }
     }
     @Published var rightURL: URL? { // For folder comparison
         didSet { if oldValue != rightURL { clearCompareOutcome() } }
@@ -211,13 +216,50 @@ class SharedAppCoordinator: ObservableObject {
     /// How the last compare for the current folders and mode ended. Compare
     /// reads this, not `operationState`, which transfers also write.
     @Published private(set) var lastCompareEnd: CompareRunEnd?
+    @Published var checkAgainst: CheckAgainstChoice = .anotherFolder {
+        didSet { if oldValue != checkAgainst { clearCompareOutcome() } }
+    }
+    @Published private(set) var savedChecksumAvailability: SavedChecksumAvailability = .notFound
+    @Published private(set) var lastSavedChecksumResult: SavedChecksumCheck.Result?
+    private var savedChecksumDiscovery: SavedChecksumCheck.Discovery?
+    private var savedChecksumDiscoveryTask: Task<Void, Never>?
     /// True when the most recent operation was a compare, so the shared
     /// `operationState` it left behind is not shown as a transfer outcome.
     @Published private(set) var lastOperationWasCompare = false
 
     private func clearCompareOutcome() {
         lastCompareStats = nil
+        lastSavedChecksumResult = nil
         lastCompareEnd = nil
+    }
+
+    private func beginSavedChecksumDiscovery(at url: URL?) {
+        savedChecksumDiscoveryTask?.cancel()
+        savedChecksumDiscovery = nil
+        savedChecksumAvailability = url == nil ? .notFound : .checking
+        checkAgainst = .defaultChoice(for: savedChecksumAvailability)
+        guard let url else { return }
+        savedChecksumDiscoveryTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let discovery = try await comparisonCoordinator.discoverSavedChecksums(at: url)
+                guard !Task.isCancelled, leftURL == url else { return }
+                savedChecksumDiscovery = discovery
+                savedChecksumAvailability = .found(fileCount: discovery.expectedFiles.count)
+                checkAgainst = .defaultChoice(for: savedChecksumAvailability)
+            } catch is CancellationError {
+                return
+            } catch SavedChecksumCheck.CheckError.notFound {
+                guard leftURL == url else { return }
+                savedChecksumAvailability = .notFound
+                checkAgainst = .defaultChoice(for: savedChecksumAvailability)
+            } catch {
+                guard leftURL == url else { return }
+                SharedLogger.warning("Could not read saved checksums at \(url.path): \(error)", category: .transfer)
+                savedChecksumAvailability = .notFound
+                checkAgainst = .defaultChoice(for: savedChecksumAvailability)
+            }
+        }
     }
 
     // Convenience accessors for folder info (delegated to service)
@@ -1769,8 +1811,12 @@ class SharedAppCoordinator: ObservableObject {
     func pauseOperation(reason: PauseInfo.PauseReason = .userRequested) async {
         guard stateService.currentState.canPause else { return }
         
-        // Pause the underlying file operations
-        await platformManager.fileOperations.pauseOperation()
+        // Pause the active engine operation.
+        if currentMode == .compareFolders {
+            comparisonCoordinator.pause()
+        } else {
+            await platformManager.fileOperations.pauseOperation()
+        }
 
         // The run may have finished while the engine paused; a finished run
         // stays finished and offers no Resume.
@@ -1800,8 +1846,12 @@ class SharedAppCoordinator: ObservableObject {
             return
         }
         
-        // Resume the underlying file operations
-        await platformManager.fileOperations.resumeOperation()
+        // Resume the active engine operation.
+        if currentMode == .compareFolders {
+            comparisonCoordinator.resume()
+        } else {
+            await platformManager.fileOperations.resumeOperation()
+        }
         
         // Update state service
         if stateService.resumeOperation() {
@@ -1860,6 +1910,10 @@ class SharedAppCoordinator: ObservableObject {
 
     func compareFolders() async {
         guard currentMode == .compareFolders else { return }
+        if checkAgainst == .savedChecksums {
+            await checkSavedChecksums()
+            return
+        }
         guard let left = leftURL, let right = rightURL else {
             await platformManager.presentAlert(
                 title: "Invalid Selection",
@@ -1878,9 +1932,19 @@ class SharedAppCoordinator: ObservableObject {
 
         guard !isOperationInProgress else { return }
         let comparedMode = verificationMode
+        let operationID = UUID()
         isOperationInProgress = true
         lastOperationWasCompare = true
-        operationState = .inProgress
+        stateService.startOperation(
+            id: operationID,
+            sourceURL: left,
+            destinationURLs: [right],
+            totalFiles: leftFolderInfo?.fileCount ?? 0,
+            totalBytes: leftFolderInfo?.totalSize ?? 0,
+            verificationMode: comparedMode.rawValue,
+            mode: "check"
+        )
+        stateService.updateCapabilities(canPause: true, canResume: false)
         results = []
         clearCompareOutcome()
         errorService.clearCurrentErrors()
@@ -1906,6 +1970,7 @@ class SharedAppCoordinator: ObservableObject {
             }
             guard leftURL == left, rightURL == right, verificationMode == comparedMode else {
                 isOperationInProgress = false
+                stateService.cancelOperation(operationId: operationID)
                 operationState = .notStarted
                 progress = nil
                 return
@@ -1929,19 +1994,88 @@ class SharedAppCoordinator: ObservableObject {
             // Success means verified (Promise 2): a size-only match is not
             // one, or the Dock tile and anything else reading `success`
             // would show it green.
-            operationState = .completed(OperationCompletionInfo(success: stats.isClean && verifiesContents, message: message))
+            stateService.completeOperation(
+                operationId: operationID,
+                info: OperationCompletionInfo(success: stats.isClean && verifiesContents, message: message)
+            )
             return
         } catch is CancellationError {
             isOperationInProgress = false
-            operationState = .cancelled
+            stateService.cancelOperation(operationId: operationID)
             lastCompareEnd = .cancelled
             return
         } catch {
             isOperationInProgress = false
-            operationState = .failed
+            stateService.failOperation(operationId: operationID)
             lastCompareEnd = .failed(error.localizedDescription)
             await platformManager.presentError(error)
             return
+        }
+    }
+
+    private func checkSavedChecksums() async {
+        guard let root = leftURL,
+              let discovery = savedChecksumDiscovery,
+              discovery.root.path == root.standardizedFileURL.resolvingSymlinksKeepingCase().path,
+              !isOperationInProgress else { return }
+
+        let operationID = UUID()
+        isOperationInProgress = true
+        lastOperationWasCompare = true
+        stateService.startOperation(
+            id: operationID,
+            sourceURL: root,
+            destinationURLs: [],
+            totalFiles: discovery.expectedFiles.count,
+            totalBytes: 0,
+            verificationMode: "saved-checksums",
+            mode: "check"
+        )
+        stateService.updateCapabilities(canPause: true, canResume: false)
+        results = []
+        clearCompareOutcome()
+        errorService.clearCurrentErrors()
+        progress = OperationProgress(
+            overallProgress: 0,
+            currentFile: nil,
+            filesProcessed: 0,
+            totalFiles: discovery.expectedFiles.count,
+            currentStage: .preparing,
+            speed: nil
+        )
+
+        do {
+            let result = try await comparisonCoordinator.checkSavedChecksums(
+                discovery: discovery,
+                onProgress: { [weak self] in self?.progress = $0 }
+            )
+            if Task.isCancelled || comparisonCoordinator.isCancellationRequested { throw CancellationError() }
+            guard leftURL == root, checkAgainst == .savedChecksums else {
+                isOperationInProgress = false
+                stateService.cancelOperation(operationId: operationID)
+                operationState = .notStarted
+                progress = nil
+                return
+            }
+            lastSavedChecksumResult = result
+            lastCompareEnd = .completed
+            isOperationInProgress = false
+            let message = result.isIntact
+                ? "\(root.lastPathComponent) still matches"
+                : "Saved checksum check found \(result.changedPaths.count) changed and \(result.missingPaths.count) missing files"
+            stateService.completeOperation(
+                operationId: operationID,
+                info: OperationCompletionInfo(success: result.isIntact, message: message)
+            )
+        } catch is CancellationError {
+            isOperationInProgress = false
+            stateService.cancelOperation(operationId: operationID)
+            lastCompareEnd = .cancelled
+        } catch {
+            isOperationInProgress = false
+            stateService.failOperation(operationId: operationID)
+            lastCompareEnd = .failed(error.localizedDescription)
+            await platformManager.presentError(error)
         }
     }
     
@@ -2062,7 +2196,11 @@ class SharedAppCoordinator: ObservableObject {
         case .copyAndVerify:
             return operationReadinessAssessment.isReady && !isOperationInProgress
         case .compareFolders:
-            guard let leftURL, let rightURL, !isOperationInProgress else { return false }
+            guard let leftURL, !isOperationInProgress else { return false }
+            if checkAgainst == .savedChecksums {
+                return savedChecksumDiscovery != nil && savedChecksumAvailability.hasRecords
+            }
+            guard let rightURL else { return false }
             return CompareBlock.check(left: leftURL, right: rightURL) == nil
         case .masterReport:
             return currentOperation != nil && !isOperationInProgress

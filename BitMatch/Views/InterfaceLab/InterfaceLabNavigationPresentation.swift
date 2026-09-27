@@ -15,6 +15,6 @@ enum InterfaceLabNavigationPolicy {
 
 enum InterfaceLabCopy {
     static let setupTitle = "Transfer setup"
-    static let compareTitle = "Compare folders"
+    static let compareTitle = "Check"
     static let navigationLabel = "Preview screen"
 }

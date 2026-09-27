@@ -10,6 +10,30 @@ import BitMatchEngine
 
 // MARK: - Folder slots
 
+enum CheckAgainstChoice: String, CaseIterable, Identifiable, Equatable, Sendable {
+    case savedChecksums = "Its saved checksums"
+    case anotherFolder = "Another folder"
+
+    var id: String { rawValue }
+}
+
+enum SavedChecksumAvailability: Equatable, Sendable {
+    case checking
+    case found(fileCount: Int)
+    case notFound
+
+    var hasRecords: Bool {
+        if case .found = self { return true }
+        return false
+    }
+}
+
+extension CheckAgainstChoice {
+    static func defaultChoice(for availability: SavedChecksumAvailability) -> Self {
+        availability.hasRecords ? .savedChecksums : .anotherFolder
+    }
+}
+
 /// One side of the compare, as the screen shows it.
 struct CompareFolderSlot: Equatable, Sendable {
     let url: URL?
@@ -97,15 +121,31 @@ enum CompareReadiness: Equatable, Sendable {
     case blocked(CompareBlock)
     /// A folder's details are still loading.
     case loading
+    /// The first folder is being searched for saved evidence.
+    case checkingRecords
     /// A compare (or any other operation) is running.
     case running
     case ready
 
     var canStart: Bool { self == .ready }
 
-    static func resolve(left: CompareFolderSlot, right: CompareFolderSlot, isRunning: Bool) -> Self {
+    static func resolve(
+        left: CompareFolderSlot,
+        right: CompareFolderSlot,
+        choice: CheckAgainstChoice = .anotherFolder,
+        savedAvailability: SavedChecksumAvailability = .notFound,
+        isRunning: Bool
+    ) -> Self {
         if isRunning { return .running }
         guard let leftURL = left.url else { return .needsLeft }
+        if savedAvailability == .checking { return .checkingRecords }
+        if choice == .savedChecksums {
+            switch savedAvailability {
+            case .checking: return .checkingRecords
+            case .found: return .ready
+            case .notFound: return .needsRight
+            }
+        }
         guard let rightURL = right.url else { return .needsRight }
         if let block = CompareBlock.check(left: leftURL, right: rightURL) { return .blocked(block) }
         if left.isLoading || right.isLoading { return .loading }
@@ -115,11 +155,12 @@ enum CompareReadiness: Equatable, Sendable {
     /// The reason line under a disabled Compare button. Nil when ready.
     var message: String? {
         switch self {
-        case .needsLeft: "Choose the reference folder, the one you trust."
-        case .needsRight: "Choose the folder to check against the reference."
+        case .needsLeft: "Choose the folder or drive to check."
+        case .needsRight: "Choose another folder to compare against."
         case .blocked(let block): block.message
         case .loading: "Reading folder details…"
-        case .running: "A compare is running."
+        case .checkingRecords: "Looking for saved checksums…"
+        case .running: "A check is running."
         case .ready: nil
         }
     }
@@ -219,19 +260,55 @@ struct CompareVerdictPresentation: Equatable, Sendable {
             )
         case .cancelled:
             return Self(
-                title: "Compare cancelled",
-                detail: "Nothing was concluded. Compare again when ready.",
+                title: "Check cancelled",
+                detail: "Nothing was concluded. Check again when ready.",
                 symbol: "stop.circle",
                 tone: .cancelled
             )
         case .failed(let message):
             return Self(
-                title: "Compare failed",
+                title: "Check failed",
                 detail: message.isEmpty ? "The folders could not be compared." : message,
                 symbol: "exclamationmark.triangle.fill",
                 tone: .failed
             )
         }
+    }
+
+    static func makeSaved(
+        _ result: SavedChecksumCheck.Result,
+        now: Date = Date(),
+        calendar: Calendar = .current
+    ) -> Self {
+        let fileCount = NumberFormatter.localizedString(
+            from: NSNumber(value: result.recordedFileCount),
+            number: .decimal
+        )
+        let fileWord = result.recordedFileCount == 1 ? "file" : "files"
+        let reports = result.records.map { $0.url.lastPathComponent }.joined(separator: ", ")
+        if result.isIntact {
+            let age = SavedChecksumCheck.agePhrase(since: result.newestRecordDate, now: now, calendar: calendar)
+            let newFiles = result.newPaths.isEmpty
+                ? ""
+                : " \(result.newPaths.count) new \(result.newPaths.count == 1 ? "file is" : "files are") not in the record."
+            return Self(
+                title: "\(result.root.lastPathComponent) still matches: \(fileCount) \(fileWord) intact, \(age)",
+                detail: "Used \(reports).\(newFiles)",
+                symbol: "checkmark.seal.fill",
+                tone: .verified
+            )
+        }
+
+        var parts: [String] = []
+        if !result.changedPaths.isEmpty { parts.append("\(result.changedPaths.count) files changed") }
+        if !result.missingPaths.isEmpty { parts.append("\(result.missingPaths.count) missing") }
+        if !result.newPaths.isEmpty { parts.append("\(result.newPaths.count) new files not in the record") }
+        return Self(
+            title: "Saved checksum check found differences",
+            detail: parts.joined(separator: ", ") + ". Used \(reports).",
+            symbol: "xmark.octagon.fill",
+            tone: .differ
+        )
     }
 }
 
@@ -264,15 +341,20 @@ enum ComparePhase: Equatable, Sendable {
     case setup
     case running(CompareProgressPresentation)
     case finished(CompareOutcome)
+    case savedFinished(SavedChecksumCheck.Result)
 }
 
 struct ComparePresentation: Equatable, Sendable {
-    static let nonDestructiveMessage = "Compare does not change either folder."
-    static let referenceFolderLabel = "Reference folder"
-    static let folderToCheckLabel = "Folder to check"
+    static let title = "Check"
+    static let nonDestructiveMessage = "Check does not change your files."
+    static let noSavedChecksumsMessage = "No saved checksums found here. Compare it with another folder instead."
+    static let folderToCheckLabel = "Folder or drive to check"
+    static let anotherFolderLabel = "Another folder"
 
     let left: CompareFolderSlot
     let right: CompareFolderSlot
+    let choice: CheckAgainstChoice
+    let savedAvailability: SavedChecksumAvailability
     let mode: VerificationMode
     let readiness: CompareReadiness
     let phase: ComparePhase
@@ -287,7 +369,7 @@ struct ComparePresentation: Equatable, Sendable {
         switch readiness {
         case .needsLeft: .chooseLeft
         case .needsRight: .chooseRight
-        case .blocked, .loading, .running, .ready: nil
+        case .blocked, .loading, .checkingRecords, .running, .ready: nil
         }
     }
 
@@ -295,18 +377,23 @@ struct ComparePresentation: Equatable, Sendable {
     /// needed under it.
     var actionTitle: String {
         switch readiness {
-        case .needsLeft: "Choose the reference folder"
-        case .needsRight: "Choose the folder to check"
+        case .needsLeft: "Choose a folder or drive"
+        case .needsRight: "Choose another folder"
         case .blocked: "Choose two separate folders"
         case .loading: "Reading folder details…"
-        case .running: "Comparing…"
-        case .ready: isFinished ? "Compare again" : "Compare folders"
+        case .checkingRecords: "Looking for saved checksums…"
+        case .running: choice == .savedChecksums ? "Checking…" : "Comparing…"
+        case .ready:
+            if choice == .savedChecksums { isFinished ? "Check again" : "Check saved checksums" }
+            else { isFinished ? "Compare again" : "Compare folders" }
         }
     }
 
     var isFinished: Bool {
-        if case .finished = phase { return true }
-        return false
+        switch phase {
+        case .finished, .savedFinished: true
+        case .setup, .running: false
+        }
     }
 
     /// Only a real problem (same or nested folders) gets a line of its own.
@@ -325,12 +412,18 @@ struct ComparePresentation: Equatable, Sendable {
     /// all locked while anything runs.
     var allowsEditing: Bool { !isRunning }
 
-    var leftName: String { left.name ?? Self.referenceFolderLabel }
-    var rightName: String { right.name ?? Self.folderToCheckLabel }
+    var leftName: String { left.name ?? Self.folderToCheckLabel }
+    var rightName: String { right.name ?? Self.anotherFolderLabel }
 
     var verdict: CompareVerdictPresentation? {
-        guard case .finished(let outcome) = phase else { return nil }
-        return CompareVerdictPresentation.make(outcome, leftName: leftName, rightName: rightName, mode: mode, stats: stats)
+        switch phase {
+        case .finished(let outcome):
+            return CompareVerdictPresentation.make(outcome, leftName: leftName, rightName: rightName, mode: mode, stats: stats)
+        case .savedFinished(let result):
+            return CompareVerdictPresentation.makeSaved(result)
+        case .setup, .running:
+            return nil
+        }
     }
 
     /// - Parameters:
@@ -339,22 +432,42 @@ struct ComparePresentation: Equatable, Sendable {
     static func make(
         left: CompareFolderSlot,
         right: CompareFolderSlot,
+        choice: CheckAgainstChoice = .anotherFolder,
+        savedAvailability: SavedChecksumAvailability = .notFound,
         mode: VerificationMode,
         isRunning: Bool,
         progress: CompareProgressPresentation?,
         stats: CompareStats?,
+        savedResult: SavedChecksumCheck.Result? = nil,
         end: CompareRunEnd?
     ) -> Self {
-        let readiness = CompareReadiness.resolve(left: left, right: right, isRunning: isRunning)
+        let readiness = CompareReadiness.resolve(
+            left: left,
+            right: right,
+            choice: choice,
+            savedAvailability: savedAvailability,
+            isRunning: isRunning
+        )
         let phase: ComparePhase
         if isRunning {
             phase = .running(progress ?? .starting)
+        } else if choice == .savedChecksums, let savedResult, end == .completed {
+            phase = .savedFinished(savedResult)
         } else if let outcome = CompareOutcome.resolve(stats: stats, end: end, mode: mode) {
             phase = .finished(outcome)
         } else {
             phase = .setup
         }
-        return Self(left: left, right: right, mode: mode, readiness: readiness, phase: phase, stats: stats)
+        return Self(
+            left: left,
+            right: right,
+            choice: choice,
+            savedAvailability: savedAvailability,
+            mode: mode,
+            readiness: readiness,
+            phase: phase,
+            stats: stats
+        )
     }
 }
 

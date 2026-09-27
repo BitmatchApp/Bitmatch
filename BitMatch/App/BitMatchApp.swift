@@ -93,17 +93,17 @@ struct BitMatchApp: App {
             
             // Into the system View menu: a CommandMenu("View") adds a second one.
             CommandGroup(before: .toolbar) {
-                Button("Copy & Verify Mode") {
+                Button(AppMode.copyAndVerify.shortTitle) {
                     NotificationCenter.default.post(name: .switchToCopyMode, object: nil)
                 }
                 .keyboardShortcut("1", modifiers: .command)
                 
-                Button("Compare Folders Mode") {
+                Button(AppMode.compareFolders.shortTitle) {
                     NotificationCenter.default.post(name: .switchToCompareMode, object: nil)
                 }
                 .keyboardShortcut("2", modifiers: .command)
                 
-                Button("Master Report") {
+                Button(AppMode.masterReport.shortTitle) {
                     NotificationCenter.default.post(name: .switchToMasterReportMode, object: nil)
                 }
                 .keyboardShortcut("3", modifiers: .command)

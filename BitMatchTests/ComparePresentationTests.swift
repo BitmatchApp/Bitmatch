@@ -26,6 +26,43 @@ struct ComparePresentationTests {
         onlyInLeftCount: 0, onlyInRightCount: 0, commonCount: 3, mismatchedCount: 0
     )
 
+    @Test func savedChecksumsAreTheDefaultOnlyWhenFound() {
+        #expect(CheckAgainstChoice.defaultChoice(for: .found(fileCount: 4)) == .savedChecksums)
+        #expect(CheckAgainstChoice.defaultChoice(for: .checking) == .anotherFolder)
+        #expect(CheckAgainstChoice.defaultChoice(for: .notFound) == .anotherFolder)
+        #expect(CompareReadiness.resolve(
+            left: Self.loaded(Self.card),
+            right: Self.emptySlot,
+            choice: .savedChecksums,
+            savedAvailability: .found(fileCount: 4),
+            isRunning: false
+        ) == .ready)
+    }
+
+    @Test func savedChecksumVerdictNamesTheFolderCountAndAge() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let copied = calendar.date(from: DateComponents(year: 2026, month: 1, day: 1))!
+        let checked = calendar.date(from: DateComponents(year: 2026, month: 1, day: 2))!
+        let record = SavedChecksumCheck.Record(
+            url: URL(fileURLWithPath: "/SHUTTLE A/Reports/BitMatch_Report_test.json"),
+            date: copied,
+            kind: .bitMatchReport
+        )
+        let result = SavedChecksumCheck.Result(
+            root: URL(fileURLWithPath: "/SHUTTLE A"),
+            matchingPaths: ["one.mov"],
+            changedPaths: [],
+            missingPaths: [],
+            newPaths: [],
+            records: [record]
+        )
+
+        let verdict = CompareVerdictPresentation.makeSaved(result, now: checked, calendar: calendar)
+        #expect(verdict.title == "SHUTTLE A still matches: 1 file intact, 1 day after copying")
+        #expect(verdict.tone == .verified)
+    }
+
     @Test func zeroByteFolderUsesEmptyWording() {
         let slot = CompareFolderSlot.make(
             url: Self.card, infoURL: Self.card, fileCount: 1, totalSize: 0, isFetching: false
@@ -35,9 +72,11 @@ struct ComparePresentationTests {
     }
 
     @Test func folderLabelsExplainRolesAndSafety() {
-        #expect(ComparePresentation.referenceFolderLabel == "Reference folder")
-        #expect(ComparePresentation.folderToCheckLabel == "Folder to check")
-        #expect(ComparePresentation.nonDestructiveMessage == "Compare does not change either folder.")
+        #expect(ComparePresentation.title == "Check")
+        #expect(ComparePresentation.folderToCheckLabel == "Folder or drive to check")
+        #expect(ComparePresentation.anotherFolderLabel == "Another folder")
+        #expect(ComparePresentation.nonDestructiveMessage == "Check does not change your files.")
+        #expect(ComparePresentation.noSavedChecksumsMessage == "No saved checksums found here. Compare it with another folder instead.")
     }
 
     // MARK: Readiness
@@ -167,7 +206,7 @@ struct ComparePresentationTests {
         )
         #expect(presentation.phase == .finished(.cancelled))
         #expect(presentation.verdict?.tone == .cancelled)
-        #expect(presentation.verdict?.title == "Compare cancelled")
+        #expect(presentation.verdict?.title == "Check cancelled")
     }
 
     /// Plant: same as `cancelledOutcomeIsNotMatch`.
@@ -278,7 +317,7 @@ struct ComparePresentationTests {
     func emptyScreenHighlightsLeftFirst() {
         let presentation = Self.screen(left: Self.emptySlot, right: Self.emptySlot)
         #expect(presentation.nextStep == .chooseLeft)
-        #expect(presentation.actionTitle == "Choose the reference folder")
+        #expect(presentation.actionTitle == "Choose a folder or drive")
         #expect(!presentation.readiness.canStart)
     }
 
@@ -289,7 +328,7 @@ struct ComparePresentationTests {
     func rightChosenFirstStillHighlightsLeft() {
         let presentation = Self.screen(left: Self.emptySlot, right: Self.loaded(Self.backup))
         #expect(presentation.nextStep == .chooseLeft)
-        #expect(presentation.actionTitle == "Choose the reference folder")
+        #expect(presentation.actionTitle == "Choose a folder or drive")
     }
 
     /// Left chosen: the highlight moves to Right.
@@ -299,7 +338,7 @@ struct ComparePresentationTests {
     func leftChosenHighlightsRight() {
         let presentation = Self.screen(left: Self.loaded(Self.card), right: Self.emptySlot)
         #expect(presentation.nextStep == .chooseRight)
-        #expect(presentation.actionTitle == "Choose the folder to check")
+        #expect(presentation.actionTitle == "Choose another folder")
         #expect(!presentation.readiness.canStart)
     }
 

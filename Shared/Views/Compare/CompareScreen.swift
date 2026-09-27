@@ -21,6 +21,7 @@ struct CompareActions {
 /// screen's own width (`AdaptiveNavigationPolicy`), not the device.
 struct CompareScreen: View {
     let presentation: ComparePresentation
+    @Binding var checkAgainst: CheckAgainstChoice
     @Binding var verificationMode: VerificationMode
     @Binding var advancedExpanded: Bool
     let actions: CompareActions
@@ -29,6 +30,10 @@ struct CompareScreen: View {
 
     private var layout: AdaptiveNavigationPresentation {
         AdaptiveNavigationPolicy.presentation(for: width)
+    }
+
+    private var showsAnotherFolder: Bool {
+        presentation.choice == .anotherFolder && presentation.savedAvailability != .checking
     }
 
     var body: some View {
@@ -71,7 +76,7 @@ struct CompareScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Compare folders")
+            Text(ComparePresentation.title)
                 .font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
             Text(ComparePresentation.nonDestructiveMessage)
@@ -89,9 +94,9 @@ struct CompareScreen: View {
             : AnyLayout(HStackLayout(alignment: .top, spacing: 12))
         return stack {
             CompareFolderSlotView(
-                side: ComparePresentation.referenceFolderLabel,
-                role: "The folder you trust",
-                detail: "The folder you trust",
+                side: ComparePresentation.folderToCheckLabel,
+                role: "The copy you want to confirm",
+                detail: "The folder or drive to check",
                 slot: presentation.left,
                 isEditable: presentation.allowsEditing,
                 isNextStep: presentation.nextStep == .chooseLeft,
@@ -99,24 +104,26 @@ struct CompareScreen: View {
                 clear: actions.clearLeft,
                 drop: actions.dropLeft
             )
-            if layout != .compact {
+            if showsAnotherFolder && layout != .compact {
                 Image(systemName: "arrow.left.arrow.right")
                     .font(.body.weight(.semibold))
                     .foregroundStyle(.tertiary)
                     .padding(.top, 34)
                     .accessibilityHidden(true)
             }
-            CompareFolderSlotView(
-                side: ComparePresentation.folderToCheckLabel,
-                role: "Compared with the reference",
-                detail: "The folder to check",
-                slot: presentation.right,
-                isEditable: presentation.allowsEditing,
-                isNextStep: presentation.nextStep == .chooseRight,
-                pick: actions.pickRight,
-                clear: actions.clearRight,
-                drop: actions.dropRight
-            )
+            if showsAnotherFolder {
+                CompareFolderSlotView(
+                    side: ComparePresentation.anotherFolderLabel,
+                    role: "Compared with the folder to check",
+                    detail: "The folder to compare against",
+                    slot: presentation.right,
+                    isEditable: presentation.allowsEditing,
+                    isNextStep: presentation.nextStep == .chooseRight,
+                    pick: actions.pickRight,
+                    clear: actions.clearRight,
+                    drop: actions.dropRight
+                )
+            }
         }
         .padding(14)
         .background(SetupLocationsPanelBackground())
@@ -128,10 +135,14 @@ struct CompareScreen: View {
     private var controls: some View {
         if !presentation.isRunning {
             VStack(alignment: .leading, spacing: 12) {
-                TransferOptionsSection(
-                    isExpanded: $advancedExpanded,
-                    verificationMode: $verificationMode
-                )
+                checkAgainstControl
+
+                if showsAnotherFolder {
+                    TransferOptionsSection(
+                        isExpanded: $advancedExpanded,
+                        verificationMode: $verificationMode
+                    )
+                }
 
                 VStack(alignment: .center, spacing: 8) {
                     compareButton
@@ -146,6 +157,52 @@ struct CompareScreen: View {
                 .frame(maxWidth: 380)
                 .frame(maxWidth: .infinity, alignment: .center)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var checkAgainstControl: some View {
+        if presentation.left.url != nil {
+            switch presentation.savedAvailability {
+            case .checking:
+                HStack(spacing: 8) {
+                    ProgressView().controlSize(.small)
+                    Text("Looking for saved checksums…")
+                }
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            case .found:
+                checkAgainstPicker
+            case .notFound:
+                VStack(alignment: .leading, spacing: 6) {
+                    LabeledContent("Check against", value: CheckAgainstChoice.anotherFolder.rawValue)
+                    Text(ComparePresentation.noSavedChecksumsMessage)
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var checkAgainstPicker: some View {
+        if layout == .compact {
+            Picker("Check against", selection: $checkAgainst) {
+                ForEach(CheckAgainstChoice.allCases) { choice in
+                    Text(choice.rawValue).tag(choice)
+                }
+            }
+            .pickerStyle(.menu)
+            .disabled(!presentation.allowsEditing)
+        } else {
+            Picker("Check against", selection: $checkAgainst) {
+                ForEach(CheckAgainstChoice.allCases) { choice in
+                    Text(choice.rawValue).tag(choice)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(!presentation.allowsEditing)
         }
     }
 
@@ -191,6 +248,54 @@ struct CompareScreen: View {
                         .padding(14)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 10))
+                }
+            }
+        case .savedFinished(let result):
+            SavedChecksumResultsView(result: result)
+        }
+    }
+}
+
+private struct SavedChecksumResultsView: View {
+    let result: SavedChecksumCheck.Result
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            CompareVerdictHeader(verdict: CompareVerdictPresentation.makeSaved(result))
+            if !result.isIntact {
+                Text("\(result.changedPaths.count) files changed (hash mismatch)")
+                Text("\(result.missingPaths.count) missing")
+                Text("\(result.newPaths.count) new files not in the record")
+            }
+            pathSection(title: "Changed", paths: result.changedPaths)
+            pathSection(title: "Missing", paths: result.missingPaths)
+            pathSection(title: "New files", paths: result.newPaths)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(result.records.count == 1 ? "Report used" : "Reports used")
+                    .font(.subheadline.weight(.semibold))
+                ForEach(result.records, id: \.url) { record in
+                    Text(record.url.lastPathComponent)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                }
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 12))
+    }
+
+    @ViewBuilder
+    private func pathSection(title: String, paths: [String]) -> some View {
+        if !paths.isEmpty {
+            DisclosureGroup("\(title) (\(paths.count))") {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    ForEach(paths.prefix(200), id: \.self) { path in
+                        Text(path)
+                            .font(.system(.callout, design: .monospaced))
+                            .textSelection(.enabled)
+                    }
                 }
             }
         }
@@ -356,7 +461,7 @@ private struct CompareProgressSection: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Comparing…")
+            Text("Checking…")
                 .font(.headline)
                 .accessibilityAddTraits(.isHeader)
             ProgressView(value: min(max(progress.fraction, 0), 1)) {
@@ -366,7 +471,7 @@ private struct CompareProgressSection: View {
                 Text(progress.percentText)
                     .font(.caption)
             }
-            .accessibilityLabel("Compare progress")
+            .accessibilityLabel("Check progress")
             .accessibilityValue("\(progress.percentText), \(progress.countText)")
             if let file = progress.currentFile {
                 Text(file)
@@ -375,7 +480,7 @@ private struct CompareProgressSection: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            Button("Cancel compare", role: .cancel, action: cancel)
+            Button("Cancel check", role: .cancel, action: cancel)
                 .buttonStyle(.bordered)
                 .controlSize(.large)
                 .frame(minHeight: 44)
