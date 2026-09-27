@@ -65,10 +65,9 @@ final class ReportEvidenceBytesTests: XCTestCase {
         }
     }
 
-    /// Promise 3: the report states only what was measured. Copy and verify
-    /// durations were each "half the total" and peak speed "average x 1.2",
-    /// invented in `ReportExporter`. Fails if any invented value returns.
-    func testReportOmitsTimingsBitMatchDoesNotMeasure() async throws {
+    /// Promise 3: copy and verify durations come from measured pipeline stages;
+    /// peak speed and per-destination timings remain absent when unmeasured.
+    func testReportCarriesMeasuredPhaseTimingsOnly() async throws {
         try await FileOperationsTestLock.shared.run {
             let fixture = try DisposableTransferFixture(seed: 20_260_926, fileCount: 3, bytesPerFile: 16 * 1024)
             defer { fixture.cleanup() }
@@ -95,9 +94,9 @@ final class ReportEvidenceBytesTests: XCTestCase {
                 .first { $0.pathExtension == "json" })
             let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
             let performance = try XCTUnwrap(object["performance"] as? [String: Any])
-            for key in ["copyDuration", "verifyDuration", "peakSpeedMBps"] {
-                XCTAssertTrue(performance[key] == nil || performance[key] is NSNull, "performance.\(key) is invented: \(String(describing: performance[key]))")
-            }
+            XCTAssertNotNil(performance["copyDurationSeconds"] as? NSNumber)
+            XCTAssertNotNil(performance["verifyDurationSeconds"] as? NSNumber)
+            XCTAssertTrue(performance["peakSpeedMBps"] == nil || performance["peakSpeedMBps"] is NSNull)
             XCTAssertNotNil(performance["totalDuration"] as? NSNumber, "the measured total stays")
             let destinations = try XCTUnwrap(object["destinations"] as? [[String: Any]])
             for destination in destinations {
@@ -120,6 +119,7 @@ final class ReportEvidenceBytesTests: XCTestCase {
         let started = Date(timeIntervalSince1970: 1_800_000_000)
         let csv = try ReportExporter.makeEnhancedCSV(
             results: rows, started: started, duration: 60, filesPerSecond: 2,
+            copyDurationSeconds: 32, verifyDurationSeconds: 28,
             photographerContext: nil, prefs: nil
         )
         let lines = csv.components(separatedBy: "\n")
@@ -135,6 +135,29 @@ final class ReportEvidenceBytesTests: XCTestCase {
         XCTAssertTrue(csv.contains("Issues,1"), csv)
         XCTAssertTrue(csv.contains("Started,"), "the measured start belongs in the summary")
         XCTAssertTrue(csv.contains("Finished,"), "the measured finish belongs in the summary")
+        XCTAssertTrue(csv.contains("Copy Duration,32.00 seconds"), csv)
+        XCTAssertTrue(csv.contains("Verify Duration,28.00 seconds"), csv)
+    }
+
+    func testJSONUsesPhaseDurationSecondKeysAndQuickOmitsVerify() throws {
+        var prefs = ReportPrefs()
+        prefs.verificationMode = .quick
+        let report = try ReportExporter.makeEnhancedJSONReport(
+            results: [], jobID: UUID(), started: Date(timeIntervalSince1970: 0),
+            finished: Date(timeIntervalSince1970: 12), mode: .copyAndVerify,
+            sourceURL: nil, destinationURLs: [], fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, duration: 12, copyDurationSeconds: 12,
+            verifyDurationSeconds: nil, workers: 1, prefs: prefs,
+            photographerContext: nil
+        )
+        let data = try EvidenceWriter.encodeEnhancedJSONReport(report)
+        let object = try XCTUnwrap(try JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let performance = try XCTUnwrap(object["performance"] as? [String: Any])
+
+        XCTAssertEqual((performance["copyDurationSeconds"] as? NSNumber)?.doubleValue, 12)
+        XCTAssertNil(performance["verifyDurationSeconds"])
+        XCTAssertNil(performance["copyDuration"])
+        XCTAssertNil(performance["verifyDuration"])
     }
 
     /// A Quick run verified nothing, so the report's matches are zero, not

@@ -6,6 +6,132 @@ import BitMatchEngine
 /// Pure values, so every platform shows the same state the same way.
 enum TransferLibraryPresentation {
 
+    struct SearchMatch: Identifiable {
+        let record: LocalTransferRecord
+        let clipLine: String?
+
+        var id: UUID { record.id }
+    }
+
+    /// Lowercased clip names and card-relative paths, built once when History
+    /// changes instead of once per result row on every search keystroke.
+    struct SearchIndex {
+        private enum DestinationState: Int {
+            case verified
+            case notVerified
+            case failed
+
+            init(_ row: ResultRow) {
+                if !row.isSuccessStatus { self = .failed }
+                else if row.isVerifiedStatus { self = .verified }
+                else { self = .notVerified }
+            }
+        }
+
+        private struct Clip {
+            let name: String
+            let lowercaseName: String
+            let lowercaseRelativePath: String
+            var destinationStates: [String: DestinationState]
+            var destinationOrder: [String]
+        }
+
+        private let clipsByRecordID: [UUID: [Clip]]
+
+        init(records: [LocalTransferRecord]) {
+            clipsByRecordID = Dictionary(uniqueKeysWithValues: records.map { record in
+                let destinationNames = DestinationIdentityPresentation.nameMap(
+                    for: record.destinations.map(\.url)
+                )
+                var clips: [String: Clip] = [:]
+                var order: [String] = []
+
+                for row in record.results {
+                    let relativePath = Self.relativePath(row.path, under: record.source.url)
+                    let key = relativePath.lowercased()
+                    let destination = DestinationIdentityPresentation.resultDriveName(
+                        for: row,
+                        destinationNames: destinationNames
+                    ) ?? "Destination"
+                    let state = DestinationState(row)
+                    if clips[key] == nil {
+                        clips[key] = Clip(
+                            name: row.fileName,
+                            lowercaseName: row.fileName.lowercased(),
+                            lowercaseRelativePath: key,
+                            destinationStates: [:],
+                            destinationOrder: []
+                        )
+                        order.append(key)
+                    }
+                    if clips[key]?.destinationStates[destination] == nil {
+                        clips[key]?.destinationOrder.append(destination)
+                    }
+                    let existing = clips[key]?.destinationStates[destination] ?? .verified
+                    clips[key]?.destinationStates[destination] = existing.rawValue >= state.rawValue ? existing : state
+                }
+                return (record.id, order.compactMap { clips[$0] })
+            })
+        }
+
+        func match(for record: LocalTransferRecord, search: String) -> SearchMatch? {
+            let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            guard !query.isEmpty else { return SearchMatch(record: record, clipLine: nil) }
+            if TransferLibraryPresentation.matchesMetadata(
+                lowercaseQuery: query,
+                title: record.title,
+                summary: record.summary,
+                projectName: record.reportSettings.projectName,
+                backupNames: record.destinations.map { $0.url.lastPathComponent }
+            ) {
+                return SearchMatch(record: record, clipLine: nil)
+            }
+
+            let matches = (clipsByRecordID[record.id] ?? []).filter {
+                $0.lowercaseName.contains(query) || $0.lowercaseRelativePath.contains(query)
+            }
+            guard let first = matches.first else { return nil }
+            let destinations = first.destinationOrder.map { destination in
+                switch first.destinationStates[destination] ?? .failed {
+                case .verified: destination
+                case .notVerified: "\(destination) (not verified)"
+                case .failed: "\(destination) (failed)"
+                }
+            }
+            let destinationText = Self.naturalList(destinations)
+            let firstLine = destinationText.isEmpty ? first.name : "\(first.name) on \(destinationText)"
+            let remaining = matches.count - 1
+            let line: String
+            if remaining == 1 { line = "\(firstLine) and 1 more clip" }
+            else if remaining > 1 { line = "\(firstLine) and \(remaining) more clips" }
+            else { line = firstLine }
+            return SearchMatch(record: record, clipLine: line)
+        }
+
+        private static func relativePath(_ path: String, under source: URL) -> String {
+            let standardizedPath = (path as NSString).standardizingPath
+            guard standardizedPath.hasPrefix("/") else {
+                return standardizedPath.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            }
+            let sourcePath = source.standardizedFileURL.path
+            if standardizedPath == sourcePath { return URL(fileURLWithPath: path).lastPathComponent }
+            let prefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
+            guard standardizedPath.hasPrefix(prefix) else {
+                return URL(fileURLWithPath: standardizedPath).lastPathComponent
+            }
+            return String(standardizedPath.dropFirst(prefix.count))
+        }
+
+        private static func naturalList(_ values: [String]) -> String {
+            switch values.count {
+            case 0: ""
+            case 1: values[0]
+            case 2: "\(values[0]) and \(values[1])"
+            default: "\(values.dropLast().joined(separator: ", ")), and \(values.last!)"
+            }
+        }
+    }
+
     struct AttentionNotice: Equatable, Sendable {
         let recordID: UUID
         let title: String
@@ -125,20 +251,35 @@ enum TransferLibraryPresentation {
 
     /// Case-insensitive match on the card, summary, project and backup folder names.
     static func matches(search: String, title: String, summary: String, projectName: String, backupNames: [String]) -> Bool {
-        let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
+        let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !query.isEmpty else { return true }
+        return matchesMetadata(lowercaseQuery: query, title: title, summary: summary,
+                               projectName: projectName, backupNames: backupNames)
+    }
+
+    private static func matchesMetadata(lowercaseQuery query: String, title: String, summary: String,
+                                        projectName: String, backupNames: [String]) -> Bool {
         return ([title, summary, projectName] + backupNames)
             .joined(separator: " ")
-            .localizedCaseInsensitiveContains(query)
+            .lowercased()
+            .contains(query)
+    }
+
+    static func visibleMatches(
+        _ records: [LocalTransferRecord],
+        showHistory: Bool,
+        search: String,
+        index: SearchIndex
+    ) -> [SearchMatch] {
+        records.compactMap { record in
+            guard isVisible(state: record.state, showHistory: showHistory) else { return nil }
+            return index.match(for: record, search: search)
+        }
     }
 
     static func visibleRecords(_ records: [LocalTransferRecord], showHistory: Bool, search: String) -> [LocalTransferRecord] {
-        records.filter { record in
-            isVisible(state: record.state, showHistory: showHistory)
-                && matches(search: search, title: record.title, summary: record.summary,
-                           projectName: record.reportSettings.projectName,
-                           backupNames: record.destinations.map { $0.url.lastPathComponent })
-        }
+        visibleMatches(records, showHistory: showHistory, search: search, index: SearchIndex(records: records))
+            .map(\.record)
     }
 
     static func reviewTargetRecordID(requested: UUID?, visibleRecords: [LocalTransferRecord]) -> UUID? {

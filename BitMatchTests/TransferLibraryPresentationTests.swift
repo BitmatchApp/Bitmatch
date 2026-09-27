@@ -117,6 +117,61 @@ struct TransferLibraryPresentationTests {
                                                      projectName: "", backupNames: ["RAID"]))
     }
 
+    @Test func clipSearchFindsExactFileName() {
+        let record = PresentationTestSupport.recordWithRows([
+            PresentationTestSupport.clipRow(path: "DCIM/A001C003.MXF", destination: "SHUTTLE A")
+        ])
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        #expect(index.match(for: record, search: "A001C003.MXF")?.record.id == record.id)
+    }
+
+    @Test func clipSearchFindsPartialRelativePathCaseInsensitively() {
+        let record = PresentationTestSupport.recordWithRows([
+            PresentationTestSupport.clipRow(path: "CONTENTS/CLIPS/C0001.MP4", destination: "SHUTTLE A")
+        ])
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        #expect(index.match(for: record, search: "clips/c0001") != nil)
+        #expect(index.match(for: record, search: "c0001.mp4") != nil)
+    }
+
+    @Test func clipMatchLineNamesVerifiedDestinationsAndAdditionalClips() {
+        let record = PresentationTestSupport.recordWithRows([
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE A"),
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE B"),
+            PresentationTestSupport.clipRow(path: "DCIM/C0002.MP4", destination: "SHUTTLE A")
+        ])
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        #expect(index.match(for: record, search: "C000")?.clipLine
+            == "C0001.MP4 on SHUTTLE A and SHUTTLE B and 1 more clip")
+    }
+
+    @Test func clipMatchLineCallsOutFailedAndUnverifiedCopies() {
+        let record = PresentationTestSupport.recordWithRows([
+            PresentationTestSupport.clipRow(
+                path: "DCIM/C0001.MP4", destination: "SHUTTLE A", outcome: .failed
+            ),
+            PresentationTestSupport.clipRow(
+                path: "DCIM/C0001.MP4", destination: "SHUTTLE B", outcome: .copiedUnverified
+            )
+        ])
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        #expect(index.match(for: record, search: "C0001")?.clipLine
+            == "C0001.MP4 on SHUTTLE A (failed) and SHUTTLE B (not verified)")
+    }
+
+    @Test func clipIndexDoesNotTreatResultDestinationNamesAsClipText() {
+        let record = PresentationTestSupport.recordWithRows([
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE A")
+        ])
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        #expect(index.match(for: record, search: "SHUTTLE A")?.record.id == nil)
+    }
+
     // MARK: - Banner
 
     /// The banner on all three platforms counts failed and interrupted transfers.
@@ -271,6 +326,26 @@ private enum PresentationTestSupport {
             destination: "Backup",
             destinationPath: destination?.appendingPathComponent("A001.mov").path
         )
+    }
+
+    static func clipRow(
+        path: String,
+        destination: String,
+        outcome: ResultOutcome = .verified
+    ) -> ResultRow {
+        ResultRow(
+            path: path,
+            status: outcome.statusText,
+            size: 10,
+            checksum: outcome == .verified ? "abc" : nil,
+            destination: destination
+        )
+    }
+
+    static func recordWithRows(_ rows: [ResultRow]) -> LocalTransferRecord {
+        var record = record(state: .completed)
+        record.results = rows
+        return record
     }
 
     static func record(

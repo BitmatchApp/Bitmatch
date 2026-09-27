@@ -125,9 +125,23 @@ final class LocalTransferJournal: ObservableObject {
         try store.reorderQueued(idsInRunOrder: orderedIDs)
     }
 
-    func finish(id: UUID, results: [ResultRow], summary: String, hadIssues: Bool) throws {
+    func finish(
+        id: UUID,
+        results: [ResultRow],
+        summary: String,
+        hadIssues: Bool,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil
+    ) throws {
         defer { refresh() }
-        try store.finish(id: id, results: results, summary: summary, hadIssues: hadIssues)
+        try store.finish(
+            id: id,
+            results: results,
+            summary: summary,
+            hadIssues: hadIssues,
+            copyDurationSeconds: copyDurationSeconds,
+            verifyDurationSeconds: verifyDurationSeconds
+        )
     }
 
     func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil) throws {

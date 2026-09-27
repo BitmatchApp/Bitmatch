@@ -83,6 +83,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public var state: LocalTransferState = .queued
     public var startedAt: Date?
     public var endedAt: Date?
+    public var copyDurationSeconds: TimeInterval? = nil
+    public var verifyDurationSeconds: TimeInterval? = nil
     public var summary: String = "Ready to copy"
     public var results: [ResultRow] = []
 
@@ -105,7 +107,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
-        case generateASCMHL, projectID, state, startedAt, endedAt, summary, results
+        case generateASCMHL, projectID, state, startedAt, endedAt
+        case copyDurationSeconds, verifyDurationSeconds, summary, results
     }
 
     public init(from decoder: Decoder) throws {
@@ -122,6 +125,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         state = try c.decode(LocalTransferState.self, forKey: .state)
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
         endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
+        copyDurationSeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .copyDurationSeconds)
+        verifyDurationSeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .verifyDurationSeconds)
         summary = try c.decode(String.self, forKey: .summary)
         results = try c.decode([ResultRow].self, forKey: .results)
     }
@@ -435,10 +440,19 @@ public final class TransferJournal: Sendable {
         }
     }
 
-    public func finish(id: UUID, results: [ResultRow], summary: String, hadIssues: Bool) throws {
+    public func finish(
+        id: UUID,
+        results: [ResultRow],
+        summary: String,
+        hadIssues: Bool,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil
+    ) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.results = results
+            record.copyDurationSeconds = copyDurationSeconds
+            record.verifyDurationSeconds = verifyDurationSeconds
             record.state = hadIssues || results.isEmpty || results.contains(where: { !$0.isSuccessStatus }) ? .issues : .completed
             // A Quick-mode record must always say its contents were not
             // verified, whatever `summary` says. In the normal flow `summary`

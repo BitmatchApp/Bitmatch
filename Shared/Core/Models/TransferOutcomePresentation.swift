@@ -64,6 +64,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     let issueLines: [String]
     /// "Completed in …", or "Stopped after …" for an interrupted transfer.
     let durationLabel: String?
+    let phaseDurationLabel: String?
     let counts: OutcomeFileCounts
     /// Bytes of verified files, summed over every backup. Nil when
     /// nothing was verified; never the source folder size.
@@ -150,6 +151,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         errorCount: Int,
         warningCount: Int,
         duration: TimeInterval?,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil,
         sourceFileCount: Int? = nil,
         sourceBytes: Int64? = nil,
         verificationMode: VerificationMode?,
@@ -239,6 +242,11 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             cardName: card,
             issueLines: makeIssueLines(safetyState: safetyState, counts: counts, errorCount: errorCount, warningCount: warningCount),
             durationLabel: duration.map { makeDurationLabel(safetyState: safetyState, state: state, seconds: $0) },
+            phaseDurationLabel: phaseDurationText(
+                copySeconds: copyDurationSeconds,
+                verifySeconds: verifyDurationSeconds,
+                verificationMode: verificationMode
+            ),
             counts: counts,
             bytesVerified: counts.verified > 0 ? verifiedBytes : nil,
             verificationModeLabel: algorithm,
@@ -361,6 +369,22 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         if hours > 0 { return "\(hours)h \(minutes)m \(secs)s" }
         if minutes > 0 { return "\(minutes)m \(secs)s" }
         return "\(secs)s"
+    }
+
+    static func phaseDurationText(
+        copySeconds: TimeInterval?,
+        verifySeconds: TimeInterval?,
+        verificationMode: VerificationMode?
+    ) -> String? {
+        guard copySeconds != nil || verifySeconds != nil else { return nil }
+        let copy = copySeconds.map(durationText) ?? "unavailable"
+        let verify: String
+        if verificationMode == .quick {
+            verify = "not performed"
+        } else {
+            verify = verifySeconds.map(durationText) ?? "unavailable"
+        }
+        return "Copy \(copy), verify \(verify)"
     }
 
     private static func makeDestinationLines(rows: [ResultRow], destinations: [URL], interrupted: Bool) -> [OutcomeDestinationLine] {

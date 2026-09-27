@@ -25,6 +25,14 @@ struct ReportView: View {
         guard s.averageSpeed > 0 else { return "—" }
         return String(format: "%.1f MB/s", s.averageSpeed)
     }
+
+    private var phaseDuration: String? {
+        TransferOutcomePresentation.phaseDurationText(
+            copySeconds: s.copyDurationSeconds,
+            verifySeconds: s.verifyDurationSeconds,
+            verificationMode: s.verificationMode
+        )
+    }
     
     private var totalDurationSeconds: TimeInterval {
         max(0, s.finished.timeIntervalSince(s.started))
@@ -343,6 +351,15 @@ struct ReportView: View {
                     Text("Workers:").foregroundColor(.secondary).font(.system(size: 11))
                     Text("\(s.workers) parallel")
                         .font(.system(size: 11, weight: .medium))
+                }
+
+                if let phaseDuration {
+                    GridRow {
+                        Text("Phases:").foregroundColor(.secondary).font(.system(size: 11))
+                        Text(phaseDuration).font(.system(size: 11, weight: .medium))
+                        EmptyView()
+                        EmptyView()
+                    }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)

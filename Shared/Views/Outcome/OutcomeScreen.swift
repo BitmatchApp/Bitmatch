@@ -394,6 +394,11 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                     if let mode = presentation.verificationModeLabel {
                         countLine(mode, systemImage: "checklist")
                     }
+                    #if os(macOS)
+                    if let phaseDuration = presentation.phaseDurationLabel {
+                        countLine(phaseDuration, systemImage: "clock")
+                    }
+                    #endif
                     projectEvidence
                 }
                 .font(.callout)

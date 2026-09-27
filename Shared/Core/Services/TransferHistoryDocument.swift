@@ -22,7 +22,12 @@ struct TransferHistoryDocument: FileDocument {
                  record.reportSettings.projectName, record.generateASCMHL ? "requested" : "not requested",
                  record.reportSettings.clientName].map(quote).joined(separator: ",")
             }
-            data = Data((header + rows.joined(separator: "\n") + "\n").utf8)
+            let timingSummary = [
+                "\n# Summary",
+                ["copyDurationSeconds", record.copyDurationSeconds.map { String($0) } ?? ""].map(quote).joined(separator: ","),
+                ["verifyDurationSeconds", record.verifyDurationSeconds.map { String($0) } ?? ""].map(quote).joined(separator: ",")
+            ].joined(separator: "\n")
+            data = Data((header + rows.joined(separator: "\n") + timingSummary + "\n").utf8)
         } else {
             // Do not export security-scoped bookmarks or credentials from the journal.
             struct Report: Encodable {
@@ -36,6 +41,8 @@ struct TransferHistoryDocument: FileDocument {
                 let projectName: String
                 let clientName: String
                 let ascMHLRequested: Bool
+                let copyDurationSeconds: TimeInterval?
+                let verifyDurationSeconds: TimeInterval?
                 let results: [ResultRow]
             }
             let encoder = JSONEncoder()
@@ -45,7 +52,10 @@ struct TransferHistoryDocument: FileDocument {
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
-                ascMHLRequested: record.generateASCMHL, results: record.results))
+                ascMHLRequested: record.generateASCMHL,
+                copyDurationSeconds: record.copyDurationSeconds,
+                verifyDurationSeconds: record.verifyDurationSeconds,
+                results: record.results))
         }
     }
 }

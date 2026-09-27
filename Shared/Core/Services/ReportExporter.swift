@@ -21,6 +21,8 @@ enum ReportExporter {
                        prefs: ReportPrefs,
                        workers: Int,
                        totalBytesProcessed: Int64,
+                       copyDurationSeconds: TimeInterval? = nil,
+                       verifyDurationSeconds: TimeInterval? = nil,
                        safetyState: CardSafetyState,
                        generateFullReport: Bool = true,
                        photographerContext: PhotographerReportContext? = nil) async throws {
@@ -58,8 +60,11 @@ enum ReportExporter {
             production: prefs.production,
             company: prefs.company,
             verificationMethod: method,
+            verificationMode: prefs.verificationMode,
             totalBytesProcessed: totalBytesProcessed,
             averageSpeed: averageSpeed,
+            copyDurationSeconds: copyDurationSeconds,
+            verifyDurationSeconds: verifyDurationSeconds,
             clientLogoData: nil,
             companyLogoData: nil,
             photographyJob: photographerPayload,
@@ -92,6 +97,8 @@ enum ReportExporter {
                                        jobID: jobID,
                                        started: started,
                                        duration: duration,
+                                       copyDurationSeconds: copyDurationSeconds,
+                                       verifyDurationSeconds: verifyDurationSeconds,
                                        sourceURL: sourceURL,
                                        fileCount: fileCount,
                                        matchCount: matchCount,
@@ -133,6 +140,8 @@ enum ReportExporter {
         started: Date,
         duration: TimeInterval,
         filesPerSecond: Double,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil,
         photographerContext: PhotographerReportContext?,
         prefs: ReportPrefs? = nil
     ) throws -> String {
@@ -141,6 +150,8 @@ enum ReportExporter {
             started: started,
             duration: duration,
             filesPerSecond: filesPerSecond,
+            copyDurationSeconds: copyDurationSeconds,
+            verifyDurationSeconds: verifyDurationSeconds,
             project: try photographerContext.map { try projectCSVEvidence(context: $0, results: results) },
             prefs: prefs
         )
@@ -159,6 +170,8 @@ enum ReportExporter {
         matchCount: Int,
         totalBytesProcessed: Int64,
         duration: TimeInterval,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil,
         workers: Int,
         prefs: ReportPrefs,
         photographerContext: PhotographerReportContext?
@@ -175,6 +188,8 @@ enum ReportExporter {
             matchCount: matchCount,
             totalBytesProcessed: totalBytesProcessed,
             duration: duration,
+            copyDurationSeconds: copyDurationSeconds,
+            verifyDurationSeconds: verifyDurationSeconds,
             workers: workers,
             prefs: prefs,
             project: try photographerContext.map {

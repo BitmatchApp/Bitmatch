@@ -116,13 +116,16 @@ struct ReportPDFLayoutTests {
             jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(60), mode: .copyAndVerify,
             source: "/Volumes/CARD1", destinations: ["/Volumes/Backup"], totalFiles: 1, matched: 1,
             issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
-            verificationMethod: "Standard", totalBytesProcessed: 1_000, averageSpeed: 1,
+            verificationMethod: "Standard", verificationMode: .standard,
+            totalBytesProcessed: 1_000, averageSpeed: 1,
+            copyDurationSeconds: 32, verifyDurationSeconds: 28,
             clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
 
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
         let firstPage = try #require(document.page(at: 0))
         let title = try #require(document.findString("BitMatch Verification Report", withOptions: []).first)
         #expect(title.pages.first == firstPage)
+        #expect(document.findString("Copy 32s, verify 28s", withOptions: []).isEmpty == false)
         // PDF y grows upward: the title's top edge must be within 60pt of the page top.
         #expect(title.bounds(for: firstPage).maxY > ReportPDFRenderer.pageHeight - 60)
     }

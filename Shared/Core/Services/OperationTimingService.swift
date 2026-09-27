@@ -4,6 +4,11 @@ import BitMatchEngine
 
 // Uses SharedLogger (shared file) for logging across platforms
 
+struct OperationPhaseDurations: Equatable, Sendable {
+    let copySeconds: TimeInterval?
+    let verifySeconds: TimeInterval?
+}
+
 @MainActor
 class OperationTimingService: ObservableObject {
     
@@ -13,23 +18,28 @@ class OperationTimingService: ObservableObject {
     
     // MARK: - Private State
     private var operationStartTime: Date?
-    private var stageStartTimes: [ProgressStage: Date] = [:]
+    private var stageStartTime: Date?
     private var lastProgressUpdate: Date?
     private var bytesProcessed: Int64 = 0
     private var lastBytesProcessed: Int64 = 0
     private var speedSamples: [Double] = []
     private let maxSpeedSamples = 10
+    private let now: () -> Date
+
+    init(now: @escaping () -> Date = Date.init) {
+        self.now = now
+    }
     
     // MARK: - Operation Control
     
     func startOperation(totalFiles: Int, totalBytes: Int64) {
-        let startTime = Date()
+        let startTime = now()
         operationStartTime = startTime
         lastProgressUpdate = startTime
         bytesProcessed = 0
         lastBytesProcessed = 0
         speedSamples.removeAll()
-        stageStartTimes.removeAll()
+        stageStartTime = nil
         
         currentTiming = OperationTiming(
             operationId: UUID(),
@@ -50,19 +60,22 @@ class OperationTimingService: ObservableObject {
     
     func updateStage(_ stage: ProgressStage) {
         guard currentTiming != nil else { return }
+        guard currentTiming?.currentStage != stage else { return }
         
-        let now = Date()
+        let timestamp = now()
         
         // Record end time for previous stage if exists
         if let previousStage = getCurrentStage(),
-           let previousStageStart = stageStartTimes[previousStage] {
-            let stageDuration = now.timeIntervalSince(previousStageStart)
-            self.currentTiming?.stageTimings[previousStage] = stageDuration
+           let previousStageStart = stageStartTime {
+            let stageDuration = timestamp.timeIntervalSince(previousStageStart)
+            var timings = currentTiming?.stageTimings ?? [:]
+            timings[previousStage, default: 0] += stageDuration
+            currentTiming?.stageTimings = timings
             SharedLogger.debug("Stage completed: \(previousStage.displayName) in \(formatDuration(stageDuration))", category: .transfer)
         }
         
         // Start timing for new stage
-        stageStartTimes[stage] = now
+        stageStartTime = timestamp
         self.currentTiming?.currentStage = stage
         
         SharedLogger.debug("Stage started: \(stage.displayName)", category: .transfer)
@@ -72,7 +85,7 @@ class OperationTimingService: ObservableObject {
         guard let currentTiming = currentTiming,
               let startTime = operationStartTime else { return }
         
-        let now = Date()
+        let now = now()
         self.bytesProcessed = bytesProcessed
         
         // Calculate speed if we have previous data
@@ -121,14 +134,15 @@ class OperationTimingService: ObservableObject {
         guard let currentTiming = currentTiming,
               let startTime = operationStartTime else { return }
         
-        let endTime = Date()
+        let endTime = now()
         let totalDuration = endTime.timeIntervalSince(startTime)
         
         // Finish current stage timing
-        if let currentStage = getCurrentStage(),
-           let stageStart = stageStartTimes[currentStage] {
+        var stageTimings = currentTiming.stageTimings
+        if let currentStage = getCurrentStage(), let stageStart = stageStartTime {
             let stageDuration = endTime.timeIntervalSince(stageStart)
-            self.currentTiming?.stageTimings[currentStage] = stageDuration
+            stageTimings[currentStage, default: 0] += stageDuration
+            self.currentTiming?.stageTimings = stageTimings
         }
         
         // Create final timing record
@@ -137,7 +151,7 @@ class OperationTimingService: ObservableObject {
             startTime: startTime,
             endTime: endTime,
             totalDuration: totalDuration,
-            stageTimings: currentTiming.stageTimings,
+            stageTimings: stageTimings,
             totalFiles: currentTiming.totalFiles,
             totalBytes: currentTiming.totalBytes,
             filesProcessed: currentTiming.filesProcessed,
@@ -167,8 +181,16 @@ class OperationTimingService: ObservableObject {
         // Clear current operation
         self.currentTiming = nil
         operationStartTime = nil
-        stageStartTimes.removeAll()
+        stageStartTime = nil
         speedSamples.removeAll()
+    }
+
+    /// Measured wall-clock intervals attributed to the pipeline's copy and
+    /// verify progress stages. Quick performs no content verification.
+    func phaseDurations(for verificationMode: VerificationMode) -> OperationPhaseDurations {
+        let copy = currentTiming?.stageTimings[.copying]
+        let verify = verificationMode == .quick ? nil : currentTiming?.stageTimings[.verifying]
+        return OperationPhaseDurations(copySeconds: copy, verifySeconds: verify)
     }
     
     func cancelOperation() {

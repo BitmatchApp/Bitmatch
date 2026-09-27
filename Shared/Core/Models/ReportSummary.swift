@@ -1,4 +1,5 @@
 import Foundation
+import BitMatchEngine
 
 /// Summary of a completed copy/verify operation, shared between the report
 /// exporter and the report views on both macOS and iPadOS. Extracted from the
@@ -20,8 +21,11 @@ struct ReportSummary {
     let production: String
     let company: String
     let verificationMethod: String
+    var verificationMode: VerificationMode? = nil
     let totalBytesProcessed: Int64
     let averageSpeed: Double // MB/s
+    var copyDurationSeconds: TimeInterval? = nil
+    var verifyDurationSeconds: TimeInterval? = nil
     let clientLogoData: Data?
     let companyLogoData: Data?
     let photographyJob: PhotographerReportPayload?
