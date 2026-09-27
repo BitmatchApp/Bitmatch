@@ -126,10 +126,17 @@ final class MacVolumeAccessModel: ObservableObject {
     }
 
     private func updateDriveAccessRequirement() {
+        let wasNeeded = needsDriveAccess
         needsDriveAccess = DriveAccessPolicy.needsDriveAccess(
             isSandboxed: isSandboxed,
             hasActiveVolumesScope: hasActiveVolumesScope
         )
+        // Readiness ("SHUTTLE A is read-only") is computed from the disk
+        // when Setup draws, and nothing it observes changes when access is
+        // granted, so the blockers stayed until a destination was re-added.
+        if wasNeeded && !needsDriveAccess {
+            shared?.objectWillChange.send()
+        }
     }
     
     // MARK: - Volume Monitoring Setup

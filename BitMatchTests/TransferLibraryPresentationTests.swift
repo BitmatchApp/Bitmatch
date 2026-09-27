@@ -242,6 +242,18 @@ struct TransferLibraryPresentationTests {
     /// Plant: in `detailLine(destinationCount:fileCount:)`, change
     /// `destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"` to
     /// always return `"\(destinationCount) backups"`.
+    /// Plant: return `record.results.count` from `fileCount(for:)`; a card
+    /// copied to two destinations then shows twice its files.
+    @Test func fileCountIsCardFilesNotResultRows() {
+        var record = PresentationTestSupport.record(state: .completed)
+        let a = URL(fileURLWithPath: "/Volumes/A"), b = URL(fileURLWithPath: "/Volumes/B")
+        record.results = [
+            PresentationTestSupport.row(.verified, destination: a),
+            PresentationTestSupport.row(.verified, destination: b)
+        ]
+        #expect(TransferLibraryPresentation.fileCount(for: record) == 1)
+    }
+
     @Test func detailLineSingularizesOneBackupAndOneFile() {
         #expect(TransferLibraryPresentation.detailLine(destinationCount: 1, fileCount: 1) == "1 destination · 1 file")
         #expect(TransferLibraryPresentation.detailLine(destinationCount: 2, fileCount: 128) == "2 destinations · 128 files")

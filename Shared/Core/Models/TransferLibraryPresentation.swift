@@ -162,6 +162,12 @@ enum TransferLibraryPresentation {
 
     /// The row's secondary line, next to the date: how many backups and how
     /// many files this transfer covers. Singular/plural for both nouns.
+    /// Files on the card, not result rows: each file has one row per
+    /// destination, so two destinations showed "38 files" for a 19-file card.
+    static func fileCount(for record: LocalTransferRecord) -> Int {
+        Set(record.results.map(\.path)).count
+    }
+
     static func detailLine(destinationCount: Int, fileCount: Int) -> String {
         let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
         let files = fileCount == 1 ? "1 file" : "\(fileCount) files"

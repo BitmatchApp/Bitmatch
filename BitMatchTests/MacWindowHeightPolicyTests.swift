@@ -14,9 +14,20 @@ struct MacWindowHeightPolicyTests {
         #expect(height == 664)
     }
 
+    /// The finish screen (verdict + actions, ~300 pt) fits without an
+    /// empty band; a 420 pt floor left one under the buttons.
+    @Test func finishSizedContentIsNotPaddedOut() {
+        let height = Policy.fittedHeight(
+            measuredContentHeight: 300,
+            windowChromeHeight: 52,
+            visibleFrameHeight: 1_200
+        )
+        #expect(height == 352)
+    }
+
     @Test func shortContentKeepsTheSensibleMinimum() {
         let height = Policy.fittedHeight(
-            measuredContentHeight: 240,
+            measuredContentHeight: 180,
             windowChromeHeight: 52,
             visibleFrameHeight: 1_200
         )

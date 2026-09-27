@@ -7,7 +7,7 @@ struct TransferRecordRow<Trailing: View>: View {
 
     var body: some View {
         let state = TransferLibraryPresentation.stateLabel(for: record)
-        let detail = TransferLibraryPresentation.detailLine(destinationCount: record.destinations.count, fileCount: record.results.count)
+        let detail = TransferLibraryPresentation.detailLine(destinationCount: record.destinations.count, fileCount: TransferLibraryPresentation.fileCount(for: record))
         return HStack(alignment: .center, spacing: 10) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(primaryTitle)

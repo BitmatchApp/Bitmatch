@@ -7,7 +7,9 @@ enum WindowPresentationPolicy {
     /// Leaves room for the principal mode picker, traffic lights, and both
     /// trailing toolbar actions without an overflow chevron.
     static let minimumWidth: CGFloat = 760
-    static let minimumHeight: CGFloat = 420
+    /// Low enough for the finish screen (verdict + actions, ~300 pt) to fit
+    /// without an empty band; every screen measures its own height.
+    static let minimumHeight: CGFloat = 280
     static let maximumWidth: CGFloat = 1440
     static let maximumHeight: CGFloat = 1000
 
