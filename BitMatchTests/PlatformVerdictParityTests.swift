@@ -155,8 +155,17 @@ private func runParityTransfer(platformManager: PlatformManager) async throws ->
 }
 
 private func parityRelativePath(_ path: String, under prefix: String) -> String {
-    guard path.hasPrefix(prefix) else { return path }
-    return String(path.dropFirst(prefix.count))
+    // The engine spells its roots through `standardizedFileURL`, which drops
+    // a leading "/private" only when the path exists, while this test
+    // canonicalizes with realpath: the same folder can arrive as "/var/..."
+    // on one side and "/private/var/..." on the other. Compare with the
+    // engine's alias-aware spelling so the check tests file identity, not
+    // string identity.
+    let comparable = ResultPathMatch.comparablePath(path)
+    let comparablePrefix = ResultPathMatch.comparablePath(prefix)
+    let rootedPrefix = comparablePrefix.hasSuffix("/") ? comparablePrefix : comparablePrefix + "/"
+    guard comparable.hasPrefix(rootedPrefix) else { return comparable }
+    return String(comparable.dropFirst(rootedPrefix.count))
 }
 
 private func parityCanonicalDirectoryURL(_ url: URL) -> URL {

@@ -409,39 +409,9 @@ public final class SafetyValidator {
     }
 
     public static func validateSourceTreeForCopy(source: URL) throws {
-        let fm = FileManager.default
-        let resolver = RelativePathResolver(base: source)
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey]
-        var relativePaths: [String] = []
-
-        guard let enumerator = fm.enumerator(
-            at: source,
-            includingPropertiesForKeys: Array(keys),
-            options: []
-        ) else { return }
-
-        while let item = enumerator.nextObject() as? URL {
-            // Keep preflight aligned with the copy manifest before asking
-            // Foundation for metadata attributes. Root volume metadata can be
-            // unreadable without Full Disk Access and is intentionally skipped.
-            if enumerator.level == 1,
-               CardSource.isRootVolumeMetadataDirectory(item) {
-                enumerator.skipDescendants()
-                continue
-            }
-
-            let values = try item.resourceValues(forKeys: keys)
-            if values.isSymbolicLink == true {
-                continue
-            }
-            guard values.isRegularFile == true || values.isDirectory == true else {
-                continue
-            }
-
-            relativePaths.append(try resolver.resolve(item))
-        }
-
-        try validatePortableRelativePaths(relativePaths)
+        try validatePortableRelativePaths(
+            CardSource.enumerateTree(base: source).map(\.relativePath)
+        )
     }
 
     public static func validatePortableRelativePaths(_ relativePaths: [String]) throws {

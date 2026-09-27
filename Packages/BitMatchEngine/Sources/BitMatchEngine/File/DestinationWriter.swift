@@ -60,6 +60,33 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         logicalRootURL.appendingPathComponent(relativePath)
     }
 
+    /// Confirms that the folder path shown to the user still names this pinned
+    /// directory. Verification may still succeed through the descriptor after
+    /// a rename, but that orphaned location is not a safe completed backup.
+    public func logicalRootStillMatchesPinnedDirectory() -> Bool {
+        var pinned = stat()
+        var current = stat()
+        guard fstat(directoryFD, &pinned) == 0,
+              lstat(logicalRootURL.path, &current) == 0 else { return false }
+        return (current.st_mode & S_IFMT) == S_IFDIR
+            && current.st_dev == pinned.st_dev
+            && current.st_ino == pinned.st_ino
+    }
+
+    /// Lists the pinned directory itself, independent of whether its pathname
+    /// was renamed. This is the final destination-coverage check.
+    public func regularFileMetadata() throws -> [FileEntry] {
+        try CardSource.enumerateTree(directoryFD: directoryFD, root: logicalRootURL).compactMap { entry in
+            guard entry.kind == .regularFile else { return nil }
+            return FileEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                size: entry.size,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
+
     /// Opens a destination file below the pinned directory. The returned
     /// descriptor, not `logicalRootURL`, is the authority for subsequent
     /// reads. This is deliberately separate from the display URL above.
@@ -371,6 +398,50 @@ public final class PinnedDestinationFile: @unchecked Sendable {
 #endif
 
 public final class DestinationWriter {
+    struct FanOutDestination: Sendable {
+        let index: Int
+        let root: PinnedDestinationDirectory
+    }
+
+    struct FanOutHooks: Sendable {
+        // Tests must use ordinary errors for destination faults. A
+        // CancellationError always means the whole operation was cancelled.
+        var beforeSourceOpen: (@Sendable (URL) throws -> Void)?
+        var sourceDidOpen: (@Sendable (URL) -> Void)?
+        var sourceDidRead: (@Sendable (URL, Int) async throws -> Void)?
+        var temporaryFileDidDisableCache: (@Sendable (Int, Int32) -> Void)?
+        var beforeWrite: (@Sendable (Int, URL, Int) async throws -> Void)?
+        var beforeFlush: (@Sendable (Int, URL) throws -> Void)?
+        var beforeClose: (@Sendable (Int, URL) throws -> Void)?
+        var beforePublish: (@Sendable (Int, URL) throws -> Void)?
+        var useClaimedNamePublish: (@Sendable (Int) -> Bool)?
+        var afterPublish: (@Sendable (Int, URL) throws -> Void)?
+
+        init(
+            beforeSourceOpen: (@Sendable (URL) throws -> Void)? = nil,
+            sourceDidOpen: (@Sendable (URL) -> Void)? = nil,
+            sourceDidRead: (@Sendable (URL, Int) async throws -> Void)? = nil,
+            temporaryFileDidDisableCache: (@Sendable (Int, Int32) -> Void)? = nil,
+            beforeWrite: (@Sendable (Int, URL, Int) async throws -> Void)? = nil,
+            beforeFlush: (@Sendable (Int, URL) throws -> Void)? = nil,
+            beforeClose: (@Sendable (Int, URL) throws -> Void)? = nil,
+            beforePublish: (@Sendable (Int, URL) throws -> Void)? = nil,
+            useClaimedNamePublish: (@Sendable (Int) -> Bool)? = nil,
+            afterPublish: (@Sendable (Int, URL) throws -> Void)? = nil
+        ) {
+            self.beforeSourceOpen = beforeSourceOpen
+            self.sourceDidOpen = sourceDidOpen
+            self.sourceDidRead = sourceDidRead
+            self.temporaryFileDidDisableCache = temporaryFileDidDisableCache
+            self.beforeWrite = beforeWrite
+            self.beforeFlush = beforeFlush
+            self.beforeClose = beforeClose
+            self.beforePublish = beforePublish
+            self.useClaimedNamePublish = useClaimedNamePublish
+            self.afterPublish = afterPublish
+        }
+    }
+
     // Perf 1: actor wrapping pre-enumerated file list for concurrent worker access
     /// Hands each copy worker the next manifest entry: one atomic index,
     /// so every file is taken exactly once.
@@ -401,7 +472,36 @@ public final class DestinationWriter {
         onProgress: @escaping @Sendable (String, Int64) async -> Void,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
-        try await createDirectoryTreeSafely(from: src, in: pinnedRoot, onError: onError)
+        try await copyAllSafelyFanOut(
+            from: src,
+            toPinnedRoots: [FanOutDestination(index: 0, root: pinnedRoot)],
+            verificationMode: verificationMode,
+            workers: workers,
+            checksumService: checksumService,
+            preEnumeratedFiles: preEnumeratedFiles,
+            pauseCheck: pauseCheck,
+            onProgress: { _, path, size in await onProgress(path, size) },
+            onError: { _, path, error in await onError(path, error) }
+        )
+    }
+
+    static func copyAllSafelyFanOut(
+        from src: URL,
+        toPinnedRoots destinations: [FanOutDestination],
+        verificationMode: VerificationMode,
+        workers: Int,
+        checksumService: any ChecksumService,
+        preEnumeratedFiles: [URL],
+        pauseCheck: (@Sendable () async throws -> Void)? = nil,
+        hooks: FanOutHooks? = nil,
+        onProgress: @escaping @Sendable (Int, String, Int64) async -> Void,
+        onError: @escaping @Sendable (Int, String, Error) async -> Void
+    ) async throws {
+        for destination in destinations {
+            try await createDirectoryTreeSafely(from: src, in: destination.root) { path, error in
+                await onError(destination.index, path, error)
+            }
+        }
         let sourceResolver = RelativePathResolver(base: src)
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -419,58 +519,55 @@ public final class DestinationWriter {
                         do {
                             relativePath = try sourceResolver.resolve(fileURL)
                         } catch {
-                            await onError(fileURL.path, error)
+                            for destination in destinations {
+                                await onError(destination.index, fileURL.path, error)
+                            }
                             continue
                         }
                         guard let components = safeRelativeComponents(relativePath) else {
-                            await onError(relativePath, NSError(
+                            let error = NSError(
                                 domain: "DestinationWriter",
                                 code: NSFileWriteNoPermissionError,
                                 userInfo: [NSLocalizedDescriptionKey: "Path contains traversal component"]
-                            ))
+                            )
+                            for destination in destinations {
+                                await onError(destination.index, relativePath, error)
+                            }
                             continue
                         }
 
                         let resolvedSource = fileURL.resolvingSymlinksKeepingCase()
                         guard PathContainment.isWithin(resolvedSource.path, root: src.resolvingSymlinksKeepingCase().path) else {
-                            await onError(relativePath, NSError(
+                            let error = NSError(
                                 domain: "DestinationWriter",
                                 code: NSFileWriteNoPermissionError,
                                 userInfo: [NSLocalizedDescriptionKey: "Source file resolves outside source directory"]
-                            ))
+                            )
+                            for destination in destinations {
+                                await onError(destination.index, relativePath, error)
+                            }
                             continue
                         }
 
                         do {
-                            let values = try fileURL.resourceValues(forKeys: [.fileSizeKey])
-                            let parentFD = try pinnedRoot.openOrCreateDirectory(at: Array(components.dropLast()))
-                            defer { _ = Darwin.close(parentFD) }
-                            let filename = components[components.count - 1]
-                            let sourceSize = Int64(values.fileSize ?? 0)
-                            if try PinnedDestinationDirectory.isExistingRegularFile(named: filename, relativeTo: parentFD) {
-                                let destinationFile = try PinnedDestinationFile.open(named: filename, relativeTo: parentFD)
-                                if try await canReuseExistingDestinationFile(
-                                    source: fileURL,
-                                    destination: destinationFile,
-                                    sourceSize: sourceSize,
-                                    verificationMode: verificationMode,
-                                    checksumService: checksumService
-                                ) {
-                                    await onProgress(relativePath, sourceSize)
-                                    continue
-                                }
-                            }
-                            try await copyFileSecurely(
+                            try await copyFileFanOut(
                                 from: fileURL,
-                                toPinnedParent: parentFD,
-                                filename: filename,
-                                pauseCheck: pauseCheck
+                                relativePath: relativePath,
+                                components: components,
+                                destinations: destinations,
+                                verificationMode: verificationMode,
+                                checksumService: checksumService,
+                                pauseCheck: pauseCheck,
+                                hooks: hooks,
+                                onProgress: onProgress,
+                                onError: onError
                             )
-                            await onProgress(relativePath, sourceSize)
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
-                            await onError(relativePath, error)
+                            for destination in destinations {
+                                await onError(destination.index, relativePath, error)
+                            }
                         }
                     }
                 }
@@ -481,74 +578,334 @@ public final class DestinationWriter {
     #endif
 
     #if canImport(Darwin)
-    private static func copyFileSecurely(
-        from source: URL,
-        toPinnedParent parentFD: Int32,
-        filename: String,
-        pauseCheck: (@Sendable () async throws -> Void)?
-    ) async throws {
-        let fm = FileManager.default
-        let sourceHandle = try FileHandle(forReadingFrom: source)
-        defer { closeFileHandle(sourceHandle, context: source.path) }
+    private final class FanOutTemporaryFile: @unchecked Sendable {
+        let destination: FanOutDestination
+        private(set) var parentFD: Int32
+        let filename: String
+        let temporaryName: String
+        private(set) var temporaryFD: Int32
+        private(set) var published = false
 
-        let temporaryName = ".bitmatch.tmp." + UUID().uuidString
-        let temporaryFD = try PinnedDestinationDirectory.createTemporaryFile(named: temporaryName, relativeTo: parentFD)
-        let destinationHandle = FileHandle(fileDescriptor: temporaryFD, closeOnDealloc: false)
-        var published = false
-        var destinationClosed = false
-        defer {
-            if !destinationClosed {
-                closeFileHandle(destinationHandle, context: temporaryName)
-            }
-            if !published {
-                PinnedDestinationDirectory.removeItem(named: temporaryName, relativeTo: parentFD)
+        init(
+            destination: FanOutDestination,
+            parentFD: Int32,
+            filename: String,
+            hooks: FanOutHooks?
+        ) throws {
+            self.destination = destination
+            self.parentFD = parentFD
+            self.filename = filename
+            temporaryName = ".bitmatch.tmp." + UUID().uuidString
+            temporaryFD = try PinnedDestinationDirectory.createTemporaryFile(
+                named: temporaryName,
+                relativeTo: parentFD
+            )
+            // Reaching this point means createTemporaryFile's mandatory
+            // F_NOCACHE call succeeded for this still-open descriptor.
+            hooks?.temporaryFileDidDisableCache?(destination.index, temporaryFD)
+        }
+
+        deinit { cleanup() }
+
+        func closeTemporaryFile() throws {
+            guard temporaryFD >= 0 else { return }
+            let fd = temporaryFD
+            // POSIX leaves the descriptor state unspecified when close fails,
+            // including after EINTR. Retire it before close and fail the file;
+            // the caller must never publish after this method throws.
+            temporaryFD = -1
+            guard Darwin.close(fd) == 0 else {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(errno),
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to close temporary destination file"]
+                )
             }
         }
 
+        func markPublished() { published = true }
+
+        func cleanup() {
+            if temporaryFD >= 0 {
+                _ = Darwin.close(temporaryFD)
+                temporaryFD = -1
+            }
+            if !published, parentFD >= 0 {
+                PinnedDestinationDirectory.removeItem(named: temporaryName, relativeTo: parentFD)
+            }
+            if parentFD >= 0 {
+                _ = Darwin.close(parentFD)
+                parentFD = -1
+            }
+        }
+    }
+
+    private struct FanOutWriteResult: Sendable {
+        let file: FanOutTemporaryFile
+        let error: (any Error)?
+    }
+
+    private static func copyFileFanOut(
+        from source: URL,
+        relativePath: String,
+        components: [String],
+        destinations: [FanOutDestination],
+        verificationMode: VerificationMode,
+        checksumService: any ChecksumService,
+        pauseCheck: (@Sendable () async throws -> Void)?,
+        hooks: FanOutHooks?,
+        onProgress: @escaping @Sendable (Int, String, Int64) async -> Void,
+        onError: @escaping @Sendable (Int, String, Error) async -> Void
+    ) async throws {
+        let fm = FileManager.default
         let sourceAttributes = try fm.attributesOfItem(atPath: source.path)
         let sourceSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? 0
         let sourceModificationDate = sourceAttributes[.modificationDate] as? Date
         let sourceIdentity = fileIdentity(from: sourceAttributes)
-        var reachedEOF = false
-        while !reachedEOF {
-            try Task.checkCancellation()
-            if let pauseCheck { try await pauseCheck() }
-            let data = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-            if data.isEmpty {
-                reachedEOF = true
-            } else {
-                try destinationHandle.write(contentsOf: data)
+
+        let filename = components[components.count - 1]
+        var pendingReuse: [FanOutDestination] = []
+        var active: [FanOutTemporaryFile] = []
+        for destination in destinations {
+            do {
+                let parentFD = try destination.root.openOrCreateDirectory(at: Array(components.dropLast()))
+                var parentOwnedByTemporaryFile = false
+                defer {
+                    if !parentOwnedByTemporaryFile { _ = Darwin.close(parentFD) }
+                }
+                if try PinnedDestinationDirectory.isExistingRegularFile(named: filename, relativeTo: parentFD) {
+                    let destinationFile = try PinnedDestinationFile.open(named: filename, relativeTo: parentFD)
+                    // Reuse either proves the existing file or throws. It never
+                    // returns false: a conflicting file must not be overwritten.
+                    try await validateReusableExistingDestinationFile(
+                        source: source,
+                        destination: destinationFile,
+                        sourceSize: sourceSize,
+                        verificationMode: verificationMode,
+                        checksumService: checksumService
+                    )
+                    pendingReuse.append(destination)
+                } else {
+                    active.append(try FanOutTemporaryFile(
+                        destination: destination,
+                        parentFD: parentFD,
+                        filename: filename,
+                        hooks: hooks
+                    ))
+                    parentOwnedByTemporaryFile = true
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                await onError(destination.index, relativePath, error)
             }
-        }
-        var temporaryInfo = stat()
-        guard fstat(temporaryFD, &temporaryInfo) == 0,
-              Int64(temporaryInfo.st_size) == sourceSize else {
-            throw NSError(domain: "DestinationWriter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Size mismatch after copy"])
-        }
-        let finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
-        guard sourceRemainedStable(
-            initialSize: sourceSize,
-            initialModificationDate: sourceModificationDate,
-            initialIdentity: sourceIdentity,
-            finalAttributes: finalSourceAttributes
-        ) else {
-            throw NSError(domain: "DestinationWriter", code: -4, userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; destination was not modified"])
         }
 
-        if let sourceModificationDate {
-            var times = [timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0),
-                         timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0)]
-            if futimens(temporaryFD, &times) != 0 {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to preserve destination modification date"])
+        guard !active.isEmpty else {
+            for destination in pendingReuse {
+                await onProgress(destination.index, relativePath, sourceSize)
+            }
+            return
+        }
+
+        let sourceHandle: FileHandle
+        do {
+            try hooks?.beforeSourceOpen?(source)
+            sourceHandle = try uncachedSourceHandle(for: source)
+            hooks?.sourceDidOpen?(source)
+        } catch {
+            for file in active { file.cleanup() }
+            for destination in pendingReuse {
+                await onError(destination.index, relativePath, error)
+            }
+            for file in active {
+                await onError(file.destination.index, relativePath, error)
+            }
+            return
+        }
+        defer { closeFileHandle(sourceHandle, context: source.path) }
+
+        do {
+            let chunkSize = 1024 * 1024
+            var bytesRead: Int64 = 0
+            var chunkIndex = 0
+            while bytesRead < sourceSize {
+                try Task.checkCancellation()
+                if let pauseCheck { try await pauseCheck() }
+                let requested = min(chunkSize, Int(sourceSize - bytesRead))
+                let data = try sourceHandle.read(upToCount: requested) ?? Data()
+                guard !data.isEmpty else {
+                    throw sourceChangedError()
+                }
+                bytesRead += Int64(data.count)
+                try await hooks?.sourceDidRead?(source, data.count)
+                let filesForChunk = active
+                let currentChunkIndex = chunkIndex
+
+                let results = await withTaskGroup(
+                    of: FanOutWriteResult.self,
+                    returning: [FanOutWriteResult].self
+                ) { writes in
+                    for file in filesForChunk {
+                        writes.addTask {
+                            do {
+                                try Task.checkCancellation()
+                                if let pauseCheck { try await pauseCheck() }
+                                try await hooks?.beforeWrite?(
+                                    file.destination.index,
+                                    file.destination.root.logicalRootURL,
+                                    currentChunkIndex
+                                )
+                                try writeAll(data, to: file.temporaryFD)
+                                return FanOutWriteResult(file: file, error: nil)
+                            } catch {
+                                return FanOutWriteResult(file: file, error: error)
+                            }
+                        }
+                    }
+                    var completed: [FanOutWriteResult] = []
+                    for await result in writes { completed.append(result) }
+                    return completed
+                }
+
+                var survivors: [FanOutTemporaryFile] = []
+                for result in results {
+                    if let error = result.error {
+                        if error is CancellationError { throw CancellationError() }
+                        result.file.cleanup()
+                        await onError(result.file.destination.index, relativePath, error)
+                    } else {
+                        survivors.append(result.file)
+                    }
+                }
+                active = survivors
+                chunkIndex += 1
+                if active.isEmpty { break }
+            }
+
+            if !active.isEmpty {
+                let trailingData = try sourceHandle.read(upToCount: 1) ?? Data()
+                let finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
+                guard bytesRead == sourceSize,
+                      trailingData.isEmpty,
+                      sourceRemainedStable(
+                        initialSize: sourceSize,
+                        initialModificationDate: sourceModificationDate,
+                        initialIdentity: sourceIdentity,
+                        finalAttributes: finalSourceAttributes
+                      ) else {
+                    throw sourceChangedError()
+                }
+            }
+        } catch is CancellationError {
+            for file in active { file.cleanup() }
+            throw CancellationError()
+        } catch {
+            for file in active { file.cleanup() }
+            for destination in pendingReuse {
+                await onError(destination.index, relativePath, error)
+            }
+            for file in active {
+                await onError(file.destination.index, relativePath, error)
+            }
+            return
+        }
+
+        for destination in pendingReuse {
+            await onProgress(destination.index, relativePath, sourceSize)
+        }
+        for file in active {
+            do {
+                try Task.checkCancellation()
+                if let pauseCheck { try await pauseCheck() }
+                var temporaryInfo = stat()
+                guard fstat(file.temporaryFD, &temporaryInfo) == 0,
+                      Int64(temporaryInfo.st_size) == sourceSize else {
+                    throw NSError(domain: "DestinationWriter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Size mismatch after copy"])
+                }
+                if let sourceModificationDate {
+                    var times = [
+                        timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0),
+                        timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0)
+                    ]
+                    guard futimens(file.temporaryFD, &times) == 0 else {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to preserve destination modification date"])
+                    }
+                }
+                try hooks?.beforeFlush?(file.destination.index, file.destination.root.logicalRootURL)
+                try PinnedDestinationDirectory.flushToMedium(file.temporaryFD)
+                try hooks?.beforeClose?(file.destination.index, file.destination.root.logicalRootURL)
+                try file.closeTemporaryFile()
+                try hooks?.beforePublish?(file.destination.index, file.destination.root.logicalRootURL)
+                if hooks?.useClaimedNamePublish?(file.destination.index) == true {
+                    try PinnedDestinationDirectory.publishByClaimingName(
+                        temporaryName: file.temporaryName,
+                        name: file.filename,
+                        relativeTo: file.parentFD
+                    )
+                } else {
+                    try PinnedDestinationDirectory.publishTemporaryFile(
+                        named: file.temporaryName,
+                        as: file.filename,
+                        relativeTo: file.parentFD
+                    )
+                }
+                file.markPublished()
+                try PinnedDestinationDirectory.synchronizeDirectory(file.parentFD)
+                try hooks?.afterPublish?(file.destination.index, file.destination.root.logicalRootURL)
+                await onProgress(file.destination.index, relativePath, sourceSize)
+            } catch is CancellationError {
+                file.cleanup()
+                throw CancellationError()
+            } catch {
+                file.cleanup()
+                await onError(file.destination.index, relativePath, error)
             }
         }
-        // Flushed after the timestamps so they are durable too.
-        try PinnedDestinationDirectory.flushToMedium(temporaryFD)
-        try destinationHandle.close()
-        destinationClosed = true
-        try PinnedDestinationDirectory.publishTemporaryFile(named: temporaryName, as: filename, relativeTo: parentFD)
-        published = true
-        try PinnedDestinationDirectory.synchronizeDirectory(parentFD)
+    }
+
+    private static func uncachedSourceHandle(for source: URL) throws -> FileHandle {
+        let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+        let fd = source.path.withCString { Darwin.open($0, flags) }
+        guard fd >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to open source file"])
+        }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            _ = Darwin.close(fd)
+            throw FileOperationError.unsafeOperation("Source item is not a regular file")
+        }
+        guard fcntl(fd, F_NOCACHE, 1) != -1 else {
+            let failure = errno
+            _ = Darwin.close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure), userInfo: [NSLocalizedDescriptionKey: "Unable to bypass the source read cache"])
+        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var written = 0
+            while written < rawBuffer.count {
+                let count = Darwin.write(fd, base.advanced(by: written), rawBuffer.count - written)
+                if count > 0 {
+                    written += count
+                } else if count < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to write destination file"])
+                }
+            }
+        }
+    }
+
+    private static func sourceChangedError() -> NSError {
+        NSError(
+            domain: "DestinationWriter",
+            code: -4,
+            userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; destination was not modified"]
+        )
     }
     #endif
 
@@ -558,37 +915,9 @@ public final class DestinationWriter {
         in pinnedRoot: PinnedDestinationDirectory,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
-        let fm = FileManager.default
-        let resolver = RelativePathResolver(base: sourceRoot)
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
-        guard let enumerator = fm.enumerator(
-            at: sourceRoot,
-            includingPropertiesForKeys: keys,
-            options: []
-        ) else { return }
-
-        while let item = enumerator.nextObject() as? URL {
+        for entry in try CardSource.enumerateTree(base: sourceRoot) where entry.kind == .directory {
             try Task.checkCancellation()
-
-            // Keep the descriptor-pinned directory tree in lockstep with the
-            // manifest before loading attributes from possibly unreadable
-            // volume metadata.
-            if enumerator.level == 1,
-               CardSource.isRootVolumeMetadataDirectory(item) {
-                enumerator.skipDescendants()
-                continue
-            }
-
-            guard let values = try? item.resourceValues(forKeys: Set(keys)),
-                  values.isSymbolicLink != true,
-                  values.isDirectory == true else { continue }
-            let relative: String
-            do {
-                relative = try resolver.resolve(item)
-            } catch {
-                await onError(item.path, error)
-                continue
-            }
+            let relative = entry.relativePath
             guard let components = safeRelativeComponents(relative) else {
                 await onError(relative, NSError(
                     domain: "DestinationWriter",
@@ -626,13 +955,13 @@ public final class DestinationWriter {
 
 
     #if canImport(Darwin)
-    private static func canReuseExistingDestinationFile(
+    private static func validateReusableExistingDestinationFile(
         source: URL,
         destination: PinnedDestinationFile,
         sourceSize: Int64,
         verificationMode: VerificationMode,
         checksumService: any ChecksumService
-    ) async throws -> Bool {
+    ) async throws {
         let destinationInfo = try destination.snapshot()
         guard Int64(destinationInfo.st_size) == sourceSize else {
             throw existingDestinationConflictError("Existing destination file differs in size")
@@ -661,7 +990,6 @@ public final class DestinationWriter {
             throw existingDestinationConflictError("Existing destination file checksum differs; refusing to overwrite it")
         }
 
-        return true
     }
 
     /// Verifies a destination file by opening it below `pinnedRoot`. The URL

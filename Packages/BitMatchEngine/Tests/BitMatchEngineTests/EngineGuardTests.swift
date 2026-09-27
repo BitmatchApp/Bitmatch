@@ -28,15 +28,42 @@ struct EngineGuardTests {
         registry.clear(id)
     }
 
-    // MARK: T3b / I3 (error path)
+    // MARK: T3b / I3 (abnormal exit)
 
-    /// When a run fails with verifies still in flight, it cancels them and
-    /// waits for them before it returns: no verify outlives its run. The
-    /// existing T3 test exits through the normal path; this one through the error path.
-    /// Plant: in `executeOperation`'s final `catch`, replace
-    /// `await finishVerificationTasks(in: verifyTaskStore, cancelling: true)`
-    /// with `_ = await verifyTaskStore.drain()`.
+    /// A cancelled run waits for in-flight verifiers before returning. Root
+    /// setup now finishes before fan-out starts, so the old late setup-error
+    /// trigger no longer exists; cancellation still exercises the invariant
+    /// that no verifier may outlive its run.
     @Test func failedRunWaitsForInFlightVerifiers() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try DisposableTransferFixture(seed: 30, fileCount: 3, bytesPerFile: 4 * 1024)
+            defer { fixture.cleanup() }
+            let checksum = GatedChecksumService()
+            let service = TransferPipeline(fileSystem: LocalFileAccess(), checksum: checksum)
+            let done = DoneFlag()
+            let run = Task {
+                defer { done.set() }
+                return try await service.performFileOperation(
+                    sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                    verificationMode: .standard, settings: CameraLabelSettings(),
+                    estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil
+                )
+            }
+            #expect(await waitUntil { checksum.startedCount > 0 })
+
+            service.cancelOperation()
+            let returnedWhileVerifying = await waitUntil(timeout: .milliseconds(300)) { done.isSet }
+            #expect(!returnedWhileVerifying, "the run returned while its verifiers were still running")
+            #expect(checksum.sawCancellation, "the run must cancel its in-flight verifiers")
+
+            checksum.release()
+            await #expect(throws: CancellationError.self) { _ = try await run.value }
+        }
+    }
+
+    /// Fan-out pins every backup before it opens a source file. A safety
+    /// rejection on any selected root therefore aborts before copy or verify.
+    @Test func unsafeDestinationAbortsBeforeFanOutStarts() async throws {
         try await FileOperationsTestLock.shared.run {
             let fixture = try DisposableTransferFixture(seed: 31, fileCount: 3, bytesPerFile: 4 * 1024)
             defer { fixture.cleanup() }
@@ -50,23 +77,14 @@ struct EngineGuardTests {
                     throw FileOperationError.unsafeOperation("planted safety refusal")
                 }
             )
-            let done = DoneFlag()
-            let run = Task {
-                defer { done.set() }
-                return try await service.performFileOperation(
+            await #expect(throws: FileOperationError.self) {
+                _ = try await service.performFileOperation(
                     sourceURL: fixture.source, destinationURLs: fixture.destinations,
                     verificationMode: .standard, settings: CameraLabelSettings(),
                     estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil
                 )
             }
-            #expect(await waitUntil { checksum.startedCount > 0 })
-
-            let returnedWhileVerifying = await waitUntil(timeout: .milliseconds(300)) { done.isSet }
-            #expect(!returnedWhileVerifying, "the failed run returned while its verifies were still running")
-            #expect(checksum.sawCancellation, "the failed run must cancel its in-flight verifies")
-
-            checksum.release()
-            await #expect(throws: FileOperationError.self) { _ = try await run.value }
+            #expect(checksum.startedCount == 0)
         }
     }
 

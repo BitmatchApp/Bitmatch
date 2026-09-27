@@ -23,21 +23,21 @@ struct RunLedgerTests {
     @Test func firstAndLastAlwaysReport() async {
         let ledger = RunLedger(destinationCount: 1, filesPerDestination: 3, throttle: 60)
         let now = Date()
-        #expect(await ledger.recordCopy(row("a"), destination: 0, now: now).emit)
-        #expect(await !ledger.recordCopy(row("b"), destination: 0, now: now).emit)
-        #expect(await ledger.recordCopy(row("c"), destination: 0, now: now).emit)
-        #expect(await !ledger.recordVerify(row("a", verified: true), now: now).emit)
-        #expect(await !ledger.recordVerify(row("b", verified: true), now: now).emit)
-        #expect(await ledger.recordVerify(row("c", verified: true), now: now).emit)
+        #expect(await ledger.recordCopy(row("a"), relativePath: "a", destination: 0, now: now).emit)
+        #expect(await !ledger.recordCopy(row("b"), relativePath: "b", destination: 0, now: now).emit)
+        #expect(await ledger.recordCopy(row("c"), relativePath: "c", destination: 0, now: now).emit)
+        #expect(await !ledger.recordVerify(row("a", verified: true), relativePath: "a", destination: 0, now: now).emit)
+        #expect(await !ledger.recordVerify(row("b", verified: true), relativePath: "b", destination: 0, now: now).emit)
+        #expect(await ledger.recordVerify(row("c", verified: true), relativePath: "c", destination: 0, now: now).emit)
     }
 
     /// A verify row replaces the copy row for the same file and backup, and
     /// every count and per-backup total adds up.
     @Test func countsAndRowsAddUp() async {
         let ledger = RunLedger(destinationCount: 2, filesPerDestination: 1, throttle: 0)
-        _ = await ledger.recordCopy(row("a"), destination: 0, now: Date())
-        await ledger.recordCopyFailure(row("b"), destination: 1)
-        _ = await ledger.recordVerify(row("a", verified: true), now: Date())
+        _ = await ledger.recordCopy(row("a"), relativePath: "a", destination: 0, now: Date())
+        await ledger.recordCopyFailure(row("b"), relativePath: "b", destination: 1)
+        _ = await ledger.recordVerify(row("a", verified: true), relativePath: "a", destination: 0, now: Date())
         let snapshot = await ledger.snapshot()
         #expect(snapshot.filesCopied == 2)
         #expect(snapshot.bytesCopied == 10)

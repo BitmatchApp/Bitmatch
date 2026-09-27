@@ -89,15 +89,30 @@ struct TransferCompletionVerdictTests {
         )
         #expect(!result.success)
         #expect(!result.copiedNotVerified)
-        #expect(result.message == "All files copied")
+        #expect(result.message.contains("All files copied"))
+        #expect(result.message.contains("Shuttle A: 1 file has no result"))
     }
 
     @Test func anyIssueOrNoFilesIsNotSuccess() {
-        #expect(verdict(
+        let failed = verdict(
             [row(fileA, at: shuttleA), row(fileB, at: shuttleA, outcome: .failed)],
             sourceFiles: [fileA, fileB]
-        ) == .init(success: false, message: "1 file failed"))
+        )
+        #expect(!failed.success)
+        #expect(failed.message.contains("1 file failed"))
+        #expect(failed.message.contains("Shuttle A: 1 file has no result"))
         #expect(verdict([], sourceFiles: []) == .init(success: false, message: "No files were copied"))
+    }
+
+    /// The ledger replaces a successful copy row with the failed readback
+    /// row. Coverage must then report the file as missing, never as safe.
+    @Test func copySuccessFollowedByVerifyFailureIsIncomplete() {
+        let verifyFailure = row(fileA, at: shuttleA, outcome: .failed)
+        let result = verdict([verifyFailure])
+
+        #expect(!result.success)
+        #expect(result.message.contains("1 file failed"))
+        #expect(result.message.contains("Shuttle A: 1 file has no result"))
     }
 
     @Test func handoffReportAndProjectFailuresAreNotSuccess() {
