@@ -1,26 +1,50 @@
-# BitMatch
+<p align="center">
+  <img src="docs/icon.png" width="128" alt="BitMatch app icon">
+</p>
 
-**A free, open source alternative to ShotPut Pro, Silverstack, and Hedge.**
+<h1 align="center">BitMatch</h1>
+
+<p align="center">
+  <b>Free, open-source camera card offloading for Mac.</b><br>
+  Copy to several drives, verify every file with SHA-256, and know exactly when the card is safe to erase.
+</p>
+
+<p align="center">
+  <i>A free, open source alternative to ShotPut Pro, Silverstack, and Hedge.</i>
+</p>
+
+<p align="center">
+  <a href="https://github.com/BitmatchApp/Bitmatch/releases/latest"><img src="https://img.shields.io/github/v/release/BitmatchApp/Bitmatch?label=download&color=2ea44f" alt="Download the latest release"></a>
+  <img src="https://img.shields.io/badge/macOS-15.5%2B-blue" alt="macOS 15.5 or newer">
+  <img src="https://img.shields.io/badge/iPadOS%20%26%20iOS-build%20from%20source-lightgrey" alt="iPad and iPhone: build from source">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-green" alt="MIT license"></a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/BitmatchApp/Bitmatch/releases/latest"><b>Download for Mac</b></a> ·
+  <a href="CHANGELOG.md">What's new</a> ·
+  <a href="docs/GUIDE.md">Guide</a> ·
+  <a href="https://github.com/BitmatchApp/Bitmatch/issues">Report a problem</a>
+</p>
+
+<p align="center">
+  <img src="docs/screenshots/mac-setup.png" width="760" alt="BitMatch on Mac: a card, two destinations, ready to start">
+</p>
 
 For indie filmmakers, YouTubers, photographers, and small productions that don't want a subscription just to copy files.
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20iPadOS%20%7C%20iOS-blue)](https://github.com/BitmatchApp/Bitmatch) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Release](https://img.shields.io/github/v/release/BitmatchApp/Bitmatch?include_prereleases)](https://github.com/BitmatchApp/Bitmatch/releases)
-
-[**Download for Mac**](https://github.com/BitmatchApp/Bitmatch/releases) · [Release notes](CHANGELOG.md) · [Report a problem](https://github.com/BitmatchApp/Bitmatch/issues)
-
-![BitMatch on Mac: a card, two destinations, ready to start](docs/screenshots/mac-setup.png)
-
-<details><summary>More screenshots</summary>
-<p><img src="docs/screenshots/mac-finish.png" alt="The card is safe to erase once every file on every destination is verified" width="680"><br><img src="docs/screenshots/mac-history.png" alt="History" width="680"></p>
-<p><strong>iPad: see what differs between two folders.</strong><br><img src="docs/validation/2026-09-20/screenshots/ipad-comparison-differences.png" alt="iPad folder comparison with verification settings and grouped differences" width="680"></p>
-<p><strong>iPhone: the same per-backup results, on a smaller screen.</strong><br><img src="docs/validation/2026-09-20/screenshots/iphone-completion.png" alt="iPhone completion screen with per-backup results, report export, and New transfer" width="320"></p>
+<details><summary><b>More screenshots</b></summary>
+<br>
+<p align="center"><img src="docs/screenshots/mac-finish.png" alt="The card is safe to erase once every file on every destination is verified" width="680"></p>
+<p align="center"><img src="docs/screenshots/mac-history.png" alt="History" width="680"></p>
+<p align="center"><b>iPad: see what differs between two folders.</b><br><img src="docs/validation/2026-09-20/screenshots/ipad-comparison-differences.png" alt="iPad folder comparison with verification settings and grouped differences" width="680"></p>
+<p align="center"><b>iPhone: the results for each destination, on a smaller screen.</b><br><img src="docs/validation/2026-09-20/screenshots/iphone-completion.png" alt="iPhone completion screen with results for each destination, report export, and New transfer" width="320"></p>
+<p align="center"><i>Screenshots use sample data.</i></p>
 </details>
-
-*Screenshots use sample data.*
 
 ## Download
 
-Signed and notarized macOS build on the [Releases page](https://github.com/BitmatchApp/Bitmatch/releases). Supports Apple Silicon and Intel Macs.
+Signed and notarized macOS build on the [Releases page](https://github.com/BitmatchApp/Bitmatch/releases/latest). Supports Apple Silicon and Intel Macs.
 
 Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now; they require **iPadOS/iOS 18.5 or newer**.
 
