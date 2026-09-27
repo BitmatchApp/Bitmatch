@@ -22,6 +22,7 @@
 
 <p align="center">
   <a href="https://github.com/BitmatchApp/Bitmatch/releases/latest"><b>Download for Mac</b></a> ·
+  <a href="https://bitmatchapp.github.io">Website</a> ·
   <a href="CHANGELOG.md">What's new</a> ·
   <a href="docs/GUIDE.md">Guide</a> ·
   <a href="https://github.com/BitmatchApp/Bitmatch/issues">Report a problem</a>
