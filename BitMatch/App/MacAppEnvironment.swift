@@ -24,8 +24,13 @@ final class MacAppEnvironment: ObservableObject {
     ) {
         self.coordinator = coordinator
         self.remoteBackups = remoteBackups
-        self.volumeAccess = MacVolumeAccessModel(shared: coordinator, enableVolumeMonitoring: monitorsVolumes)
-        self.cameraAutoSource = MacCameraAutoSourceController(shared: coordinator, startMonitoring: monitorsVolumes)
+        let volumeAccess = MacVolumeAccessModel(shared: coordinator, enableVolumeMonitoring: monitorsVolumes)
+        self.volumeAccess = volumeAccess
+        self.cameraAutoSource = MacCameraAutoSourceController(
+            shared: coordinator,
+            volumeAccess: volumeAccess,
+            startMonitoring: monitorsVolumes
+        )
     }
 
     /// The app: the Core Data project store and its job view model, the

@@ -2,12 +2,15 @@ import SwiftUI
 
 struct ConnectedDrivesView: View {
     let rows: [ConnectedDrivesPresentation.Row]
+    let needsDriveAccess: Bool
+    let actionsDisabled: Bool
+    let requestDriveAccess: () -> Void
     let useAsCard: (URL) -> Void
     let addAsBackup: (URL) -> Void
 
     var body: some View {
         Group {
-            if rows.isEmpty {
+            if rows.isEmpty && !needsDriveAccess {
                 HStack(spacing: 8) {
                     Image(systemName: "externaldrive")
                         .foregroundStyle(.secondary)
@@ -24,6 +27,9 @@ struct ConnectedDrivesView: View {
                         .font(.subheadline.weight(.semibold))
                         .accessibilityAddTraits(.isHeader)
                     VStack(spacing: 8) {
+                        if needsDriveAccess {
+                            driveAccessRow
+                        }
                         ForEach(rows) { row in
                             driveRow(row)
                         }
@@ -38,6 +44,25 @@ struct ConnectedDrivesView: View {
                 .fill(Color.primary.opacity(0.03))
                 .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
         )
+    }
+
+    private var driveAccessRow: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "externaldrive")
+                .foregroundStyle(.secondary)
+                .frame(width: 22)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Allow BitMatch to use your drives")
+                    .font(.subheadline)
+                Text("Needed once to read cards and write backups.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            Button("Allow…", action: requestDriveAccess)
+        }
+        .frame(minHeight: 40)
     }
 
     private func driveRow(_ row: ConnectedDrivesPresentation.Row) -> some View {
@@ -81,14 +106,17 @@ struct ConnectedDrivesView: View {
     private func buttons(for row: ConnectedDrivesPresentation.Row) -> some View {
         Button("Use as card") { useAsCard(row.url) }
             .accessibilityLabel("Use \(row.displayName) as card")
+            .disabled(actionsDisabled)
         Button("Add as backup") { addAsBackup(row.url) }
             .accessibilityLabel("Add \(row.displayName) as backup")
+            .disabled(actionsDisabled)
     }
 }
 
 @MainActor
 struct MacConnectedDrives: View {
     @ObservedObject var monitor: VolumeMonitorService
+    @ObservedObject var volumeAccess: MacVolumeAccessModel
     @ObservedObject var coordinator: SharedAppCoordinator
     let platform: SetupLocationsPlatform
 
@@ -104,15 +132,31 @@ struct MacConnectedDrives: View {
                 sourceURL: coordinator.sourceURL?.standardizedFileURL.resolvingSymlinksInPath(),
                 destinationURLs: coordinator.destinationURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
             ).filter { $0.state == .none },
-            useAsCard: { show(selection.chooseSource($0)) },
-            addAsBackup: { show(selection.addBackups([$0])) }
+            needsDriveAccess: volumeAccess.needsDriveAccess,
+            actionsDisabled: coordinator.isOperationInProgress || !coordinator.stagedSetupTransfers.isEmpty,
+            requestDriveAccess: { volumeAccess.requestVolumeAccess() },
+            useAsCard: { url in
+                withDriveAccess { show(selection.chooseSource(url)) }
+            },
+            addAsBackup: { url in
+                withDriveAccess { show(selection.addBackups([url])) }
+            }
         )
         .buttonStyle(.bordered)
         .controlSize(.small)
-        .disabled(coordinator.isOperationInProgress || !coordinator.stagedSetupTransfers.isEmpty)
     }
 
     private func show(_ refusals: [String]) {
         if !refusals.isEmpty { platform.showRefusals(refusals) }
+    }
+
+    private func withDriveAccess(_ action: @escaping () -> Void) {
+        guard volumeAccess.needsDriveAccess else {
+            action()
+            return
+        }
+        volumeAccess.requestVolumeAccess { granted in
+            if granted { action() }
+        }
     }
 }
