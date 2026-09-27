@@ -16,10 +16,15 @@ struct MacSetupLocations: View {
     @ObservedObject private var volumeMonitor = VolumeMonitorService.shared
     let context: SetupLocationsContext
     let advanced: AnyView
+    let transferTransitionContext: QueueTransferTransitionContext
 
     var body: some View {
         CoordinatorSetupLocations(
-            coordinator: coordinator, context: context, advanced: advanced, platform: platform
+            coordinator: coordinator,
+            context: context,
+            advanced: advanced,
+            platform: platform,
+            transferTransitionContext: transferTransitionContext
         )
     }
 

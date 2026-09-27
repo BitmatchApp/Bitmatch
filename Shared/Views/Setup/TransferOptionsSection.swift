@@ -16,6 +16,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
     private let showsLabelContent: Bool
     private let showsVerificationPicker: Bool
     private let labelContent: LabelContent
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Setup: camera label (a platform slot), ASC MHL and reports. Verification
     /// lives in the middle composer box.
@@ -49,35 +50,50 @@ struct TransferOptionsSection<LabelContent: View>: View {
 
     var body: some View {
         let options = presentation
-        DisclosureGroup(isExpanded: $isExpanded) {
-            VStack(alignment: .leading, spacing: 12) {
-                recordsColumn(options)
-                if showsLabelContent {
-                    Divider()
-                    labelContent
-                }
-            }
-            .padding(.top, 10)
-        } label: {
-            HStack(spacing: 8) {
-                Label("Advanced", systemImage: "slider.horizontal.3")
-                    .font(.optionsTitle)
-                    .foregroundStyle(.primary)
-                Spacer(minLength: 8)
-                if !options.advancedNote.isEmpty {
-                    Text(options.advancedNote)
-                        .font(.optionsDetail)
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isExpanded.toggle() }
+            } label: {
+                HStack(spacing: 8) {
+                    Label("Advanced", systemImage: "slider.horizontal.3")
+                        .font(.optionsTitle)
+                        .foregroundStyle(.primary)
+                    Spacer(minLength: 8)
+                    if !options.advancedNote.isEmpty {
+                        Text(options.advancedNote)
+                            .font(.optionsDetail)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.trailing)
+                        .rotationEffect(.degrees(isExpanded ? 90 : 0))
+                        .accessibilityHidden(true)
                 }
+                .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+                .contentShape(Rectangle())
+                .touchTarget()
             }
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .contentShape(Rectangle())
-            .touchTarget()
+            .buttonStyle(.plain)
+            .accessibilityLabel("Advanced")
+            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
+            .accessibilityHint(showsLabelContent
+                ? "Shows handoff, report, and camera label settings"
+                : "Shows verification settings")
+
+            if isExpanded {
+                VStack(alignment: .leading, spacing: 12) {
+                    recordsColumn(options)
+                    if showsLabelContent {
+                        Divider()
+                        labelContent
+                    }
+                }
+                .padding(.top, 10)
+                .transition(.opacity.combined(with: .move(edge: .top)))
+            }
         }
-        .accessibilityHint(showsLabelContent
-            ? "Shows handoff, report, and camera label settings"
-            : "Shows verification settings")
     }
 
     @ViewBuilder

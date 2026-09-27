@@ -36,6 +36,12 @@ struct ActiveQueueSection: View {
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
                 Spacer()
+                if presentation.showsClearFinished {
+                    Button("Clear finished") { coordinator.clearFinishedQueueRows() }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .help("Remove finished rows from this list. They remain in History.")
+                }
                 if coordinator.queueIsRunning {
                     Button("Stop Queue") { coordinator.stopQueueAfterCurrentTransfer() }
                         .buttonStyle(.bordered)
@@ -120,6 +126,14 @@ struct ActiveQueueSection: View {
 
     private func queueRow(_ row: QueueSessionRow) -> some View {
         HStack(alignment: .center, spacing: 10) {
+            if row.isEditable || row.isFinished {
+                Button { removeFromList(row) } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
+                }
+                .buttonStyle(.borderless)
+                .help(removeHelp(for: row))
+                .accessibilityLabel(removeHelp(for: row))
+            }
             Image(systemName: "sdcard").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text(row.cardName).lineLimit(1).truncationMode(.middle)
@@ -131,12 +145,6 @@ struct ActiveQueueSection: View {
                 .foregroundStyle(row.isEditable ? Color.secondary : row.safetyState.tint.color)
             if row.isEditable {
                 Button("Edit") { edit(row.id) }.buttonStyle(.borderless)
-                Button { remove(row.id) } label: {
-                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-                .help("Remove \(row.cardName) from the queue")
-                .accessibilityLabel("Remove \(row.cardName) from the queue")
             } else if row.action == .review && coordinator.queuePausedRecordID != row.id {
                 Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
             }
@@ -146,6 +154,10 @@ struct ActiveQueueSection: View {
             selectedWaitingID == row.id ? Color.accentColor.opacity(0.12) : Color.clear,
             in: RoundedRectangle(cornerRadius: 8)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.5), lineWidth: focusedWaitingID == row.id ? 1.5 : 0)
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             guard row.safetyState == .waiting else { return }
@@ -160,6 +172,7 @@ struct ActiveQueueSection: View {
         if row.safetyState == .waiting {
             queueRow(row)
                 .focusable()
+                .focusEffectDisabled()
                 .focused($focusedWaitingID, equals: row.id)
                 .draggable(row.id.uuidString)
                 .dropDestination(for: String.self) { values, _ in
@@ -217,6 +230,21 @@ struct ActiveQueueSection: View {
 
     private func remove(_ id: UUID) {
         perform { try coordinator.removeQueuedTransfer(id) }
+    }
+
+    private func removeFinished(_ id: UUID) {
+        perform { try coordinator.removeFinishedQueueRow(id) }
+    }
+
+    private func removeFromList(_ row: QueueSessionRow) {
+        if row.isFinished { removeFinished(row.id) }
+        else if row.isEditable { remove(row.id) }
+    }
+
+    private func removeHelp(for row: QueueSessionRow) -> String {
+        row.isFinished
+            ? "Remove \(row.cardName) from the list — it stays in History"
+            : "Remove \(row.cardName) from the queue"
     }
 
     private func moveToTop(_ id: UUID) {

@@ -137,18 +137,21 @@ struct CoordinatorSetupLocations: View {
     let context: SetupLocationsContext
     let advanced: AnyView
     let platform: SetupLocationsPlatform
+    let transferTransitionContext: QueueTransferTransitionContext?
 
     init(
         coordinator: SharedAppCoordinator,
         context: SetupLocationsContext,
         advanced: AnyView,
-        platform: SetupLocationsPlatform
+        platform: SetupLocationsPlatform,
+        transferTransitionContext: QueueTransferTransitionContext? = nil
     ) {
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _cameraLabels = ObservedObject(wrappedValue: coordinator.cameraLabels)
         self.context = context
         self.advanced = advanced
         self.platform = platform
+        self.transferTransitionContext = transferTransitionContext
     }
 
     var body: some View {
@@ -161,7 +164,8 @@ struct CoordinatorSetupLocations: View {
             editingID: coordinator.editingSetupTransferID,
             stacksVertically: platform.stacksComposerVertically,
             advanced: advanced,
-            drops: platform.acceptsDrops ? drops : nil
+            drops: platform.acceptsDrops ? drops : nil,
+            transferTransitionContext: transferTransitionContext
         )
     }
 
@@ -282,11 +286,12 @@ struct CoordinatorSetupLocations: View {
                 coordinator.sourceURL = nil
             },
             addAnotherCard: {
-                guard coordinator.canEnqueueSelection else { return }
+                guard coordinator.canEnqueueSelection else { return nil }
                 do {
-                    try coordinator.enqueueSelection()
+                    return try coordinator.enqueueSelection()
                 } catch {
                     platform.showRefusals([error.localizedDescription])
+                    return nil
                 }
             },
             chooseConnectedSource: { url in
@@ -319,8 +324,13 @@ struct CoordinatorSetupLocations: View {
                 }
             },
             editStagedCard: { id in
-                do { try coordinator.editSetupTransfer(id) }
-                catch { platform.showRefusals([error.localizedDescription]) }
+                do {
+                    try coordinator.editSetupTransfer(id)
+                    return true
+                } catch {
+                    platform.showRefusals([error.localizedDescription])
+                    return false
+                }
             },
             cancelEdit: { coordinator.cancelSetupTransferEdit() },
             moveStagedCard: { id, index in

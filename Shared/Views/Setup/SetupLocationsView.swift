@@ -5,12 +5,12 @@ import BitMatchEngine
 struct SetupLocationsActions {
     var pickSource: () -> Void
     var clearSource: () -> Void
-    var addAnotherCard: () -> Void
+    var addAnotherCard: () -> UUID?
     var chooseConnectedSource: (URL) -> Void
     var chooseFolderOnSource: (URL) -> Void
     var chooseConnectedBackup: (URL) -> Void
     var chooseFolderOnBackup: (URL) -> Void
-    var editStagedCard: (UUID) -> Void
+    var editStagedCard: (UUID) -> Bool
     var cancelEdit: () -> Void
     var moveStagedCard: (UUID, Int) -> Void
     var removeStagedCard: (UUID) -> Void
@@ -22,6 +22,13 @@ struct SetupLocationsDrops {
     var source: ([NSItemProvider]) -> Bool
     var addBackups: ([NSItemProvider]) -> Bool
     var replaceBackup: (Int, [NSItemProvider]) -> Bool
+}
+
+/// A shared transition bridge for layouts where the composer and queue live
+/// in sibling views (the Mac). iPhone and iPad use the local namespace.
+struct QueueTransferTransitionContext {
+    let namespace: Namespace.ID
+    let activeID: Binding<UUID?>
 }
 
 /// The shared transfer composer. Accent colour means selected; green remains
@@ -36,6 +43,7 @@ struct SetupLocationsView: View {
     let stacksVertically: Bool
     let advanced: AnyView
     var drops: SetupLocationsDrops? = nil
+    var transferTransitionContext: QueueTransferTransitionContext? = nil
 
     @State private var isSourceTargeted = false
     @State private var isAddTargeted = false
@@ -43,16 +51,38 @@ struct SetupLocationsView: View {
     @State private var isSourcePickerPresented = false
     @State private var isDestinationPickerPresented = false
     @State private var selectedQueueID: UUID?
+    @State private var transitioningQueueID: UUID?
+    @State private var transitionClearTask: Task<Void, Never>?
     @FocusState private var focusedQueueID: UUID?
+    @Namespace private var queueTransition
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    private var transitionNamespace: Namespace.ID {
+        transferTransitionContext?.namespace ?? queueTransition
+    }
+
+    private var activeTransitionID: UUID? {
+        transferTransitionContext?.activeID.wrappedValue ?? transitioningQueueID
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             composer
+            if let summary = composerSummary {
+                transferSummary(summary)
+                    .transferTransition(
+                        id: AnyHashable("composer-transfer"),
+                        namespace: transitionNamespace,
+                        enabled: !reduceMotion
+                    )
+                    .transition(.opacity)
+            }
             composerAction
             advanced
             if !presentation.stagedSources.isEmpty { setupQueue }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .onDisappear { transitionClearTask?.cancel() }
     }
 
     @ViewBuilder
@@ -381,7 +411,7 @@ struct SetupLocationsView: View {
                 if editingID != nil {
                     Button("Cancel", action: actions.cancelEdit).keyboardShortcut(.cancelAction)
                 }
-                Button(editingID == nil ? "Add to queue" : "Update", action: actions.addAnotherCard)
+                Button(editingID == nil ? "Add to queue" : "Update", action: addOrUpdate)
                     .buttonStyle(.bordered)
                     .disabled(!presentation.canAddAnotherCard)
                     .accessibilityHint(presentation.canAddAnotherCard
@@ -405,6 +435,7 @@ struct SetupLocationsView: View {
     private func reorderableQueueRow(_ item: SetupLocationsPresentation.StagedSource, index: Int) -> some View {
         let row = queueRow(item)
             .focusable()
+            .focusEffectDisabled()
             .focused($focusedQueueID, equals: item.id)
             .draggable(item.id.uuidString)
             .dropDestination(for: String.self) { values, _ in
@@ -416,10 +447,10 @@ struct SetupLocationsView: View {
             .accessibilityAction(named: "Move down") {
                 if index + 1 < presentation.stagedSources.count { actions.moveStagedCard(item.id, index + 1) }
             }
-            .accessibilityAction(named: "Edit") { actions.editStagedCard(item.id) }
+            .accessibilityAction(named: "Edit") { edit(item.id) }
             .accessibilityAction(named: "Remove from queue") { actions.removeStagedCard(item.id) }
             .contextMenu {
-                Button("Edit") { actions.editStagedCard(item.id) }
+                Button("Edit") { edit(item.id) }
                 Button("Move to Top") { actions.moveStagedCard(item.id, 0) }
                     .disabled(index == 0)
                 Button("Remove", role: .destructive) { actions.removeStagedCard(item.id) }
@@ -459,25 +490,17 @@ struct SetupLocationsView: View {
             .disabled(editingID == item.id)
             .help("Remove \(item.title) from the queue")
             .accessibilityLabel("Remove \(item.title) from the queue")
-            HStack(spacing: 8) {
-                Text(item.title + " → ").lineLimit(1)
-                Text(item.destinationNames.joined(separator: " + "))
-                    .lineLimit(1).truncationMode(.middle)
-                    .foregroundStyle(item.destinationsDiffer ? Color.orange : Color.primary)
-                Text("· \(item.verificationMode.rawValue)")
-                    .foregroundStyle(item.modeDiffers ? Color.orange : Color.secondary)
-                if item.differs {
-                    Label("differs", systemImage: "arrow.triangle.branch")
-                        .font(.caption.weight(.medium)).foregroundStyle(.orange)
-                }
-                Spacer(minLength: 8)
-                Label("Waiting", systemImage: "clock")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+            if editingID != item.id {
+                transferSummary(item)
+                    .transferTransition(
+                        id: activeTransitionID == item.id
+                            ? AnyHashable("composer-transfer")
+                            : AnyHashable(item.id),
+                        namespace: transitionNamespace,
+                        enabled: !reduceMotion
+                    )
             }
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(item.sentence + (item.differs ? ", differs from the first transfer, waiting" : ", waiting"))
-            Button("Edit") { actions.editStagedCard(item.id) }
+            Button("Edit") { edit(item.id) }
                 .buttonStyle(.borderless)
                 .foregroundStyle(Color.accentColor)
                 .disabled(editingID != nil)
@@ -492,10 +515,92 @@ struct SetupLocationsView: View {
                 : (item.differs ? Color.orange.opacity(0.08) : Color.primary.opacity(0.025)),
             in: RoundedRectangle(cornerRadius: 8)
         )
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.5), lineWidth: focusedQueueID == item.id ? 1.5 : 0)
+        }
         .contentShape(Rectangle())
         .onTapGesture {
             selectedQueueID = item.id
             focusedQueueID = item.id
+        }
+    }
+
+    private var composerSummary: SetupLocationsPresentation.StagedSource? {
+        guard presentation.showsAddAnotherCard || editingID != nil,
+              let source = presentation.source else { return nil }
+        return .init(
+            id: editingID ?? UUID(),
+            title: source.title,
+            path: source.path,
+            detail: "",
+            destinationNames: presentation.backups.map(\.title),
+            verificationMode: verificationMode,
+            destinationsDiffer: false,
+            modeDiffers: false
+        )
+    }
+
+    private func transferSummary(_ item: SetupLocationsPresentation.StagedSource) -> some View {
+        let isWaiting = presentation.stagedSources.contains(where: { $0.id == item.id })
+        return HStack(spacing: 8) {
+            Text(item.title).lineLimit(1).truncationMode(.middle)
+            Image(systemName: "arrow.right").font(.caption).foregroundStyle(.secondary)
+            Text(item.destinationNames.joined(separator: " + "))
+                .lineLimit(1).truncationMode(.middle)
+                .foregroundStyle(item.destinationsDiffer ? Color.orange : Color.primary)
+            Text("· \(item.verificationMode.rawValue)")
+                .foregroundStyle(item.modeDiffers ? Color.orange : Color.secondary)
+            if item.differs {
+                Label("differs", systemImage: "arrow.triangle.branch")
+                    .font(.caption.weight(.medium)).foregroundStyle(.orange)
+            }
+            Spacer(minLength: 8)
+            if isWaiting {
+                Label("Waiting", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .font(.subheadline)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(item.sentence + (isWaiting ? (item.differs ? ", differs from the first transfer, waiting" : ", waiting") : ""))
+    }
+
+    private func addOrUpdate() {
+        performTransition { actions.addAnotherCard() }
+    }
+
+    private func edit(_ id: UUID) {
+        performTransition { actions.editStagedCard(id) ? id : nil }
+    }
+
+    private func performTransition(_ operation: () -> UUID?) {
+        transitionClearTask?.cancel()
+        let animation: Animation = reduceMotion
+            ? .easeInOut(duration: 0.18)
+            : .spring(duration: 0.4, bounce: 0.18)
+        var committedID: UUID?
+        withAnimation(animation) {
+            committedID = operation()
+            guard let id = committedID else { return }
+            if let transferTransitionContext {
+                transferTransitionContext.activeID.wrappedValue = id
+            } else {
+                transitioningQueueID = id
+            }
+        }
+        guard committedID != nil else { return }
+        transitionClearTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                if let transferTransitionContext {
+                    transferTransitionContext.activeID.wrappedValue = nil
+                } else {
+                    transitioningQueueID = nil
+                }
+            }
         }
     }
 
@@ -528,6 +633,19 @@ struct SetupLocationsView: View {
 }
 
 private extension View {
+    @ViewBuilder
+    func transferTransition<ID: Hashable>(
+        id: ID,
+        namespace: Namespace.ID,
+        enabled: Bool
+    ) -> some View {
+        if enabled {
+            matchedGeometryEffect(id: id, in: namespace)
+        } else {
+            transition(.opacity)
+        }
+    }
+
     @ViewBuilder
     func fileDrop(isTargeted: Binding<Bool>, enabled: Bool, perform: (([NSItemProvider]) -> Bool)?) -> some View {
         if let perform, enabled { onDrop(of: [.fileURL], isTargeted: isTargeted, perform: perform) }

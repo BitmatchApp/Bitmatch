@@ -81,11 +81,62 @@ struct MainScreenQueueTests {
         )
 
         #expect(coordinator.queuePresentation.rows.map(\.id) == [id, waitingID])
+        #expect(coordinator.queuePresentation.showsClearFinished)
         coordinator.clearFinishedQueueRows()
 
         #expect(coordinator.queuePresentation.rows.map(\.id) == [waitingID])
+        #expect(!coordinator.queuePresentation.showsClearFinished)
         #expect(coordinator.transferJournal.records.contains { $0.id == id })
         #expect(coordinator.transferJournal.records.contains { $0.id == waitingID })
+    }
+
+    @Test func removeFinishedRemovesOnlyThatSessionRowAndKeepsHistory() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        try coordinator.enqueueSelection()
+        let finishedID = try #require(coordinator.transferJournal.records.first?.id)
+        try coordinator.transferJournal.markRunning(id: finishedID)
+        try coordinator.transferJournal.finish(
+            id: finishedID,
+            results: [],
+            summary: "Interrupted",
+            hadIssues: true
+        )
+        let waitingSource = fixture.folders.root.appendingPathComponent("waiting-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: waitingSource, withIntermediateDirectories: true)
+        try Data("waiting".utf8).write(to: waitingSource.appendingPathComponent("B.RAW"))
+        let waitingID = try coordinator.enqueue(
+            source: waitingSource,
+            destinations: [fixture.folders.primary]
+        )
+
+        try coordinator.removeFinishedQueueRow(finishedID)
+
+        #expect(coordinator.queuePresentation.rows.map(\.id) == [waitingID])
+        #expect(coordinator.transferJournal.records.contains { $0.id == finishedID })
+        #expect(coordinator.transferJournal.records.contains { $0.id == waitingID })
+    }
+
+    @Test func runningTransferCannotBeRemovedFromSessionList() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+        let live = Task { await coordinator.startOperation() }
+        #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+        let runningID = try #require(coordinator.queuePresentation.rows.first?.id)
+
+        #expect(throws: FileOperationError.self) {
+            try coordinator.removeFinishedQueueRow(runningID)
+        }
+        #expect(coordinator.queuePresentation.rows.map(\.id) == [runningID])
+        #expect(coordinator.transferJournal.records.contains { $0.id == runningID })
+
+        coordinator.cancelOperation()
+        await fixture.operations.gate.release()
+        await live.value
     }
 
     @Test func startingOneCardAddsItsRunningRowToTheTransferList() async throws {

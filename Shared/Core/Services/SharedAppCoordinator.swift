@@ -921,10 +921,12 @@ class SharedAppCoordinator: ObservableObject {
         return id
     }
 
-    func enqueueSelection() throws {
+    @discardableResult
+    func enqueueSelection() throws -> UUID {
         guard canEnqueueSelection, let sourceURL else {
             throw FileOperationError.unsafeOperation("Choose a source and destinations for a one-time transfer first.")
         }
+        let committedID: UUID
         if let id = editingSetupTransferID {
             let scopedURLs = ([sourceURL] + destinationURLs).filter { $0.startAccessingSecurityScopedResource() }
             defer { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
@@ -950,18 +952,20 @@ class SharedAppCoordinator: ObservableObject {
             )
             editingSetupTransferID = nil
             composerBeforeEditing = nil
+            committedID = id
         } else {
             if let running = runningOneTimeTransfer {
                 addQueueSessionRecord(running.id)
                 if let volumeID = running.source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
             }
-            try enqueue(source: sourceURL, destinations: destinationURLs)
+            committedID = try enqueue(source: sourceURL, destinations: destinationURLs)
         }
         isClearingSnapshottedComposerSource = true
         cameraLabels.clearDetectionPreservingSettings()
         self.sourceURL = nil
         isClearingSnapshottedComposerSource = false
         if isOperationInProgress || queueIsRunning { startQueue() }
+        return committedID
     }
 
     func editSetupTransfer(_ id: UUID) throws {
@@ -1194,16 +1198,30 @@ class SharedAppCoordinator: ObservableObject {
     func clearFinishedQueueRows() {
         let finishedIDs = Set(queuePresentation.rows.filter(\.isFinished).map(\.id))
         guard !finishedIDs.isEmpty else { return }
-        queueSessionRecordIDs.subtract(finishedIDs)
-        queueSessionRecordOrder.removeAll { finishedIDs.contains($0) }
-        reviewedQueueAttentionIDs.subtract(finishedIDs)
-        skippedQueueAttentionIDs.subtract(finishedIDs)
-        ejectedQueueSourceIDs.subtract(finishedIDs)
-        if let paused = queuePausedRecordID, finishedIDs.contains(paused) {
+        removeQueueSessionRows(finishedIDs)
+    }
+
+    /// Removes one terminal row from this session list while leaving its
+    /// journal record, report, copied files, and History entry untouched.
+    func removeFinishedQueueRow(_ id: UUID) throws {
+        guard queueSessionRecordIDs.contains(id),
+              queuePresentation.rows.first(where: { $0.id == id })?.isFinished == true else {
+            throw FileOperationError.unsafeOperation("Only finished transfers can be removed from this list.")
+        }
+        removeQueueSessionRows([id])
+    }
+
+    private func removeQueueSessionRows(_ ids: Set<UUID>) {
+        queueSessionRecordIDs.subtract(ids)
+        queueSessionRecordOrder.removeAll { ids.contains($0) }
+        reviewedQueueAttentionIDs.subtract(ids)
+        skippedQueueAttentionIDs.subtract(ids)
+        ejectedQueueSourceIDs.subtract(ids)
+        if let paused = queuePausedRecordID, ids.contains(paused) {
             queuePausedRecordID = nil
             queueMessage = nil
         }
-        if let reviewed = reviewedQueueRecordID, finishedIDs.contains(reviewed) {
+        if let reviewed = reviewedQueueRecordID, ids.contains(reviewed) {
             reviewedQueueRecordID = nil
         }
         if queueSessionRecordIDs.isEmpty {

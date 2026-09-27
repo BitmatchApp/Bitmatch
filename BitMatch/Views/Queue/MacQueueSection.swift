@@ -16,11 +16,17 @@ struct MacQueueSection: View {
     @State private var exportDocument: TransferHistoryDocument?
     @State private var exportType = UTType.json
     @State private var showingExporter = false
+    @State private var transitionClearTask: Task<Void, Never>?
     @FocusState private var focusedWaitingID: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let transferTransitionContext: QueueTransferTransitionContext?
 
-    init(coordinator: SharedAppCoordinator) {
+    init(
+        coordinator: SharedAppCoordinator,
+        transferTransitionContext: QueueTransferTransitionContext? = nil
+    ) {
         self.coordinator = coordinator
+        self.transferTransitionContext = transferTransitionContext
         _progress = ObservedObject(wrappedValue: coordinator.liveProgress)
         _stateService = ObservedObject(wrappedValue: coordinator.stateService)
     }
@@ -58,7 +64,10 @@ struct MacQueueSection: View {
         .onChange(of: presentation.rows) { oldRows, newRows in
             handleRowChanges(from: oldRows, to: newRows)
         }
-        .onDisappear { heroDismissTask?.cancel() }
+        .onDisappear {
+            heroDismissTask?.cancel()
+            transitionClearTask?.cancel()
+        }
         .fileExporter(
             isPresented: $showingExporter,
             document: exportDocument,
@@ -78,9 +87,9 @@ struct MacQueueSection: View {
                 }
             }
             Spacer()
-            if presentation.rows.contains(where: \.isFinished) {
+            if presentation.showsClearFinished {
                 Button("Clear finished") { coordinator.clearFinishedQueueRows() }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.bordered)
                     .controlSize(.small)
                     .help("Remove finished rows from this list. They remain in History.")
             }
@@ -119,6 +128,7 @@ struct MacQueueSection: View {
     private func reorderableWaitingRow(_ row: QueueSessionRow, rows: [QueueSessionRow]) -> some View {
         transferRow(row)
             .focusable()
+            .focusEffectDisabled()
             .focused($focusedWaitingID, equals: row.id)
             .draggable(row.id.uuidString)
             .dropDestination(for: String.self) { values, _ in
@@ -166,29 +176,36 @@ struct MacQueueSection: View {
                 }
             }
         }
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row)))
+        .overlay {
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(borderColor(for: row))
+            RoundedRectangle(cornerRadius: 8)
+                .stroke(Color.accentColor.opacity(0.5), lineWidth: focusedWaitingID == row.id ? 1.5 : 0)
+        }
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
     }
 
     private func collapsedRow(_ row: QueueSessionRow) -> some View {
         HStack(spacing: 8) {
-            if row.isEditable {
-                Button { remove(row.id) } label: {
+            if row.isEditable || row.isFinished {
+                Button { removeFromList(row) } label: {
                     Image(systemName: "xmark.circle.fill")
                         .foregroundStyle(.secondary).frame(width: 24, height: 24)
                 }
                 .buttonStyle(.borderless)
-                .accessibilityLabel("Remove \(row.cardName) from the queue")
+                .help(removeHelp(for: row))
+                .accessibilityLabel(removeHelp(for: row))
             } else {
                 Image(systemName: row.safetyState.symbol)
                     .foregroundStyle(row.isRunning ? Color.accentColor : row.safetyState.tint.color)
                     .frame(width: 24).accessibilityHidden(true)
             }
-            Text(collapsedText(row))
-                .font(.subheadline.weight(row.isFinished ? .medium : .regular))
-                .lineLimit(1).truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
+            if coordinator.editingSetupTransferID != row.id {
+                collapsedSummary(row)
+            } else {
+                Spacer(minLength: 0)
+            }
             if row.isEditable {
                 Text("Waiting").font(.caption).foregroundStyle(.secondary)
                 Button("Edit") { edit(row.id) }.buttonStyle(.borderless)
@@ -227,6 +244,24 @@ struct MacQueueSection: View {
         row.isEditable
             ? row.waitingText
             : row.oneLineStatus(timeRemaining: row.isRunning ? liveProgressPresentation.timeRemaining : nil)
+    }
+
+    @ViewBuilder
+    private func collapsedSummary(_ row: QueueSessionRow) -> some View {
+        let text = Text(collapsedText(row))
+            .font(.subheadline.weight(row.isFinished ? .medium : .regular))
+            .lineLimit(1).truncationMode(.middle)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        if let transferTransitionContext {
+            text.matchedGeometryEffect(
+                id: transferTransitionContext.activeID.wrappedValue == row.id
+                    ? AnyHashable("composer-transfer")
+                    : AnyHashable(row.id),
+                in: transferTransitionContext.namespace
+            )
+        } else {
+            text
+        }
     }
 
     @ViewBuilder
@@ -363,8 +398,35 @@ struct MacQueueSection: View {
     }
 
     private func remove(_ id: UUID) { perform { try coordinator.removeQueuedTransfer(id) } }
-    private func edit(_ id: UUID) { perform { try coordinator.editSetupTransfer(id) } }
+    private func removeFinished(_ id: UUID) { perform { try coordinator.removeFinishedQueueRow(id) } }
+    private func edit(_ id: UUID) {
+        guard let transferTransitionContext else {
+            perform { try coordinator.editSetupTransfer(id) }
+            return
+        }
+        transitionClearTask?.cancel()
+        withAnimation(reduceMotion ? .easeInOut(duration: 0.18) : .spring(duration: 0.4, bounce: 0.18)) {
+            transferTransitionContext.activeID.wrappedValue = id
+            perform { try coordinator.editSetupTransfer(id) }
+        }
+        transitionClearTask = Task {
+            try? await Task.sleep(for: .milliseconds(500))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { transferTransitionContext.activeID.wrappedValue = nil }
+        }
+    }
     private func removePausedCard(_ id: UUID) { perform { try coordinator.removePausedCardFromQueue(id) } }
+
+    private func removeFromList(_ row: QueueSessionRow) {
+        if row.isFinished { removeFinished(row.id) }
+        else if row.isEditable { remove(row.id) }
+    }
+
+    private func removeHelp(for row: QueueSessionRow) -> String {
+        row.isFinished
+            ? "Remove \(row.cardName) from the list — it stays in History"
+            : "Remove \(row.cardName) from the queue"
+    }
 
     private func moveToTop(_ id: UUID) {
         perform { try coordinator.moveQueuedTransferToTop(id) }

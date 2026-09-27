@@ -104,6 +104,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
     var hasWaitingCards: Bool { rows.contains { $0.isEditable } }
     var showsQueueSummary: Bool { summaryTitle != nil }
     var showsEjectAllButton: Bool { ejectableCardIDs.count >= 2 }
+    var showsClearFinished: Bool { rows.contains(where: \.isFinished) }
 
     static func make(
         records: [LocalTransferRecord],
