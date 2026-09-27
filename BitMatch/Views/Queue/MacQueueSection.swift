@@ -18,7 +18,6 @@ struct MacQueueSection: View {
     @State private var choosingSource = false
     @State private var choosingBackups = false
     @State private var isDropTargeted = false
-    @State private var reauthorizeRecord: LocalTransferRecord?
     @FocusState private var editorFocus: EditorFocus?
     @FocusState private var focusedQueueRowID: UUID?
     @FocusState private var focusedGhostURL: URL?
@@ -54,9 +53,12 @@ struct MacQueueSection: View {
                     }
                     Spacer()
                     if !coordinator.queueIsRunning,
-                       presentation.rows.contains(where: { $0.safetyState == .waiting }),
+                       QueueCommandPolicy.showsResume(
+                           hasSessionStarted: coordinator.queueSessionStarted,
+                           waitingCount: presentation.rows.filter(\.isEditable).count
+                       ),
                        coordinator.queuePausedRecordID == nil {
-                        Button("Run Queue") { coordinator.startQueue() }
+                        Button("Resume Queue") { coordinator.startQueue() }
                             .controlSize(.small)
                             .disabled(!coordinator.queueRunCommandEnabled)
                     }
@@ -85,13 +87,6 @@ struct MacQueueSection: View {
         }
         .fileImporter(isPresented: $choosingBackups, allowedContentTypes: [.folder], allowsMultipleSelection: true) {
             choose($0, asSource: false)
-        }
-        .sheet(item: $reauthorizeRecord) { record in
-            ReauthorizeLocationsView(
-                coordinator: coordinator,
-                journal: coordinator.transferJournal,
-                recordID: record.id
-            )
         }
     }
 
@@ -316,6 +311,7 @@ struct MacQueueSection: View {
                 }
                 .accessibilityAction(named: "Move up") { moveWaitingCard(row.id, offset: -1, rows: rows) }
                 .accessibilityAction(named: "Move down") { moveWaitingCard(row.id, offset: 1, rows: rows) }
+                .accessibilityAction(named: "Edit") { edit(row.id) }
                 .accessibilityAction(named: "Remove from queue") { remove(row.id) }
         } else {
             queueRow(row)
@@ -361,16 +357,27 @@ struct MacQueueSection: View {
                     .font(.caption).foregroundStyle(.secondary)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Label(row.statusText, systemImage: row.safetyState.symbol)
-                    .font(.caption.weight(.medium))
-                    .foregroundStyle(row.safetyState.tint.color)
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(row.safetyState.tint.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                if row.isEditable {
+                    Label("Waiting", systemImage: "clock")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label(row.statusText, systemImage: row.safetyState.symbol)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(row.safetyState.tint.color)
+                        .padding(.horizontal, 8).padding(.vertical, 4)
+                        .background(row.safetyState.tint.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(row.accessibilityStatus)
-            action(row)
+            if row.isEditable && selectedID == row.id {
+                Button("Edit") { edit(row.id) }
+                Button("Remove", role: .destructive) { remove(row.id) }
+            } else {
+                action(row)
+            }
         }
         .frame(minHeight: 46)
         .padding(.horizontal, 8)
@@ -386,10 +393,8 @@ struct MacQueueSection: View {
         }
         .contextMenu {
             if row.safetyState == .waiting {
+                Button("Edit") { edit(row.id) }
                 Button("Move to Top") { moveToTop(row.id) }
-                Button("Reconnect…") {
-                    reauthorizeRecord = coordinator.transferJournal.records.first { $0.id == row.id }
-                }
                 Button("Remove", role: .destructive) { remove(row.id) }
             }
         }
@@ -416,6 +421,11 @@ struct MacQueueSection: View {
 
     private func remove(_ id: UUID) {
         do { try coordinator.removeQueuedTransfer(id) }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func edit(_ id: UUID) {
+        do { try coordinator.editSetupTransfer(id) }
         catch { errorMessage = error.localizedDescription }
     }
 

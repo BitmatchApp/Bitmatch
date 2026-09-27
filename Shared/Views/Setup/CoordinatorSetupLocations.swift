@@ -2,10 +2,19 @@ import SwiftUI
 import BitMatchEngine
 
 struct SetupConnectedVolume: Identifiable, Equatable {
+    enum Kind: Equatable {
+        case card
+        case drive
+        case internalDrive
+    }
+
     var id: URL { url }
     let url: URL
     let title: String
     let detail: String
+    var kind: Kind = .drive
+    var availableBytes: Int64? = nil
+    var totalBytes: Int64? = nil
 }
 
 /// What differs per platform in the source and backup boxes: how a folder
@@ -143,13 +152,27 @@ struct CoordinatorSetupLocations: View {
             presentation: presentation,
             actions: actions,
             verificationMode: $coordinator.verificationMode,
-            connectedSources: platform.connectedSources,
+            connectedSources: eligibleConnectedSources,
             connectedDestinations: eligibleConnectedDestinations,
             editingID: coordinator.editingSetupTransferID,
             stacksVertically: platform.stacksComposerVertically,
             advanced: advanced,
             drops: platform.acceptsDrops ? drops : nil
         )
+    }
+
+    private var eligibleConnectedSources: [SetupConnectedVolume] {
+        platform.connectedSources.filter { volume in
+            let root = BackupTargetPolicy.canonicalPath(volume.url)
+            if let source = coordinator.sourceURL {
+                let sourcePath = BackupTargetPolicy.canonicalPath(source)
+                if sourcePath == root || sourcePath.hasPrefix(root + "/") { return true }
+            }
+            return !coordinator.destinationURLs.contains { destination in
+                let destinationPath = BackupTargetPolicy.canonicalPath(destination)
+                return destinationPath == root || destinationPath.hasPrefix(root + "/")
+            }
+        }
     }
 
     private var eligibleConnectedDestinations: [SetupConnectedVolume] {
@@ -266,6 +289,14 @@ struct CoordinatorSetupLocations: View {
                     presentRefusals(selection.chooseSource(url), platform: platform)
                 }
             },
+            chooseFolderOnSource: { oldURL in
+                Task { @MainActor in
+                    let startingAt = containingVolumeURL(for: oldURL, in: platform.connectedSources) ?? oldURL
+                    guard await platform.ensureDriveAccess(),
+                          let url = await platform.pickFolderOnDrive(startingAt) else { return }
+                    presentRefusals(selection.chooseSource(url), platform: platform)
+                }
+            },
             chooseConnectedBackup: { url in
                 Task { @MainActor in
                     guard await platform.ensureDriveAccess() else { return }
@@ -274,8 +305,9 @@ struct CoordinatorSetupLocations: View {
             },
             chooseFolderOnBackup: { oldURL in
                 Task { @MainActor in
+                    let startingAt = containingVolumeURL(for: oldURL, in: platform.connectedDestinations) ?? oldURL
                     guard await platform.ensureDriveAccess(),
-                          let url = await platform.pickFolderOnDrive(oldURL),
+                          let url = await platform.pickFolderOnDrive(startingAt),
                           let index = coordinator.destinationURLs.firstIndex(of: oldURL) else { return }
                     presentRefusals(selection.replaceBackup(at: index, with: url), platform: platform)
                 }
@@ -350,6 +382,14 @@ struct CoordinatorSetupLocations: View {
             }
         )
     }
+}
+
+private func containingVolumeURL(for selection: URL, in volumes: [SetupConnectedVolume]) -> URL? {
+    let selectionPath = BackupTargetPolicy.canonicalPath(selection)
+    return volumes.first { volume in
+        let root = BackupTargetPolicy.canonicalPath(volume.url)
+        return selectionPath == root || selectionPath.hasPrefix(root + "/")
+    }?.url
 }
 
 /// Reads file URLs from dropped items, then calls back on the main actor

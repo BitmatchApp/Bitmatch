@@ -156,6 +156,7 @@ private struct IOSSetupLocations: View {
                 addBackup: { coordinator.addDestination($0) },
                 removeBackup: { coordinator.removeDestinationFolder($0) },
                 stacksComposerVertically: true,
+                pickFolderOnDrive: { _ in await coordinator.pickFolderForSource() },
                 capacity: SetupLocationsPresentation.capacity,
                 showRefusals: { reasons in
                     Task {

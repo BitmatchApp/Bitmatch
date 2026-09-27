@@ -100,6 +100,9 @@ struct SetupLocationsPresentation: Equatable {
         let path: String
         /// Capacity or the amount missing for this source, when available.
         let capacity: String?
+        /// The selected route below the drive root, for example
+        /// "SHUTTLE A › Day 3". Nil when the drive root is selected.
+        let folderPath: String?
     }
 
     let source: Source?
@@ -152,11 +155,13 @@ struct SetupLocationsPresentation: Equatable {
             source: source,
             stagedSources: stagedSources,
             backups: destinationURLs.map { url in
-                Backup(
+                let title = DestinationIdentityPresentation.title(for: url)
+                return Backup(
                     url: url,
-                    title: DestinationIdentityPresentation.title(for: url),
+                    title: title,
                     path: url.path,
-                    capacity: capacity(url).map { capacityLine($0, sourceBytes: sourceBytes) }
+                    capacity: capacity(url).map { capacityLine($0, sourceBytes: sourceBytes) },
+                    folderPath: destinationFolderPath(for: url, driveName: title)
                 )
             },
             canEdit: !isOperationInProgress,
@@ -215,9 +220,21 @@ struct SetupLocationsPresentation: Equatable {
             let missing = required - capacity.availableBytes + 1
             return "Needs \(ByteCountPresentation.fileSize(missing)) more"
         }
-        let available = ByteCountPresentation.capacity(capacity.availableBytes)
-        guard let total = capacity.totalBytes else { return "\(available) free" }
-        return "\(available) free of \(ByteCountPresentation.capacity(total))"
+        // Just what matters on a narrow destination row; the picker shows
+        // the full capacity.
+        return "\(ByteCountPresentation.capacity(capacity.availableBytes)) free"
+    }
+
+    private static func destinationFolderPath(for url: URL, driveName: String) -> String? {
+        let components = url.standardizedFileURL.pathComponents
+        if let volumes = components.firstIndex(of: "Volumes"), volumes + 1 < components.count {
+            let route = components.dropFirst(volumes + 1)
+            guard route.count > 1 else { return nil }
+            return route.joined(separator: " › ")
+        }
+        let folder = url.lastPathComponent
+        guard !folder.isEmpty, folder != driveName else { return nil }
+        return "\(driveName) › \(folder)"
     }
 }
 

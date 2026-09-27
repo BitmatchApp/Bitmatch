@@ -232,7 +232,7 @@ struct MacMainView: View {
                 if coordinator.currentMode == .copyAndVerify && !coordinator.lastOperationWasCompare
                     && (coordinator.runningOneTimeTransfer != nil || coordinator.queueIsRunning
                         || coordinator.queuePausedRecordID != nil || coordinator.queueSessionEnded
-                        || coordinator.queuePresentation.rows.contains { $0.safetyState == .waiting }) {
+                        || coordinator.queueSessionStarted) {
                     MacQueueSection(coordinator: coordinator)
                 }
                 resultsArea
@@ -275,7 +275,7 @@ struct MacMainView: View {
         MacCopyMainContentPolicy.make(
             isOperationInProgress: showsTransferProgress,
             hasPausedQueue: coordinator.queuePausedRecordID != nil,
-            queueSessionEnded: coordinator.queueSessionEnded,
+            queueSessionEnded: coordinator.queueSessionEnded && coordinator.editingSetupTransferID == nil,
             showsQueueSummary: coordinator.queuePresentation.showsQueueSummary,
             isReviewingQueueRecord: coordinator.reviewedQueueRecordID != nil
         )
@@ -669,28 +669,17 @@ struct MacMainView: View {
                 switch coordinator.currentMode {
                 case .copyAndVerify:
                     guard coordinator.queuePausedRecordID == nil else { return }
-                    // Setup owns staged cards while it is idle. Its command
-                    // path must first stage the current final card, exactly
-                    // like the visible Start button, before generic queue
-                    // replay is considered.
-                    if SetupStartPolicy.startsSetupBatch(
+                    let presentation = SetupPresentation.make(coordinator: coordinator)
+                    guard presentation.start.canStart else { return }
+                    if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
                         stagedCardCount: coordinator.stagedSetupTransfers.count,
+                        hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
                         isOperationInProgress: coordinator.isOperationInProgress
                     ) {
-                        guard SetupPresentation.make(coordinator: coordinator).start.canStart else { return }
                         do { try coordinator.startSetupTransfers() }
                         catch { Task { await coordinator.showError(error) } }
-                    } else if coordinator.queueRunCommandEnabled {
-                        coordinator.startQueue()
                     } else {
-                        // The shared Start: refuses what the Start button would.
-                        guard SetupPresentation.make(coordinator: coordinator).start.canStart else { return }
-                        if !coordinator.stagedSetupTransfers.isEmpty {
-                            do { try coordinator.startSetupTransfers() }
-                            catch { Task { await coordinator.showError(error) } }
-                        } else {
-                            Task { await coordinator.startCurrentMode() }
-                        }
+                        Task { await coordinator.startCurrentMode() }
                     }
                 case .compareFolders:
                     // ⌘R obeys the same readiness rule as the Compare button.

@@ -142,6 +142,10 @@ struct QueueSessionPresentationTests {
         #expect(stopped.copySummary.hasPrefix("Queue stopped "))
         #expect(waitingOnly.copySummary.hasPrefix("Queue "))
         #expect(!waitingOnly.copySummary.hasPrefix("Queue finished"))
+        #expect(QueueCommandPolicy.showsResume(hasSessionStarted: true, waitingCount: 1))
+        #expect(!QueueCommandPolicy.showsResume(hasSessionStarted: false, waitingCount: 1))
+        #expect(waitingOnly.rows.allSatisfy { $0.isEditable })
+        #expect(stopped.rows.first(where: { $0.id == failed.id })?.isEditable == false)
     }
 
     @Test func allSafeQueueUsesCardCountAsItsSummaryTitle() throws {

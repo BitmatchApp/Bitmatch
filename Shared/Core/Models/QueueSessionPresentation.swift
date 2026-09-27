@@ -18,6 +18,8 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let cause: String?
     let copySummary: String
 
+    var isEditable: Bool { safetyState == .waiting }
+
     var statusText: String {
         safetyState == .copiedNotVerified
             ? "Copied, not verified: size check only"
@@ -69,6 +71,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
     let pausedCause: String?
 
     var isMultiCard: Bool { rows.count >= 2 }
+    var hasStarted: Bool { rows.contains { $0.safetyState != .waiting } }
+    var hasWaitingCards: Bool { rows.contains { $0.isEditable } }
     var showsQueueSummary: Bool { summaryTitle != nil }
     var showsEjectAllButton: Bool { ejectableCardIDs.count >= 2 }
 
@@ -290,6 +294,10 @@ private extension CardSafetyState {
 enum QueueCommandPolicy {
     static func canRunQueue(isPausedOnProblem: Bool, waitingCount: Int) -> Bool {
         !isPausedOnProblem && waitingCount > 0
+    }
+
+    static func showsResume(hasSessionStarted: Bool, waitingCount: Int) -> Bool {
+        hasSessionStarted && waitingCount > 0
     }
 }
 

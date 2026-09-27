@@ -84,6 +84,7 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var queuePausedRecordID: UUID?
     @Published private(set) var reviewedQueueRecordID: UUID?
     @Published private(set) var queueSessionEnded = false
+    @Published private(set) var queueSessionStarted = false
     @Published private(set) var editingSetupTransferID: UUID?
     private var queueSessionRecordOrder: [UUID] = []
     private var isProcessingQueue = false
@@ -332,11 +333,15 @@ class SharedAppCoordinator: ObservableObject {
         var skippedIDs: Set<UUID> = []
         var pausedID: UUID?
         var sessionEnded = false
+        var sessionStarted = false
         if let persistedSession {
             recoveredOrder = persistedSession.recordIDs.filter(existingIDs.contains)
             skippedIDs = persistedSession.skippedRecordIDs.intersection(existingIDs)
             pausedID = persistedSession.pausedRecordID.flatMap { existingIDs.contains($0) ? $0 : nil }
             sessionEnded = persistedSession.ended
+            sessionStarted = persistedSession.started ?? selectedJournal.records.contains {
+                recoveredOrder.contains($0.id) && $0.state != .queued
+            }
         } else {
             // Queue membership is session state, not transfer-history state.
             // Without a session file, old queued/interrupted records remain
@@ -365,6 +370,7 @@ class SharedAppCoordinator: ObservableObject {
         self.skippedQueueAttentionIDs = skippedIDs
         self.queuePausedRecordID = pausedID
         self.queueSessionEnded = sessionEnded
+        self.queueSessionStarted = sessionStarted
         self.queueFinishNotificationWasPosted = sessionEnded
         self.queueSessionRecordOrder = recoveredOrder
         self.queueSessionRecordIDs = recoveredSessionIDs
@@ -873,6 +879,12 @@ class SharedAppCoordinator: ObservableObject {
               let record = stagedSetupTransfers.first(where: { $0.id == id }) else {
             throw FileOperationError.unsafeOperation("Only a waiting setup transfer can be edited.")
         }
+        // A stopped queue may still be showing the preceding card's outcome.
+        // Return to Setup before loading the waiting snapshot into its composer.
+        if queueSessionEnded && showsOutcomeSummary {
+            resetForNewOperation()
+            sourceURL = nil
+        }
         composerBeforeEditing = SetupComposerSnapshot(
             source: sourceURL,
             destinations: destinationURLs,
@@ -1028,7 +1040,7 @@ class SharedAppCoordinator: ObservableObject {
     func startQueue() {
         guard !(isOperationInProgress && currentMode == .compareFolders) else {
             queueIsRunning = false
-            queueMessage = "Finish or cancel the folder comparison, then choose Run queue."
+            queueMessage = "Finish or cancel the folder comparison, then choose Resume Queue."
             return
         }
         guard !hasUnresolvedQueueRecords else {
@@ -1052,6 +1064,7 @@ class SharedAppCoordinator: ObservableObject {
         queueStopWasRequested = false
         queueMessage = nil
         queueIsRunning = true
+        queueSessionStarted = true
         persistQueueSession()
         Task { await processNextQueuedTransfer() }
     }
@@ -1259,7 +1272,7 @@ class SharedAppCoordinator: ObservableObject {
         #if os(iOS)
         guard UIApplication.shared.applicationState == .active else {
             queueIsRunning = false
-            queueMessage = "Queue paused. Open BitMatch and choose Run queue to continue."
+            queueMessage = "Queue paused. Choose Resume Queue to continue."
             return
         }
         #endif
@@ -1608,7 +1621,8 @@ class SharedAppCoordinator: ObservableObject {
                 recordIDs: orderedIDs,
                 skippedRecordIDs: skippedQueueAttentionIDs,
                 pausedRecordID: queuePausedRecordID,
-                ended: queueSessionEnded
+                ended: queueSessionEnded,
+                started: queueSessionStarted
             ))
         } catch {
             queueMessage = "Could not save queue session: \(error.localizedDescription)"
@@ -1626,6 +1640,7 @@ class SharedAppCoordinator: ObservableObject {
         reviewedQueueRecordID = nil
         queueMessage = nil
         queueSessionEnded = false
+        queueSessionStarted = false
         queueFinishNotificationWasPosted = false
         queueStopWasRequested = false
         do {
@@ -2197,7 +2212,7 @@ class SharedAppCoordinator: ObservableObject {
     /// old source risks copying the same card again by accident.
     func startNewTransfer() {
         // A stopped queue with cards still waiting keeps its session, or
-        // those cards would be stranded behind a disabled Run Queue.
+        // those cards would be stranded without a Resume Queue action.
         let hasWaitingCards = transferJournal.records.contains {
             queueSessionRecordIDs.contains($0.id) && $0.state == .queued
         }

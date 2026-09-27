@@ -54,7 +54,6 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     private let projectEvidence: ProjectEvidence
 
     @State private var width: CGFloat = 0
-    @State private var readyGlowPulse = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     init(
@@ -289,18 +288,10 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             // cannot be pressed should not look pressable.
             .tint(start.canStart ? Color.accentColor : Color.gray)
             .disabled(!start.canStart)
-            .shadow(
-                color: start.canStart
-                    ? Color.accentColor.opacity(reduceMotion ? 0.30 : (readyGlowPulse ? 0.32 : 0.16))
-                    : .clear,
-                radius: start.canStart ? (reduceMotion ? 9 : (readyGlowPulse ? 14 : 7)) : 0
-            )
-            .animation(
-                start.canStart && !reduceMotion
-                    ? .easeInOut(duration: 1.6).repeatForever(autoreverses: true)
-                    : nil,
-                value: readyGlowPulse
-            )
+            // The glow lives in its own layer with its own state: a
+            // repeating animation on the button itself swept every layout
+            // change (the queue appearing) into it, and the button bobbed.
+            .background { StartGlow(isActive: start.canStart, reduceMotion: reduceMotion) }
             .accessibilityLabel(start.title)
             .accessibilityHint(start.accessibilityHint)
             if let blocker = start.blocker {
@@ -319,13 +310,6 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         }
         .frame(maxWidth: 380)
         .frame(maxWidth: .infinity, alignment: .center)
-        .onAppear { readyGlowPulse = start.canStart && !reduceMotion }
-        .onChange(of: start.canStart) { _, isReady in
-            readyGlowPulse = isReady && !reduceMotion
-        }
-        .onChange(of: reduceMotion) { _, shouldReduceMotion in
-            readyGlowPulse = start.canStart && !shouldReduceMotion
-        }
     }
 }
 
@@ -337,5 +321,35 @@ extension TransferPlanStatusTone {
         case .warning: .orange
         case .error: .red
         }
+    }
+}
+
+
+/// The soft pulse behind a ready Start button. It animates only its own
+/// opacity and blur, never the layout around it.
+private struct StartGlow: View {
+    let isActive: Bool
+    let reduceMotion: Bool
+    @State private var bright = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.accentColor)
+            .blur(radius: bright ? 14 : 8)
+            .opacity(isActive ? (reduceMotion ? 0.30 : (bright ? 0.38 : 0.18)) : 0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
+            .onAppear(perform: update)
+            .onChange(of: isActive) { _, _ in update() }
+            .onChange(of: reduceMotion) { _, _ in update() }
+    }
+
+    private func update() {
+        guard isActive, !reduceMotion else {
+            bright = false
+            return
+        }
+        bright = false
+        withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { bright = true }
     }
 }

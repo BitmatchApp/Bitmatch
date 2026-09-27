@@ -1,4 +1,5 @@
 import SwiftUI
+import BitMatchEngine
 
 extension SetupPresentation {
     /// The one adapter from `SharedAppCoordinator`, used by Mac, iPad and
@@ -17,6 +18,29 @@ extension SetupPresentation {
             readiness: coordinator.transferReadiness
         )
         let jobs = coordinator.photographerJobViewModel
+        let stagedTransfers = coordinator.stagedSetupTransfers
+        let isEditingStagedTransfer = coordinator.editingSetupTransferID != nil
+        let composerDestinationNames = coordinator.destinationURLs.map {
+            DestinationIdentityPresentation.title(for: $0)
+        }
+        let composerDestinationIdentities = coordinator.destinationURLs.map {
+            BackupTargetPolicy.canonicalPath($0)
+        }
+        let stagedDestinationNames = stagedTransfers.map { record in
+            if record.id == coordinator.editingSetupTransferID {
+                return composerDestinationNames
+            }
+            return record.destinations.map { DestinationIdentityPresentation.title(for: $0.url) }
+        }
+        let stagedVerificationModes = stagedTransfers.map { record in
+            record.id == coordinator.editingSetupTransferID ? coordinator.verificationMode : record.verificationMode
+        }
+        let stagedDestinationIdentities = stagedTransfers.map { record in
+            if record.id == coordinator.editingSetupTransferID {
+                return composerDestinationIdentities
+            }
+            return record.destinations.map { BackupTargetPolicy.canonicalPath($0.url) }
+        }
         let hasPreparedCard = jobs.hasPreparedIngestAwaitingStart
         let projectBlocker: String? = hasPreparedCard
             ? jobs.startPresentation(
@@ -34,8 +58,14 @@ extension SetupPresentation {
             projectUnit: jobs.selectedWorkflow.sourceUnitLabel,
             isOperationInProgress: coordinator.isOperationInProgress,
             isQueuePaused: coordinator.hasUnresolvedQueueRecords,
-            hasCurrentSource: coordinator.sourceURL != nil,
-            stagedCardCount: coordinator.stagedSetupTransfers.count,
+            hasComposerCard: !isEditingStagedTransfer
+                && coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
+            composerDestinationNames: composerDestinationNames,
+            composerDestinationIdentities: composerDestinationIdentities,
+            stagedCardCount: stagedTransfers.count,
+            stagedDestinationNames: stagedDestinationNames,
+            stagedDestinationIdentities: stagedDestinationIdentities,
+            stagedVerificationModes: stagedVerificationModes,
             sourceFileCount: coordinator.sourceFolderInfo?.fileCount,
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
             destinationCount: coordinator.destinationURLs.count,
@@ -100,10 +130,12 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
             },
             start: {
                 // The one Start: the same rule as ⌘R, including S-2.
-                guard SetupPresentation.make(coordinator: coordinator).start.canStart else { return }
+                let presentation = SetupPresentation.make(coordinator: coordinator)
+                guard presentation.start.canStart else { return }
                 coordinator.switchMode(to: .copyAndVerify)
-                if SetupStartPolicy.startsSetupBatch(
+                if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
                     stagedCardCount: coordinator.stagedSetupTransfers.count,
+                    hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
                     isOperationInProgress: coordinator.isOperationInProgress
                 ) {
                     do { try coordinator.startSetupTransfers() }

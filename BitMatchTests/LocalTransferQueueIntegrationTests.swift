@@ -152,7 +152,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         coordinator.isOperationInProgress = true
         coordinator.startQueue()
         XCTAssertFalse(coordinator.queueIsRunning)
-        XCTAssertEqual(coordinator.queueMessage, "Finish or cancel the folder comparison, then choose Run queue.")
+        XCTAssertEqual(coordinator.queueMessage, "Finish or cancel the folder comparison, then choose Resume Queue.")
         let starts = await service.starts
         XCTAssertTrue(starts.isEmpty)
         coordinator.isOperationInProgress = false
@@ -762,7 +762,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(journal.loadQueueSession()).recordIDs, [newID])
 
         // A card still waiting keeps the session: New Transfer must not
-        // strand it behind a disabled Run Queue.
+        // strand it without a Resume Queue action.
         coordinator.startNewTransfer()
         XCTAssertEqual(coordinator.queueSessionRecordIDs, [newID])
         XCTAssertTrue(coordinator.queueRunCommandEnabled)

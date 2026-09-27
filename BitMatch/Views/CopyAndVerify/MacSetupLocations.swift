@@ -66,10 +66,25 @@ struct MacSetupLocations: View {
     }
 
     private var connectedSourceChoices: [SetupConnectedVolume] {
-        let cardURLs = Set(volumeMonitor.connectedVolumes.filter { $0.cameraName != nil || $0.isRemovable }.map(\.url))
-        return connectedRows.filter { cardURLs.contains($0.url) }.map {
-            SetupConnectedVolume(url: $0.url, title: $0.displayName, detail: $0.subtitle)
+        return connectedRows.map { row in
+            let volume = volumeMonitor.connectedVolumes.first { $0.url == row.url }
+            return SetupConnectedVolume(
+                url: row.url,
+                title: row.displayName,
+                detail: row.subtitle,
+                kind: connectedKind(for: row, volume: volume),
+                availableBytes: volume?.freeBytes,
+                totalBytes: volume?.totalBytes
+            )
         }
+    }
+
+    private func connectedKind(
+        for row: ConnectedDrivesPresentation.Row,
+        volume: ConnectedDrivesPresentation.Volume?
+    ) -> SetupConnectedVolume.Kind {
+        if case .card = row.role { return .card }
+        return volume?.isInternal == true ? .internalDrive : .drive
     }
 
     private var connectedDestinationChoices: [SetupConnectedVolume] {
@@ -82,8 +97,16 @@ struct MacSetupLocations: View {
             connectedRows,
             sourceURL: coordinator.sourceURL,
             selectedURLs: coordinator.destinationURLs
-        ).filter { usableURLs.contains($0.url) }.map {
-            SetupConnectedVolume(url: $0.url, title: $0.displayName, detail: $0.subtitle)
+        ).filter { usableURLs.contains($0.url) }.map { row in
+            let volume = volumeMonitor.connectedVolumes.first { $0.url == row.url }
+            return SetupConnectedVolume(
+                url: row.url,
+                title: row.displayName,
+                detail: row.subtitle,
+                kind: volume?.isInternal == true ? .internalDrive : .drive,
+                availableBytes: volume?.freeBytes,
+                totalBytes: volume?.totalBytes
+            )
         }
     }
 

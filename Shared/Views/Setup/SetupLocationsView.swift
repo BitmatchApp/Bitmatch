@@ -7,6 +7,7 @@ struct SetupLocationsActions {
     var clearSource: () -> Void
     var addAnotherCard: () -> Void
     var chooseConnectedSource: (URL) -> Void
+    var chooseFolderOnSource: (URL) -> Void
     var chooseConnectedBackup: (URL) -> Void
     var chooseFolderOnBackup: (URL) -> Void
     var editStagedCard: (UUID) -> Void
@@ -39,18 +40,17 @@ struct SetupLocationsView: View {
     @State private var isSourceTargeted = false
     @State private var isAddTargeted = false
     @State private var targetedBackup: Int?
+    @State private var isSourcePickerPresented = false
+    @State private var isDestinationPickerPresented = false
+    @State private var selectedQueueID: UUID?
     @FocusState private var focusedQueueID: UUID?
-
-    private var cardCount: Int {
-        presentation.stagedSources.count + (presentation.source != nil && editingID == nil ? 1 : 0)
-    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             composer
             composerAction
             advanced
-            if cardCount >= 2 { setupQueue }
+            if !presentation.stagedSources.isEmpty { setupQueue }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -101,58 +101,91 @@ struct SetupLocationsView: View {
 
     private var sourceBox: some View {
         box(title: "Source", accessibilityLabel: sourceAccessibilityLabel) {
-            Menu {
-                ForEach(connectedSources) { volume in
-                    Button { actions.chooseConnectedSource(volume.url) } label: {
-                        if contains(presentation.source?.path, in: volume.url) {
-                            Label("\(volume.title) — \(volume.detail)", systemImage: "checkmark")
-                        } else { Text("\(volume.title) — \(volume.detail)") }
-                    }
-                }
-                if !connectedSources.isEmpty { Divider() }
-                Button("Choose a folder…", action: actions.pickSource)
-                if presentation.source != nil {
-                    Divider()
-                    Button("Remove", role: .destructive, action: actions.clearSource)
-                }
-            } label: { sourceMenuLabel }
-            .buttonStyle(.plain)
-            .disabled(!presentation.canEdit)
-            .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
-            .accessibilityHint("Lists connected cards or opens a folder picker")
+            sourceControl
         }
         .fileDrop(isTargeted: $isSourceTargeted, enabled: presentation.canEdit, perform: drops?.source)
     }
 
-    private var sourceMenuLabel: some View {
+    private var sourceControl: some View {
         HStack(spacing: 9) {
-            Image(systemName: "sdcard")
-                .font(.title3)
-                .foregroundStyle(isSourceTargeted ? Color.accentColor : Color.secondary)
             if let source = presentation.source {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(source.title).font(.headline).lineLimit(1).truncationMode(.middle)
-                    if let camera = source.cameraName {
-                        Text(camera).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                    }
-                    if let detail = source.detail {
-                        Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                    }
+                Button(action: actions.clearSource) {
+                    Image(systemName: "xmark.circle.fill")
+                        .frame(width: 24, height: 24)
+                        .foregroundStyle(.secondary)
                 }
-            } else {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("Choose source…").font(.headline)
-                    Text(drops == nil ? "Connected card or folder" : "Connected card, folder, or drop here")
-                        .font(.caption).foregroundStyle(.secondary)
+                .buttonStyle(.plain)
+                .disabled(!presentation.canEdit)
+                .accessibilityLabel("Remove \(source.title)")
+                .help("Remove \(source.title)")
+            }
+
+            Button { isSourcePickerPresented = true } label: {
+                HStack(spacing: 9) {
+                    Image(systemName: sourceIconName)
+                        .font(.title3)
+                        .foregroundStyle(isSourceTargeted ? Color.accentColor : Color.secondary)
+                    if let source = presentation.source {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(source.title).font(.headline).lineLimit(1).truncationMode(.middle)
+                            if let camera = source.cameraName {
+                                Text(camera).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                            if let detail = source.detail {
+                                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            }
+                        }
+                    } else {
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("Choose source…").font(.headline)
+                            Text(drops == nil ? "Connected card or folder" : "Connected card, folder, or drop here")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer(minLength: 0)
+                    Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .disabled(!presentation.canEdit)
+            .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
+            .accessibilityHint("Lists connected cards and drives or opens a folder picker")
+            .popover(isPresented: $isSourcePickerPresented, arrowEdge: .bottom) {
+                SetupLocationPickerPopover(
+                    purpose: .source,
+                    volumes: connectedSources,
+                    selectedURLs: presentation.source.map { [URL(fileURLWithPath: $0.path)] } ?? [],
+                    select: { volume in
+                        actions.chooseConnectedSource(volume.url)
+                        isSourcePickerPresented = false
+                    },
+                    chooseFolder: {
+                        isSourcePickerPresented = false
+                        actions.pickSource()
+                    },
+                    dismiss: { isSourcePickerPresented = false }
+                )
+            }
+
+            if let source = presentation.source {
+                chooseSubfolderButton(
+                    help: "Choose a folder on \(locationTitle(for: source.path, matching: connectedSources) ?? source.title)",
+                    enabled: presentation.canEdit
+                ) {
+                    actions.chooseFolderOnSource(URL(fileURLWithPath: source.path))
                 }
             }
-            Spacer(minLength: 0)
-            Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
         }
         .padding(10)
         .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
         .contentShape(RoundedRectangle(cornerRadius: 9))
         .background(SetupSelectedLocationBackground(isTargeted: isSourceTargeted))
+    }
+
+    private var sourceIconName: String {
+        guard let path = presentation.source?.path else { return "sdcard.fill" }
+        return locationIconName(for: path, matching: connectedSources, fallback: "sdcard.fill")
     }
 
     /// How the copy gets from the card to the drives: not a third box but
@@ -241,30 +274,51 @@ struct SetupLocationsView: View {
             ForEach(Array(presentation.backups.enumerated()), id: \.element.id) { index, backup in
                 destinationRow(backup, index: index)
             }
-            addDestinationMenu
+            addDestinationButton
         }
         .fileDrop(isTargeted: $isAddTargeted, enabled: presentation.canEditBackups, perform: drops?.addBackups)
     }
 
     private func destinationRow(_ backup: SetupLocationsPresentation.Backup, index: Int) -> some View {
-        HStack(spacing: 7) {
-            Image(systemName: "checkmark").foregroundStyle(.secondary).accessibilityHidden(true)
-            Text(backup.title).font(.subheadline.weight(.medium)).lineLimit(1).truncationMode(.middle)
-            Spacer(minLength: 4)
-            if let capacity = backup.capacity {
-                Text(capacity).font(.caption)
-                    .foregroundStyle(capacity.hasPrefix("Needs ") ? Color.orange : Color.secondary)
-                    .lineLimit(1)
+        HStack(alignment: .top, spacing: 8) {
+            Button { actions.removeBackup(backup.url) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 22, height: 22)
             }
-            Menu {
-                Button("Choose folder on \(backup.title)…") { actions.chooseFolderOnBackup(backup.url) }
-                Divider()
-                Button("Remove", role: .destructive) { actions.removeBackup(backup.url) }
-            } label: { Image(systemName: "ellipsis.circle").frame(width: 24, height: 24) }
             .buttonStyle(.plain)
-            .accessibilityLabel("Options for destination \(backup.title)")
+            .disabled(!presentation.canEditBackups)
+            .accessibilityLabel("Remove \(backup.title)")
+            .help("Remove \(backup.title)")
+
+            Image(systemName: locationIconName(for: backup.path, matching: connectedDestinations, fallback: "externaldrive.fill"))
+                .frame(width: 22, height: 22)
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(backup.title).font(.subheadline).lineLimit(1).truncationMode(.middle)
+                if let folderPath = backup.folderPath {
+                    Text(folderPath)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                if let capacity = backup.capacity {
+                    Text(capacity).font(.caption)
+                        .foregroundStyle(capacity.hasPrefix("Needs ") ? Color.orange : Color.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .help(backup.path)
+            Spacer(minLength: 4)
+            chooseSubfolderButton(
+                help: "Choose a folder on \(backup.title)",
+                enabled: presentation.canEditBackups
+            ) {
+                actions.chooseFolderOnBackup(backup.url)
+            }
         }
-        .help(backup.path)
         .fileDrop(
             isTargeted: Binding(get: { targetedBackup == index }, set: { targetedBackup = $0 ? index : nil }),
             enabled: presentation.canEditBackups,
@@ -272,22 +326,28 @@ struct SetupLocationsView: View {
         )
     }
 
-    private var addDestinationMenu: some View {
-        Menu {
-            ForEach(connectedDestinations) { volume in
-                let selected = presentation.backups.contains { contains($0.path, in: volume.url) }
-                Button {
-                    if selected, let backup = presentation.backups.first(where: { contains($0.path, in: volume.url) }) {
-                        actions.removeBackup(backup.url)
-                    } else { actions.chooseConnectedBackup(volume.url) }
-                } label: {
-                    if selected { Label("\(volume.title) — \(volume.detail)", systemImage: "checkmark") }
-                    else { Text("\(volume.title) — \(volume.detail)") }
-                }
+    private func chooseSubfolderButton(
+        help: String,
+        enabled: Bool,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            ViewThatFits(in: .horizontal) {
+                Label("Choose subfolder", systemImage: "folder.badge.plus")
+                    .fixedSize()
+                Image(systemName: "folder.badge.plus")
+                    .frame(width: 24, height: 24)
             }
-            if !connectedDestinations.isEmpty { Divider() }
-            Button("Choose a folder…", action: actions.pickBackups)
-        } label: {
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+        .foregroundStyle(.secondary)
+        .accessibilityLabel("Choose subfolder")
+        .help(help)
+    }
+
+    private var addDestinationButton: some View {
+        Button { isDestinationPickerPresented = true } label: {
             Label("Add destination", systemImage: "plus")
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
@@ -298,6 +358,19 @@ struct SetupLocationsView: View {
         .foregroundStyle(Color.accentColor)
         .accessibilityLabel("Add destination")
         .accessibilityHint("Lists connected destination drives or opens a folder picker")
+        .popover(isPresented: $isDestinationPickerPresented, arrowEdge: .bottom) {
+            SetupLocationPickerPopover(
+                purpose: .destinations,
+                volumes: connectedDestinations,
+                selectedURLs: presentation.backups.map(\.url),
+                select: { actions.chooseConnectedBackup($0.url) },
+                chooseFolder: {
+                    isDestinationPickerPresented = false
+                    actions.pickBackups()
+                },
+                dismiss: { isDestinationPickerPresented = false }
+            )
+        }
     }
 
     @ViewBuilder
@@ -343,6 +416,14 @@ struct SetupLocationsView: View {
             .accessibilityAction(named: "Move down") {
                 if index + 1 < presentation.stagedSources.count { actions.moveStagedCard(item.id, index + 1) }
             }
+            .accessibilityAction(named: "Edit") { actions.editStagedCard(item.id) }
+            .accessibilityAction(named: "Remove from queue") { actions.removeStagedCard(item.id) }
+            .contextMenu {
+                Button("Edit") { actions.editStagedCard(item.id) }
+                Button("Move to Top") { actions.moveStagedCard(item.id, 0) }
+                    .disabled(index == 0)
+                Button("Remove", role: .destructive) { actions.removeStagedCard(item.id) }
+            }
         #if os(macOS)
         row
             .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
@@ -355,6 +436,10 @@ struct SetupLocationsView: View {
                 actions.moveStagedCard(item.id, index + 1)
                 return .handled
             }
+            .onKeyPress(.delete) {
+                actions.removeStagedCard(item.id)
+                return .handled
+            }
         #else
         row
         #endif
@@ -362,6 +447,18 @@ struct SetupLocationsView: View {
 
     private func queueRow(_ item: SetupLocationsPresentation.StagedSource) -> some View {
         HStack(spacing: 8) {
+            // Same pattern as destination rows: remove on the left,
+            // always visible.
+            Button { actions.removeStagedCard(item.id) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.borderless)
+            .disabled(editingID == item.id)
+            .help("Remove \(item.title) from the queue")
+            .accessibilityLabel("Remove \(item.title) from the queue")
             HStack(spacing: 8) {
                 Text(item.title + " → ").lineLimit(1)
                 Text(item.destinationNames.joined(separator: " + "))
@@ -374,17 +471,32 @@ struct SetupLocationsView: View {
                         .font(.caption.weight(.medium)).foregroundStyle(.orange)
                 }
                 Spacer(minLength: 8)
-                Text("Ready").font(.caption).foregroundStyle(.secondary)
+                Label("Waiting", systemImage: "clock")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             .accessibilityElement(children: .ignore)
-            .accessibilityLabel(item.sentence + (item.differs ? ", differs from the first transfer" : ", ready"))
-            Button("Edit") { actions.editStagedCard(item.id) }.disabled(editingID != nil)
-            Button("Remove") { actions.removeStagedCard(item.id) }.disabled(editingID == item.id)
+            .accessibilityLabel(item.sentence + (item.differs ? ", differs from the first transfer, waiting" : ", waiting"))
+            Button("Edit") { actions.editStagedCard(item.id) }
+                .buttonStyle(.borderless)
+                .foregroundStyle(Color.accentColor)
+                .disabled(editingID != nil)
+                .help("Load \(item.title) into the setup above to change it")
         }
         .font(.subheadline)
         .frame(minHeight: 36)
         .padding(.horizontal, 8)
-        .background(item.differs ? Color.orange.opacity(0.08) : Color.primary.opacity(0.025), in: RoundedRectangle(cornerRadius: 8))
+        .background(
+            selectedQueueID == item.id
+                ? Color.accentColor.opacity(0.12)
+                : (item.differs ? Color.orange.opacity(0.08) : Color.primary.opacity(0.025)),
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            selectedQueueID = item.id
+            focusedQueueID = item.id
+        }
     }
 
     private func contains(_ path: String?, in volume: URL) -> Bool {
@@ -393,6 +505,26 @@ struct SetupLocationsView: View {
         let selected = URL(fileURLWithPath: path).standardizedFileURL.path
         return selected == root || selected.hasPrefix(root + "/")
     }
+
+    private func locationIconName(
+        for path: String,
+        matching volumes: [SetupConnectedVolume],
+        fallback: String
+    ) -> String {
+        if let volume = volumes.first(where: { contains(path, in: $0.url) }) {
+            switch volume.kind {
+            case .card: return "sdcard.fill"
+            case .drive: return "externaldrive.fill"
+            case .internalDrive: return "internaldrive"
+            }
+        }
+        return path.hasPrefix("/Volumes/") ? fallback : "internaldrive"
+    }
+
+    private func locationTitle(for path: String, matching volumes: [SetupConnectedVolume]) -> String? {
+        volumes.first(where: { contains(path, in: $0.url) })?.title
+    }
+
 }
 
 private extension View {

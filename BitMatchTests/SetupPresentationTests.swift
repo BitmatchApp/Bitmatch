@@ -43,7 +43,7 @@ struct SetupPresentationTests {
             projectUnit: "Card",
             isOperationInProgress: running,
             isQueuePaused: queuePaused,
-            hasCurrentSource: plan.nextStep != .chooseSource,
+            hasComposerCard: plan.nextStep == nil,
             sourceFileCount: 12,
             sourceBytes: 4_000,
             destinationCount: plan.destinationTitles.count
@@ -88,7 +88,7 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
-            hasCurrentSource: false,
+            hasComposerCard: false,
             sourceFileCount: nil,
             sourceBytes: nil,
             destinationCount: 0,
@@ -145,7 +145,7 @@ struct SetupPresentationTests {
             projectUnit: "Card",
             isOperationInProgress: false,
             isQueuePaused: true,
-            hasCurrentSource: true,
+            hasComposerCard: true,
             sourceFileCount: 12,
             sourceBytes: 4_000,
             destinationCount: 1,
@@ -183,8 +183,10 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
-            hasCurrentSource: true,
+            hasComposerCard: true,
+            composerDestinationNames: ["RAID_A"],
             stagedCardCount: 2,
+            stagedDestinationNames: [["RAID_A"], ["RAID_A"]],
             sourceFileCount: 12,
             sourceBytes: 4_000,
             destinationCount: 1
@@ -192,6 +194,7 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.title == "Start 3 transfers")
+        #expect(presentation.readyLine == "Ready to copy 3 cards to RAID_A. Source files stay in place.")
         #expect(presentation.accessibilityHint.contains("source unchanged"))
     }
 
@@ -203,8 +206,9 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
-            hasCurrentSource: false,
+            hasComposerCard: false,
             stagedCardCount: 2,
+            stagedDestinationNames: [["SHUTTLE A", "SHUTTLE B"], ["SHUTTLE A", "SHUTTLE B"]],
             sourceFileCount: nil,
             sourceBytes: nil,
             destinationCount: 1
@@ -212,7 +216,33 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.title == "Start 2 transfers")
-        #expect(presentation.readyLine == "2 cards will run as separate verified transfers to 1 destination.")
+        #expect(presentation.readyLine == "Ready to copy 2 cards to SHUTTLE A and SHUTTLE B. Source files stay in place.")
+    }
+
+    @Test func batchCaptionCountsCardsWithDifferentDestinations() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: source, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            composerDestinationNames: ["SHUTTLE A"],
+            composerDestinationIdentities: ["/Volumes/SHUTTLE A/Day 2"],
+            stagedCardCount: 2,
+            stagedDestinationNames: [["SHUTTLE A"], ["SHUTTLE A"]],
+            stagedDestinationIdentities: [
+                ["/Volumes/SHUTTLE A/Day 1"],
+                ["/Volumes/SHUTTLE A/Day 1"]
+            ],
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 1
+        )
+
+        #expect(presentation.title == "Start 3 transfers")
+        #expect(presentation.readyLine == "Ready to copy 3 cards; 1 goes to different destinations.")
     }
 
     @Test func oneQueuedCardKeepsTheModeSpecificStartWording() {
@@ -223,14 +253,36 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
-            hasCurrentSource: false,
+            hasComposerCard: false,
             stagedCardCount: 1,
+            stagedDestinationNames: [["SHUTTLE A"]],
             sourceFileCount: nil,
             sourceBytes: nil,
             destinationCount: 1
         )
 
         #expect(presentation.title == "Start verified copy")
+        #expect(presentation.readyLine == "Ready to copy 1 card to SHUTTLE A. Source files stay in place.")
+    }
+
+    @Test func oneQuickQueuedCardKeepsTheQuickStartWording() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: nil, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: false,
+            stagedCardCount: 1,
+            stagedDestinationNames: [["SHUTTLE A"]],
+            stagedVerificationModes: [.quick],
+            sourceFileCount: nil,
+            sourceBytes: nil,
+            destinationCount: 1
+        )
+
+        #expect(presentation.title == "Start copy without checksum verification")
     }
 
     @Test func emptySourceDisablesStartWithAReason() {
@@ -242,7 +294,7 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
-            hasCurrentSource: true,
+            hasComposerCard: true,
             sourceFileCount: 0,
             sourceBytes: 0,
             destinationCount: 1
@@ -265,7 +317,7 @@ struct SetupPresentationTests {
             projectBlocker: nil,
             projectUnit: "Card",
             isOperationInProgress: false,
-            hasCurrentSource: true,
+            hasComposerCard: true,
             sourceFileCount: 1,
             sourceBytes: 4,
             destinationCount: 1,

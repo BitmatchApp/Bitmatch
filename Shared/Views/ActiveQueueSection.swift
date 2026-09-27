@@ -4,12 +4,11 @@ import BitMatchEngine
 
 /// Active queue controls shared by iPhone and iPad. The Mac uses the denser
 /// `MacQueueSection`, but both surfaces call the same coordinator actions and
-/// preserve Add, Run/Stop, Move, Remove, Review, and Reconnect.
+/// preserve Add, Resume/Stop, Move, Edit, Remove, and Review.
 struct ActiveQueueSection: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @State private var choosingSource = false
     @State private var errorMessage: String?
-    @State private var reauthorizeRecord: LocalTransferRecord?
     @State private var selectedWaitingID: UUID?
     @FocusState private var focusedWaitingID: UUID?
 
@@ -40,8 +39,11 @@ struct ActiveQueueSection: View {
                 if coordinator.queueIsRunning {
                     Button("Stop Queue") { coordinator.stopQueueAfterCurrentTransfer() }
                         .buttonStyle(.bordered)
-                } else if presentation.rows.contains(where: { $0.safetyState == .waiting }) {
-                    Button("Run Queue") { coordinator.startQueue() }
+                } else if QueueCommandPolicy.showsResume(
+                    hasSessionStarted: coordinator.queueSessionStarted,
+                    waitingCount: presentation.rows.filter(\.isEditable).count
+                ) && coordinator.queuePausedRecordID == nil {
+                    Button("Resume Queue") { coordinator.startQueue() }
                         .buttonStyle(.borderedProminent)
                         .disabled(!coordinator.queueRunCommandEnabled)
                 }
@@ -87,13 +89,6 @@ struct ActiveQueueSection: View {
                 errorMessage = error.localizedDescription
             }
         }
-        .sheet(item: $reauthorizeRecord) { record in
-            ReauthorizeLocationsView(
-                coordinator: coordinator,
-                journal: coordinator.transferJournal,
-                recordID: record.id
-            )
-        }
     }
 
     private var isAvailable: Bool {
@@ -101,7 +96,7 @@ struct ActiveQueueSection: View {
             || coordinator.queueIsRunning
             || coordinator.queuePausedRecordID != nil
             || (coordinator.queueSessionEnded && coordinator.queuePresentation.isMultiCard)
-            || coordinator.queuePresentation.rows.contains { $0.safetyState == .waiting }
+            || coordinator.queueSessionStarted
     }
 
     private var queueTemplate: LocalTransferRecord? {
@@ -133,15 +128,17 @@ struct ActiveQueueSection: View {
             Spacer(minLength: 8)
             Label(row.statusText, systemImage: row.safetyState.symbol)
                 .font(.caption)
-                .foregroundStyle(row.safetyState.tint.color)
-            if coordinator.queuePausedRecordID != row.id,
-               row.safetyState == .waiting || row.action == .review {
-                Menu {
-                    rowActions(row)
-                } label: {
-                    Image(systemName: "ellipsis.circle").frame(width: 44, height: 44)
+                .foregroundStyle(row.isEditable ? Color.secondary : row.safetyState.tint.color)
+            if row.isEditable {
+                Button("Edit") { edit(row.id) }.buttonStyle(.borderless)
+                Button { remove(row.id) } label: {
+                    Image(systemName: "xmark.circle.fill").foregroundStyle(.secondary)
                 }
-                .accessibilityLabel("Actions for \(row.cardName)")
+                .buttonStyle(.borderless)
+                .help("Remove \(row.cardName) from the queue")
+                .accessibilityLabel("Remove \(row.cardName) from the queue")
+            } else if row.action == .review && coordinator.queuePausedRecordID != row.id {
+                Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
             }
         }
         .padding(.horizontal, 6)
@@ -185,29 +182,17 @@ struct ActiveQueueSection: View {
                 }
                 .accessibilityAction(named: "Move up") { moveWaitingCard(row.id, offset: -1, rows: rows) }
                 .accessibilityAction(named: "Move down") { moveWaitingCard(row.id, offset: 1, rows: rows) }
+                .accessibilityAction(named: "Edit") { edit(row.id) }
                 .accessibilityAction(named: "Remove from queue") {
-                    perform { try coordinator.removeQueuedTransfer(row.id) }
+                    remove(row.id)
+                }
+                .contextMenu {
+                    Button("Edit") { edit(row.id) }
+                    Button("Move to Top") { moveToTop(row.id) }
+                    Button("Remove", role: .destructive) { remove(row.id) }
                 }
         } else {
             queueRow(row)
-        }
-    }
-
-    @ViewBuilder
-    private func rowActions(_ row: QueueSessionRow) -> some View {
-        if row.safetyState == .waiting {
-            Button("Move to Top") {
-                perform { try coordinator.moveQueuedTransferToTop(row.id) }
-            }
-            Button("Reconnect…") {
-                reauthorizeRecord = coordinator.transferJournal.records.first { $0.id == row.id }
-            }
-            Button("Remove", role: .destructive) {
-                perform { try coordinator.removeQueuedTransfer(row.id) }
-            }
-        }
-        if row.action == .review {
-            Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
         }
     }
 
@@ -222,6 +207,20 @@ struct ActiveQueueSection: View {
         let destination = index + offset
         guard waiting.indices.contains(destination) else { return }
         perform { try coordinator.moveQueuedTransfer(id: id, to: destination) }
+        selectedWaitingID = id
+        focusedWaitingID = id
+    }
+
+    private func edit(_ id: UUID) {
+        perform { try coordinator.editSetupTransfer(id) }
+    }
+
+    private func remove(_ id: UUID) {
+        perform { try coordinator.removeQueuedTransfer(id) }
+    }
+
+    private func moveToTop(_ id: UUID) {
+        perform { try coordinator.moveQueuedTransferToTop(id) }
         selectedWaitingID = id
         focusedWaitingID = id
     }

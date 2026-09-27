@@ -7,6 +7,8 @@ struct PersistedQueueSession: Codable, Equatable, Sendable {
     var skippedRecordIDs: Set<UUID>
     var pausedRecordID: UUID?
     var ended: Bool
+    /// Nil in queue-session files written before this field existed.
+    var started: Bool? = nil
 }
 
 /// The app's observable view of the transfer journal. Every call goes to the

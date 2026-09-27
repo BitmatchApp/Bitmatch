@@ -150,7 +150,7 @@ struct SetupLocationsPresentationTests {
         let presentation = make(backups: [raid])
 
         #expect(presentation.backups.map(\.title) == ["RAID_A"])
-        #expect(presentation.backups.first?.capacity == "842 GB free of 2 TB")
+        #expect(presentation.backups.first?.capacity == "842 GB free")
     }
 
     @Test func backupIdentityPrefersTheVolumeAndNeverATemporaryPath() {

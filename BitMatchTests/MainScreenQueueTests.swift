@@ -17,11 +17,20 @@ struct MainScreenQueueTests {
     }
 
     @Test func buttonAndCommandRouteAStagedBatchThroughSetupFirst() {
-        let buttonRoute = SetupStartPolicy.startsSetupBatch(stagedCardCount: 1, isOperationInProgress: false)
-        let commandRoute = SetupStartPolicy.startsSetupBatch(stagedCardCount: 1, isOperationInProgress: false)
+        let buttonRoute = SetupStartPolicy.startsSetupBatch(
+            stagedCardCount: 1, hasComposerCard: true, isOperationInProgress: false
+        )
+        let commandRoute = SetupStartPolicy.startsSetupBatch(
+            stagedCardCount: 1, hasComposerCard: true, isOperationInProgress: false
+        )
         #expect(buttonRoute)
         #expect(commandRoute)
-        #expect(!SetupStartPolicy.startsSetupBatch(stagedCardCount: 0, isOperationInProgress: false))
+        #expect(SetupStartPolicy.startsSetupBatch(
+            stagedCardCount: 0, hasComposerCard: true, isOperationInProgress: false
+        ))
+        #expect(!SetupStartPolicy.startsSetupBatch(
+            stagedCardCount: 0, hasComposerCard: false, isOperationInProgress: false
+        ))
     }
 
     @Test func selectionKeepsBackupsAndSnapshotsCurrentSettings() async throws {
@@ -64,6 +73,8 @@ struct MainScreenQueueTests {
         coordinator.generateASCMHL = false
 
         try coordinator.enqueueSelection()
+        #expect(!coordinator.queueSessionStarted)
+        let firstID = try #require(coordinator.stagedSetupTransfers.first?.id)
         let secondCard = fixture.folders.root.appendingPathComponent("second-card", isDirectory: true)
         try FileManager.default.createDirectory(at: secondCard, withIntermediateDirectories: true)
         try Data("second card".utf8).write(to: secondCard.appendingPathComponent("B.ARW"))
@@ -73,10 +84,13 @@ struct MainScreenQueueTests {
         try coordinator.startSetupTransfers()
 
         #expect(coordinator.transferJournal.records.count == 2)
+        let finalID = try #require(coordinator.transferJournal.records.first { $0.id != firstID }?.id)
+        #expect(coordinator.queuePresentation.rows.map(\.id) == [firstID, finalID])
         #expect(Set(coordinator.transferJournal.records.map { $0.source.url.resolvingSymlinksInPath() }) ==
             Set([fixture.folders.source.resolvingSymlinksInPath(), secondCard.resolvingSymlinksInPath()]))
         #expect(coordinator.sourceURL == nil)
         #expect(coordinator.queueIsRunning)
+        #expect(coordinator.queueSessionStarted)
         coordinator.cancelOperation()
         await fixture.operations.gate.release()
         #expect(await waitUntil { !coordinator.isOperationInProgress })

@@ -2,11 +2,14 @@ import Foundation
 import BitMatchEngine
 
 enum SetupStartPolicy {
-    /// A staged setup batch owns the idle Start action before the generic
-    /// queue command. This keeps the final, currently selected card in the
-    /// same run for both the button and Command-Return.
-    static func startsSetupBatch(stagedCardCount: Int, isOperationInProgress: Bool) -> Bool {
-        stagedCardCount > 0 && !isOperationInProgress
+    /// Every ready one-time card enters the journal-backed queue before it
+    /// runs, including a single card that is still in the composer.
+    static func startsSetupBatch(
+        stagedCardCount: Int,
+        hasComposerCard: Bool,
+        isOperationInProgress: Bool
+    ) -> Bool {
+        (stagedCardCount > 0 || hasComposerCard) && !isOperationInProgress
     }
 }
 
@@ -51,15 +54,24 @@ struct StartButtonPresentation: Equatable, Sendable {
         projectUnit: String,
         isOperationInProgress: Bool,
         isQueuePaused: Bool = false,
-        hasCurrentSource: Bool,
+        hasComposerCard: Bool,
+        composerDestinationNames: [String] = [],
+        composerDestinationIdentities: [String] = [],
         stagedCardCount: Int = 0,
+        stagedDestinationNames: [[String]] = [],
+        stagedDestinationIdentities: [[String]] = [],
+        stagedVerificationModes: [VerificationMode] = [],
         sourceFileCount: Int?,
         sourceBytes: Int64?,
         destinationCount: Int
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard
         let unit = projectUnit.lowercased()
-        let cardCount = stagedCardCount + (hasCurrentSource ? 1 : 0)
+        let cardCount = stagedCardCount + (hasComposerCard ? 1 : 0)
+        let composerRoute = composerDestinationNames.isEmpty ? plan.destinationTitles : composerDestinationNames
+        let destinationRoutes = stagedDestinationNames + (hasComposerCard ? [composerRoute] : [])
+        let destinationRouteIdentities = stagedDestinationIdentities
+            + (hasComposerCard ? [composerDestinationIdentities] : [])
 
         if isOperationInProgress {
             return Self(
@@ -105,16 +117,21 @@ struct StartButtonPresentation: Equatable, Sendable {
                 return Self(
                     title: startTitle(
                         cardCount: stagedCardCount,
-                        fallback: plan.verificationMode == .quick
-                            ? "Start copy without checksum verification" : "Start verified copy"
+                        fallback: singleTransferTitle(
+                            verificationMode: stagedVerificationModes.first ?? plan.verificationMode
+                        )
                     ),
                     symbol: "play.fill",
                     canStart: true,
                     startsProject: false,
                     nextStep: nil,
                     blocker: nil,
-                    readyLine: readyCardsLine(cardCount: stagedCardCount, destinationCount: destinationCount),
-                    accessibilityHint: "Starts each staged card as its own verified transfer"
+                    readyLine: readyCardsLine(
+                        cardCount: stagedCardCount,
+                        destinationRoutes: destinationRoutes,
+                        destinationRouteIdentities: destinationRouteIdentities
+                    ),
+                    accessibilityHint: "Starts each staged card in queue order and leaves every source unchanged"
                 )
             }
             return Self(
@@ -175,12 +192,16 @@ struct StartButtonPresentation: Equatable, Sendable {
             blocker: blocker,
             readyLine: canStart
                 ? (cardCount > 1
-                    ? readyCardsLine(cardCount: cardCount, destinationCount: destinationCount)
+                    ? readyCardsLine(
+                        cardCount: cardCount,
+                        destinationRoutes: destinationRoutes,
+                        destinationRouteIdentities: destinationRouteIdentities
+                    )
                     : readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount))
                 : nil,
             accessibilityHint: canStart
                 ? (cardCount > 1
-                    ? "Starts each card as its own verified transfer and leaves every source unchanged"
+                    ? "Starts each card in queue order and leaves every source unchanged"
                     : "Copies files to each destination and leaves the source unchanged")
                 : (blocker ?? "Not ready to start")
         )
@@ -190,10 +211,55 @@ struct StartButtonPresentation: Equatable, Sendable {
         cardCount > 1 ? "Start \(cardCount) transfers" : fallback
     }
 
-    private static func readyCardsLine(cardCount: Int, destinationCount: Int) -> String {
+    private static func singleTransferTitle(verificationMode: VerificationMode) -> String {
+        verificationMode == .quick
+            ? "Start copy without checksum verification"
+            : "Start verified copy"
+    }
+
+    private static func readyCardsLine(
+        cardCount: Int,
+        destinationRoutes: [[String]],
+        destinationRouteIdentities: [[String]]
+    ) -> String {
         let cards = cardCount == 1 ? "1 card" : "\(cardCount) cards"
-        let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
-        return "\(cards) will run as separate verified transfers to \(backups)."
+        guard let firstRoute = destinationRoutes.first else {
+            return "Ready to copy \(cards). Source files stay in place."
+        }
+        let usesIdentities = destinationRouteIdentities.count == destinationRoutes.count
+            && destinationRouteIdentities.allSatisfy { !$0.isEmpty }
+        let routesForComparison = usesIdentities ? destinationRouteIdentities : destinationRoutes
+        func normalized(_ route: [String]) -> [String] {
+            usesIdentities ? route.sorted() : normalizedDestinationRoute(route)
+        }
+        let baseline = normalized(routesForComparison[0])
+        let differentCount = routesForComparison.dropFirst().filter {
+            normalized($0) != baseline
+        }.count
+        if differentCount > 0 {
+            let verb = differentCount == 1 ? "goes" : "go"
+            return "Ready to copy \(cards); \(differentCount) \(verb) to different destinations."
+        }
+        let destinations = joinedDestinationNames(firstRoute)
+        guard !destinations.isEmpty else {
+            return "Ready to copy \(cards). Source files stay in place."
+        }
+        return "Ready to copy \(cards) to \(destinations). Source files stay in place."
+    }
+
+    private static func normalizedDestinationRoute(_ names: [String]) -> [String] {
+        names.map {
+            $0.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+        }.sorted()
+    }
+
+    private static func joinedDestinationNames(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return ""
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        default: return names.dropLast().joined(separator: ", ") + ", and \(names.last ?? "")"
+        }
     }
 
     private static func readyLine(fileCount: Int?, bytes: Int64?, destinationCount: Int) -> String {
@@ -232,8 +298,13 @@ struct SetupPresentation: Equatable {
         projectUnit: String,
         isOperationInProgress: Bool,
         isQueuePaused: Bool = false,
-        hasCurrentSource: Bool,
+        hasComposerCard: Bool,
+        composerDestinationNames: [String] = [],
+        composerDestinationIdentities: [String] = [],
         stagedCardCount: Int = 0,
+        stagedDestinationNames: [[String]] = [],
+        stagedDestinationIdentities: [[String]] = [],
+        stagedVerificationModes: [VerificationMode] = [],
         sourceFileCount: Int?,
         sourceBytes: Int64?,
         destinationCount: Int,
@@ -250,8 +321,13 @@ struct SetupPresentation: Equatable {
                 projectUnit: projectUnit,
                 isOperationInProgress: isOperationInProgress,
                 isQueuePaused: isQueuePaused,
-                hasCurrentSource: hasCurrentSource,
+                hasComposerCard: hasComposerCard,
+                composerDestinationNames: composerDestinationNames,
+                composerDestinationIdentities: composerDestinationIdentities,
                 stagedCardCount: stagedCardCount,
+                stagedDestinationNames: stagedDestinationNames,
+                stagedDestinationIdentities: stagedDestinationIdentities,
+                stagedVerificationModes: stagedVerificationModes,
                 sourceFileCount: sourceFileCount,
                 sourceBytes: sourceBytes,
                 destinationCount: destinationCount

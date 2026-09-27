@@ -228,7 +228,7 @@ struct OperationCommands: Commands {
         // Into the system File menu, so it keeps its place; a
         // CommandMenu("File") adds a second File menu after View.
         CommandGroup(after: .newItem) {
-            Button("Start / Run Queue") {
+            Button("Start") {
                 NotificationCenter.default.post(name: .startVerification, object: nil)
             }
             .keyboardShortcut(.return, modifiers: .command)
