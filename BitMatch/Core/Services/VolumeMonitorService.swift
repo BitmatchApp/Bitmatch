@@ -188,7 +188,7 @@ final class VolumeMonitorService: ObservableObject {
         let volumeName = facts.volumeName ?? "Unknown"
         vlog("🔍 Mountable disk appeared: \(volumeName)")
         
-        // For mountable volumes, try to mount them first if not already mounted
+        // Mounted volumes are analysed; unmounted ones are left alone.
         if let volumePath = facts.volumePath {
             vlog("📂 Volume already mounted at: \(volumePath)")
             analyzeAndAddVolume(at: volumePath, facts: facts)
@@ -200,23 +200,12 @@ final class VolumeMonitorService: ObservableObject {
             // system's.
             vlog("⏭️ Not mounting system disk: \(volumeName)")
         } else {
-            vlog("🔄 Volume not mounted, attempting to mount...")
-            // The mount callback also runs on the session's (main) run loop.
-            DADiskMount(disk, nil, DADiskMountOptions(kDADiskMountOptionDefault), { disk, dissenter, context in
-                guard let context else { return }
-                let service = Unmanaged<VolumeMonitorService>.fromOpaque(context).takeUnretainedValue()
-                MainActor.assumeIsolated {
-                    if let dissenter {
-                        service.vlog("❌ Failed to mount disk: \(DADissenterGetStatus(dissenter))")
-                        return
-                    }
-                    service.vlog("✅ Disk mounted successfully")
-                    // Re-check for volume path after mounting
-                    if let mounted = DiskFacts(disk: disk), let volumePath = mounted.volumePath {
-                        service.analyzeAndAddVolume(at: volumePath, facts: mounted)
-                    }
-                }
-            }, Unmanaged.passUnretained(self).toOpaque())
+            // BitMatch never mounts anything itself. macOS mounts every volume
+            // it should; what it leaves unmounted (an external drive's EFI
+            // partition, a volume the user unmounted) stays that way. Mounting
+            // them put stray "EFI" volumes on the desktop. A volume macOS
+            // mounts later is picked up by the /Volumes watcher.
+            vlog("⏭️ Leaving unmounted disk alone: \(volumeName)")
         }
     }
     
