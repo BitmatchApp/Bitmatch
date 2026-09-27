@@ -125,7 +125,7 @@ The script builds, signs, notarizes, staples and checksums `dist/BitMatch-<versi
 
 Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card to two destinations, check "safe to erase", Eject, and relaunch. Debug builds and tests do not exercise the sandboxed release paths.
 
-After publishing the GitHub release, update the Homebrew cask in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap): set `version` and `sha256` (from the `.sha256` file) in `Casks/bitmatch.rb`, then run `brew audit --cask --online bitmatchapp/tap/bitmatch`.
+After publishing the GitHub release, run `Scripts/bump_cask.sh <version>`. It checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
 
 ## Conventions
 
