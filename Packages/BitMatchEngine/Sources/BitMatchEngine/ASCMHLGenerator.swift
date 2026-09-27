@@ -262,15 +262,11 @@ public enum ASCMHLGenerator: Sendable {
             }
             ancestor.deleteLastPathComponent()
         }
-        var enumerationError: Error?
-        guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey], errorHandler: { _, error in
-            enumerationError = error
-            return false
-        }) else { throw GenerationError.invalidPath(root.path) }
-        for case let url as URL in enumerator {
-            if url.lastPathComponent.lowercased() == "ascmhl" { throw GenerationError.existingHistory }
+        for entry in try CardSource.enumerateTree(base: root) {
+            if entry.url.lastPathComponent.lowercased() == "ascmhl" {
+                throw GenerationError.existingHistory
+            }
         }
-        if let enumerationError { throw enumerationError }
     }
 
     private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {

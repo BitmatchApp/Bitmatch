@@ -4,13 +4,8 @@ import Foundation
 import Synchronization
 
 private struct FileResultKey: Hashable {
-    let sourcePath: String
-    let destinationPath: String
-
-    init(sourceURL: URL, destinationURL: URL) {
-        self.sourcePath = sourceURL.standardizedFileURL.path
-        self.destinationPath = destinationURL.standardizedFileURL.path
-    }
+    let sourceRelativePath: String
+    let destinationIndex: Int
 }
 
 /// Everything one run records, in one place: the result rows (a verify row
@@ -55,8 +50,13 @@ public actor RunLedger {
     }
 
     /// A file copied (or reused) on backup `destination`.
-    public func recordCopy(_ row: FileOperationResult, destination: Int, now: Date) -> Event {
-        store(row)
+    public func recordCopy(
+        _ row: FileOperationResult,
+        relativePath: String,
+        destination: Int,
+        now: Date
+    ) -> Event {
+        store(row, relativePath: relativePath, destination: destination)
         filesCopied += 1
         bytesCopied += max(0, row.fileSize)
         completeOne(on: destination)
@@ -67,22 +67,35 @@ public actor RunLedger {
     }
 
     /// A file that could not be copied to backup `destination`.
-    public func recordCopyFailure(_ row: FileOperationResult, destination: Int) {
-        store(row)
+    public func recordCopyFailure(
+        _ row: FileOperationResult,
+        relativePath: String,
+        destination: Int
+    ) {
+        store(row, relativePath: relativePath, destination: destination)
         filesCopied += 1
         completeOne(on: destination)
     }
 
     /// A pipelined verify's outcome. The last verify always reports.
-    public func recordVerify(_ row: FileOperationResult, now: Date) -> Event {
-        store(row)
+    public func recordVerify(
+        _ row: FileOperationResult,
+        relativePath: String,
+        destination: Int,
+        now: Date
+    ) -> Event {
+        store(row, relativePath: relativePath, destination: destination)
         filesVerified += 1
         return Event(snapshot: snapshot(), emit: shouldEmit(now: now, force: filesVerified >= totalFiles), log: false)
     }
 
     /// A pipelined verify that failed with an error.
-    public func recordVerifyFailure(_ row: FileOperationResult) {
-        store(row)
+    public func recordVerifyFailure(
+        _ row: FileOperationResult,
+        relativePath: String,
+        destination: Int
+    ) {
+        store(row, relativePath: relativePath, destination: destination)
         filesVerified += 1
     }
 
@@ -93,8 +106,8 @@ public actor RunLedger {
     }
 
     /// A row with no counting (the sequential pass's outcome).
-    public func record(_ row: FileOperationResult) {
-        store(row)
+    public func record(_ row: FileOperationResult, relativePath: String, destination: Int) {
+        store(row, relativePath: relativePath, destination: destination)
     }
 
     public func snapshot() -> Snapshot {
@@ -104,8 +117,18 @@ public actor RunLedger {
 
     public func results() -> [FileOperationResult] { rows }
 
-    private func store(_ row: FileOperationResult) {
-        let key = FileResultKey(sourceURL: row.sourceURL, destinationURL: row.destinationURL)
+    /// Completion coverage gates add failures for rows that were successful.
+    /// They must not replace a more specific copy or verification failure.
+    func alreadyFailed(relativePath: String, destination: Int) -> Bool {
+        guard let index = rowIndex[FileResultKey(
+            sourceRelativePath: relativePath,
+            destinationIndex: destination
+        )] else { return false }
+        return !rows[index].success
+    }
+
+    private func store(_ row: FileOperationResult, relativePath: String, destination: Int) {
+        let key = FileResultKey(sourceRelativePath: relativePath, destinationIndex: destination)
         if let index = rowIndex[key] {
             rows[index] = row
         } else {
@@ -132,6 +155,7 @@ private struct VerifyJob: Sendable {
     let destination: URL
     let relativePath: String
     let fileSize: Int64
+    let destinationIndex: Int
     let pinnedRoot: PinnedDestinationDirectory
 }
 
@@ -139,6 +163,47 @@ private struct VerifyJob: Sendable {
 private func safeMultiply(_ a: Int64, _ b: Int64) -> Int64 {
     let (result, overflow) = a.multipliedReportingOverflow(by: b)
     return overflow ? Int64.max : result
+}
+
+private func sourceChangeReason(initial: [FileEntry], current: [FileEntry]) -> String? {
+    // Filesystem traversal produces one entry per relative path. Keep this
+    // comparison non-trapping even if an unusual filesystem exposes two names
+    // that Swift considers canonically equivalent.
+    let before = Dictionary(initial.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+    let after = Dictionary(current.map { ($0.relativePath, $0) }, uniquingKeysWith: { first, _ in first })
+    guard before.count == initial.count, after.count == current.count else {
+        return "The card changed during the copy: file names became ambiguous. Run it again."
+    }
+    let added = after.keys.filter { before[$0] == nil }.sorted()
+    let removed = before.keys.filter { after[$0] == nil }.sorted()
+    let changed = before.keys.filter { path in
+        guard let old = before[path], let new = after[path] else { return false }
+        return old.size != new.size || old.modificationDate != new.modificationDate
+    }.sorted()
+    guard !added.isEmpty || !removed.isEmpty || !changed.isEmpty else { return nil }
+
+    func summary(_ count: Int, singular: String, plural: String, paths: [String]) -> String {
+        return "\(count) \(count == 1 ? singular : plural) (\(paths.joined(separator: ", ")))"
+    }
+    var changes: [String] = []
+    if !added.isEmpty {
+        changes.append(summary(added.count, singular: "new file", plural: "new files", paths: added))
+    }
+    if !removed.isEmpty {
+        changes.append(summary(removed.count, singular: "removed file", plural: "removed files", paths: removed))
+    }
+    if !changed.isEmpty {
+        changes.append(summary(changed.count, singular: "changed file", plural: "changed files", paths: changed))
+    }
+    return "The card changed during the copy: " + changes.joined(separator: "; ") + ". Run it again."
+}
+
+private func completionGateError(_ message: String) -> NSError {
+    NSError(
+        domain: "TransferPipeline",
+        code: NSFileReadUnknownError,
+        userInfo: [NSLocalizedDescriptionKey: message]
+    )
 }
 
 /// Owns the single operation admitted by a service instance.
@@ -407,6 +472,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         }
 
         let sourceFileURLs = sourceManifest.map(\.url)
+        var pinnedDestinations = Array<PinnedDestinationDirectory?>(
+            repeating: nil,
+            count: destinationCount
+        )
         // Perf 7: adaptive copy worker count
         let copyWorkers = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2))
 
@@ -431,7 +500,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     verificationResult: verificationResult,
                     processingTime: 0
                 )
-                let event = await ledger.recordVerify(verified, now: Date())
+                let event = await ledger.recordVerify(
+                    verified,
+                    relativePath: job.relativePath,
+                    destination: job.destinationIndex,
+                    now: Date()
+                )
                 if event.emit {
                     progressCallback(makeProgress(
                         .verifying, job.source.lastPathComponent, event.snapshot, Date(),
@@ -451,7 +525,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     verificationResult: nil,
                     processingTime: 0
                 )
-                await ledger.recordVerifyFailure(failure)
+                await ledger.recordVerifyFailure(
+                    failure,
+                    relativePath: job.relativePath,
+                    destination: job.destinationIndex
+                )
                 await onFileResult?(failure)
             }
         }
@@ -506,6 +584,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         destination: destinationURL,
                         rootComponents: rootComponents
                     )
+                    pinnedDestinations[destIndex] = pinnedDestination
                 } catch let error as FileOperationError {
                     // A safety-policy rejection (e.g. a symlink substituted into
                     // the destination path) is a fail-closed signal, not a
@@ -538,7 +617,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             verificationResult: nil,
                             processingTime: 0
                         )
-                        await ledger.recordCopyFailure(result, destination: destIndex)
+                        await ledger.recordCopyFailure(
+                            result,
+                            relativePath: entry.relativePath,
+                            destination: destIndex
+                        )
                         await onFileResult?(result)
                     }
                     continue
@@ -577,7 +660,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             verificationResult: nil,
                             processingTime: 0
                         )
-                        let copied = await ledger.recordCopy(copyResult, destination: destIndex, now: Date())
+                        let copied = await ledger.recordCopy(
+                            copyResult,
+                            relativePath: relativePath,
+                            destination: destIndex,
+                            now: Date()
+                        )
                         if copied.log {
                             let formatted = ByteCountFormatter.string(fromByteCount: copied.snapshot.bytesCopied, countStyle: .file)
                             SharedLogger.debug("Copy progress: files=\(copied.snapshot.filesCopied)/\(totalFiles) bytes=\(formatted)", category: .transfer)
@@ -587,7 +675,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         if shouldPipelineVerify {
                             submitVerify.yield(VerifyJob(
                                 source: srcURL, destination: dstURL, relativePath: relativePath,
-                                fileSize: max(0, fileSize), pinnedRoot: pinnedDestination
+                                fileSize: max(0, fileSize), destinationIndex: destIndex,
+                                pinnedRoot: pinnedDestination
                             ))
                         }
 
@@ -598,7 +687,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     onError: { fileName, err in
                         let nsErr = err as NSError
                         SharedLogger.error("Copy error on dest #\(destIndex + 1): \(fileName) – \(nsErr.domain)(\(nsErr.code)): \(nsErr.localizedDescription)", category: .transfer)
-                        let srcURL = operation.sourceURL.appendingPathComponent(fileName)
+                        let srcURL = manifestURLByRelativePath[fileName]
+                            ?? operation.sourceURL.appendingPathComponent(fileName)
                         let dstURL = destFolder.appendingPathComponent(fileName)
                         let result = FileOperationResult(
                             sourceURL: srcURL,
@@ -609,7 +699,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             verificationResult: nil,
                             processingTime: 0
                         )
-                        await ledger.recordCopyFailure(result, destination: destIndex)
+                        await ledger.recordCopyFailure(
+                            result,
+                            relativePath: fileName,
+                            destination: destIndex
+                        )
                         await onFileResult?(result)
                     }
                 )
@@ -656,7 +750,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     verificationResult: verificationResult,
                                     processingTime: Date().timeIntervalSince(fileStartTime)
                                 )
-                                await ledger.record(result)
+                                await ledger.record(
+                                    result,
+                                    relativePath: relativePath,
+                                    destination: destIndex
+                                )
                                 await onFileResult?(result)
                         
                             } catch {
@@ -671,7 +769,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     verificationResult: nil,
                                     processingTime: Date().timeIntervalSince(fileStartTime)
                                 )
-                                await ledger.record(result)
+                                await ledger.record(
+                                    result,
+                                    relativePath: relativePath,
+                                    destination: destIndex
+                                )
                                 await onFileResult?(result)
                             }
                             // Copies were counted in the copy callbacks.
@@ -684,6 +786,127 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             try await run.waitForAll()
         }
         try Task.checkCancellation()
+
+        // Re-read only source metadata. Any path, size, or modification-time
+        // change invalidates the whole run, including a file added after the
+        // initial manifest was captured.
+        let finalSourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
+        if let reason = sourceChangeReason(initial: sourceManifest, current: finalSourceManifest) {
+            let error = completionGateError(reason)
+            for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
+                let root = pinnedDestinations[destIndex]?.logicalRootURL
+                    ?? SafetyValidator.resolvedDestinationRoot(
+                        source: operation.sourceURL,
+                        destination: destinationURL,
+                        settings: operation.settings
+                    )
+                for entry in sourceManifest {
+                    let failure = FileOperationResult(
+                        sourceURL: entry.url,
+                        destinationURL: root.appendingPathComponent(entry.relativePath),
+                        success: false,
+                        error: error,
+                        fileSize: entry.size,
+                        verificationResult: nil,
+                        processingTime: 0
+                    )
+                    await ledger.record(
+                        failure,
+                        relativePath: entry.relativePath,
+                        destination: destIndex
+                    )
+                    await onFileResult?(failure)
+                }
+            }
+        }
+
+        for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
+            guard let pinned = pinnedDestinations[destIndex] else { continue }
+            let actual: [String: FileEntry]
+            do {
+                actual = Dictionary(
+                    uniqueKeysWithValues: try pinned.regularFileMetadata().map { ($0.relativePath, $0) }
+                )
+            } catch {
+                let reason = "\(destinationURL.lastPathComponent)'s files could not be checked after verification: \(error.localizedDescription)"
+                let failure = completionGateError(reason)
+                for entry in sourceManifest {
+                    if await ledger.alreadyFailed(
+                        relativePath: entry.relativePath,
+                        destination: destIndex
+                    ) { continue }
+                    let row = FileOperationResult(
+                        sourceURL: entry.url,
+                        destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
+                        success: false,
+                        error: failure,
+                        fileSize: entry.size,
+                        verificationResult: nil,
+                        processingTime: 0
+                    )
+                    await ledger.record(row, relativePath: entry.relativePath, destination: destIndex)
+                    await onFileResult?(row)
+                }
+                continue
+            }
+            for entry in sourceManifest {
+                if await ledger.alreadyFailed(
+                    relativePath: entry.relativePath,
+                    destination: destIndex
+                ) { continue }
+                guard let destinationEntry = actual[entry.relativePath],
+                      destinationEntry.size == entry.size else {
+                    let reason = "\(destinationURL.lastPathComponent) is missing \(entry.relativePath) after verification."
+                    let failure = FileOperationResult(
+                        sourceURL: entry.url,
+                        destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
+                        success: false,
+                        error: completionGateError(reason),
+                        fileSize: entry.size,
+                        verificationResult: nil,
+                        processingTime: 0
+                    )
+                    await ledger.record(
+                        failure,
+                        relativePath: entry.relativePath,
+                        destination: destIndex
+                    )
+                    await onFileResult?(failure)
+                    continue
+                }
+            }
+        }
+
+        // A pinned descriptor can keep reading a directory after the selected
+        // path is renamed. Safe completion also requires that path to retain
+        // the same device and inode.
+        for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
+            guard let pinned = pinnedDestinations[destIndex],
+                  !pinned.logicalRootStillMatchesPinnedDirectory() else { continue }
+            let reason = "\(destinationURL.lastPathComponent)'s folder was moved or renamed during the copy."
+            let error = completionGateError(reason)
+            for entry in sourceManifest {
+                if await ledger.alreadyFailed(
+                    relativePath: entry.relativePath,
+                    destination: destIndex
+                ) { continue }
+                let failure = FileOperationResult(
+                    sourceURL: entry.url,
+                    destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
+                    success: false,
+                    error: error,
+                    fileSize: entry.size,
+                    verificationResult: nil,
+                    processingTime: 0
+                )
+                await ledger.record(
+                    failure,
+                    relativePath: entry.relativePath,
+                    destination: destIndex
+                )
+                await onFileResult?(failure)
+            }
+        }
 
         // The executor writes optional ASC MHL handoff records after authoritative verification.
 
