@@ -290,7 +290,7 @@ struct ResultsTableView: View {
                 .frame(width: 80, alignment: .trailing)
 
             if LiveResultDestinationPolicy.showsDestinationInEachRow(
-                backupCount: coordinator.destinationURLs.count
+                backupCount: coordinator.presentedDestinationURLs.count
             ) {
                 HStack(spacing: 4) {
                     Image(systemName: "externaldrive.fill")
@@ -331,7 +331,7 @@ struct ResultsTableView: View {
                 HStack(spacing: 6) {
                     Text(ByteCountPresentation.fileSize(row.size))
                     if LiveResultDestinationPolicy.showsDestinationInEachRow(
-                        backupCount: coordinator.destinationURLs.count
+                        backupCount: coordinator.presentedDestinationURLs.count
                     ), let destination = destinationDriveName(for: row) {
                         Label(destination, systemImage: "externaldrive.fill")
                             .lineLimit(1)
@@ -355,8 +355,8 @@ struct ResultsTableView: View {
     private func destinationDriveName(for row: ResultRow) -> String? {
         ResultPresentation.destinationDriveName(
             for: row,
-            destinationRoots: coordinator.destinationURLs,
-            destinationNames: coordinator.destinationVolumeNames
+            destinationRoots: coordinator.presentedDestinationURLs,
+            destinationNames: coordinator.presentedDestinationNames
         )
     }
 

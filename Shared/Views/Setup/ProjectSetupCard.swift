@@ -374,6 +374,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
         }
     }
 
+    @ViewBuilder
     private var setupAction: some View {
         HStack {
             if viewModel.isPreparing {
@@ -399,10 +400,15 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
             } else {
                 Button("Set up \(viewModel.selectedWorkflow.sourceUnitLabel.lowercased())", action: setUpCard)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!presentation.canSetUpCard)
+                    .disabled(!presentation.canSetUpCard || coordinator.isProjectRunInProgress)
                     .keyboardShortcut(.defaultAction)
                     .accessibilityHint("Analyzes the selected source and prepares its job package")
             }
+        }
+        if coordinator.isProjectRunInProgress {
+            Text("Available when this card finishes")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -432,7 +438,8 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     }
 
     private func setUpCard() {
-        guard presentation.canSetUpCard,
+        guard !coordinator.isProjectRunInProgress,
+              presentation.canSetUpCard,
               let sourceURL = coordinator.sourceURL else { return }
         viewModel.startPreparingDraftCard(sourceURL: sourceURL, setupSignature: setupSignature)
     }

@@ -25,6 +25,7 @@ struct SetupLocationsPresentationTests {
             destinationURLs: backups,
             capacity: { _ in .init(availableBytes: 842_000_000_000, totalBytes: 2_000_000_000_000) },
             isOperationInProgress: running,
+            keepsComposerEditableDuringOperation: true,
             nextStep: nextStep,
             layout: layout
         )
@@ -44,10 +45,9 @@ struct SetupLocationsPresentationTests {
         #expect(noBackup.highlightsBackups)
     }
 
-    /// A running transfer locks the boxes on every platform.
-    /// Plant: in `SetupLocationsPresentation.make`, set `canEdit: true`.
-    @Test func runningTransferLocksEditing() {
-        #expect(!make(source: card, backups: [raid], running: true).canEdit)
+    @Test func runningTransferLeavesTheNextCardComposerEditable() {
+        #expect(make(source: card, backups: [raid], running: true).canEdit)
+        #expect(make(source: card, backups: [raid], running: true).canEditBackups)
         #expect(make(source: card, backups: [raid]).canEdit)
     }
 

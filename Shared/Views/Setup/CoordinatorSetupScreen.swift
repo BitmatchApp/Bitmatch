@@ -56,7 +56,8 @@ extension SetupPresentation {
             hasPreparedCard: hasPreparedCard,
             projectBlocker: projectBlocker,
             projectUnit: jobs.selectedWorkflow.sourceUnitLabel,
-            isOperationInProgress: coordinator.isOperationInProgress,
+            isOperationInProgress: coordinator.isOperationInProgress || coordinator.queueIsRunning,
+            isProjectRunInProgress: coordinator.isProjectRunInProgress,
             isQueuePaused: coordinator.hasUnresolvedQueueRecords,
             hasComposerCard: !isEditingStagedTransfer
                 && coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
@@ -132,6 +133,11 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
                 // The one Start: the same rule as ⌘R, including S-2.
                 let presentation = SetupPresentation.make(coordinator: coordinator)
                 guard presentation.start.canStart else { return }
+                if presentation.start.action == .addToQueue {
+                    do { try coordinator.enqueueSelection() }
+                    catch { Task { await coordinator.showError(error) } }
+                    return
+                }
                 coordinator.switchMode(to: .copyAndVerify)
                 if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
                     stagedCardCount: coordinator.stagedSetupTransfers.count,

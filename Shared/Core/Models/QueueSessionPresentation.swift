@@ -17,8 +17,18 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let action: QueueRowAction?
     let cause: String?
     let copySummary: String
+    let outcome: TransferOutcomePresentation?
+    let destinationNames: [String]
+    let verificationModeName: String
 
     var isEditable: Bool { safetyState == .waiting }
+    var isRunning: Bool { safetyState.isActiveQueueState }
+    var isFinished: Bool { !isEditable && !isRunning }
+    var showsSafeHero: Bool { outcome?.safetyState == .safeToErase }
+    var waitingText: String {
+        let route = destinationNames.isEmpty ? destinations : destinationNames.joined(separator: " + ")
+        return "\(cardName) → \(route) · \(verificationModeName)"
+    }
 
     var statusText: String {
         safetyState == .copiedNotVerified
@@ -29,6 +39,25 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     var accessibilityStatus: String {
         let warning = safetyState.isSafe ? "" : ", not safe to erase"
         return "\(cardName), \(statusText)\(warning)" + (cause.map { ", \($0)" } ?? "")
+    }
+
+    func oneLineStatus(timeRemaining: String? = nil) -> String {
+        let route = destinationNames.isEmpty ? destinations : destinationNames.joined(separator: " + ")
+        let prefix = "\(cardName) → \(route)"
+        if isRunning {
+            let progress = progressFraction.map { " \(Int((min(max($0, 0), 1) * 100).rounded(.down)))%" } ?? ""
+            let remaining = timeRemaining.map { " · \($0) left" } ?? ""
+            let phase: String
+            switch safetyState {
+            case .copying: phase = "Copying"
+            case .verifying: phase = "Verifying"
+            case .preparing: phase = "Preparing"
+            default: phase = safetyState.title
+            }
+            return "\(prefix) · \(phase)\(progress)\(remaining)"
+        }
+        if let outcome { return outcome.finishTitle }
+        return "\(waitingText) · Waiting"
     }
 }
 
@@ -93,9 +122,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let session: [LocalTransferRecord]
         if let sessionRecordIDsInOrder {
             session = sessionRecordIDsInOrder.compactMap { recordsByID[$0] }
-                .filter { $0.projectID == nil }
         } else {
-            session = records.reversed().filter { sessionIDs.contains($0.id) && $0.projectID == nil }
+            session = records.reversed().filter { sessionIDs.contains($0.id) }
         }
         let runningID = session.first(where: { $0.state == .running })?.id
         let rows = session.map { record in
@@ -121,8 +149,10 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let running = rows.first { $0.safetyState.isActiveQueueState }
         let finishedCount = rows.filter { $0.safetyState != .waiting && $0.id != running?.id }.count
         let waitingCount = rows.filter { $0.safetyState == .waiting }.count
-        let detail = running.map { _ in
-            "\(finishedCount) finished · \(waitingCount) waiting"
+        // "Copying 2 of 4" reads at a glance; "0 finished · 0 waiting" did not.
+        let detail = running.map { _ -> String in
+            let total = finishedCount + waitingCount + 1
+            return total == 1 ? "Copying 1 card" : "Card \(finishedCount + 1) of \(total)"
         }
         let title = running.map { "\($0.safetyState.title.components(separatedBy: " ").first ?? "Copying") \($0.cardName)" }
         let paused = pausedRecordID.flatMap { id in rows.first { $0.id == id } }
@@ -194,7 +224,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let bytes: Int64? = paths.isEmpty ? progress?.totalBytes : recordedBytes
         let evidence: String?
         if count > 0, let bytes {
-            evidence = "\(ByteCountPresentation.fileSize(bytes)) · \(count) \(count == 1 ? "file" : "files")"
+            evidence = "\(count) \(count == 1 ? "file" : "files") · \(ByteCountPresentation.fileSize(bytes))"
         } else if count > 0 {
             evidence = "\(count) \(count == 1 ? "file" : "files")"
         } else {
@@ -202,6 +232,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         }
         let destinationNames = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
         let cause = cause(for: record, state: state)
+        let outcome = finishedOutcome(for: record, state: state)
         let action: QueueRowAction?
         if isEjected && state.canEject { action = .ejected }
         else if state.canEject && isMounted { action = .eject }
@@ -223,7 +254,57 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 destinations: destinationNames,
                 algorithm: TransferOutcomePresentation.algorithmLabel(record.verificationMode),
                 reason: cause
-            )
+            ),
+            outcome: outcome,
+            destinationNames: destinationNames,
+            verificationModeName: record.verificationMode.rawValue
+        )
+    }
+
+    private static func finishedOutcome(
+        for record: LocalTransferRecord,
+        state: CardSafetyState
+    ) -> TransferOutcomePresentation? {
+        guard record.state != .queued, record.state != .running else { return nil }
+        let operationState: OperationState
+        switch state {
+        case .safeToErase:
+            operationState = .completed(.init(success: true, message: record.summary))
+        case .copiedNotVerified:
+            operationState = .completed(.init(success: false, message: record.summary, copiedNotVerified: true))
+        case .needsAttention:
+            operationState = .completed(.init(success: false, message: record.summary))
+        case .failed:
+            operationState = .failed
+        case .interrupted:
+            operationState = .cancelled
+        case .waiting, .preparing, .copying, .verifying:
+            return nil
+        }
+        let uniqueFiles = Dictionary(grouping: record.results, by: \.path).values.compactMap(\.first)
+        let sourceBytes = uniqueFiles.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
+        let issueCount = record.results.filter { !$0.isSuccessStatus }.count
+        let duration = record.startedAt.flatMap { started in record.endedAt.map { $0.timeIntervalSince(started) } }
+        return TransferOutcomePresentation.make(
+            state: operationState,
+            rows: record.results,
+            destinations: record.destinations.map(\.url),
+            hasErrors: issueCount > 0,
+            hasCriticalErrors: state == .failed,
+            errorCount: issueCount,
+            warningCount: 0,
+            duration: duration,
+            copyDurationSeconds: record.copyDurationSeconds,
+            verifyDurationSeconds: record.verifyDurationSeconds,
+            sourceFileCount: uniqueFiles.count,
+            sourceBytes: sourceBytes,
+            verificationMode: record.verificationMode,
+            canRetry: record.canRetry || (
+                record.projectID != nil && record.projectCardID != nil && record.state.canRetry
+            ),
+            canExport: true,
+            sourceName: record.title,
+            completionReason: record.summary
         )
     }
 
@@ -271,18 +352,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
     }
 }
 
-enum QueueConnectedCardPresentation {
-    /// A connected card is an offer, not a queued snapshot, until the person
-    /// chooses Queue next. Discovery supplies only root-anchored card layouts.
-    static func ghostRows(
-        isTransferOrQueueRunning: Bool,
-        eligibleRows: [ConnectedDrivesPresentation.Row]
-    ) -> [ConnectedDrivesPresentation.Row] {
-        isTransferOrQueueRunning ? eligibleRows : []
-    }
-}
-
-private extension CardSafetyState {
+extension CardSafetyState {
     var isActiveQueueState: Bool {
         switch self {
         case .preparing, .copying, .verifying: true
@@ -298,6 +368,18 @@ enum QueueCommandPolicy {
 
     static func showsResume(hasSessionStarted: Bool, waitingCount: Int) -> Bool {
         hasSessionStarted && waitingCount > 0
+    }
+}
+
+enum QueueHeroPolicy {
+    static func shouldExpand(
+        row: QueueSessionRow,
+        previousRows: [QueueSessionRow],
+        currentRows: [QueueSessionRow]
+    ) -> Bool {
+        guard row.showsSafeHero,
+              previousRows.first(where: { $0.id == row.id })?.showsSafeHero != true else { return false }
+        return !currentRows.contains { $0.id != row.id && $0.isRunning }
     }
 }
 
@@ -329,18 +411,23 @@ enum AutoQueuePolicy {
 
 enum QueueDockBadgePolicy {
     static func unresolvedCount(rows: [QueueSessionRow], reviewedIDs: Set<UUID>) -> Int {
-        rows.enumerated().filter { index, row in
+        unresolvedIDs(rows: rows, reviewedIDs: reviewedIDs).count
+    }
+
+    private static func unresolvedIDs(rows: [QueueSessionRow], reviewedIDs: Set<UUID>) -> Set<UUID> {
+        Set(rows.enumerated().compactMap { index, row in
             let laterSafeRetry = rows.dropFirst(index + 1).contains {
                 $0.cardName == row.cardName && $0.safetyState == .safeToErase
             }
-            return (row.safetyState == .needsAttention || row.safetyState == .failed || row.safetyState == .interrupted)
-                && !reviewedIDs.contains(row.id) && !laterSafeRetry
-        }.count
+            let unresolved = (row.safetyState == .needsAttention || row.safetyState == .failed
+                || row.safetyState == .interrupted) && !reviewedIDs.contains(row.id) && !laterSafeRetry
+            return unresolved ? row.id : nil
+        })
     }
 
     static func totalUnresolvedCount(
-        rows: [QueueSessionRow], reviewedIDs: Set<UUID>, standaloneAttentionCount: Int
+        rows: [QueueSessionRow], reviewedIDs: Set<UUID>, standaloneAttentionIDs: Set<UUID>
     ) -> Int {
-        unresolvedCount(rows: rows, reviewedIDs: reviewedIDs) + max(0, standaloneAttentionCount)
+        unresolvedIDs(rows: rows, reviewedIDs: reviewedIDs).union(standaloneAttentionIDs).count
     }
 }

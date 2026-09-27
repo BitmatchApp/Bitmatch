@@ -6,16 +6,6 @@ import BitMatchEngine
 @MainActor
 @Suite(.serialized)
 struct MainScreenQueueTests {
-    @Test func pausedQueueKeepsSetupAsTheMainContent() {
-        #expect(MacCopyMainContentPolicy.make(
-            isOperationInProgress: false,
-            hasPausedQueue: true,
-            queueSessionEnded: false,
-            showsQueueSummary: false,
-            isReviewingQueueRecord: false
-        ) == .pausedSetup)
-    }
-
     @Test func buttonAndCommandRouteAStagedBatchThroughSetupFirst() {
         let buttonRoute = SetupStartPolicy.startsSetupBatch(
             stagedCardCount: 1, hasComposerCard: true, isOperationInProgress: false
@@ -63,6 +53,58 @@ struct MainScreenQueueTests {
         let access = try coordinator.transferJournal.prepareToRun(id: record.id)
         defer { access.release() }
         #expect(access.sourceURL.resolvingSymlinksInPath() == fixture.folders.source.resolvingSymlinksInPath())
+    }
+
+    @Test func clearFinishedRemovesOnlySessionRowsAndKeepsHistory() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        try coordinator.enqueueSelection()
+        let id = try #require(coordinator.transferJournal.records.first?.id)
+        try coordinator.transferJournal.markRunning(id: id)
+        let result = ResultRow(
+            path: fixture.folders.source.appendingPathComponent("A.RAW").path,
+            status: ResultOutcome.verified.statusText,
+            size: 4,
+            checksum: "abc",
+            destination: "Primary",
+            destinationPath: fixture.folders.primary.appendingPathComponent("A.RAW").path
+        )
+        try coordinator.transferJournal.finish(
+            id: id, results: [result], summary: "Verified", hadIssues: false
+        )
+        let waitingSource = fixture.folders.root.appendingPathComponent("waiting-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: waitingSource, withIntermediateDirectories: true)
+        try Data("waiting".utf8).write(to: waitingSource.appendingPathComponent("B.RAW"))
+        let waitingID = try coordinator.enqueue(
+            source: waitingSource, destinations: [fixture.folders.primary]
+        )
+
+        #expect(coordinator.queuePresentation.rows.map(\.id) == [id, waitingID])
+        coordinator.clearFinishedQueueRows()
+
+        #expect(coordinator.queuePresentation.rows.map(\.id) == [waitingID])
+        #expect(coordinator.transferJournal.records.contains { $0.id == id })
+        #expect(coordinator.transferJournal.records.contains { $0.id == waitingID })
+    }
+
+    @Test func startingOneCardAddsItsRunningRowToTheTransferList() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+        let live = Task { await coordinator.startOperation() }
+        #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+
+        let row = try #require(coordinator.queuePresentation.rows.first)
+        #expect(coordinator.queuePresentation.rows.count == 1)
+        #expect(row.cardName == fixture.folders.source.lastPathComponent)
+        #expect(row.isRunning)
+
+        coordinator.cancelOperation()
+        await fixture.operations.gate.release()
+        await live.value
     }
 
     @Test func setupStartStagesTheFinalCardAndRunsSeparateTransfers() async throws {
@@ -147,6 +189,32 @@ struct MainScreenQueueTests {
         #expect(updated.cameraSettings.label == "Camera C")
         #expect(!updated.reportSettings.makeReport)
         #expect(coordinator.sourceURL == nil)
+    }
+
+    /// Plant: restore the `!isOperationInProgress` guard in
+    /// `editSetupTransfer`; the waiting card can no longer use the composer.
+    @Test func waitingCardCanBeEditedWhileAnotherRunIsActive() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        let coordinator = fixture.coordinator
+        try coordinator.enqueueSelection()
+        let waitingID = try #require(coordinator.stagedSetupTransfers.first?.id)
+
+        let runningSource = fixture.folders.root.appendingPathComponent("running-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: runningSource, withIntermediateDirectories: true)
+        try Data("running".utf8).write(to: runningSource.appendingPathComponent("B.ARW"))
+        coordinator.sourceURL = runningSource
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+        let run = Task { await coordinator.startOperation() }
+        #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+
+        try coordinator.editSetupTransfer(waitingID)
+
+        #expect(coordinator.editingSetupTransferID == waitingID)
+        #expect(coordinator.sourceURL == fixture.folders.source)
+        coordinator.cancelOperation()
+        await fixture.operations.release()
+        _ = await run.value
+        fixture.folders.cleanup()
     }
 
     @Test func formOverridesModeAndMHLThroughTheSamePath() async throws {

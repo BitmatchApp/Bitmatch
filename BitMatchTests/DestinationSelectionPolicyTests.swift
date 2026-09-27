@@ -195,15 +195,12 @@ struct DestinationSelectionPolicyTests {
         #expect(coordinator.destinationURLs == [raidC, raidB])
     }
 
-    /// Nothing changes while a transfer runs.
-    /// Plant: in `SetupLocationSelection.addBackups`, delete the
-    /// `guard !coordinator.isOperationInProgress` line.
-    @Test func runningTransferLocksTheBoxes() {
+    @Test func runningTransferCanComposeTheNextDestinations() {
         let coordinator = makeCoordinator()
         coordinator.isOperationInProgress = true
 
         _ = selection(coordinator).addBackups([raidA])
 
-        #expect(coordinator.destinationURLs.isEmpty)
+        #expect(coordinator.destinationURLs == [raidA])
     }
 }

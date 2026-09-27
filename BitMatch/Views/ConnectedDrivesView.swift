@@ -155,10 +155,6 @@ struct MacConnectedDrives: View {
             sourceURL: coordinator.sourceURL?.standardizedFileURL.resolvingSymlinksInPath(),
             destinationURLs: coordinator.destinationURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
         ).filter { $0.state == .none }
-        let offers = QueueConnectedCardPresentation.ghostRows(
-            isTransferOrQueueRunning: coordinator.runningOneTimeTransfer != nil || coordinator.queueIsRunning,
-            eligibleRows: coordinator.queueCandidates(volumes: volumes)
-        )
         let selection = SetupLocationSelection(
             coordinator: coordinator,
             addBackup: platform.addBackup,
@@ -167,20 +163,13 @@ struct MacConnectedDrives: View {
         ConnectedDrivesView(
             rows: rows,
             needsDriveAccess: volumeAccess.needsDriveAccess,
-            actionsDisabled: coordinator.isOperationInProgress || !coordinator.stagedSetupTransfers.isEmpty,
-            queueCandidateURLs: Set(offers.map(\.url)),
+            actionsDisabled: coordinator.isOperationInProgress && coordinator.usesProjectWorkflow,
             requestDriveAccess: { volumeAccess.requestVolumeAccess() },
             useAsCard: { url in
                 withDriveAccess { show(selection.chooseSource(url)) }
             },
             addAsBackup: { url in
                 withDriveAccess { show(selection.addBackups([url])) }
-            },
-            queueNext: { row in
-                withDriveAccess {
-                    do { try coordinator.enqueueNext(source: row.url) }
-                    catch { show([error.localizedDescription]) }
-                }
             }
         )
         .buttonStyle(.bordered)

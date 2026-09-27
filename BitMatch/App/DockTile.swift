@@ -92,7 +92,7 @@ final class DockTileController {
         let count = QueueDockBadgePolicy.totalUnresolvedCount(
             rows: presentation.rows,
             reviewedIDs: coordinator.reviewedQueueAttentionIDs,
-            standaloneAttentionCount: coordinator.standaloneAttentionRecordIDsSinceLaunch.count
+            standaloneAttentionIDs: coordinator.standaloneAttentionRecordIDsSinceLaunch
         )
         let label = count == 0 ? nil : String(count)
         guard NSApp.dockTile.badgeLabel != label else { return }

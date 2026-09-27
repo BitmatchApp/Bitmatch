@@ -129,11 +129,13 @@ struct SetupPresentationTests {
         #expect(presentation.blocker == blocker)
     }
 
-    /// Plant: delete the `if isOperationInProgress` branch of `StartButtonPresentation.make`.
-    @Test func runningTransferDisablesStart() {
+    @Test func runningTransferChangesPrimaryActionToAddToQueue() {
         let presentation = start(plan(source: source, backups: [backup]), running: true)
 
-        #expect(!presentation.canStart)
+        #expect(presentation.canStart)
+        #expect(presentation.action == .addToQueue)
+        #expect(presentation.title == "Add to queue")
+        #expect(presentation.readyLine == "Runs after the current card finishes.")
     }
 
     @Test func pausedQueueDisablesSetupStart() {
@@ -392,5 +394,39 @@ struct SetupProjectGateCoordinatorTests {
         #expect(presentation.workflow == .project)
         #expect(presentation.start.nextStep == .prepareCard)
         #expect(!presentation.start.canStart)
+    }
+}
+
+@Suite struct ProjectRunSetupLockTests {
+    /// Plant: in `SetupPresentation.make`, lock only on `hasPreparedCard`.
+    @Test func runningProjectLocksWorkflowWithPlainHint() {
+        let plan = TransferPlanPresentation.make(
+            sourceURL: URL(fileURLWithPath: "/Volumes/CARD"),
+            sourceInfo: nil,
+            destinationURLs: [URL(fileURLWithPath: "/Volumes/BACKUP")],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(),
+            isAnalyzing: false,
+            blockingIssues: [],
+            warnings: []
+        )
+        let presentation = SetupPresentation.make(
+            plan: plan,
+            usesProjectWorkflow: true,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: true,
+            isProjectRunInProgress: true,
+            hasComposerCard: false,
+            sourceFileCount: 1,
+            sourceBytes: 4,
+            destinationCount: 2,
+            hasProjectEvidence: true
+        )
+
+        #expect(presentation.isWorkflowLocked)
+        #expect(presentation.workflowLockHint == "Available when this card finishes")
     }
 }

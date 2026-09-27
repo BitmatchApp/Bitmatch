@@ -32,6 +32,7 @@ struct MacSetupLocations: View {
             removeBackup: { volumeAccess.removeDestination($0) },
             connectedSources: connectedSourceChoices,
             connectedDestinations: connectedDestinationChoices,
+            showsStagedQueue: false,
             pickFolderOnDrive: { drive in
                 Self.chooseFolders(multiple: false, prompt: "Choose Folder", startingAt: drive).first
             },

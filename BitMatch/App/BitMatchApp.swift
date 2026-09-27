@@ -209,20 +209,14 @@ struct BitMatchApp: App {
     }
 }
 
-/// File menu transfer commands. New Transfer and Eject publish through the
-/// focused main window; Eject exists only for a safe, removable card.
+/// File menu transfer commands. The composer is always present, so there is
+/// no New Transfer command; Eject exists only for a safe, removable card.
 struct OperationCommands: Commands {
     @FocusedValue(\.canCancelOperation) private var canCancelOperation
-    @FocusedValue(\.canStartNewTransfer) private var canStartNewTransfer
     @FocusedValue(\.ejectCardTitle) private var ejectCardTitle
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button(TransferMenuPresentation.newTransferTitle) {
-                NotificationCenter.default.post(name: .newTransfer, object: nil)
-            }
-            .keyboardShortcut("n", modifiers: .command)
-            .disabled(canStartNewTransfer != true)
         }
 
         // Into the system File menu, so it keeps its place; a
@@ -257,10 +251,6 @@ struct CanCancelOperationKey: FocusedValueKey {
     typealias Value = Bool
 }
 
-struct CanStartNewTransferKey: FocusedValueKey {
-    typealias Value = Bool
-}
-
 struct EjectCardTitleKey: FocusedValueKey {
     typealias Value = String
 }
@@ -269,11 +259,6 @@ extension FocusedValues {
     var canCancelOperation: Bool? {
         get { self[CanCancelOperationKey.self] }
         set { self[CanCancelOperationKey.self] = newValue }
-    }
-
-    var canStartNewTransfer: Bool? {
-        get { self[CanStartNewTransferKey.self] }
-        set { self[CanStartNewTransferKey.self] = newValue }
     }
 
     var ejectCardTitle: String? {

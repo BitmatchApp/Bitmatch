@@ -66,11 +66,12 @@ final class LocalTransferJournal: ObservableObject {
 
     @discardableResult
     func enqueue(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
-                 cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true, projectID: UUID? = nil) throws -> UUID {
+                 cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true,
+                 projectID: UUID? = nil, projectCardID: UUID? = nil) throws -> UUID {
         defer { refresh() }
         return try store.enqueue(sourceURL: sourceURL, destinationURLs: destinationURLs, verificationMode: verificationMode,
                                  cameraSettings: cameraSettings, reportSettings: reportSettings,
-                                 generateASCMHL: generateASCMHL, projectID: projectID)
+                                 generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID)
     }
 
     /// A retry is a new attempt, preserving the previous attempt and its evidence.

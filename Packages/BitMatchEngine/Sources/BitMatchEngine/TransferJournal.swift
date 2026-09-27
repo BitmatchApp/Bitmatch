@@ -80,6 +80,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public let reportSettings: ReportPrefs
     public let generateASCMHL: Bool
     public let projectID: UUID?
+    public let projectCardID: UUID?
     public var state: LocalTransferState = .queued
     public var startedAt: Date?
     public var endedAt: Date?
@@ -93,7 +94,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
 
     public init(id: UUID, createdAt: Date, source: LocalTransferResource, destinations: [LocalTransferResource],
          verificationMode: VerificationMode, cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs,
-         generateASCMHL: Bool = true, projectID: UUID? = nil) {
+         generateASCMHL: Bool = true, projectID: UUID? = nil, projectCardID: UUID? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.source = source
@@ -103,11 +104,12 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         self.reportSettings = reportSettings
         self.generateASCMHL = generateASCMHL
         self.projectID = projectID
+        self.projectCardID = projectCardID
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
-        case generateASCMHL, projectID, state, startedAt, endedAt
+        case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, summary, results
     }
 
@@ -122,6 +124,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         reportSettings = try c.decode(ReportPrefs.self, forKey: .reportSettings)
         generateASCMHL = try c.decodeIfPresent(Bool.self, forKey: .generateASCMHL) ?? true
         projectID = try c.decodeIfPresent(UUID.self, forKey: .projectID)
+        projectCardID = try c.decodeIfPresent(UUID.self, forKey: .projectCardID)
         state = try c.decode(LocalTransferState.self, forKey: .state)
         startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
         endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
@@ -236,12 +239,13 @@ public final class TransferJournal: Sendable {
 
     @discardableResult
     public func enqueue(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
-                 cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true, projectID: UUID? = nil) throws -> UUID {
+                 cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true,
+                 projectID: UUID? = nil, projectCardID: UUID? = nil) throws -> UUID {
         guard !destinationURLs.isEmpty else { throw LocalTransferJournalError.missingDestinations }
         let record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: sourceURL),
                                          destinations: try destinationURLs.map(LocalTransferResource.init(url:)),
                                          verificationMode: verificationMode, cameraSettings: cameraSettings, reportSettings: reportSettings,
-                                         generateASCMHL: generateASCMHL, projectID: projectID)
+                                         generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID)
         try commit { [record] + $0 }
         return record.id
     }
@@ -256,7 +260,8 @@ public final class TransferJournal: Sendable {
         let retry = LocalTransferRecord(id: UUID(), createdAt: Date(), source: original.source,
                                         destinations: original.destinations, verificationMode: original.verificationMode,
                                         cameraSettings: original.cameraSettings, reportSettings: original.reportSettings,
-                                        generateASCMHL: generateASCMHL ?? original.generateASCMHL, projectID: original.projectID)
+                                        generateASCMHL: generateASCMHL ?? original.generateASCMHL,
+                                        projectID: original.projectID, projectCardID: original.projectCardID)
         try commit { [retry] + $0 }
         return retry.id
     }

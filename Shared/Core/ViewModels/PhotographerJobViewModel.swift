@@ -46,6 +46,10 @@ final class PhotographerJobViewModel: ObservableObject {
         return activeJob?.cardIngests.first { $0.id == id }
     }
 
+    func projectCardState(jobID: UUID, cardID: UUID) -> PhotographerLocalState? {
+        jobForRun(jobID)?.cardIngests.first(where: { $0.id == cardID })?.localState
+    }
+
     /// A photographer card changes the transfer contract only while it is
     /// deliberately prepared and waiting to begin. Completed or failed cards
     /// remain visible in the dashboard, but never block ordinary transfers.
@@ -516,27 +520,37 @@ final class PhotographerJobViewModel: ObservableObject {
     }
 
     func updateProgressStage(_ stage: ProgressStage) {
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        updateProgressStage(stage, jobID: jobID, cardID: cardID)
+    }
+
+    func updateProgressStage(_ stage: ProgressStage, jobID: UUID, cardID: UUID) {
         switch stage {
         case .copying:
-            transitionActiveCard(to: .copying) { card in
+            transitionCard(jobID: jobID, cardID: cardID, to: .copying) { card in
                 if card.startedAt == nil { card.startedAt = self.now() }
             }
         case .verifying:
-            transitionActiveCard(to: .verifying)
+            transitionCard(jobID: jobID, cardID: cardID, to: .verifying)
         default:
             break
         }
     }
 
     func operationFailed() {
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        operationFailed(jobID: jobID, cardID: cardID)
+    }
+
+    func operationFailed(jobID: UUID, cardID: UUID) {
         do {
-            try transitionActiveCardThrowing(to: .issues) { card in
+            try transitionCardThrowing(jobID: jobID, cardID: cardID, to: .issues) { card in
                 card.locallySafeAt = nil
                 card.provenance.confirmedFingerprint = nil
                 card.verifiedDestinationCount = 0
             }
         } catch {
-            forceActiveCardIntoIssuesInMemory()
+            forceCardIntoIssuesInMemory(jobID: jobID, cardID: cardID)
             lastError = error.localizedDescription
         }
     }
@@ -609,15 +623,30 @@ final class PhotographerJobViewModel: ObservableObject {
 
     @discardableResult
     func completeIngest(results: [ResultRow]) throws -> PhotographerFinalizationResult {
-        guard var job = activeJob else {
-            throw PhotographerJobViewModelError.noActiveJob
-        }
-        guard let cardID = activeCardDraft?.id,
-              let cardIndex = job.cardIngests.firstIndex(where: { $0.id == cardID }) else {
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else {
             throw PhotographerJobViewModelError.noActiveCard
         }
-        guard let analysis = preliminaryAnalysis else {
-            throw PhotographerJobViewModelError.missingPreliminaryAnalysis
+        guard let preliminaryAnalysis else { throw PhotographerJobViewModelError.missingPreliminaryAnalysis }
+        return try completeIngest(
+            jobID: jobID,
+            cardID: cardID,
+            analysis: preliminaryAnalysis,
+            results: results
+        )
+    }
+
+    @discardableResult
+    func completeIngest(
+        jobID: UUID,
+        cardID: UUID,
+        analysis: CardAnalysis,
+        results: [ResultRow]
+    ) throws -> PhotographerFinalizationResult {
+        guard var job = jobForRun(jobID) else {
+            throw PhotographerJobViewModelError.noActiveJob
+        }
+        guard let cardIndex = job.cardIngests.firstIndex(where: { $0.id == cardID }) else {
+            throw PhotographerJobViewModelError.noActiveCard
         }
         let currentCard = job.cardIngests[cardIndex]
         guard currentCard.localState == .copying || currentCard.localState == .verifying else {
@@ -647,33 +676,38 @@ final class PhotographerJobViewModel: ObservableObject {
             failedCard.verifiedDestinationCount = 0
             job.cardIngests[cardIndex] = failedCard
             do {
-                try persistThrowing(job)
+                try persistRunJobThrowing(job)
             } catch {
                 lastError = error.localizedDescription
                 throw error
             }
-            activeCardDraft = failedCard
+            if activeCardDraft?.id == cardID { activeCardDraft = failedCard }
             lastError = error.localizedDescription
             throw error
         }
 
         job.cardIngests[cardIndex] = finalized.card
         do {
-            try persistThrowing(job)
+            try persistRunJobThrowing(job)
         } catch {
             lastError = error.localizedDescription
             throw error
         }
-        activeCardDraft = finalized.card
+        if activeCardDraft?.id == cardID { activeCardDraft = finalized.card }
         return finalizationResult(
-            job: activeJob ?? job,
+            job: jobForRun(jobID) ?? job,
             cardID: cardID,
             analysis: analysis
         )
     }
 
     func cancelIngest() {
-        transitionActiveCard(to: .cancelled) { card in
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        cancelIngest(jobID: jobID, cardID: cardID)
+    }
+
+    func cancelIngest(jobID: UUID, cardID: UUID) {
+        transitionCard(jobID: jobID, cardID: cardID, to: .cancelled) { card in
             card.locallySafeAt = nil
         }
     }
@@ -779,6 +813,44 @@ final class PhotographerJobViewModel: ObservableObject {
 
     func resetForNextCard() {
         clearCardPreparation()
+    }
+
+    /// Reopens the exact project card behind a failed transfer row. The old
+    /// journal attempt keeps its evidence; setup re-analyzes the source before
+    /// this card can start another attempt.
+    func prepareProjectCardForRetry(jobID: UUID, cardID: UUID) throws {
+        guard var job = jobForRun(jobID),
+              let index = job.cardIngests.firstIndex(where: { $0.id == cardID }),
+              job.cardIngests[index].localState == .issues
+                || job.cardIngests[index].localState == .cancelled else {
+            throw PhotographerJobViewModelError.noActiveCard
+        }
+        var card = job.cardIngests[index]
+        card.localState = .notStarted
+        card.startedAt = nil
+        card.locallySafeAt = nil
+        card.provenance.confirmedFingerprint = nil
+        card.verifiedDestinationCount = 0
+        job.cardIngests[index] = card
+        try persistRunJobThrowing(job)
+
+        activeJob = jobForRun(jobID) ?? job
+        selectedWorkflow = job.workflow
+        draftRecipe = job.recipe
+        selectedPhotographerID = card.provenance.photographerID
+        cameraName = card.provenance.cameraName
+        activeCardDraft = card
+        renderedRecipe = RenderedFolderRecipe(
+            components: card.renderedRelativePath.split(separator: "/").map(String.init)
+        )
+        preliminaryAnalysis = nil
+        duplicateWarning = nil
+        preparedSourcePath = nil
+        preparedSetupSignature = nil
+        sourcePreparationInvalidated = false
+        setupPreparationInvalidated = false
+        preparationError = nil
+        lastError = nil
     }
 
     func setDraftLayer(_ id: UUID, isEnabled: Bool) {
@@ -979,8 +1051,18 @@ final class PhotographerJobViewModel: ObservableObject {
         to state: PhotographerLocalState,
         mutate: (inout CardIngest) -> Void = { _ in }
     ) {
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        transitionCard(jobID: jobID, cardID: cardID, to: state, mutate: mutate)
+    }
+
+    private func transitionCard(
+        jobID: UUID,
+        cardID: UUID,
+        to state: PhotographerLocalState,
+        mutate: (inout CardIngest) -> Void = { _ in }
+    ) {
         do {
-            try transitionActiveCardThrowing(to: state, mutate: mutate)
+            try transitionCardThrowing(jobID: jobID, cardID: cardID, to: state, mutate: mutate)
         } catch {
             lastError = error.localizedDescription
         }
@@ -990,8 +1072,17 @@ final class PhotographerJobViewModel: ObservableObject {
         to state: PhotographerLocalState,
         mutate: (inout CardIngest) -> Void = { _ in }
     ) throws {
-        guard var job = activeJob,
-              let cardID = activeCardDraft?.id,
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        try transitionCardThrowing(jobID: jobID, cardID: cardID, to: state, mutate: mutate)
+    }
+
+    private func transitionCardThrowing(
+        jobID: UUID,
+        cardID: UUID,
+        to state: PhotographerLocalState,
+        mutate: (inout CardIngest) -> Void = { _ in }
+    ) throws {
+        guard var job = jobForRun(jobID),
               let index = job.cardIngests.firstIndex(where: { $0.id == cardID }) else { return }
         let currentState = job.cardIngests[index].localState
         guard currentState != state, canTransition(from: currentState, to: state) else { return }
@@ -999,17 +1090,21 @@ final class PhotographerJobViewModel: ObservableObject {
         job.cardIngests[index].localState = state
         mutate(&job.cardIngests[index])
         do {
-            try persistThrowing(job)
+            try persistRunJobThrowing(job)
         } catch {
             lastError = error.localizedDescription
             throw error
         }
-        activeCardDraft = job.cardIngests[index]
+        if activeCardDraft?.id == cardID { activeCardDraft = job.cardIngests[index] }
     }
 
     private func forceActiveCardIntoIssuesInMemory() {
-        guard var job = activeJob,
-              let cardID = activeCardDraft?.id,
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        forceCardIntoIssuesInMemory(jobID: jobID, cardID: cardID)
+    }
+
+    private func forceCardIntoIssuesInMemory(jobID: UUID, cardID: UUID) {
+        guard var job = jobForRun(jobID),
               let index = job.cardIngests.firstIndex(where: { $0.id == cardID }) else { return }
         guard job.cardIngests[index].localState == .notStarted
                 || job.cardIngests[index].localState == .copying
@@ -1019,11 +1114,11 @@ final class PhotographerJobViewModel: ObservableObject {
         job.cardIngests[index].locallySafeAt = nil
         job.cardIngests[index].provenance.confirmedFingerprint = nil
         job.cardIngests[index].verifiedDestinationCount = 0
-        activeJob = job
+        if activeJob?.id == jobID { activeJob = job }
         if let jobIndex = jobs.firstIndex(where: { $0.id == job.id }) {
             jobs[jobIndex] = job
         }
-        activeCardDraft = job.cardIngests[index]
+        if activeCardDraft?.id == cardID { activeCardDraft = job.cardIngests[index] }
     }
 
     private func persistThrowing(_ job: PhotographerJob) throws {
@@ -1032,6 +1127,30 @@ final class PhotographerJobViewModel: ObservableObject {
         try store.save(updated)
         activeJob = updated
         selectedWorkflow = updated.workflow
+        if let index = jobs.firstIndex(where: { $0.id == updated.id }) {
+            jobs[index] = updated
+        } else {
+            jobs.append(updated)
+        }
+        jobs.sort { $0.updatedAt > $1.updatedAt }
+        lastError = nil
+    }
+
+    private func jobForRun(_ jobID: UUID) -> PhotographerJob? {
+        if activeJob?.id == jobID { return activeJob }
+        return jobs.first { $0.id == jobID }
+    }
+
+    /// Persists a snapshotted run's project without changing whichever job
+    /// or draft the setup composer currently has selected.
+    private func persistRunJobThrowing(_ job: PhotographerJob) throws {
+        var updated = job
+        updated.updatedAt = now()
+        try store.save(updated)
+        if activeJob?.id == updated.id {
+            activeJob = updated
+            selectedWorkflow = updated.workflow
+        }
         if let index = jobs.firstIndex(where: { $0.id == updated.id }) {
             jobs[index] = updated
         } else {

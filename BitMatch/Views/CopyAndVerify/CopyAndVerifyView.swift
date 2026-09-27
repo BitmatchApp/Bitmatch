@@ -1,9 +1,8 @@
 // Views/CopyAndVerify/CopyAndVerifyView.swift
 import SwiftUI
 
-/// The Mac Copy & Verify setup: the shared Setup screen with the Mac's slots
-/// (step 4.8). A running transfer is shown by `MacTransferProgressView`
-/// (step 4.9), which `ContentView` selects before this view.
+/// The Mac Copy & Verify workspace: Setup remains visible while the transfer
+/// list beneath its composer carries live progress and final verdicts.
 struct CopyAndVerifyView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var showReportSettings: Bool

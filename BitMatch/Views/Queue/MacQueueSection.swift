@@ -2,537 +2,63 @@ import SwiftUI
 import UniformTypeIdentifiers
 import BitMatchEngine
 
+/// One journal-backed transfer list directly under the Mac composer.
 struct MacQueueSection: View {
-    private enum EditorFocus: Hashable { case addButton, source }
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject private var progress: LiveProgressFeed
-    @ObservedObject private var volumeMonitor = VolumeMonitorService.shared
-    @State private var selectedID: UUID?
-    @State private var errorMessage: String?
-    @State private var isAdding = false
-    @State private var draftSource: URL?
-    @State private var draftSourceUsesDriveAccess = false
-    @State private var draftDestinations: [URL] = []
-    @State private var draftMode = VerificationMode.standard
-    @State private var draftASCMHL = true
-    @State private var choosingSource = false
-    @State private var choosingBackups = false
-    @State private var isDropTargeted = false
-    @FocusState private var editorFocus: EditorFocus?
-    @FocusState private var focusedQueueRowID: UUID?
-    @FocusState private var focusedGhostURL: URL?
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @EnvironmentObject private var volumeAccess: MacVolumeAccessModel
-
-    init(coordinator: SharedAppCoordinator) {
-        self.coordinator = coordinator
-        _progress = ObservedObject(wrappedValue: coordinator.liveProgress)
-    }
-
-    var body: some View {
-        let presentation = coordinator.queuePresentation
-        let offers = connectedCardOffers
-        VStack(alignment: .leading, spacing: 12) {
-            if !presentation.rows.isEmpty || !offers.isEmpty {
-                if presentation.pausedTitle != nil, coordinator.queuePausedRecordID != nil {
-                    QueuePauseBanner(
-                        presentation: presentation,
-                        review: coordinator.reviewQueuedTransfer,
-                        skipAndContinue: coordinator.skipPausedCardAndContinue,
-                        remove: removePausedCard
-                    )
-                }
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(presentation.headerTitle ?? "Queue")
-                            .font(.headline)
-                            .accessibilityAddTraits(.isHeader)
-                        if let detail = presentation.headerDetail {
-                            Text(detail).font(.caption).foregroundStyle(.secondary)
-                        }
-                    }
-                    Spacer()
-                    if !coordinator.queueIsRunning,
-                       QueueCommandPolicy.showsResume(
-                           hasSessionStarted: coordinator.queueSessionStarted,
-                           waitingCount: presentation.rows.filter(\.isEditable).count
-                       ),
-                       coordinator.queuePausedRecordID == nil {
-                        Button("Resume Queue") { coordinator.startQueue() }
-                            .controlSize(.small)
-                            .disabled(!coordinator.queueRunCommandEnabled)
-                    }
-                }
-                queueRows(presentation.rows, ghostRows: offers)
-            } else {
-                Text("Queue")
-                    .font(.headline)
-                    .accessibilityAddTraits(.isHeader)
-            }
-            if coordinator.queueIsRunning || coordinator.isOperationInProgress {
-                addCardRow
-            }
-            if let errorMessage {
-                Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color)
-            }
-        }
-        .padding(12)
-        .background(
-            RoundedRectangle(cornerRadius: 10)
-                .fill(Color.primary.opacity(0.03))
-                .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
-        )
-        .fileImporter(isPresented: $choosingSource, allowedContentTypes: [.folder], allowsMultipleSelection: false) {
-            choose($0, asSource: true)
-        }
-        .fileImporter(isPresented: $choosingBackups, allowedContentTypes: [.folder], allowsMultipleSelection: true) {
-            choose($0, asSource: false)
-        }
-    }
-
-    @ViewBuilder
-    private var addCardRow: some View {
-        if isAdding {
-            inlineEditor
-                .transition(.opacity.combined(with: .move(edge: .top)))
-        } else {
-            Button {
-                openEditor()
-            } label: {
-                Label("Queue another card", systemImage: "plus")
-                    .frame(maxWidth: .infinity, minHeight: 36, alignment: .leading)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .focused($editorFocus, equals: .addButton)
-            .accessibilityHint("Adds a card that arrived while this queue is running")
-        }
-    }
-
-    private var inlineEditor: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "sdcard").foregroundStyle(.secondary).accessibilityHidden(true)
-                Picker("Card", selection: connectedCardSelection) {
-                    Text("Choose a connected card").tag(nil as URL?)
-                    ForEach(connectedCardRows) { row in
-                        Text(row.displayName).tag(Optional(row.url))
-                    }
-                }
-                .pickerStyle(.menu)
-                .focused($editorFocus, equals: .source)
-                Button("Choose Folder…") { choosingSource = true }
-                    .controlSize(.small)
-            }
-
-            HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Destinations").font(.caption).foregroundStyle(.secondary)
-                ForEach(draftDestinations, id: \.self) { destination in
-                    HStack(spacing: 4) {
-                        Text(destination.lastPathComponent).lineLimit(1)
-                        Button {
-                            draftDestinations.removeAll { $0 == destination }
-                        } label: { Image(systemName: "xmark") }
-                            .buttonStyle(.plain)
-                            .accessibilityLabel("Remove \(destination.lastPathComponent)")
-                    }
-                    .font(.caption)
-                    .padding(.horizontal, 7).padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.07), in: Capsule())
-                }
-                Button("Add destination…") { choosingBackups = true }
-                    .controlSize(.small)
-                Spacer(minLength: 0)
-            }
-
-            HStack(spacing: 16) {
-                Picker("Verification", selection: $draftMode) {
-                    ForEach(VerificationMode.allCases) { mode in Text(mode.rawValue).tag(mode) }
-                }
-                .pickerStyle(.menu)
-                Toggle("ASC MHL", isOn: $draftASCMHL)
-                    .disabled(draftMode == .quick)
-                Spacer(minLength: 0)
-                Button("Cancel", action: closeEditor)
-                    .keyboardShortcut(.cancelAction)
-                Button("Queue Card", action: enqueueDraft)
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
-                    .disabled(draftSource == nil || draftDestinations.isEmpty)
-            }
-            .controlSize(.small)
-        }
-        .padding(12)
-        .overlay(alignment: .leading) {
-            Rectangle().fill(Color.accentColor).frame(width: 2)
-        }
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(isDropTargeted ? Color.accentColor : Color.primary.opacity(0.08), lineWidth: isDropTargeted ? 2 : 1)
-        }
-        .dropDestination(for: URL.self) { urls, _ in
-            guard let first = urls.first else { return false }
-            draftSource = first
-            draftSourceUsesDriveAccess = false
-            return true
-        } isTargeted: { isDropTargeted = $0 }
-        .onExitCommand(perform: closeEditor)
-    }
-
-    private var connectedCardRows: [ConnectedDrivesPresentation.Row] {
-        let cardURLs = Set(volumeMonitor.connectedVolumes.filter { $0.cameraName != nil || $0.isRemovable }.map(\.url))
-        return ConnectedDrivesPresentation.make(
-            volumes: volumeMonitor.connectedVolumes,
-            sourceURL: coordinator.sourceURL,
-            destinationURLs: draftDestinations
-        ).filter { cardURLs.contains($0.url) && $0.state == .none }
-    }
-
-    private var connectedCardOffers: [ConnectedDrivesPresentation.Row] {
-        QueueConnectedCardPresentation.ghostRows(
-            isTransferOrQueueRunning: coordinator.runningOneTimeTransfer != nil || coordinator.queueIsRunning,
-            eligibleRows: coordinator.queueCandidates(volumes: volumeMonitor.connectedVolumes)
-        )
-    }
-
-    private var connectedCardSelection: Binding<URL?> {
-        Binding(
-            get: { draftSource },
-            set: { source in
-                draftSource = source
-                draftSourceUsesDriveAccess = source != nil
-            }
-        )
-    }
-
-    private func openEditor() {
-        draftSource = nil
-        draftSourceUsesDriveAccess = false
-        draftDestinations = coordinator.destinationURLs
-        draftMode = coordinator.verificationMode
-        draftASCMHL = coordinator.generateASCMHL
-        errorMessage = nil
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isAdding = true }
-        Task { @MainActor in
-            await Task.yield()
-            editorFocus = .source
-        }
-    }
-
-    private func closeEditor() {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isAdding = false }
-        Task { @MainActor in
-            await Task.yield()
-            editorFocus = .addButton
-        }
-    }
-
-    private func choose(_ result: Result<[URL], Error>, asSource: Bool) {
-        do {
-            for url in try result.get() {
-                if asSource {
-                    draftSource = url
-                    draftSourceUsesDriveAccess = false
-                }
-                else if !draftDestinations.contains(url) { draftDestinations.append(url) }
-            }
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    private func enqueueDraft() {
-        guard let source = draftSource else { return }
-        let enqueue = {
-            do {
-                try coordinator.enqueueInlineCard(
-                    source: source,
-                    destinations: draftDestinations,
-                    verificationMode: draftMode,
-                    generateASCMHL: draftASCMHL && draftMode != .quick
-                )
-                closeEditor()
-            } catch { errorMessage = error.localizedDescription }
-        }
-        guard draftSourceUsesDriveAccess && volumeAccess.needsDriveAccess else {
-            enqueue()
-            return
-        }
-        volumeAccess.requestVolumeAccess { granted in
-            if granted { enqueue() }
-        }
-    }
-
-    @ViewBuilder
-    private func queueRows(
-        _ rows: [QueueSessionRow],
-        ghostRows: [ConnectedDrivesPresentation.Row]
-    ) -> some View {
-        if rows.count + ghostRows.count > 2 {
-            ScrollView {
-                LazyVStack(spacing: 8) {
-                    ForEach(rows) { row in reorderableQueueRow(row, rows: rows) }
-                    ForEach(ghostRows) { row in ghostRow(row) }
-                }
-            }
-            .frame(maxHeight: 160)
-        } else {
-            VStack(spacing: 8) {
-                ForEach(rows) { row in reorderableQueueRow(row, rows: rows) }
-                ForEach(ghostRows) { row in ghostRow(row) }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func reorderableQueueRow(_ row: QueueSessionRow, rows: [QueueSessionRow]) -> some View {
-        if row.safetyState == .waiting {
-            queueRow(row)
-                .focusable()
-                .focused($focusedQueueRowID, equals: row.id)
-                .draggable(row.id.uuidString)
-                .dropDestination(for: String.self) { values, _ in
-                    guard let value = values.first, let draggedID = UUID(uuidString: value) else { return false }
-                    return moveWaitingCard(draggedID, to: row.id, rows: rows)
-                }
-                .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
-                    guard press.modifiers.contains(.option) else { return .ignored }
-                    moveWaitingCard(row.id, offset: -1, rows: rows)
-                    return .handled
-                }
-                .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
-                    guard press.modifiers.contains(.option) else { return .ignored }
-                    moveWaitingCard(row.id, offset: 1, rows: rows)
-                    return .handled
-                }
-                .onKeyPress(.delete) {
-                    remove(row.id)
-                    return .handled
-                }
-                .accessibilityAction(named: "Move up") { moveWaitingCard(row.id, offset: -1, rows: rows) }
-                .accessibilityAction(named: "Move down") { moveWaitingCard(row.id, offset: 1, rows: rows) }
-                .accessibilityAction(named: "Edit") { edit(row.id) }
-                .accessibilityAction(named: "Remove from queue") { remove(row.id) }
-        } else {
-            queueRow(row)
-        }
-    }
-
-    private func ghostRow(_ row: ConnectedDrivesPresentation.Row) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sdcard")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
-            Text("\(row.displayName) is connected")
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 8)
-            Button("Queue next") { queueNext(row) }
-                .buttonStyle(.borderedProminent)
-                .accessibilityLabel("Queue \(row.displayName) next")
-        }
-        .frame(minHeight: 46)
-        .padding(.horizontal, 8)
-        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
-        .focusable()
-        .focused($focusedGhostURL, equals: row.url)
-        .onKeyPress(.return) {
-            queueNext(row)
-            return .handled
-        }
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("\(row.displayName) is connected")
-    }
-
-    private func queueRow(_ row: QueueSessionRow) -> some View {
-        HStack(spacing: 8) {
-            HStack(spacing: 8) {
-                Image(systemName: "sdcard").foregroundStyle(.secondary).accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(row.cardName).lineLimit(1).truncationMode(.middle).help(row.cardName)
-                    HStack(spacing: 8) {
-                        if let evidence = row.evidence { Text(evidence) }
-                        Text(row.destinations).lineLimit(1).truncationMode(.middle)
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                if row.isEditable {
-                    Label("Waiting", systemImage: "clock")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                } else {
-                    Label(row.statusText, systemImage: row.safetyState.symbol)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(row.safetyState.tint.color)
-                        .padding(.horizontal, 8).padding(.vertical, 4)
-                        .background(row.safetyState.tint.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .accessibilityElement(children: .ignore)
-            .accessibilityLabel(row.accessibilityStatus)
-            if row.isEditable && selectedID == row.id {
-                Button("Edit") { edit(row.id) }
-                Button("Remove", role: .destructive) { remove(row.id) }
-            } else {
-                action(row)
-            }
-        }
-        .frame(minHeight: 46)
-        .padding(.horizontal, 8)
-        .background(
-            selectedID == row.id || isRunning(row.safetyState)
-                ? Color.accentColor.opacity(0.12) : Color.clear,
-            in: RoundedRectangle(cornerRadius: 8)
-        )
-        .contentShape(Rectangle())
-        .onTapGesture {
-            selectedID = row.id
-            focusedQueueRowID = row.safetyState == .waiting ? row.id : nil
-        }
-        .contextMenu {
-            if row.safetyState == .waiting {
-                Button("Edit") { edit(row.id) }
-                Button("Move to Top") { moveToTop(row.id) }
-                Button("Remove", role: .destructive) { remove(row.id) }
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func action(_ row: QueueSessionRow) -> some View {
-        if coordinator.queuePausedRecordID == row.id {
-            EmptyView()
-        } else {
-            switch row.action {
-            case .some(.eject):
-                Button("Eject") { eject(row.id) }.accessibilityLabel("Eject \(row.cardName)")
-            case .some(.review):
-                Button("Review") { coordinator.reviewQueuedTransfer(row.id) }
-                    .accessibilityLabel("Review \(row.cardName)")
-            case .some(.ejected):
-                Text("Ejected").font(.caption).foregroundStyle(.secondary)
-            case .none:
-                EmptyView()
-            }
-        }
-    }
-
-    private func remove(_ id: UUID) {
-        do { try coordinator.removeQueuedTransfer(id) }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    private func edit(_ id: UUID) {
-        do { try coordinator.editSetupTransfer(id) }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    private func removePausedCard(_ id: UUID) {
-        do { try coordinator.removePausedCardFromQueue(id) }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    private func moveToTop(_ id: UUID) {
-        do { try coordinator.moveQueuedTransferToTop(id) }
-        catch { errorMessage = error.localizedDescription }
-    }
-
-    private func moveWaitingCard(_ id: UUID, offset: Int, rows: [QueueSessionRow]) {
-        let waiting = rows.filter { $0.safetyState == .waiting }
-        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
-        let destination = index + offset
-        guard waiting.indices.contains(destination) else { return }
-        do {
-            try coordinator.moveQueuedTransfer(id: id, to: destination)
-            selectedID = id
-            focusedQueueRowID = id
-            errorMessage = nil
-        } catch { errorMessage = error.localizedDescription }
-    }
-
-    @discardableResult
-    private func moveWaitingCard(_ id: UUID, to targetID: UUID, rows: [QueueSessionRow]) -> Bool {
-        let waiting = rows.filter { $0.safetyState == .waiting }
-        guard let destination = waiting.firstIndex(where: { $0.id == targetID }),
-              waiting.contains(where: { $0.id == id }) else { return false }
-        do {
-            try coordinator.moveQueuedTransfer(id: id, to: destination)
-            selectedID = id
-            focusedQueueRowID = id
-            errorMessage = nil
-            return true
-        } catch {
-            errorMessage = error.localizedDescription
-            return false
-        }
-    }
-
-    private func queueNext(_ row: ConnectedDrivesPresentation.Row) {
-        let enqueue = {
-            do {
-                try coordinator.enqueueNext(source: row.url)
-                errorMessage = nil
-            } catch { errorMessage = error.localizedDescription }
-        }
-        guard volumeAccess.needsDriveAccess else {
-            enqueue()
-            return
-        }
-        volumeAccess.requestVolumeAccess { granted in
-            if granted { enqueue() }
-        }
-    }
-
-    private func eject(_ id: UUID) {
-        Task {
-            if let error = await coordinator.ejectQueueSource(id) { errorMessage = error }
-        }
-    }
-
-    private func isRunning(_ state: CardSafetyState) -> Bool {
-        switch state {
-        case .copying, .verifying, .preparing: true
-        default: false
-        }
-    }
-}
-
-struct MacQueueSummaryView: View {
-    @ObservedObject var coordinator: SharedAppCoordinator
+    @ObservedObject private var stateService: OperationStateService
+    @State private var expandedIDs: Set<UUID> = []
+    @State private var selectedWaitingID: UUID?
+    @State private var heroID: UUID?
+    @State private var heroDismissTask: Task<Void, Never>?
+    @State private var confirmingCancel = false
     @State private var errorMessage: String?
     @State private var exportDocument: TransferHistoryDocument?
     @State private var exportType = UTType.json
     @State private var showingExporter = false
+    @FocusState private var focusedWaitingID: UUID?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    init(coordinator: SharedAppCoordinator) {
+        self.coordinator = coordinator
+        _progress = ObservedObject(wrappedValue: coordinator.liveProgress)
+        _stateService = ObservedObject(wrappedValue: coordinator.stateService)
+    }
 
     var body: some View {
         let presentation = coordinator.queuePresentation
-        VStack(alignment: .leading, spacing: 12) {
-            Text(presentation.summaryTitle ?? "Queue finished")
-                .font(.title2.weight(.semibold))
-            HStack(spacing: 8) {
-                if presentation.showsEjectAllButton {
-                    Button("Eject all safe cards") { ejectAllSafeCards() }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityLabel("Eject all safe cards")
-                }
-                Button("Copy Summary") { TransferSummaryPasteboard.copy(presentation.copySummary) }
-                if presentation.showsExportReport {
-                    Menu("Export Report") {
-                        ForEach(reportRecords) { record in
-                            Menu(record.title) {
-                                Button("JSON report") { export(record, asCSV: false) }
-                                Button("CSV results") { export(record, asCSV: true) }
-                            }
-                        }
+        Group {
+            if !presentation.rows.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    if presentation.pausedCardID != nil {
+                        QueuePauseBanner(
+                            presentation: presentation,
+                            review: { id in
+                                coordinator.markQueueTransferReviewed(id)
+                                expandedIDs.insert(id)
+                            },
+                            skipAndContinue: coordinator.skipPausedCardAndContinue,
+                            remove: removePausedCard
+                        )
+                    }
+                    header(presentation)
+                    rows(presentation.rows)
+                    if let errorMessage {
+                        Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color)
                     }
                 }
-                Button("New Transfer") { coordinator.finishQueueSessionAndStartNewTransfer() }
+                .padding(12)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.primary.opacity(0.03))
+                        .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+                )
             }
-            if let errorMessage { Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color) }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
+        .onChange(of: presentation.rows) { oldRows, newRows in
+            handleRowChanges(from: oldRows, to: newRows)
+        }
+        .onDisappear { heroDismissTask?.cancel() }
         .fileExporter(
             isPresented: $showingExporter,
             document: exportDocument,
@@ -543,27 +69,407 @@ struct MacQueueSummaryView: View {
         }
     }
 
-    private var reportRecords: [LocalTransferRecord] {
-        coordinator.transferJournal.records.filter {
-            coordinator.queueSessionRecordIDs.contains($0.id)
-                && $0.reportSettings.makeReport && $0.state != .queued && $0.state != .running
-                && !$0.summary.localizedCaseInsensitiveContains("report could not be saved")
+    private func header(_ presentation: QueueSessionPresentation) -> some View {
+        HStack(alignment: .firstTextBaseline) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Transfers").font(.headline).accessibilityAddTraits(.isHeader)
+                if let detail = presentation.headerDetail {
+                    Text(detail).font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if presentation.rows.contains(where: \.isFinished) {
+                Button("Clear finished") { coordinator.clearFinishedQueueRows() }
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help("Remove finished rows from this list. They remain in History.")
+            }
+            if !coordinator.queueIsRunning,
+               QueueCommandPolicy.showsResume(
+                hasSessionStarted: coordinator.queueSessionStarted,
+                waitingCount: presentation.rows.filter(\.isEditable).count
+               ), coordinator.queuePausedRecordID == nil {
+                Button("Resume Queue") { coordinator.startQueue() }
+                    .controlSize(.small)
+                    .disabled(!coordinator.queueRunCommandEnabled)
+            }
         }
     }
 
-    private func export(_ record: LocalTransferRecord, asCSV: Bool) {
+    @ViewBuilder
+    private func rows(_ rows: [QueueSessionRow]) -> some View {
+        if rows.count > 8 {
+            ScrollView {
+                LazyVStack(spacing: 8) { transferRows(rows) }.padding(.trailing, 3)
+            }
+            .frame(maxHeight: 520)
+        } else {
+            VStack(spacing: 8) { transferRows(rows) }
+        }
+    }
+
+    @ViewBuilder
+    private func transferRows(_ rows: [QueueSessionRow]) -> some View {
+        ForEach(rows) { row in
+            if row.isEditable { reorderableWaitingRow(row, rows: rows) }
+            else { transferRow(row) }
+        }
+    }
+
+    private func reorderableWaitingRow(_ row: QueueSessionRow, rows: [QueueSessionRow]) -> some View {
+        transferRow(row)
+            .focusable()
+            .focused($focusedWaitingID, equals: row.id)
+            .draggable(row.id.uuidString)
+            .dropDestination(for: String.self) { values, _ in
+                guard let value = values.first, let draggedID = UUID(uuidString: value) else { return false }
+                return moveWaitingCard(draggedID, to: row.id, rows: rows)
+            }
+            .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+                guard press.modifiers.contains(.option) else { return .ignored }
+                moveWaitingCard(row.id, offset: -1, rows: rows)
+                return .handled
+            }
+            .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+                guard press.modifiers.contains(.option) else { return .ignored }
+                moveWaitingCard(row.id, offset: 1, rows: rows)
+                return .handled
+            }
+            .onKeyPress(.delete) {
+                remove(row.id)
+                return .handled
+            }
+            .accessibilityAction(named: "Move up") { moveWaitingCard(row.id, offset: -1, rows: rows) }
+            .accessibilityAction(named: "Move down") { moveWaitingCard(row.id, offset: 1, rows: rows) }
+    }
+
+    private func transferRow(_ row: QueueSessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            collapsedRow(row)
+            if expandedIDs.contains(row.id) {
+                Divider().padding(.horizontal, 10)
+                expandedContent(row)
+                    .padding(12)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .background {
+            GeometryReader { proxy in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row))
+                    if row.isRunning {
+                        RoundedRectangle(cornerRadius: 8)
+                            .fill(Color.accentColor.opacity(0.14))
+                            .frame(width: proxy.size.width * min(max(row.progressFraction ?? 0, 0), 1))
+                            .animation(reduceMotion ? nil : .linear(duration: 0.25), value: row.progressFraction)
+                    }
+                }
+            }
+        }
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row)))
+        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .accessibilityElement(children: .contain)
+    }
+
+    private func collapsedRow(_ row: QueueSessionRow) -> some View {
+        HStack(spacing: 8) {
+            if row.isEditable {
+                Button { remove(row.id) } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(.secondary).frame(width: 24, height: 24)
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Remove \(row.cardName) from the queue")
+            } else {
+                Image(systemName: row.safetyState.symbol)
+                    .foregroundStyle(row.isRunning ? Color.accentColor : row.safetyState.tint.color)
+                    .frame(width: 24).accessibilityHidden(true)
+            }
+            Text(collapsedText(row))
+                .font(.subheadline.weight(row.isFinished ? .medium : .regular))
+                .lineLimit(1).truncationMode(.middle)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            if row.isEditable {
+                Text("Waiting").font(.caption).foregroundStyle(.secondary)
+                Button("Edit") { edit(row.id) }.buttonStyle(.borderless)
+            } else {
+                compactAction(row)
+                Button { toggleExpanded(row.id) } label: {
+                    Image(systemName: expandedIDs.contains(row.id) ? "chevron.up" : "chevron.down")
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(expandedIDs.contains(row.id) ? "Collapse \(row.cardName)" : "Expand \(row.cardName)")
+            }
+        }
+        .frame(minHeight: 46)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if row.isEditable {
+                selectedWaitingID = row.id
+                focusedWaitingID = row.id
+            } else {
+                toggleExpanded(row.id)
+            }
+        }
+        .accessibilityLabel(row.accessibilityStatus)
+        .contextMenu {
+            if row.isEditable {
+                Button("Edit") { edit(row.id) }
+                Button("Move to Top") { moveToTop(row.id) }
+                Button("Remove", role: .destructive) { remove(row.id) }
+            }
+        }
+    }
+
+    private func collapsedText(_ row: QueueSessionRow) -> String {
+        row.isEditable
+            ? row.waitingText
+            : row.oneLineStatus(timeRemaining: row.isRunning ? liveProgressPresentation.timeRemaining : nil)
+    }
+
+    @ViewBuilder
+    private func compactAction(_ row: QueueSessionRow) -> some View {
+        switch row.action {
+        case .some(.eject):
+            // The expanded row (or the safe-to-erase moment) has its own
+            // Eject; one per row is enough.
+            if heroID != row.id && !expandedIDs.contains(row.id) {
+                Button("Eject") { eject(row.id) }.accessibilityLabel("Eject \(row.cardName)")
+            }
+        case .some(.review):
+            Button("Review") {
+                coordinator.markQueueTransferReviewed(row.id)
+                expandedIDs.insert(row.id)
+            }
+        case .some(.ejected):
+            Text("Ejected").font(.caption).foregroundStyle(.secondary)
+        case .none:
+            EmptyView()
+        }
+    }
+
+    @ViewBuilder
+    private func expandedContent(_ row: QueueSessionRow) -> some View {
+        if row.isRunning {
+            ProgressScreen(
+                presentation: liveProgressPresentation,
+                actions: ProgressActions(
+                    pause: { Task { await coordinator.pauseOperation() } },
+                    resume: { Task { await coordinator.resumeOperation() } },
+                    cancel: { coordinator.cancelOperation() }
+                ),
+                confirmingCancel: $confirmingCancel
+            )
+        } else if heroID == row.id, let outcome = row.outcome, outcome.safetyState == .safeToErase {
+            SafeTransferHero(
+                row: row, outcome: outcome, reduceMotion: reduceMotion,
+                eject: row.action == .eject ? { eject(row.id) } : nil
+            )
+        } else if let outcome = row.outcome {
+            finishedDetails(row, outcome: outcome)
+        }
+    }
+
+    private var liveProgressPresentation: TransferProgressPresentation {
+        TransferProgressPresentation.make(coordinator: coordinator)
+    }
+
+    private func finishedDetails(_ row: QueueSessionRow, outcome: TransferOutcomePresentation) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text(outcome.verdict.detail)
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            if let cause = row.cause {
+                Label(cause, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(outcome.safetyState.tint.color)
+            }
+            ForEach(outcome.destinations) { destination in
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: destination.needsAttention ? "exclamationmark.triangle" : "externaldrive")
+                        .foregroundStyle(destination.needsAttention ? CardSafetyTint.red.color : Color.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(destination.title).font(.subheadline.weight(.medium))
+                        Text(destination.detail).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                }
+            }
+            HStack(spacing: 8) {
+                if outcome.canRetry {
+                    Button("Retry") { coordinator.retryTransfer(row.id) }.buttonStyle(.borderedProminent)
+                }
+                if outcome.canExport {
+                    Menu("Export Report") {
+                        Button("JSON report") { export(row.id, asCSV: false) }
+                        Button("CSV results") { export(row.id, asCSV: true) }
+                    }.menuStyle(.button)
+                }
+                Button("Copy Summary") { TransferSummaryPasteboard.copy(row.copySummary) }
+                if row.action == .eject { Button("Eject") { eject(row.id) } }
+            }
+        }
+    }
+
+    private func baseColor(for row: QueueSessionRow) -> Color {
+        if row.isFinished { return row.safetyState.tint.color.opacity(0.08) }
+        if selectedWaitingID == row.id { return Color.accentColor.opacity(0.08) }
+        return Color.primary.opacity(0.025)
+    }
+
+    private func borderColor(for row: QueueSessionRow) -> Color {
+        row.isFinished ? row.safetyState.tint.color.opacity(0.28) : Color.primary.opacity(0.07)
+    }
+
+    private func toggleExpanded(_ id: UUID) {
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+            if expandedIDs.contains(id) { expandedIDs.remove(id) }
+            else { expandedIDs.insert(id) }
+        }
+    }
+
+    private func handleRowChanges(from oldRows: [QueueSessionRow], to newRows: [QueueSessionRow]) {
+        if let heroID, newRows.contains(where: { $0.id != heroID && $0.isRunning }) {
+            settleHero(heroID)
+        }
+        for row in newRows where row.showsSafeHero {
+            let isNewlySafe = oldRows.first(where: { $0.id == row.id })?.showsSafeHero != true
+            guard isNewlySafe else { continue }
+            if coordinator.autoEjectWhenSafe && row.action == .eject { eject(row.id) }
+            if QueueHeroPolicy.shouldExpand(row: row, previousRows: oldRows, currentRows: newRows) {
+                showHero(for: row)
+            }
+        }
+    }
+
+    private func showHero(for row: QueueSessionRow) {
+        heroDismissTask?.cancel()
+        heroID = row.id
+        expandedIDs.insert(row.id)
+        heroDismissTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            await MainActor.run { settleHero(row.id) }
+        }
+    }
+
+    private func settleHero(_ id: UUID) {
+        guard heroID == id else { return }
+        heroDismissTask?.cancel()
+        heroDismissTask = nil
+        heroID = nil
+        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { expandedIDs.remove(id) }
+    }
+
+    private func remove(_ id: UUID) { perform { try coordinator.removeQueuedTransfer(id) } }
+    private func edit(_ id: UUID) { perform { try coordinator.editSetupTransfer(id) } }
+    private func removePausedCard(_ id: UUID) { perform { try coordinator.removePausedCardFromQueue(id) } }
+
+    private func moveToTop(_ id: UUID) {
+        perform { try coordinator.moveQueuedTransferToTop(id) }
+        selectedWaitingID = id
+        focusedWaitingID = id
+    }
+
+    private func perform(_ action: () throws -> Void) {
+        do { try action(); errorMessage = nil }
+        catch { errorMessage = error.localizedDescription }
+    }
+
+    private func moveWaitingCard(_ id: UUID, offset: Int, rows: [QueueSessionRow]) {
+        let waiting = rows.filter(\.isEditable)
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        let destination = index + offset
+        guard waiting.indices.contains(destination) else { return }
+        perform { try coordinator.moveQueuedTransfer(id: id, to: destination) }
+        selectedWaitingID = id
+        focusedWaitingID = id
+    }
+
+    @discardableResult
+    private func moveWaitingCard(_ id: UUID, to targetID: UUID, rows: [QueueSessionRow]) -> Bool {
+        let waiting = rows.filter(\.isEditable)
+        guard let destination = waiting.firstIndex(where: { $0.id == targetID }),
+              waiting.contains(where: { $0.id == id }) else { return false }
+        do {
+            try coordinator.moveQueuedTransfer(id: id, to: destination)
+            errorMessage = nil
+            selectedWaitingID = id
+            focusedWaitingID = id
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func eject(_ id: UUID) {
+        Task { if let error = await coordinator.ejectQueueSource(id) { errorMessage = error } }
+    }
+
+    private func export(_ id: UUID, asCSV: Bool) {
+        guard let record = coordinator.transferJournal.records.first(where: { $0.id == id }) else {
+            errorMessage = "The transfer record is no longer available."
+            return
+        }
         do {
             exportDocument = try TransferHistoryDocument(record: record, asCSV: asCSV)
             exportType = asCSV ? .commaSeparatedText : .json
             showingExporter = true
-        } catch {
-            errorMessage = error.localizedDescription
+        } catch { errorMessage = error.localizedDescription }
+    }
+}
+
+private struct SafeTransferHero: View {
+    let row: QueueSessionRow
+    let outcome: TransferOutcomePresentation
+    let reduceMotion: Bool
+    let eject: (() -> Void)?
+    @State private var closesRing = false
+
+    var body: some View {
+        HStack(alignment: .center, spacing: 16) {
+            ZStack {
+                Circle().stroke(CardSafetyTint.green.color.opacity(0.18), lineWidth: 5)
+                Circle()
+                    .trim(from: 0, to: reduceMotion ? 1 : (closesRing ? 1 : 0.06))
+                    .stroke(CardSafetyTint.green.color, style: StrokeStyle(lineWidth: 5, lineCap: .round))
+                    .rotationEffect(.degrees(-90))
+                Image(systemName: "checkmark")
+                    .font(.title2.bold()).foregroundStyle(CardSafetyTint.green.color)
+                    .scaleEffect(reduceMotion ? 1 : (closesRing ? 1 : 0.72))
+                    .opacity(reduceMotion ? 1 : (closesRing ? 1 : 0))
+            }
+            .frame(width: 62, height: 62)
+            .shadow(color: CardSafetyTint.green.color.opacity(0.22), radius: closesRing ? 10 : 5)
+            .accessibilityHidden(true)
+            VStack(alignment: .leading, spacing: 5) {
+                Text(outcome.finishTitle)
+                    .font(.title2.weight(.semibold)).foregroundStyle(CardSafetyTint.green.color)
+                Text(heroEvidence).font(.subheadline).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            if let eject {
+                Button("Eject", action: eject)
+                    .buttonStyle(.borderedProminent).tint(CardSafetyTint.green.color)
+            }
         }
+        .padding(.vertical, 6)
+        .onAppear {
+            guard !reduceMotion else { closesRing = true; return }
+            withAnimation(.easeOut(duration: 0.8)) { closesRing = true }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(outcome.finishTitle). \(heroEvidence)")
     }
 
-    private func ejectAllSafeCards() {
-        Task {
-            errorMessage = await coordinator.ejectAllSafeQueueSources()
-        }
+    private var heroEvidence: String {
+        var parts: [String] = []
+        if let evidence = row.evidence { parts.append(evidence) }
+        let count = row.destinationNames.count
+        parts.append("\(count) destination\(count == 1 ? "" : "s")")
+        parts.append(row.verificationModeName)
+        return parts.joined(separator: " · ")
     }
 }

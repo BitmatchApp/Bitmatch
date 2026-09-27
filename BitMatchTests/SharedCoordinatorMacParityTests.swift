@@ -225,6 +225,73 @@ struct SharedCoordinatorMacParityTests {
         await fixture.cleanup()
     }
 
+    /// The run owns the card identity it started with. Preparing another card
+    /// must not redirect finalization or failure to that newer draft.
+    /// Plant: make the finalizer or `updateProjectLifecycle` use `activeCard`.
+    @Test func projectRunFinalizesItsSnapshottedCardIdentity() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true)
+        let originalID = try #require(fixture.jobs.activeCard?.id)
+        let start = Task { await fixture.coordinator.startProjectOperation() }
+        #expect(await waitUntil(timeout: .seconds(5)) { await fixture.operations.starts.count == 1 })
+
+        try fixture.jobs.prepareCard(
+            photographerName: "Mike",
+            cameraName: "Sony A7 IV",
+            sourceDisplayName: "NEXT_CARD",
+            analysis: CardAnalysis(
+                fingerprint: "next-preliminary", fileCount: 1, totalBytes: 8,
+                companionGroups: [], sourcePaths: ["/NEXT_CARD/B.ARW"]
+            )
+        )
+        let nextID = try #require(fixture.jobs.activeCard?.id)
+        #expect(nextID != originalID)
+
+        await fixture.operations.release()
+        _ = await start.value
+        await fixture.waitUntilIdle()
+
+        let cards = try #require(fixture.jobs.activeJob?.cardIngests)
+        #expect(cards.first(where: { $0.id == originalID })?.localState == .issues)
+        #expect(cards.first(where: { $0.id == nextID })?.localState == .notStarted)
+        fixture.folders.cleanup()
+    }
+
+    /// A project transfer is also an ordinary transfer-list row, while the
+    /// project dashboard continues to own its project-specific evidence.
+    /// Plant: restore the `photographerReportFinalizer == nil` row filter.
+    @Test func projectRunAppearsAsRunningAndFinishedTransferRow() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, reportsStage: .copying)
+        let start = Task { await fixture.coordinator.startProjectOperation() }
+        #expect(await waitUntil(timeout: .seconds(5)) {
+            fixture.coordinator.queuePresentation.rows.first?.safetyState == .copying(progress: 50)
+        })
+        let running = try #require(fixture.coordinator.queuePresentation.rows.first)
+        #expect(running.isRunning)
+        #expect(running.outcome == nil)
+        let setup = SetupPresentation.make(coordinator: fixture.coordinator)
+        #expect(setup.isWorkflowLocked)
+        #expect(setup.workflowLockHint == "Available when this card finishes")
+
+        await fixture.operations.release()
+        _ = await start.value
+        await fixture.waitUntilIdle()
+
+        let finished = try #require(fixture.coordinator.queuePresentation.rows.first)
+        #expect(finished.isFinished)
+        #expect(finished.safetyState == .needsAttention)
+        #expect(finished.outcome?.canRetry == true)
+        #expect(finished.outcome?.canExport == true)
+        let cardID = try #require(fixture.jobs.activeCard?.id)
+
+        fixture.coordinator.retryTransfer(finished.id)
+
+        #expect(fixture.jobs.activeCard?.id == cardID)
+        #expect(fixture.jobs.activeCard?.localState == .notStarted)
+        #expect(fixture.coordinator.usesProjectWorkflow)
+        #expect(fixture.coordinator.sourceURL == fixture.folders.source)
+        fixture.folders.cleanup()
+    }
+
     /// A store that refuses the downgrade still leaves the card in issues.
     /// Plant: in `PhotographerJobViewModel.operationFailed`'s `catch`, delete
     /// `forceActiveCardIntoIssuesInMemory()`.

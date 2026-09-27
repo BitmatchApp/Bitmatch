@@ -32,6 +32,9 @@ struct SetupLocationsPlatform {
     var connectedSources: [SetupConnectedVolume] = []
     var connectedDestinations: [SetupConnectedVolume] = []
     var stacksComposerVertically = false
+    /// The Mac supplies its journal-backed session list below the composer.
+    /// iPad and iPhone keep the compact staged list here.
+    var showsStagedQueue = true
     var pickFolderOnDrive: @MainActor (URL) async -> URL? = { _ in nil }
     var ensureDriveAccess: @MainActor () async -> Bool = { true }
     /// Available and total capacity for a backup, or nil.
@@ -45,8 +48,9 @@ struct SetupLocationsPlatform {
 
 /// Choosing a source or backups from a pick or a drop, the same on every
 /// platform: `DestinationSelectionPolicy` first, then the platform's add,
-/// which applies `BackupTargetPolicy`. Nothing changes while a transfer
-/// runs. Each call returns the refusals to show.
+/// which applies `BackupTargetPolicy`. A running one-time transfer owns an
+/// immutable snapshot, so these choices can compose the next card while it
+/// runs. Project transfers retain their existing lock.
 @MainActor
 struct SetupLocationSelection {
     let coordinator: SharedAppCoordinator
@@ -57,7 +61,7 @@ struct SetupLocationSelection {
     var backupRefusal: (URL, URL?) -> String? = DestinationSelectionPolicy.userChoiceRefusal
 
     func chooseSource(_ url: URL) -> [String] {
-        guard !coordinator.isOperationInProgress else { return [] }
+        guard !coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow else { return [] }
         let path = BackupTargetPolicy.canonicalPath(url)
         if coordinator.stagedSetupTransfers.contains(where: {
             $0.id != coordinator.editingSetupTransferID &&
@@ -77,7 +81,7 @@ struct SetupLocationSelection {
     }
 
     func addBackups(_ urls: [URL]) -> [String] {
-        guard !coordinator.isOperationInProgress else { return [] }
+        guard !coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow else { return [] }
         let coordinator = self.coordinator
         return DestinationSelectionPolicy.addBackups(
             urls,
@@ -95,7 +99,7 @@ struct SetupLocationSelection {
     /// the old one's slot, and the old one is removed (on the Mac that also
     /// keeps discovery from adding the old drive straight back).
     func replaceBackup(at index: Int, with url: URL) -> [String] {
-        guard !coordinator.isOperationInProgress,
+        guard (!coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow),
               coordinator.destinationURLs.indices.contains(index) else { return [] }
         let old = coordinator.destinationURLs[index]
         let decision = DestinationSelectionPolicy.evaluateBackup(
@@ -194,11 +198,13 @@ struct CoordinatorSetupLocations: View {
             isAnalysingSource: coordinator.isAnalysingSource,
             cameraName: cameraLabels.detectedCameraName ?? coordinator.detectedCamera?.displayName,
             connectedSourceDetail: connectedSourceDetail,
-            stagedSources: stagedPresentations,
+            stagedSources: platform.showsStagedQueue ? stagedPresentations : [],
             destinationURLs: coordinator.destinationURLs,
             capacity: platform.capacity,
             isOperationInProgress: coordinator.isOperationInProgress,
-            showsAddAnotherCard: coordinator.sourceURL != nil
+            keepsComposerEditableDuringOperation: !coordinator.usesProjectWorkflow,
+            showsAddAnotherCard: !coordinator.isOperationInProgress
+                && coordinator.sourceURL != nil
                 && !coordinator.usesProjectWorkflow
                 && !coordinator.photographerJobViewModel.hasPreparedIngestAwaitingStart,
             canAddAnotherCard: coordinator.canEnqueueSelection,
@@ -272,7 +278,7 @@ struct CoordinatorSetupLocations: View {
                 }
             },
             clearSource: {
-                guard !coordinator.isOperationInProgress else { return }
+                guard !coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow else { return }
                 coordinator.sourceURL = nil
             },
             addAnotherCard: {
@@ -332,7 +338,7 @@ struct CoordinatorSetupLocations: View {
                 }
             },
             removeBackup: { url in
-                guard !coordinator.isOperationInProgress else { return }
+                guard !coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow else { return }
                 platform.removeBackup(url)
             }
         )

@@ -2,28 +2,6 @@
 import SwiftUI
 import AppKit
 
-enum MacCopyMainContentPolicy: Equatable {
-    case progress
-    case pausedSetup
-    case queueSummary
-    case transferContent
-
-    /// A paused queue never becomes a screen of its own. Its banner lives in
-    /// Queue while Setup remains the transfer content underneath it.
-    static func make(
-        isOperationInProgress: Bool,
-        hasPausedQueue: Bool,
-        queueSessionEnded: Bool,
-        showsQueueSummary: Bool,
-        isReviewingQueueRecord: Bool
-    ) -> Self {
-        if isOperationInProgress { return .progress }
-        if hasPausedQueue && !isReviewingQueueRecord { return .pausedSetup }
-        if queueSessionEnded && showsQueueSummary && !isReviewingQueueRecord { return .queueSummary }
-        return .transferContent
-    }
-}
-
 private struct MacScrollableContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -32,13 +10,6 @@ private struct MacScrollableContentHeightKey: PreferenceKey {
 }
 
 private struct MacNoticeHeightKey: PreferenceKey {
-    static let defaultValue: CGFloat = 0
-    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
-        value = max(value, nextValue())
-    }
-}
-
-private struct MacOutcomeContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
         value = max(value, nextValue())
@@ -98,12 +69,9 @@ struct MacMainView: View {
     @State private var showingTransfers = false
     @State private var transferToReviewID: UUID?
     @State private var dismissedAttentionIDs: Set<UUID> = []
-    @State private var showOnlyIssues = false
-    @AppStorage("BitMatchShowLiveTransferFiles") private var showLiveTransferFiles = false
     
     // Dynamic window height management
     @State private var measuredScrollableContentHeight: CGFloat = 0
-    @State private var measuredOutcomeContentHeight: CGFloat = 0
     @State private var measuredNoticeHeight: CGFloat = 0
     @State private var hostingWindow: NSWindow?
     @State private var transferOptionsExpanded = false
@@ -125,7 +93,6 @@ struct MacMainView: View {
         keyboardShortcutsView
             .background(MacHostingWindowReader(window: $hostingWindow).frame(width: 0, height: 0))
             .focusedSceneValue(\.canCancelOperation, coordinator.isOperationInProgress)
-            .focusedSceneValue(\.canStartNewTransfer, menuPresentation.newTransferEnabled)
             .focusedSceneValue(\.ejectCardTitle, menuPresentation.ejectTitle)
             .toolbar { mainToolbar }
             .onAppear {
@@ -151,6 +118,21 @@ struct MacMainView: View {
                 } else {
                     Text(description)
                 }
+            }
+            .confirmationDialog(
+                TransferProgressPresentation.cancelConfirmationTitle,
+                isPresented: $confirmingTransferCancel,
+                titleVisibility: .visible
+            ) {
+                Button(TransferProgressPresentation.cancelConfirmationAction, role: .destructive) {
+                    confirmingTransferCancel = false
+                    coordinator.cancelOperation()
+                }
+                Button(TransferProgressPresentation.cancelKeepAction, role: .cancel) {
+                    confirmingTransferCancel = false
+                }
+            } message: {
+                Text(TransferProgressPresentation.cancelConfirmationMessage)
             }
             .alert("Confirm SFTP Host Key", isPresented: Binding(get: { remoteBackups.hostTrustPrompt != nil }, set: { if !$0 { remoteBackups.confirmHostTrust(false) } })) {
                 Button("Trust Host Key") { remoteBackups.confirmHostTrust(true) }
@@ -229,13 +211,6 @@ struct MacMainView: View {
         ScrollView {
             VStack(spacing: 24) {
                 mainContentSwitch
-                if coordinator.currentMode == .copyAndVerify && !coordinator.lastOperationWasCompare
-                    && (coordinator.runningOneTimeTransfer != nil || coordinator.queueIsRunning
-                        || coordinator.queuePausedRecordID != nil || coordinator.queueSessionEnded
-                        || coordinator.queueSessionStarted) {
-                    MacQueueSection(coordinator: coordinator)
-                }
-                resultsArea
             }
             .padding(.horizontal, 20)
             .padding(.top, 24)
@@ -250,75 +225,7 @@ struct MacMainView: View {
     
     @ViewBuilder
     private var mainContentSwitch: some View {
-        // Compare shows its own progress and outcome inside CompareScreen, and
-        // a finished compare is never shown as the transfer completion.
-        if coordinator.currentMode == .compareFolders || coordinator.lastOperationWasCompare {
-            modeSpecificView
-        } else if copyMainContentPolicy == .progress {
-            // The shared progress screen (UI plan 4.9); it observes progress
-            // ticks itself, so this shell does not redraw on each one.
-            MacTransferProgressView(coordinator: coordinator, confirmingCancel: $confirmingTransferCancel)
-        } else if copyMainContentPolicy == .pausedSetup {
-            modeSpecificView
-        } else if coordinator.queueIsRunning {
-            // Preserve the existing between-cards transition; a paused queue
-            // is deliberately excluded and continues to show Setup.
-            EmptyView()
-        } else if copyMainContentPolicy == .queueSummary {
-            MacQueueSummaryView(coordinator: coordinator)
-        } else {
-            transferContentSwitch
-        }
-    }
-
-    private var copyMainContentPolicy: MacCopyMainContentPolicy {
-        MacCopyMainContentPolicy.make(
-            isOperationInProgress: showsTransferProgress,
-            hasPausedQueue: coordinator.queuePausedRecordID != nil,
-            queueSessionEnded: coordinator.queueSessionEnded && coordinator.editingSetupTransferID == nil,
-            showsQueueSummary: coordinator.queuePresentation.showsQueueSummary,
-            isReviewingQueueRecord: coordinator.reviewedQueueRecordID != nil
-        )
-    }
-
-    @ViewBuilder
-    private var transferContentSwitch: some View {
-        switch coordinator.completionState {
-        case .idle, .inProgress:
-            // A running transfer never reaches here: `mainContentSwitch` shows
-            // `MacTransferProgressView` first.
-            modeSpecificView
-        default:
-            completionView
-        }
-    }
-    
-    @ViewBuilder
-    private var resultsArea: some View {
-        // Live results while a transfer runs; the outcome screen lists them after.
-        if coordinator.currentMode == .copyAndVerify &&
-           !coordinator.lastOperationWasCompare &&
-           coordinator.isOperationInProgress {
-            VStack(alignment: .leading, spacing: 10) {
-                Button(showLiveTransferFiles ? "Hide Files" : "Show Files") {
-                    withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
-                        showLiveTransferFiles.toggle()
-                    }
-                }
-                .buttonStyle(.borderless)
-                .accessibilityHint(showLiveTransferFiles
-                    ? "Collapses the per-file transfer details"
-                    : "Shows the per-file transfer details")
-
-                if showLiveTransferFiles {
-                    ResultsTableView(
-                        coordinator: coordinator,
-                        showOnlyIssues: $showOnlyIssues
-                    )
-                    .transition(.move(edge: .top).combined(with: .opacity))
-                }
-            }
-        }
+        modeSpecificView
     }
     
     // MARK: - View Components
@@ -457,32 +364,6 @@ struct MacMainView: View {
         }
     }
     
-    /// The shared outcome screen (UI plan step 4.7), with the Mac's project
-    /// dashboard and its SFTP actions in the evidence slot.
-    @ViewBuilder
-    private var completionView: some View {
-        CoordinatorOutcomeScreen(coordinator: coordinator, projectEvidence: {
-            if let job = coordinator.photographerJobViewModel.dashboardJob,
-               CompletionEvidencePresentation.shouldShowProjectMedia(
-                hasDashboardJob: true,
-                hasCardIngests: !job.cardIngests.isEmpty
-               ) {
-                PhotographerSessionDashboard(
-                    viewModel: coordinator.photographerJobViewModel,
-                    job: job,
-                    queueRemoteBackup: remoteBackups.queueRemoteBackup,
-                    retryRemoteBackup: remoteBackups.retryRemoteBackup,
-                    cancelRemoteBackup: remoteBackups.cancelRemoteBackup
-                )
-            }
-        })
-        .background {
-            GeometryReader { proxy in
-                Color.clear.preference(key: MacOutcomeContentHeightKey.self, value: proxy.size.height)
-            }
-        }
-    }
-    
     private var darkBackground: some View {
         Color(nsColor: .windowBackgroundColor)
     }
@@ -508,10 +389,6 @@ struct MacMainView: View {
                 await coordinator.showAlert(title: TransferMenuPresentation.ejectErrorTitle, message: error)
             }
         }
-    }
-
-    private var showsTransferProgress: Bool {
-        coordinator.currentMode == .copyAndVerify && coordinator.isOperationInProgress
     }
 
     private var activeAttentionNotice: TransferLibraryPresentation.AttentionNotice? {
@@ -543,13 +420,7 @@ struct MacMainView: View {
         case .masterReport:
             return "master-report"
         case .copyAndVerify:
-            switch copyMainContentPolicy {
-            case .progress: return "copy-running"
-            case .pausedSetup: return "copy-paused"
-            case .queueSummary: return "copy-queue-summary"
-            case .transferContent:
-                return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
-            }
+            return "copy-setup"
         }
     }
 
@@ -562,15 +433,9 @@ struct MacMainView: View {
         guard let window = hostingWindow, measuredScrollableContentHeight > 0 else { return }
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
-        // A vertical ScrollView can retain the previous setup viewport as its
-        // measured content height. The finish screen reports its own intrinsic
-        // height so the same window policy can shrink away that empty space.
-        let contentHeight = coordinator.showsOutcomeSummary && measuredOutcomeContentHeight > 0
-            ? measuredOutcomeContentHeight + 44
-            : measuredScrollableContentHeight
         let newFrame = MacWindowFramePolicy.fittedFrame(
             currentFrame: window.frame,
-            measuredContentHeight: contentHeight + measuredNoticeHeight,
+            measuredContentHeight: measuredScrollableContentHeight + measuredNoticeHeight,
             windowChromeHeight: chromeHeight,
             visibleFrame: visibleFrame
         )
@@ -630,10 +495,6 @@ struct MacMainView: View {
                 measuredNoticeHeight = height
                 resizeWindowToMeasuredContent()
             }
-            .onPreferenceChange(MacOutcomeContentHeightKey.self) { height in
-                measuredOutcomeContentHeight = height
-                resizeWindowToMeasuredContent()
-            }
             .onChange(of: hostingWindow != nil) { _, hasWindow in
                 guard hasWindow, let hostingWindow else { return }
                 restoreWindowFrame(in: hostingWindow)
@@ -671,6 +532,11 @@ struct MacMainView: View {
                     guard coordinator.queuePausedRecordID == nil else { return }
                     let presentation = SetupPresentation.make(coordinator: coordinator)
                     guard presentation.start.canStart else { return }
+                    if presentation.start.action == .addToQueue {
+                        do { try coordinator.enqueueSelection() }
+                        catch { Task { await coordinator.showError(error) } }
+                        return
+                    }
                     if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
                         stagedCardCount: coordinator.stagedSetupTransfers.count,
                         hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
@@ -692,18 +558,11 @@ struct MacMainView: View {
                 // ⌘. does nothing when nothing runs. A transfer asks first,
                 // like its Cancel button; Compare cancels at once as before.
                 guard coordinator.isOperationInProgress else { return }
-                if showsTransferProgress {
+                if coordinator.currentMode == .copyAndVerify {
                     confirmingTransferCancel = true
                 } else {
                     coordinator.cancelOperation()
                 }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .newTransfer)) { _ in
-                guard menuPresentation.newTransferEnabled else { return }
-                // From Compare or Master Report, New Transfer goes back to
-                // Copy & Verify, or the command would appear to do nothing.
-                coordinator.switchMode(to: .copyAndVerify)
-                coordinator.startNewTransfer()
             }
             .onReceive(NotificationCenter.default.publisher(for: .ejectCard)) { _ in
                 ejectCardFromMenu()
@@ -732,7 +591,6 @@ struct MacMainView: View {
 extension Notification.Name {
     static let startVerification = Notification.Name("startVerification")
     static let cancelOperation = Notification.Name("cancelOperation")
-    static let newTransfer = Notification.Name("newTransfer")
     static let ejectCard = Notification.Name("ejectCard")
     static let switchToCopyMode = Notification.Name("switchToCopyMode")
     static let switchToCompareMode = Notification.Name("switchToCompareMode")

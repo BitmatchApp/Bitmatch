@@ -23,10 +23,59 @@ struct QueueSessionPresentationTests {
 
         #expect(presentation.rows.map(\.cardName) == ["A001", "A002", "A003"])
         #expect(presentation.headerTitle == "Copying A002")
-        #expect(presentation.headerDetail == "1 finished · 1 waiting")
+        #expect(presentation.headerDetail == "Card 2 of 3")
         #expect(presentation.rows[0].action == .eject)
         #expect(presentation.rows[1].safetyState == .copying(progress: 42))
+        #expect(presentation.rows[1].oneLineStatus(timeRemaining: "3 min")
+            .contains("A002 →"))
+        #expect(presentation.rows[1].oneLineStatus(timeRemaining: "3 min")
+            .contains("Copying 42% · 3 min left"))
         #expect(presentation.rows[2].action == nil)
+        #expect(presentation.rows[2].oneLineStatus().contains("· Waiting"))
+
+        let verifyingProgress = OperationProgress(
+            overallProgress: 0.7, currentFile: "clip.mov", filesProcessed: 7, totalFiles: 10,
+            currentStage: .verifying, speed: nil, elapsedTime: nil, averageSpeed: nil,
+            peakSpeed: nil, bytesProcessed: nil, totalBytes: nil, stageProgress: 0.4
+        )
+        let verifying = QueueSessionPresentation.make(
+            records: [running], sessionIDs: [running.id], progress: verifyingProgress,
+            mountedSourceIDs: []
+        )
+        #expect(verifying.rows.first?.oneLineStatus().contains("Verifying 40%") == true)
+    }
+
+    /// Plant: filter `projectID != nil` records out of the session.
+    @Test func projectRecordUsesTheSameRunningAndFinishedSafetyRows() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let projectID = UUID()
+        let projectCardID = UUID()
+        let running = try fixture.record(
+            name: "PROJECT_CARD", state: .running, at: 1,
+            projectID: projectID, projectCardID: projectCardID
+        )
+        let progress = OperationProgress(
+            overallProgress: 0.6, currentFile: "clip.mov", filesProcessed: 1, totalFiles: 1,
+            currentStage: .verifying, speed: nil, elapsedTime: nil, averageSpeed: nil,
+            peakSpeed: nil, bytesProcessed: 64, totalBytes: 64, stageProgress: 0.6
+        )
+        let runningPresentation = QueueSessionPresentation.make(
+            records: [running], sessionIDs: [running.id], progress: progress, mountedSourceIDs: []
+        )
+        #expect(runningPresentation.rows.first?.safetyState == .verifying(progress: 60))
+        #expect(runningPresentation.rows.first?.progressFraction == 0.6)
+
+        let safe = try fixture.record(
+            name: "PROJECT_CARD", state: .completed, outcome: .verified, at: 1,
+            projectID: projectID, projectCardID: projectCardID
+        )
+        let finishedPresentation = QueueSessionPresentation.make(
+            records: [safe], sessionIDs: [safe.id], progress: nil, mountedSourceIDs: [safe.id]
+        )
+        let row = try #require(finishedPresentation.rows.first)
+        #expect(row.safetyState == .safeToErase)
+        #expect(row.outcome?.canExport == true)
     }
 
     @Test func waitingQueueDoesNotPretendItAlreadyStopped() throws {
@@ -181,30 +230,30 @@ struct QueueSessionPresentationTests {
 
         #expect(presentation.rows.map(\.action) == [.eject, .review, .review])
         #expect(presentation.ejectableCardIDs == [safe.id])
+        #expect(presentation.rows[0].outcome?.finishTitle == "A001 is safe to erase")
+        #expect(presentation.rows[1].outcome?.finishTitle == "A002 copied, not verified")
+        #expect(presentation.rows[2].outcome?.finishTitle == "A003 needs attention")
+        #expect(presentation.rows[0].showsSafeHero)
+        #expect(!presentation.rows[1].showsSafeHero)
+        #expect(!presentation.rows[2].showsSafeHero)
     }
 
-    @Test func connectedCardGhostRowsRequireRunningStateAndEligibleCards() {
-        let card = ConnectedDrivesPresentation.Volume(
-            name: "A004", url: URL(fileURLWithPath: "/Volumes/A004"),
-            totalBytes: 64, freeBytes: 32, isRemovable: true, isInternal: false,
-            volumeID: "card-4", cameraName: "ARRI"
-        )
-        let backup = ConnectedDrivesPresentation.Volume(
-            name: "Shuttle", url: URL(fileURLWithPath: "/Volumes/Shuttle"),
-            totalBytes: 1_000, freeBytes: 500, isRemovable: true, isInternal: false,
-            volumeID: "backup"
-        )
-        let eligible = ConnectedDrivesPresentation.queueCandidates(
-            volumes: [card, backup], sourceURL: URL(fileURLWithPath: "/Volumes/A003"),
-            destinationURLs: [backup.url], queuedSourceURLs: []
-        )
+    @Test func heroExpansionRequiresANewSafeVerdictAndStopsForTheNextRunningCard() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let safe = try fixture.record(name: "A001", state: .completed, outcome: .verified, at: 1)
+        let running = try fixture.record(name: "A002", state: .running, at: 2)
+        let safeRow = try #require(QueueSessionPresentation.make(
+            records: [safe], sessionIDs: [safe.id], progress: nil, mountedSourceIDs: [safe.id]
+        ).rows.first)
+        let runningRows = QueueSessionPresentation.make(
+            records: [running, safe], sessionIDs: [safe.id, running.id], progress: nil,
+            mountedSourceIDs: [safe.id]
+        ).rows
 
-        #expect(QueueConnectedCardPresentation.ghostRows(
-            isTransferOrQueueRunning: false, eligibleRows: eligible
-        ).isEmpty)
-        #expect(QueueConnectedCardPresentation.ghostRows(
-            isTransferOrQueueRunning: true, eligibleRows: eligible
-        ).map(\.displayName) == ["A004"])
+        #expect(QueueHeroPolicy.shouldExpand(row: safeRow, previousRows: [], currentRows: [safeRow]))
+        #expect(!QueueHeroPolicy.shouldExpand(row: safeRow, previousRows: [safeRow], currentRows: [safeRow]))
+        #expect(!QueueHeroPolicy.shouldExpand(row: safeRow, previousRows: [], currentRows: runningRows))
     }
 
     @Test func accessibilityStatusCombinesCardStateCauseAndSafetyWarning() throws {
@@ -224,7 +273,7 @@ struct QueueSessionPresentationTests {
         let row = try #require(QueueSessionPresentation.make(
             records: [record], sessionIDs: [record.id], progress: nil, mountedSourceIDs: [record.id]
         ).rows.first)
-        #expect(row.evidence == "Empty · 1 file")
+        #expect(row.evidence == "1 file · Empty")
         #expect(!row.evidence!.contains("Zero KB"))
     }
 
@@ -273,7 +322,7 @@ struct QueueSessionPresentationTests {
 
     @Test func dockBadgeIncludesStandaloneAttentionSinceLaunch() {
         #expect(QueueDockBadgePolicy.totalUnresolvedCount(
-            rows: [], reviewedIDs: [], standaloneAttentionCount: 2
+            rows: [], reviewedIDs: [], standaloneAttentionIDs: [UUID(), UUID()]
         ) == 2)
     }
 }
@@ -296,14 +345,17 @@ private final class QueuePresentationFixture {
         outcome: ResultOutcome? = nil,
         size: Int64 = 64,
         summary: String = "Ready",
-        at seconds: TimeInterval
+        at seconds: TimeInterval,
+        projectID: UUID? = nil,
+        projectCardID: UUID? = nil
     ) throws -> LocalTransferRecord {
         let source = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         var record = LocalTransferRecord(
             id: UUID(), createdAt: Date(timeIntervalSince1970: seconds),
             source: try LocalTransferResource(url: source), destinations: [try LocalTransferResource(url: backup)],
-            verificationMode: mode, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+            verificationMode: mode, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+            projectID: projectID, projectCardID: projectCardID
         )
         record.state = state
         record.summary = summary

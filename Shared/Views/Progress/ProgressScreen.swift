@@ -54,6 +54,7 @@ struct ProgressScreen: View {
             header
             progressBar
             stats
+            currentFile
             issue
             destinationList
             deviceNotes
@@ -83,6 +84,22 @@ struct ProgressScreen: View {
             }
         } message: {
             Text(TransferProgressPresentation.cancelConfirmationMessage)
+        }
+    }
+
+    @ViewBuilder
+    private var currentFile: some View {
+        if let file = presentation.currentFile {
+            HStack(spacing: 6) {
+                Text("Current file")
+                    .foregroundStyle(.secondary)
+                Text(URL(fileURLWithPath: file).lastPathComponent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.caption)
+            .help(file)
+            .accessibilityElement(children: .combine)
         }
     }
 

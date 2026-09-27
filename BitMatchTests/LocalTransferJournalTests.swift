@@ -253,12 +253,20 @@ struct LocalTransferJournalTests {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
         let journal = LocalTransferJournal(fileURL: f.journal)
+        let projectID = UUID()
+        let projectCardID = UUID()
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
-                                     cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), projectID: UUID())
+                                     cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+                                     projectID: projectID, projectCardID: projectCardID)
         try journal.markRunning(id: id)
         try journal.interrupt(id: id, summary: "Interrupted")
         #expect(journal.records.first?.canRetry == false)
         #expect(throws: LocalTransferJournalError.self) { try journal.requeue(id: id) }
+        // A second journal instance cannot open live history (it is locked
+        // while this one is alive), so read what was written to disk.
+        let saved = try String(contentsOf: f.journal, encoding: .utf8)
+        #expect(saved.contains(projectID.uuidString))
+        #expect(saved.contains(projectCardID.uuidString))
     }
 
     @Test func corruptHistoryIsNotSilentlyOverwritten() throws {
