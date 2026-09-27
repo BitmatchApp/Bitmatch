@@ -426,8 +426,8 @@ public final class DestinationWriter {
                             continue
                         }
 
-                        let resolvedSource = fileURL.resolvingSymlinksInPath()
-                        guard PathContainment.isWithin(resolvedSource.path, root: src.resolvingSymlinksInPath().path) else {
+                        let resolvedSource = fileURL.resolvingSymlinksKeepingCase()
+                        guard PathContainment.isWithin(resolvedSource.path, root: src.resolvingSymlinksKeepingCase().path) else {
                             await onError(relativePath, NSError(
                                 domain: "DestinationWriter",
                                 code: NSFileWriteNoPermissionError,

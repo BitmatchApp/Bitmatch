@@ -117,8 +117,8 @@ public enum EvidenceReader: Sendable {
 
     /// The path of `url` under `root`, or its filename when it is not under it.
     public static func displayName(of url: URL, under root: URL) -> String {
-        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
-        let path = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let rootPath = root.standardizedFileURL.resolvingSymlinksKeepingCase().path
+        let path = url.standardizedFileURL.resolvingSymlinksKeepingCase().path
         let prefix = rootPath.hasSuffix("/") ? rootPath : rootPath + "/"
         guard path.hasPrefix(prefix) else { return url.lastPathComponent }
         return String(path.dropFirst(prefix.count))

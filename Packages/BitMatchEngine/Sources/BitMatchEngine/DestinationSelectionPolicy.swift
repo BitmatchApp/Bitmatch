@@ -179,6 +179,6 @@ public enum DestinationSelectionPolicy: Sendable {
     }
 
     private static func resolvedPath(_ url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksInPath().path
+        url.standardizedFileURL.resolvingSymlinksKeepingCase().path
     }
 }

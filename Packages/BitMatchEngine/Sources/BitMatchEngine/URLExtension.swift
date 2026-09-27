@@ -2,8 +2,8 @@ import Foundation
 
 public extension URL {
     func relativePath(to base: URL) -> String {
-        let base = base.standardizedFileURL.resolvingSymlinksInPath()
-        let me = self.standardizedFileURL.resolvingSymlinksInPath()
+        let base = base.standardizedFileURL.resolvingSymlinksKeepingCase()
+        let me = self.standardizedFileURL.resolvingSymlinksKeepingCase()
         let a = base.pathComponents
         let b = me.pathComponents
         guard b.starts(with: a) else { return self.lastPathComponent }
@@ -11,8 +11,8 @@ public extension URL {
     }
 
     func isAncestor(of other: URL) -> Bool {
-        let a = standardizedFileURL.resolvingSymlinksInPath().pathComponents
-        let b = other.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let a = standardizedFileURL.resolvingSymlinksKeepingCase().pathComponents
+        let b = other.standardizedFileURL.resolvingSymlinksKeepingCase().pathComponents
         return b.starts(with: a)
     }
 

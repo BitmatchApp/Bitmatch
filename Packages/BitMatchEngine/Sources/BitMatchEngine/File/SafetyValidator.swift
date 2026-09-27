@@ -368,7 +368,7 @@ public final class SafetyValidator {
             } else {
                 target = candidate.deletingLastPathComponent().appendingPathComponent(linkDestination)
             }
-            resolved = target.standardizedFileURL.resolvingSymlinksInPath()
+            resolved = target.standardizedFileURL.resolvingSymlinksKeepingCase()
         }
 
         return resolved.standardizedFileURL.path
@@ -534,7 +534,7 @@ public final class SafetyValidator {
     }
 
     private static func canonicalPath(_ url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksInPath().path
+        url.standardizedFileURL.resolvingSymlinksKeepingCase().path
     }
 }
 

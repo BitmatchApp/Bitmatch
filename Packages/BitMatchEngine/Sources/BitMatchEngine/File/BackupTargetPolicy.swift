@@ -273,6 +273,6 @@ public enum BackupTargetPolicy: Sendable {
     }
 
     public static func canonicalPath(_ url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksInPath().path
+        url.standardizedFileURL.resolvingSymlinksKeepingCase().path
     }
 }

@@ -282,7 +282,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                     actions.copySummary(presentation.copySummary)
                 } label: {
                     Label("Copy Summary", systemImage: "doc.on.doc")
-                        .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                        .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.actionTargetHeight)
                 }
                 .buttonStyle(.bordered)
             }
@@ -292,6 +292,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                     .foregroundStyle(ResultStatusTone.warning.color)
             }
         }
+        .controlSize(.large)
         .disabled(isBusy)
     }
 
@@ -299,7 +300,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     private func newTransferButton(prominent: Bool) -> some View {
         let button = Button(action: actions.newTransfer) {
             Label("New Transfer", systemImage: "plus")
-                .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.actionTargetHeight)
         }
         .accessibilityHint(presentation.newTransferHelp ?? "Clears this outcome.")
         .help(presentation.newTransferHelp ?? "Start a new transfer")
@@ -314,7 +315,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     private func retryButton(_ retry: @escaping () -> Void, prominent: Bool) -> some View {
         let button = Button(action: retry) {
             Label("Retry Transfer", systemImage: "arrow.clockwise")
-                .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.actionTargetHeight)
         }
         .accessibilityHint("Runs this transfer again from the same card to the same destinations. The earlier attempt stays in history.")
         if prominent {
@@ -324,13 +325,25 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
         }
     }
 
+    /// iPad and iPhone keep 44 pt touch targets. On the Mac a menu button
+    /// ignores its label's height, so stretching the plain buttons to 44 pt
+    /// made Export Report shorter than its neighbours; all of them use the
+    /// large control size instead.
+    private static var actionTargetHeight: CGFloat? {
+        #if os(macOS)
+        nil
+        #else
+        minTarget
+        #endif
+    }
+
     private var exportMenu: some View {
         Menu {
             Button("JSON report") { export(asCSV: false) }
             Button("CSV results") { export(asCSV: true) }
         } label: {
             Label("Export Report", systemImage: "square.and.arrow.up")
-                .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
+                .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.actionTargetHeight)
         }
         .menuStyle(.button)
         .buttonStyle(.bordered)
@@ -402,7 +415,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                 // A stable label (audit M12): VoiceOver says "Show issues only, on".
                 Toggle("Show issues only", systemImage: "exclamationmark.triangle", isOn: $issuesOnly)
                     .toggleStyle(.button)
-                    .frame(minHeight: Self.minTarget)
+                    .frame(minHeight: Self.actionTargetHeight)
 
                 let visible = ResultPresentation.visibleRows(
                     rows,

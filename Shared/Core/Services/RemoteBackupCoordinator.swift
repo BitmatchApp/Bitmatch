@@ -259,7 +259,7 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
 
         let root: URL
         do {
-            root = try resolveBookmark(bookmark).standardizedFileURL.resolvingSymlinksInPath()
+            root = try resolveBookmark(bookmark).standardizedFileURL.resolvingSymlinksKeepingCase()
         } catch {
             throw RemoteBackupError.bookmarkUnavailable
         }
@@ -273,7 +273,7 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
             }
         }
         let file = root.appendingPathComponent(entry.relativePath.description, isDirectory: false)
-            .standardizedFileURL.resolvingSymlinksInPath()
+            .standardizedFileURL.resolvingSymlinksKeepingCase()
         guard contains(file, in: root),
               (try? fileSize(file)) == entry.byteCount,
               let digest = try? await sha256(file),
@@ -378,8 +378,8 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
     }
 
     private func contains(_ url: URL, in root: URL) -> Bool {
-        let rootPath = root.standardizedFileURL.resolvingSymlinksInPath().path
-        let urlPath = url.standardizedFileURL.resolvingSymlinksInPath().path
+        let rootPath = root.standardizedFileURL.resolvingSymlinksKeepingCase().path
+        let urlPath = url.standardizedFileURL.resolvingSymlinksKeepingCase().path
         return urlPath.hasPrefix(rootPath.hasSuffix("/") ? rootPath : rootPath + "/")
     }
 

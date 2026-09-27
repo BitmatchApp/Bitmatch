@@ -71,7 +71,7 @@ public struct TransferReadiness: Equatable, Sendable {
             blockers.append(emptySourceIssue)
         }
 
-        let uniqueDestinationPaths = Set(destinations.map { PathContainment.comparablePath($0.standardizedFileURL.resolvingSymlinksInPath().path) })
+        let uniqueDestinationPaths = Set(destinations.map { PathContainment.comparablePath($0.standardizedFileURL.resolvingSymlinksKeepingCase().path) })
         if uniqueDestinationPaths.count != destinations.count {
             blockers.append("Destination folders must be unique")
         }

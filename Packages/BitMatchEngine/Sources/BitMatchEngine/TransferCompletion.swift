@@ -160,7 +160,7 @@ public enum TransferCompletion: Sendable {
     }
 
     private static func canonicalPath(_ url: URL) -> String {
-        ResultPathMatch.comparablePath(url.standardizedFileURL.resolvingSymlinksInPath().path)
+        ResultPathMatch.comparablePath(url.standardizedFileURL.resolvingSymlinksKeepingCase().path)
     }
 
     /// Resolves each folder once. Only the folder can hold a symlink here:
@@ -178,7 +178,7 @@ public enum TransferCompletion: Sendable {
                 comparableFolder = cached
             } else {
                 comparableFolder = ResultPathMatch.comparablePath(
-                    URL(fileURLWithPath: folder).standardizedFileURL.resolvingSymlinksInPath().path
+                    URL(fileURLWithPath: folder).standardizedFileURL.resolvingSymlinksKeepingCase().path
                 )
                 resolved[folder] = comparableFolder
             }
@@ -243,10 +243,10 @@ public enum TransferCompletion: Sendable {
                 issues.append("\(item.destination.lastPathComponent): ASC MHL not created because verification is incomplete")
                 continue
             }
-            let canonicalRoot = item.root.standardizedFileURL.resolvingSymlinksInPath()
+            let canonicalRoot = item.root.standardizedFileURL.resolvingSymlinksKeepingCase()
             jobs.append(ASCMHLJob(root: item.root, files: rows.map {
                 ASCMHLGenerator.VerifiedFile(
-                    relativePath: $0.destinationURL.standardizedFileURL.resolvingSymlinksInPath().relativePath(to: canonicalRoot),
+                    relativePath: $0.destinationURL.standardizedFileURL.resolvingSymlinksKeepingCase().relativePath(to: canonicalRoot),
                     size: $0.fileSize, expectedSHA256: $0.verificationResult?.sourceChecksum ?? ""
                 )
             }))

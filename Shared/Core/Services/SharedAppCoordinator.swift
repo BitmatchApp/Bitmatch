@@ -665,7 +665,7 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     private static func resolvedPath(_ url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksInPath().path
+        url.standardizedFileURL.resolvingSymlinksKeepingCase().path
     }
 
     /// True while the chosen source has not finished its folder scan. Start
@@ -815,10 +815,10 @@ class SharedAppCoordinator: ObservableObject {
         guard let record = queueTemplateRecord else { return [] }
         return ConnectedDrivesPresentation.queueCandidates(
             volumes: volumes,
-            sourceURL: record.source.url.standardizedFileURL.resolvingSymlinksInPath(),
-            destinationURLs: record.destinations.map { $0.url.standardizedFileURL.resolvingSymlinksInPath() },
+            sourceURL: record.source.url.standardizedFileURL.resolvingSymlinksKeepingCase(),
+            destinationURLs: record.destinations.map { $0.url.standardizedFileURL.resolvingSymlinksKeepingCase() },
             queuedSourceURLs: transferJournal.records.filter { $0.state == .queued }
-                .map { $0.source.url.standardizedFileURL.resolvingSymlinksInPath() }
+                .map { $0.source.url.standardizedFileURL.resolvingSymlinksKeepingCase() }
         )
     }
 

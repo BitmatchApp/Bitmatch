@@ -30,7 +30,7 @@ public struct RelativePathResolver: Sendable {
 
     public init(base: URL) {
         self.base = base
-        var paths = [base.path, base.resolvingSymlinksInPath().path, base.standardizedFileURL.path]
+        var paths = [base.path, base.resolvingSymlinksKeepingCase().path, base.standardizedFileURL.path]
         paths = paths.map { $0.hasSuffix("/") && $0.count > 1 ? String($0.dropLast()) : $0 }
         var unique: [String] = []
         for path in paths where !unique.contains(path) { unique.append(path) }
@@ -38,7 +38,7 @@ public struct RelativePathResolver: Sendable {
     }
 
     public func resolve(_ item: URL) throws -> String {
-        for candidate in [item.path, item.resolvingSymlinksInPath().path] {
+        for candidate in [item.path, item.resolvingSymlinksKeepingCase().path] {
             for basePath in basePaths where candidate.hasPrefix(basePath + "/") {
                 return String(candidate.dropFirst(basePath.count + 1))
             }
