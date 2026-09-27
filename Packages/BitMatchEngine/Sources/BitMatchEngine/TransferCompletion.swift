@@ -333,8 +333,14 @@ public enum TransferCompletion: Sendable {
         reportIssue: String?,
         project: ProjectGate
     ) -> Verdict {
+        // Safe-to-erase modes count only independently verified readback rows.
+        // Quick has no safe verdict; its copied rows remain eligible only for
+        // the separate amber "copied, not verified" outcome.
+        let coverageRows = mode == .quick
+            ? rows.filter(\.isSuccessStatus)
+            : rows.filter(\.isVerifiedStatus)
         let coverage = coverageAnalysis(
-            entries: rows.map {
+            entries: coverageRows.map {
                 CoverageEntry(
                     source: URL(fileURLWithPath: $0.path),
                     destination: $0.destinationPath.map { URL(fileURLWithPath: $0) }
