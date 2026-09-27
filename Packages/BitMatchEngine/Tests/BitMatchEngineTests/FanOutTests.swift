@@ -142,6 +142,43 @@ struct FanOutTests {
     }
 
     @Test
+    func sequentialVerifyCannotTurnAFailedCopyIntoSuccess() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "sequential-failed-copy")
+            defer { fixture.cleanup() }
+            try fixture.write(Data(repeating: 0x2a, count: 4097), to: "clip.bin")
+            struct AfterPublishFailure: Error {}
+            let settings = CameraLabelSettings()
+            // The file is published intact, then the copy fails (as when the
+            // folder cannot be saved to the drive). The verify pass will find
+            // matching bytes; the failure must still stand.
+            let operation = try await TransferPipeline(
+                fileSystem: LocalFileAccess(),
+                checksum: ChecksumEngine.shared,
+                pipelinedVerification: false,
+                fanOutHooks: .init(afterPublish: { destination, _ in
+                    if destination == 1 { throw AfterPublishFailure() }
+                })
+            ).performFileOperation(
+                sourceURL: fixture.source,
+                destinationURLs: fixture.destinations,
+                verificationMode: .standard,
+                settings: settings,
+                progressCallback: { _ in },
+                onFileResult: nil
+            )
+
+            #expect(operation.results.filter { !$0.success }.count == 1)
+            let verdict = fixture.verdict(for: operation, settings: settings)
+            #expect(!verdict.success)
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
     func copiedFilesWithFailedReadbackDoNotCountAsCoverage() async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)

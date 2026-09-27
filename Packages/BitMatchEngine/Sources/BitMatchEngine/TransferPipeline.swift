@@ -130,6 +130,10 @@ public actor RunLedger {
     private func store(_ row: FileOperationResult, relativePath: String, destination: Int) {
         let key = FileResultKey(sourceRelativePath: relativePath, destinationIndex: destination)
         if let index = rowIndex[key] {
+            // A failure is final for this run: a later verify pass may not
+            // turn a failed copy (e.g. a folder that failed to save after
+            // publish) back into a success.
+            if !rows[index].success && row.success { return }
             rows[index] = row
         } else {
             rowIndex[key] = rows.count

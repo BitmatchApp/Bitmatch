@@ -173,13 +173,18 @@ final class OperationOwnershipTests: XCTestCase {
                 return result
             }
 
-            let verifierStarted = await waitUntil { await checksum.didStart }
+            // Fan-out pins every destination before the source-once copy, so no
+            // verifier can start while a destination setup is still blocked.
+            // Unblock setup first (it then fails fast) and only then wait for
+            // the verifier to block in the checksum gate.
             let failingDirectoryEntered = await waitUntil { fileSystem.didEnterFailingDirectory }
-            XCTAssertTrue(verifierStarted)
             XCTAssertTrue(failingDirectoryEntered)
+            fileSystem.releaseFailingDirectory()
+
+            let verifierStarted = await waitUntil { await checksum.didStart }
+            XCTAssertTrue(verifierStarted)
 
             service.cancelOperation()
-            fileSystem.releaseFailingDirectory()
 
             let returnedBeforeVerifierRelease = await waitUntil(timeout: .milliseconds(300)) { await operationFinished.value }
             let verifierSawCancellation = await checksum.didObserveCancellation
