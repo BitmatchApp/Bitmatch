@@ -60,6 +60,23 @@ struct CompareIgnoredFilesTests {
     }
 
     @Test
+    func finderMetadataOnSourceIsADifference() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        // A card-side AppleDouble sidecar (and card-side view state) that was
+        // never copied is a real gap: doubt fails closed.
+        try f.write("Clip/._A001C001.mxf", in: f.card)
+        try f.write(".DS_Store", in: f.card)
+
+        let stats = try await f.compare()
+
+        #expect(stats.onlyInLeftPaths.contains("Clip/._A001C001.mxf"))
+        #expect(stats.onlyInLeftPaths.contains(".DS_Store"))
+        #expect(stats.onlyInRightPaths == [])
+        #expect(!stats.isClean)
+    }
+
+    @Test
     func finderMetadataOnBothSidesIsNotAMismatch() async throws {
         let f = try Fixture()
         defer { f.cleanup() }

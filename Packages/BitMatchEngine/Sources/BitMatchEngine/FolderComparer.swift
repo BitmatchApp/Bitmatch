@@ -42,9 +42,18 @@ public struct FolderComparer: Sendable {
         let sourceSet = Set(sourceMap.keys)
         let destSet = Set(destMap.keys)
 
+        // Finder metadata is asymmetric: macOS writes `.DS_Store`, `._`
+        // sidecars, and `Icon\r` into browsed folders on its own (notably on
+        // exFAT/FAT destinations), so a metadata file that exists ONLY on the
+        // destination side is view state, not a difference. A metadata file
+        // on the SOURCE side that was never copied is a real gap: the card
+        // held a `._` sidecar the backup does not have, and doubt fails
+        // closed. Files present on both sides are never content-compared.
         let onlyInSource = sourceSet.subtracting(destSet)
-        let onlyInDest = destSet.subtracting(sourceSet).filter { !Self.isOffloadManifest($0) }
-        let common = sourceSet.intersection(destSet)
+        let onlyInDest = destSet.subtracting(sourceSet).filter {
+            !Self.isOffloadManifest($0) && !Self.isFinderMetadata($0)
+        }
+        let common = sourceSet.intersection(destSet).filter { !Self.isFinderMetadata($0) }
 
         var mismatched: Set<String> = []
         // One plan for engine and screen: Paranoid is byte-by-byte plus SHA-256.
@@ -127,8 +136,10 @@ public struct FolderComparer: Sendable {
     }
 
     /// Finder writes these into any folder it displays, so a card and its offload
-    /// differ as soon as someone browses one of them (GitHub issue #8). They are
-    /// view state, not footage, and are ignored on both sides.
+    /// differ as soon as someone browses one of them (GitHub issue #8). The
+    /// AppleDouble `._` sidecar also travels with real footage on FAT-family
+    /// media. See `compare`: destination-only metadata is view state and is
+    /// not a difference, while source-only metadata is a real gap.
     public static func isFinderMetadata(_ relativePath: String) -> Bool {
         let name = (relativePath as NSString).lastPathComponent
         return name == ".DS_Store" || name == "Icon\r" || name.hasPrefix("._")
@@ -150,8 +161,10 @@ public struct FolderComparer: Sendable {
         map.reserveCapacity(files.count)
         let resolver = RelativePathResolver(base: base)
         for fileURL in files {
+            // Finder metadata stays in the map: `compare` applies the
+            // asymmetric rule (destination-only is ignored, source-only is a
+            // difference, present-on-both is never content-compared).
             let key = try resolver.resolve(fileURL)
-            if Self.isFinderMetadata(key) { continue }
             let size = try fileAccess.getFileSize(for: fileURL)
             map[key] = (fileURL, size)
         }

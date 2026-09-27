@@ -60,6 +60,33 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         logicalRootURL.appendingPathComponent(relativePath)
     }
 
+    /// Confirms that the folder path shown to the user still names this pinned
+    /// directory. Verification may still succeed through the descriptor after
+    /// a rename, but that orphaned location is not a safe completed backup.
+    public func logicalRootStillMatchesPinnedDirectory() -> Bool {
+        var pinned = stat()
+        var current = stat()
+        guard fstat(directoryFD, &pinned) == 0,
+              lstat(logicalRootURL.path, &current) == 0 else { return false }
+        return (current.st_mode & S_IFMT) == S_IFDIR
+            && current.st_dev == pinned.st_dev
+            && current.st_ino == pinned.st_ino
+    }
+
+    /// Lists the pinned directory itself, independent of whether its pathname
+    /// was renamed. This is the final destination-coverage check.
+    public func regularFileMetadata() throws -> [FileEntry] {
+        try CardSource.enumerateTree(directoryFD: directoryFD, root: logicalRootURL).compactMap { entry in
+            guard entry.kind == .regularFile else { return nil }
+            return FileEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                size: entry.size,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
+
     /// Opens a destination file below the pinned directory. The returned
     /// descriptor, not `logicalRootURL`, is the authority for subsequent
     /// reads. This is deliberately separate from the display URL above.
@@ -558,37 +585,9 @@ public final class DestinationWriter {
         in pinnedRoot: PinnedDestinationDirectory,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
-        let fm = FileManager.default
-        let resolver = RelativePathResolver(base: sourceRoot)
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
-        guard let enumerator = fm.enumerator(
-            at: sourceRoot,
-            includingPropertiesForKeys: keys,
-            options: []
-        ) else { return }
-
-        while let item = enumerator.nextObject() as? URL {
+        for entry in try CardSource.enumerateTree(base: sourceRoot) where entry.kind == .directory {
             try Task.checkCancellation()
-
-            // Keep the descriptor-pinned directory tree in lockstep with the
-            // manifest before loading attributes from possibly unreadable
-            // volume metadata.
-            if enumerator.level == 1,
-               CardSource.isRootVolumeMetadataDirectory(item) {
-                enumerator.skipDescendants()
-                continue
-            }
-
-            guard let values = try? item.resourceValues(forKeys: Set(keys)),
-                  values.isSymbolicLink != true,
-                  values.isDirectory == true else { continue }
-            let relative: String
-            do {
-                relative = try resolver.resolve(item)
-            } catch {
-                await onError(item.path, error)
-                continue
-            }
+            let relative = entry.relativePath
             guard let components = safeRelativeComponents(relative) else {
                 await onError(relative, NSError(
                     domain: "DestinationWriter",
