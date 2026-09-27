@@ -49,6 +49,7 @@ final class NotificationDelegate: NSObject, UNUserNotificationCenterDelegate {
 struct BitMatchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var environment: MacAppEnvironment
+    @StateObject private var updater: UpdaterController
     #if DEBUG
     @ObservedObject private var devModeManager = DevModeManager.shared
     #endif
@@ -68,6 +69,7 @@ struct BitMatchApp: App {
     init() {
         let environment = MacAppEnvironment.make()
         _environment = StateObject(wrappedValue: environment)
+        _updater = StateObject(wrappedValue: UpdaterController(coordinator: environment.coordinator))
         appDelegate.coordinator = environment.coordinator
         UNUserNotificationCenter.current().delegate = notifDelegate
     }
@@ -89,6 +91,13 @@ struct BitMatchApp: App {
         }
         .windowToolbarStyle(.unified(showsTitle: false))
         .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
+            }
+
             OperationCommands()
             
             // Into the system View menu: a CommandMenu("View") adds a second one.
@@ -161,7 +170,8 @@ struct BitMatchApp: App {
             PreferencesWindow(
                 coordinator: environment.coordinator,
                 cameraAutoSource: environment.cameraAutoSource,
-                remoteBackups: environment.remoteBackups
+                remoteBackups: environment.remoteBackups,
+                updater: updater
             )
             .macCompanions(environment)
         }

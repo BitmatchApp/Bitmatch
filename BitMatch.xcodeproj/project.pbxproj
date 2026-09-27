@@ -9,6 +9,7 @@
 /* Begin PBXBuildFile section */
 		E7B1E0012F10000000000004 /* BitMatchEngine in Frameworks */ = {isa = PBXBuildFile; productRef = E7B1E0012F10000000000002 /* BitMatchEngine */; };
 		E7B1E0012F10000000000005 /* BitMatchEngine in Frameworks */ = {isa = PBXBuildFile; productRef = E7B1E0012F10000000000003 /* BitMatchEngine */; };
+		E7B1E0022F10000000000003 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = E7B1E0022F10000000000002 /* Sparkle */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -123,6 +124,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				E7B1E0012F10000000000004 /* BitMatchEngine in Frameworks */,
+				E7B1E0022F10000000000003 /* Sparkle in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -215,6 +217,7 @@
 			name = BitMatch;
 			packageProductDependencies = (
 				E7B1E0012F10000000000002 /* BitMatchEngine */,
+				E7B1E0022F10000000000002 /* Sparkle */,
 			);
 			productName = BitMatch;
 			productReference = 271377ED2E52C7C80048DEC7 /* BitMatch.app */;
@@ -382,6 +385,7 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				E7B1E0012F10000000000001 /* XCLocalSwiftPackageReference "Packages/BitMatchEngine" */,
+				E7B1E0022F10000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 271377EE2E52C7C80048DEC7 /* Products */;
@@ -645,6 +649,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_FILE = "Config/BitMatch-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -673,6 +678,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				INFOPLIST_FILE = "Config/BitMatch-Info.plist";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -985,6 +991,17 @@
 		};
 /* End XCLocalSwiftPackageReference section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		E7B1E0022F10000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/sparkle-project/Sparkle";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.6.0;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
 /* Begin XCSwiftPackageProductDependency section */
 		E7B1E0012F10000000000002 /* BitMatchEngine */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -993,6 +1010,11 @@
 		E7B1E0012F10000000000003 /* BitMatchEngine */ = {
 			isa = XCSwiftPackageProductDependency;
 			productName = BitMatchEngine;
+		};
+		E7B1E0022F10000000000002 /* Sparkle */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E7B1E0022F10000000000001 /* XCRemoteSwiftPackageReference "Sparkle" */;
+			productName = Sparkle;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

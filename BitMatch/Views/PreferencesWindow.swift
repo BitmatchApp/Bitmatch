@@ -16,6 +16,7 @@ struct PreferencesWindow: View {
     @ObservedObject private var notifier: TransferNotifier
     let cameraAutoSource: MacCameraAutoSourceController
     let remoteBackups: MacRemoteBackupController
+    @ObservedObject var updater: UpdaterController
     @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -25,13 +26,15 @@ struct PreferencesWindow: View {
     init(
         coordinator: SharedAppCoordinator,
         cameraAutoSource: MacCameraAutoSourceController,
-        remoteBackups: MacRemoteBackupController
+        remoteBackups: MacRemoteBackupController,
+        updater: UpdaterController
     ) {
         self.coordinator = coordinator
         _generalSettings = ObservedObject(wrappedValue: coordinator.generalSettings)
         _notifier = ObservedObject(wrappedValue: coordinator.transferNotifier)
         self.cameraAutoSource = cameraAutoSource
         self.remoteBackups = remoteBackups
+        self.updater = updater
     }
 
     enum PreferencesPane: String, CaseIterable {
@@ -138,6 +141,20 @@ struct PreferencesWindow: View {
 
             Section(GeneralSettingsPresentation.soundsSection) {
                 Toggle(GeneralSettingsPresentation.playSounds, isOn: $generalSettings.playSounds)
+            }
+
+            Section("Updates") {
+                Toggle(
+                    "Check for updates automatically",
+                    isOn: Binding(
+                        get: { updater.automaticallyChecksForUpdates },
+                        set: updater.setAutomaticallyChecksForUpdates
+                    )
+                )
+                Button("Check Now") {
+                    updater.checkForUpdates()
+                }
+                .disabled(!updater.canCheckForUpdates)
             }
         }
         .formStyle(.grouped)
@@ -371,7 +388,8 @@ struct PreferencesWindow_Previews: PreviewProvider {
         return PreferencesWindow(
             coordinator: environment.coordinator,
             cameraAutoSource: environment.cameraAutoSource,
-            remoteBackups: environment.remoteBackups
+            remoteBackups: environment.remoteBackups,
+            updater: UpdaterController(coordinator: environment.coordinator)
         )
     }
 }
