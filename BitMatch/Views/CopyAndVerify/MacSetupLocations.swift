@@ -1,4 +1,5 @@
 import SwiftUI
+import BitMatchEngine
 
 /// The Mac pickers for the shared source and backup boxes
 /// (`CoordinatorSetupLocations`): the open panel, drag and drop onto the

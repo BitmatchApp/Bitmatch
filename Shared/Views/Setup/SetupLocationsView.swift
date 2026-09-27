@@ -58,28 +58,21 @@ struct SetupLocationsView: View {
     @ViewBuilder
     private var composer: some View {
         if presentation.sideBySide && !stacksVertically {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .top, spacing: 0) {
                 sourceBox.frame(minWidth: 180, maxWidth: .infinity)
-                arrow
-                verificationBox.frame(minWidth: 145, maxWidth: 170)
-                arrow
+                verificationConnector(vertical: false)
+                    .frame(minWidth: 150, maxWidth: 190)
+                    .padding(.top, 44)
                 destinationsBox.frame(minWidth: 250, maxWidth: .infinity)
             }
         } else {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 10) {
                 sourceBox
-                verificationBox
+                verificationConnector(vertical: true)
+                    .frame(maxWidth: .infinity)
                 destinationsBox
             }
         }
-    }
-
-    private var arrow: some View {
-        Image(systemName: "arrow.right")
-            .font(.body.weight(.semibold))
-            .foregroundStyle(.tertiary)
-            .padding(.top, 55)
-            .accessibilityHidden(true)
     }
 
     private func box<Content: View>(
@@ -162,29 +155,71 @@ struct SetupLocationsView: View {
         .background(SetupSelectedLocationBackground(isTargeted: isSourceTargeted))
     }
 
-    private var verificationBox: some View {
-        box(title: "Verification", accessibilityLabel: "Verification: \(verificationMode.rawValue). \(shortVerificationDetail)") {
-            Menu {
-                ForEach(VerificationMode.allCases) { mode in
-                    Button { verificationMode = mode } label: {
-                        if verificationMode == mode { Label(mode.rawValue, systemImage: "checkmark") }
-                        else { Text(mode.rawValue) }
-                    }
+    /// How the copy gets from the card to the drives: not a third box but
+    /// the connection between them, a small menu on the line with one plain
+    /// line of explanation under it.
+    private func verificationConnector(vertical: Bool) -> some View {
+        VStack(spacing: 6) {
+            if vertical {
+                Image(systemName: "arrow.down")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+                verificationMenu
+            } else {
+                HStack(spacing: 0) {
+                    connectorLine
+                    verificationMenu.fixedSize()
+                    connectorLine
+                    Image(systemName: "chevron.right")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, -3)
+                        .accessibilityHidden(true)
                 }
-            } label: {
-                HStack {
-                    Text(verificationMode.rawValue).font(.headline)
-                    Spacer()
-                    Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
-                }
-                .frame(minHeight: 28).contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
-            .accessibilityLabel("Verification mode")
             Text(shortVerificationDetail)
-                .font(.caption).foregroundStyle(.secondary)
+                .font(.caption)
+                .foregroundStyle(verificationMode == .quick ? AnyShapeStyle(ResultStatusTone.warning.color) : AnyShapeStyle(.secondary))
+                .multilineTextAlignment(.center)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.horizontal, 10)
         }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Verification: \(verificationMode.rawValue). \(shortVerificationDetail)")
+    }
+
+    private var connectorLine: some View {
+        Rectangle()
+            .fill(Color.primary.opacity(0.18))
+            .frame(height: 1)
+            .frame(minWidth: 10)
+            .accessibilityHidden(true)
+    }
+
+    private var verificationMenu: some View {
+        Menu {
+            ForEach(VerificationMode.allCases) { mode in
+                Button { verificationMode = mode } label: {
+                    if verificationMode == mode { Label(mode.rawValue, systemImage: "checkmark") }
+                    else { Text(mode.rawValue) }
+                }
+            }
+        } label: {
+            HStack(spacing: 5) {
+                Text(verificationMode.rawValue).font(.subheadline.weight(.semibold))
+                Image(systemName: "chevron.down").font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(Capsule().fill(Color.primary.opacity(0.07)))
+            .overlay(Capsule().strokeBorder(Color.primary.opacity(0.14)))
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .accessibilityLabel("Verification mode")
+        .help("How each copy is checked")
     }
 
     private var shortVerificationDetail: String {

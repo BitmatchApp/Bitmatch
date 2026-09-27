@@ -36,6 +36,9 @@ struct UnreadableMediaBanner: View {
                 .accessibilityElement(children: .combine)
             }
         }
+        // Takes no room at all without a notice: the setup screen does not
+        // space around this slot, so the gap appears only with a banner.
+        .padding(.top, monitor.notices.isEmpty ? 0 : 24)
         .onAppear { monitor.start() }
         .onDisappear { monitor.stop() }
     }

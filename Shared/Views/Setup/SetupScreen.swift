@@ -88,8 +88,13 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     var body: some View {
         VStack(alignment: .leading, spacing: 24) {
             header
-            locationsCard
-            problems
+            if !(layout == .sidebar && hasTrailingColumn) { workflowPicker }
+            VStack(alignment: .leading, spacing: 0) {
+                locationsCard
+                // The problems slot adds its own top spacing when it shows
+                // something, so an empty slot leaves no gap.
+                problems
+            }
             if layout == .sidebar && hasTrailingColumn {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 24) {
@@ -105,7 +110,6 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                     .frame(maxWidth: .infinity, alignment: .topLeading)
                 }
             } else {
-                workflowPicker
                 projectSection
                 preflight
                 controls

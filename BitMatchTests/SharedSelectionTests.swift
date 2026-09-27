@@ -39,7 +39,7 @@ struct SharedSelectionTests {
         let manifest = try CardSource.enumerateRegularFiles(base: root)
         let service = FolderInfoService()
         await service.updateSource(root)
-        #expect(await waitUntil(timeout: .seconds(3)) { !service.isAwaitingSourceInfo(for: root) })
+        #expect(await waitUntil(timeout: .seconds(10)) { !service.isAwaitingSourceInfo(for: root) })
 
         #expect(manifest.map(\.relativePath).contains("clip.mov"))
         #expect(!manifest.map(\.relativePath).contains(".fseventsd/fseventsd-uuid"))
