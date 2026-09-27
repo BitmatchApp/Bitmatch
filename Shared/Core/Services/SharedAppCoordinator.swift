@@ -1399,7 +1399,15 @@ class SharedAppCoordinator: ObservableObject {
                 try transferJournal.cancel(id: recordID, results: results)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else if case .completed(let info) = operationState {
-                try transferJournal.finish(id: recordID, results: results, summary: info.message, hadIssues: !info.success)
+                let durations = copyVerifyExecutor.completedPhaseDurations
+                try transferJournal.finish(
+                    id: recordID,
+                    results: results,
+                    summary: info.message,
+                    hadIssues: !info.success,
+                    copyDurationSeconds: durations.copySeconds,
+                    verifyDurationSeconds: durations.verifySeconds
+                )
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else {
                 try transferJournal.interrupt(id: recordID, summary: "Transfer did not reach verified completion.", results: results)

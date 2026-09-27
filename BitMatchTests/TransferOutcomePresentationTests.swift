@@ -63,6 +63,15 @@ struct TransferOutcomePresentationTests {
         [row("A001.mov", .verified, backup: backupA), row("A001.mov", .verified, backup: backupB)]
     }
 
+    @Test func phaseDurationLineUsesCompactUnitsAndQuickNamesMissingVerify() {
+        #expect(TransferOutcomePresentation.phaseDurationText(
+            copySeconds: 252, verifySeconds: 238, verificationMode: .standard
+        ) == "Copy 4m 12s, verify 3m 58s")
+        #expect(TransferOutcomePresentation.phaseDurationText(
+            copySeconds: 12, verifySeconds: nil, verificationMode: .quick
+        ) == "Copy 12s, verify not performed")
+    }
+
     // MARK: Interrupted says interrupted
 
     @Test func cancelledOperationPresentsAsInterrupted() {

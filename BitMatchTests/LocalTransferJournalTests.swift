@@ -57,6 +57,55 @@ struct LocalTransferJournalTests {
         #expect(restored.records.first?.results.first?.id == row.id)
     }
 
+    @Test func historyPersistsCopyAndVerifyDurations() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journal)
+            let id = try journal.enqueue(
+                sourceURL: f.source,
+                destinationURLs: [f.destination],
+                verificationMode: .standard,
+                cameraSettings: CameraLabelSettings(),
+                reportSettings: ReportPrefs()
+            )
+            try journal.markRunning(id: id)
+            try journal.finish(
+                id: id,
+                results: [ResultRow(path: "clip.mov", status: "✅ Verified", size: 1,
+                                    checksum: "abc", destination: "Backup")],
+                summary: "Done",
+                hadIssues: false,
+                copyDurationSeconds: 252,
+                verifyDurationSeconds: 238
+            )
+        }
+
+        let restored = LocalTransferJournal(fileURL: f.journal)
+        #expect(restored.records.first?.copyDurationSeconds == 252)
+        #expect(restored.records.first?.verifyDurationSeconds == 238)
+    }
+
+    @Test func oldHistoryJSONDecodesWithoutPhaseDurations() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let source = try LocalTransferResource(url: f.source)
+        let destination = try LocalTransferResource(url: f.destination)
+        let record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: source, destinations: [destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs()
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "copyDurationSeconds")
+        object.removeValue(forKey: "verifyDurationSeconds")
+
+        let oldData = try JSONSerialization.data(withJSONObject: object)
+        let decoded = try JSONDecoder().decode(LocalTransferRecord.self, from: oldData)
+        #expect(decoded.copyDurationSeconds == nil)
+        #expect(decoded.verifyDurationSeconds == nil)
+    }
+
     @Test func retryKeepsPreviousAttemptAndChecksResources() throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }

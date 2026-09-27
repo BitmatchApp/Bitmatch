@@ -88,6 +88,7 @@ final class CopyVerifyExecutor {
     private var reportTask: Task<Void, Error>?
     private var cancellationRequested = false
     private var destinationRoots: [URL] = []
+    private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
 
     // MARK: - Initialization
 
@@ -116,6 +117,7 @@ final class CopyVerifyExecutor {
         callbacks: CopyVerifyCallbacks
     ) async throws -> FileOperation? {
         cancellationRequested = false
+        completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
         destinationRoots = config.destinationURLs
         SharedLogger.info("CopyVerifyExecutor: starting operation \(config.operationId)", category: .transfer)
 
@@ -228,6 +230,11 @@ final class CopyVerifyExecutor {
         config: CopyVerifyConfig,
         callbacks: CopyVerifyCallbacks
     ) async throws -> FileOperation {
+        // Close the final pipeline stage before report work begins. The
+        // report itself is not copy or verify time.
+        timingService.updateStage(.completed)
+        let phaseDurations = timingService.phaseDurations(for: config.verificationMode)
+        completedPhaseDurations = phaseDurations
         let allResults = TransferCompletion.rows(from: operation)
         SharedLogger.info("Mapped \(allResults.count) authoritative operation results for report", category: .transfer)
 
@@ -269,7 +276,8 @@ final class CopyVerifyExecutor {
                 config: config,
                 photographerContext: photographerLifecycle.context,
                 handoffSummary: handoffIssues.isEmpty ? nil : handoffIssues.joined(separator: "; "),
-                safetyState: preReportSafetyState
+                safetyState: preReportSafetyState,
+                phaseDurations: phaseDurations
             )
         } else {
             reportIssue = nil
@@ -376,7 +384,8 @@ final class CopyVerifyExecutor {
         config: CopyVerifyConfig,
         photographerContext: PhotographerReportContext?,
         handoffSummary: String? = nil,
-        safetyState: CardSafetyState
+        safetyState: CardSafetyState,
+        phaseDurations: OperationPhaseDurations
     ) async throws -> String? {
         try checkCancellation()
         // Matches are verified files only; a Quick copy is not a match.
@@ -412,6 +421,8 @@ final class CopyVerifyExecutor {
                 prefs: reportSettings,
                 workers: workers,
                 totalBytesProcessed: totalBytesProcessed,
+                copyDurationSeconds: phaseDurations.copySeconds,
+                verifyDurationSeconds: phaseDurations.verifySeconds,
                 safetyState: safetyState,
                 generateFullReport: reportSettings.makeReport,
                 photographerContext: reportContext

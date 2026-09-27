@@ -110,10 +110,8 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
     
     public struct Performance: Codable, Sendable {
         public let totalDuration: TimeInterval
-        /// Copy, verify and peak speed are not measured separately; nil
-        /// rather than a guess (Promise 3).
-        public let copyDuration: TimeInterval?
-        public let verifyDuration: TimeInterval?
+        public let copyDurationSeconds: TimeInterval?
+        public let verifyDurationSeconds: TimeInterval?
         public let throughputMBps: Double
         public let peakSpeedMBps: Double?
         public let averageSpeedMBps: Double
@@ -121,10 +119,10 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let workers: Int
         public let bottleneck: String?  // "Source Read", "Destination Write", "CPU", "Network"
 
-        public init(totalDuration: TimeInterval, copyDuration: TimeInterval?, verifyDuration: TimeInterval?, throughputMBps: Double, peakSpeedMBps: Double?, averageSpeedMBps: Double, filesPerSecond: Double, workers: Int, bottleneck: String?) {
+        public init(totalDuration: TimeInterval, copyDurationSeconds: TimeInterval?, verifyDurationSeconds: TimeInterval?, throughputMBps: Double, peakSpeedMBps: Double?, averageSpeedMBps: Double, filesPerSecond: Double, workers: Int, bottleneck: String?) {
             self.totalDuration = totalDuration
-            self.copyDuration = copyDuration
-            self.verifyDuration = verifyDuration
+            self.copyDurationSeconds = copyDurationSeconds
+            self.verifyDurationSeconds = verifyDurationSeconds
             self.throughputMBps = throughputMBps
             self.peakSpeedMBps = peakSpeedMBps
             self.averageSpeedMBps = averageSpeedMBps
@@ -278,6 +276,8 @@ public enum EvidenceWriter: Sendable {
                                         jobID: UUID,
                                         started: Date,
                                         duration: TimeInterval,
+                                        copyDurationSeconds: TimeInterval? = nil,
+                                        verifyDurationSeconds: TimeInterval? = nil,
                                         sourceURL: URL?,
                                         fileCount: Int,
                                         matchCount: Int,
@@ -324,6 +324,8 @@ public enum EvidenceWriter: Sendable {
                                  started: started,
                                  duration: duration,
                                  filesPerSecond: filesPerSecond,
+                                 copyDurationSeconds: copyDurationSeconds,
+                                 verifyDurationSeconds: verifyDurationSeconds,
                                  project: projectCSV,
                                  prefs: prefs)
             
@@ -343,6 +345,8 @@ public enum EvidenceWriter: Sendable {
                 matchCount: matchCount,
                 totalBytesProcessed: totalBytesProcessed,
                 duration: duration,
+                copyDurationSeconds: copyDurationSeconds,
+                verifyDurationSeconds: verifyDurationSeconds,
                 workers: workers,
                 prefs: prefs,
                 project: projectJSON
@@ -381,6 +385,8 @@ public enum EvidenceWriter: Sendable {
                                           started: Date,
                                           duration: TimeInterval,
                                           filesPerSecond: Double,
+                                          copyDurationSeconds: TimeInterval?,
+                                          verifyDurationSeconds: TimeInterval?,
                                           project: ProjectCSVEvidence? = nil,
                                           prefs: ReportPrefs? = nil) throws {
         let csvContent = try makeEnhancedCSV(
@@ -388,6 +394,8 @@ public enum EvidenceWriter: Sendable {
             started: started,
             duration: duration,
             filesPerSecond: filesPerSecond,
+            copyDurationSeconds: copyDurationSeconds,
+            verifyDurationSeconds: verifyDurationSeconds,
             project: project,
             prefs: prefs
         )
@@ -399,6 +407,8 @@ public enum EvidenceWriter: Sendable {
         started: Date,
         duration: TimeInterval,
         filesPerSecond: Double,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil,
         project: ProjectCSVEvidence?,
         prefs: ReportPrefs? = nil
     ) throws -> String {
@@ -443,6 +453,10 @@ public enum EvidenceWriter: Sendable {
         csvContent += csvRow(["Copied, not verified", String(results.filter { isMatchStatus($0.status) && !$0.isVerifiedStatus }.count)])
         csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) }.count)])
         csvContent += csvRow(["Duration", "\(String(format: "%.2f", duration)) seconds"])
+        if copyDurationSeconds != nil || verifyDurationSeconds != nil {
+            csvContent += csvRow(["Copy Duration", copyDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
+            csvContent += csvRow(["Verify Duration", verifyDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
+        }
         csvContent += csvRow(["Files/Second", String(format: "%.2f", filesPerSecond)])
         for row in project?.summaryRows ?? [] {
             csvContent += csvRow(row)
@@ -470,6 +484,8 @@ public enum EvidenceWriter: Sendable {
                                                  matchCount: Int,
                                                  totalBytesProcessed: Int64,
                                                  duration: TimeInterval,
+                                                 copyDurationSeconds: TimeInterval?,
+                                                 verifyDurationSeconds: TimeInterval?,
                                                  workers: Int,
                                                  prefs: ReportPrefs,
                                                  project: Project?) throws {
@@ -485,6 +501,8 @@ public enum EvidenceWriter: Sendable {
             matchCount: matchCount,
             totalBytesProcessed: totalBytesProcessed,
             duration: duration,
+            copyDurationSeconds: copyDurationSeconds,
+            verifyDurationSeconds: verifyDurationSeconds,
             workers: workers,
             prefs: prefs,
             project: project
@@ -512,6 +530,8 @@ public enum EvidenceWriter: Sendable {
         matchCount: Int,
         totalBytesProcessed: Int64,
         duration: TimeInterval,
+        copyDurationSeconds: TimeInterval? = nil,
+        verifyDurationSeconds: TimeInterval? = nil,
         workers: Int,
         prefs: ReportPrefs,
         project: Project?
@@ -646,8 +666,8 @@ public enum EvidenceWriter: Sendable {
             extensions: extensions,
             performance: EnhancedJSONReport<Project>.Performance(
                 totalDuration: duration,
-                copyDuration: nil,
-                verifyDuration: nil,
+                copyDurationSeconds: copyDurationSeconds,
+                verifyDurationSeconds: verifyDurationSeconds,
                 throughputMBps: throughputMBps,
                 peakSpeedMBps: nil,
                 averageSpeedMBps: throughputMBps,

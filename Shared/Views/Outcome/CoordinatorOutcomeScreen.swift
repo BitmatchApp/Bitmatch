@@ -22,6 +22,8 @@ extension TransferOutcomePresentation {
             errorCount: record == nil ? coordinator.errorCount : recordedIssueCount,
             warningCount: coordinator.warningCount,
             duration: duration,
+            copyDurationSeconds: record?.copyDurationSeconds,
+            verifyDurationSeconds: record?.verifyDurationSeconds,
             sourceFileCount: nil,
             sourceBytes: nil,
             verificationMode: record?.verificationMode,

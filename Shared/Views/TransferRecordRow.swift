@@ -3,7 +3,18 @@ import BitMatchEngine
 
 struct TransferRecordRow<Trailing: View>: View {
     let record: LocalTransferRecord
+    let clipMatchLine: String?
     @ViewBuilder var trailing: () -> Trailing
+
+    init(
+        record: LocalTransferRecord,
+        clipMatchLine: String? = nil,
+        @ViewBuilder trailing: @escaping () -> Trailing
+    ) {
+        self.record = record
+        self.clipMatchLine = clipMatchLine
+        self.trailing = trailing
+    }
 
     var body: some View {
         let state = TransferLibraryPresentation.stateLabel(for: record)
@@ -20,6 +31,13 @@ struct TransferRecordRow<Trailing: View>: View {
                     .truncationMode(.middle)
                     .textSelection(.enabled)
                     .help(record.title)
+                if let clipMatchLine {
+                    Text(clipMatchLine)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             Spacer(minLength: 8)
             stateLabel(state)

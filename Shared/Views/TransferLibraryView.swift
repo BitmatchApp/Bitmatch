@@ -13,6 +13,7 @@ struct TransferLibraryView: View {
     @State private var reauthorizeRecord: LocalTransferRecord?
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
+    @State private var searchIndex: TransferLibraryPresentation.SearchIndex
     private let initialRecordID: UUID?
     private let onBack: (() -> Void)?
 
@@ -27,10 +28,20 @@ struct TransferLibraryView: View {
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _journal = ObservedObject(wrappedValue: journal)
         _expandedIDs = State(initialValue: initialRecordID.map { Set([$0]) } ?? [])
+        _searchIndex = State(initialValue: TransferLibraryPresentation.SearchIndex(records: journal.records))
+    }
+
+    private var visibleMatches: [TransferLibraryPresentation.SearchMatch] {
+        TransferLibraryPresentation.visibleMatches(
+            journal.records,
+            showHistory: true,
+            search: search,
+            index: searchIndex
+        )
     }
 
     private var visibleRecords: [LocalTransferRecord] {
-        TransferLibraryPresentation.visibleRecords(journal.records, showHistory: true, search: search)
+        visibleMatches.map(\.record)
     }
 
     private var tabCounts: (queue: Int, history: Int) {
@@ -53,6 +64,9 @@ struct TransferLibraryView: View {
             .toolbar { toolbarContent }
             #endif
             .modifier(OptionalSearchable(isActive: searchIsAvailable, text: $search))
+            .onReceive(journal.$records) { records in
+                searchIndex = TransferLibraryPresentation.SearchIndex(records: records)
+            }
             .sheet(item: $reauthorizeRecord) { record in
                 ReauthorizeLocationsView(coordinator: coordinator, journal: journal, recordID: record.id)
             }
@@ -89,9 +103,9 @@ struct TransferLibraryView: View {
             } else {
                 ScrollViewReader { proxy in
                     List {
-                        ForEach(visibleRecords) { record in
-                            rowView(record)
-                                .id(record.id)
+                        ForEach(visibleMatches) { match in
+                            rowView(match.record, clipLine: match.clipLine)
+                                .id(match.id)
                                 .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                                 .listRowSeparator(.visible)
                                 .alignmentGuide(.listRowSeparatorLeading) { _ in 0 }
@@ -132,12 +146,12 @@ struct TransferLibraryView: View {
     }
     #endif
 
-    private func rowView(_ record: LocalTransferRecord) -> some View {
+    private func rowView(_ record: LocalTransferRecord, clipLine: String?) -> some View {
         let actions = TransferLibraryPresentation.actions(for: record)
         return DisclosureGroup(isExpanded: expandedBinding(record.id)) {
             detailsView(record, actions: actions)
         } label: {
-            TransferRecordRow(record: record) {
+            TransferRecordRow(record: record, clipMatchLine: clipLine) {
                 Menu {
                     menuItems(record, actions: actions)
                 } label: {
@@ -268,7 +282,7 @@ private struct OptionalSearchable: ViewModifier {
 
     func body(content: Content) -> some View {
         if isActive {
-            content.searchable(text: $text, prompt: "Search cards, jobs, or destinations")
+            content.searchable(text: $text, prompt: "Search cards, clips, or destinations")
         } else {
             content
         }
