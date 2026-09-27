@@ -5,6 +5,107 @@ import BitMatchEngine
 
 @MainActor
 struct LocalTransferJournalTests {
+    @Test func fingerprintMatchRequiresVerifiedCompletedHistory() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        let fingerprint = "abc123"
+
+        let verifiedID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: verifiedID)
+        try journal.finish(
+            id: verifiedID,
+            results: [ResultRow(
+                path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc",
+                destination: "Backup", destinationPath: f.destination.appendingPathComponent("clip.mov").path
+            )],
+            summary: "Done", hadIssues: false, sourceFingerprint: fingerprint
+        )
+        let match = try #require(journal.matchingVerifiedRecord(sourceFingerprint: fingerprint))
+        #expect(match.id == verifiedID)
+
+        let issueID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: issueID)
+        try journal.finish(
+            id: issueID,
+            results: [ResultRow(path: "clip.mov", status: "❌ Failed", size: 1, checksum: nil, destination: "Backup")],
+            summary: "Failed", hadIssues: true, sourceFingerprint: "issues"
+        )
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "issues") == nil)
+
+        let quickID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .quick,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: quickID)
+        try journal.finish(
+            id: quickID,
+            results: [ResultRow(path: "clip.mov", status: "✅ Copied", size: 1, checksum: nil, destination: "Backup")],
+            summary: "Done", hadIssues: false, sourceFingerprint: "quick"
+        )
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "quick") == nil)
+
+        let incompleteID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: incompleteID)
+        try journal.finish(
+            id: incompleteID,
+            results: [ResultRow(
+                path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc",
+                destination: "Somewhere else", destinationPath: "/missing/clip.mov"
+            )],
+            summary: "Done", hadIssues: false, sourceFingerprint: "incomplete"
+        )
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "incomplete") == nil)
+    }
+
+    @Test func oldHistoryJSONDecodesWithoutNewSourceAndDiskFields() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let source = try LocalTransferResource(url: f.source)
+        let destination = try LocalTransferResource(url: f.destination)
+        let record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: source, destinations: [destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "sourceFingerprint")
+        object.removeValue(forKey: "independentDestinationCount")
+
+        let decoded = try JSONDecoder().decode(
+            LocalTransferRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(decoded.sourceFingerprint == nil)
+        #expect(decoded.independentDestinationCount == nil)
+    }
+
+    @Test func runningAttemptPersistsIndependentDestinationCount() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journal)
+            let id = try journal.enqueue(
+                sourceURL: f.source,
+                destinationURLs: [f.destination],
+                verificationMode: .standard,
+                cameraSettings: CameraLabelSettings(),
+                reportSettings: ReportPrefs()
+            )
+            try journal.markRunning(id: id, independentDestinationCount: 1)
+        }
+
+        let restored = LocalTransferJournal(fileURL: f.journal)
+        #expect(restored.records.first?.independentDestinationCount == 1)
+    }
     private func fixture() throws -> (root: URL, source: URL, destination: URL, journal: URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("Card")

@@ -161,7 +161,8 @@ final class SharedProjectFixture {
         blocked: Bool = false,
         reportsStage: ProgressStage? = nil,
         corruptJournal: Bool = false,
-        prepareCard: Bool = true
+        prepareCard: Bool = true,
+        physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider()
     ) async throws -> SharedProjectFixture {
         let folders = try CoordinatorFolders()
         if corruptJournal { try Data("corrupt history".utf8).write(to: folders.journalURL) }
@@ -175,7 +176,8 @@ final class SharedProjectFixture {
                 platformManager: RecordingPlatformManager(fileOperations: operations),
                 transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
                 projectStore: store,
-                defaults: folders.defaults
+                defaults: folders.defaults,
+                physicalDiskIdentityProvider: physicalDiskIdentityProvider
             )
         )
         fixture.coordinator.destinationURLs = [folders.primary, folders.secondary]

@@ -1,5 +1,6 @@
 // CardSource.swift - The fail-closed list of files on a card.
 import Foundation
+import CryptoKit
 #if canImport(Darwin)
 import Darwin
 #endif
@@ -16,6 +17,47 @@ public struct FileEntry: Sendable {
         self.relativePath = relativePath
         self.size = size
         self.modificationDate = modificationDate
+    }
+}
+
+public enum SourceFingerprint: Sendable {
+    /// SHA-256 of a canonical, order-independent manifest listing. Length
+    /// prefixes keep file names containing separators unambiguous.
+    public static func make<S: Sequence>(_ entries: S) -> String where S.Element == FileEntry {
+        let sorted = entries.sorted {
+            if $0.relativePath != $1.relativePath { return $0.relativePath < $1.relativePath }
+            if $0.size != $1.size { return $0.size < $1.size }
+            return dateBits($0.modificationDate) < dateBits($1.modificationDate)
+        }
+        var canonical = ""
+        canonical.reserveCapacity(sorted.count * 80)
+        for entry in sorted {
+            let pathBytes = entry.relativePath.lengthOfBytes(using: .utf8)
+            canonical += "\(pathBytes):\(entry.relativePath)\u{0}\(entry.size)\u{0}\(dateBits(entry.modificationDate))\n"
+        }
+        return SHA256.hash(data: Data(canonical.utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func dateBits(_ date: Date?) -> UInt64 {
+        date?.timeIntervalSince1970.bitPattern ?? UInt64.max
+    }
+}
+
+public struct CloudSourceFilesError: LocalizedError, Equatable, Sendable {
+    public let count: Int
+    public let firstFileName: String
+
+    public var errorDescription: String? {
+        let files = count == 1 ? "1 file" : "\(count) files"
+        return "\(files) on this source are stored in the cloud, not on this disk. Download them first. First file: \(firstFileName)."
+    }
+}
+
+public struct CloudManagedSourceError: LocalizedError, Equatable, Sendable {
+    public init() {}
+
+    public var errorDescription: String? {
+        "This source is in a cloud-managed location. Choose a source on a local disk."
     }
 }
 
@@ -52,6 +94,29 @@ public struct RelativePathResolver: Sendable {
 }
 
 public enum CardSource: Sendable {
+    private static let dataLessFlag: UInt32 = 0x40000000
+
+    /// Metadata-only cloud placeholders must never reach a source read.
+    /// `lstat` does not follow the final path component.
+    public static func isDatalessFile(_ url: URL) -> Bool {
+#if canImport(Darwin)
+        var info = stat()
+        if lstat(url.path, &info) == 0,
+           (UInt32(info.st_flags) & dataLessFlag) != 0 {
+            return true
+        }
+#endif
+        guard let values = try? url.resourceValues(forKeys: [
+            .isUbiquitousItemKey,
+            .ubiquitousItemDownloadingStatusKey,
+        ]) else {
+            return false
+        }
+        if let status = values.ubiquitousItemDownloadingStatus {
+            return status != .current
+        }
+        return values.isUbiquitousItem == true
+    }
     /// macOS volume metadata directories written to the root of removable media. They are
     /// not user data and are frequently unreadable without Full Disk Access, so descending
     /// into them would abort the whole transfer with a permission error. Only direct
@@ -91,7 +156,9 @@ public enum CardSource: Sendable {
     /// as soon as it finds one transferable file.
     public static func containsRegularFile(base: URL) throws -> Bool {
         let fileManager = FileManager.default
-        let keys: Set<URLResourceKey> = [.isRegularFileKey, .isSymbolicLinkKey]
+        if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
+            throw CloudManagedSourceError()
+        }
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: base.path, isDirectory: &isDirectory), isDirectory.boolValue else {
             throw BitMatchError.fileNotFound(base)
@@ -99,7 +166,7 @@ public enum CardSource: Sendable {
         var traversalError: Error?
         guard let enumerator = fileManager.enumerator(
             at: base,
-            includingPropertiesForKeys: Array(keys),
+            includingPropertiesForKeys: nil,
             options: [],
             errorHandler: { url, error in
                 if traversalError == nil {
@@ -120,8 +187,16 @@ public enum CardSource: Sendable {
                 enumerator.skipDescendants()
                 continue
             }
-            let values = try item.resourceValues(forKeys: keys)
+#if canImport(Darwin)
+            var info = stat()
+            guard lstat(item.path, &info) == 0 else {
+                throw BitMatchError.fileAccessDenied(item)
+            }
+            if (info.st_mode & S_IFMT) == S_IFREG { return true }
+#else
+            let values = try item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             if values.isSymbolicLink != true, values.isRegularFile == true { return true }
+#endif
         }
         if let traversalError { throw traversalError }
         return false
@@ -130,18 +205,22 @@ public enum CardSource: Sendable {
     /// Perf 1: Enumerate regular files once and cache the list.
     /// Pass result to both copy and verify phases to eliminate triple filesystem walk.
     /// ~20 bytes per entry overhead for 100K files ≈ 20MB - acceptable.
-    public static func enumerateRegularFiles(base: URL) throws -> [FileEntry] {
+    public static func enumerateRegularFiles(
+        base: URL,
+        isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile
+    ) throws -> [FileEntry] {
         try Task.checkCancellation()
         let fileManager = FileManager.default
         let resolver = RelativePathResolver(base: base)
+        if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
+            throw CloudManagedSourceError()
+        }
         let keys: Set<URLResourceKey> = [
-            .isRegularFileKey,
-            .isDirectoryKey,
-            .isSymbolicLinkKey,
             .fileSizeKey,
             .contentModificationDateKey
         ]
         var entries: [FileEntry] = []
+        var datalessFiles: [URL] = []
         var isDirectory: ObjCBool = false
         guard fileManager.fileExists(atPath: base.path, isDirectory: &isDirectory),
               isDirectory.boolValue else {
@@ -151,7 +230,7 @@ public enum CardSource: Sendable {
         var traversalError: Error?
         guard let enumerator = fileManager.enumerator(
             at: base,
-            includingPropertiesForKeys: Array(keys),
+            includingPropertiesForKeys: nil,
             options: [],
             errorHandler: { url, error in
                 if traversalError == nil {
@@ -179,10 +258,21 @@ public enum CardSource: Sendable {
                 continue
             }
 
-            let values = try item.resourceValues(forKeys: keys)
-            if values.isSymbolicLink == true || values.isRegularFile != true {
+#if canImport(Darwin)
+            var info = stat()
+            guard lstat(item.path, &info) == 0 else {
+                throw BitMatchError.fileAccessDenied(item)
+            }
+            guard (info.st_mode & S_IFMT) == S_IFREG else { continue }
+#else
+            let kind = try item.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            guard kind.isSymbolicLink != true, kind.isRegularFile == true else { continue }
+#endif
+            if isDataless(item) {
+                datalessFiles.append(item)
                 continue
             }
+            let values = try item.resourceValues(forKeys: keys)
             entries.append(FileEntry(
                 url: item,
                 relativePath: try resolver.resolve(item),
@@ -191,6 +281,12 @@ public enum CardSource: Sendable {
             ))
         }
         if let traversalError { throw traversalError }
+        if let first = datalessFiles.min(by: { $0.path < $1.path }) {
+            throw CloudSourceFilesError(
+                count: datalessFiles.count,
+                firstFileName: (try? resolver.resolve(first)) ?? first.lastPathComponent
+            )
+        }
         try Task.checkCancellation()
         return entries
     }

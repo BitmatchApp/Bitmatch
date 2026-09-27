@@ -330,6 +330,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         guard !sourceManifest.isEmpty else {
             throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
         }
+        let sourceFingerprint = SourceFingerprint.make(sourceManifest)
         let manifestURLByRelativePath = Dictionary(
             sourceManifest.map { ($0.relativePath, $0.url) },
             uniquingKeysWith: { first, _ in first }
@@ -712,6 +713,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             endTime: Date(),
             results: finalResults,
             sourceManifest: sourceManifest.map(\.url),
+            sourceFingerprint: sourceFingerprint,
             verificationMode: operation.verificationMode,
             settings: operation.settings,
             estimatedTotalBytes: operation.estimatedTotalBytes

@@ -159,7 +159,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         canRetry: Bool,
         canExport: Bool,
         sourceName: String = "",
-        completionReason: String? = nil
+        completionReason: String? = nil,
+        independentDestinationCount: Int? = nil
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
         // owns the empty-name fallback and its "The card" / "the card"
@@ -171,13 +172,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors
         )
+        let claimedDestinationCount = min(
+            destinations.count,
+            max(0, independentDestinationCount ?? destinations.count)
+        )
         let baseVerdict = CompletionVerdictPresentation.make(
             state: state,
             rows: rows,
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors,
             cardName: sourceName,
-            backupCount: destinations.count
+            backupCount: claimedDestinationCount
         )
         let safetyState = CardSafetyState.make(state: state, verdict: resolved)
         let counts = OutcomeFileCounts.make(rows: rows)
@@ -231,7 +236,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 rows: rows,
                 hasErrors: hasErrors,
                 hasCriticalErrors: hasCriticalErrors,
-                backupCount: destinations.count
+                backupCount: claimedDestinationCount
             ).sourceGuidance
         )
 

@@ -307,6 +307,9 @@ struct PhotographerReportContext: Codable, Equatable, Sendable {
     let analysis: CardAnalysis
     let verifiedDestinationCount: Int
     let warnings: [String]
+    /// Caps verified destinations when several folders share one physical
+    /// drive. Nil preserves records and call sites from older versions.
+    var independentDestinationCount: Int? = nil
 }
 
 enum PhotographerReportError: Error, Equatable {
@@ -538,11 +541,15 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
                 manifest[row.path] = row.checksum ?? ""
             }
         }
+        let independentCount = min(
+            groups.count,
+            max(0, context.independentDestinationCount ?? groups.count)
+        )
         let hasExactEvidence = !expectedPaths.isEmpty
             && expectedSet.count == expectedPaths.count
             && expectedPaths.count == card.fileCount
             && identifiedRows.count == results.count
-            && groups.count >= context.job.requiredLocalCopyCount
+            && independentCount >= context.job.requiredLocalCopyCount
             && groups.values.allSatisfy { rows in
                 rows.count == expectedPaths.count
                     && Set(rows.map(\.path)) == expectedSet
@@ -556,7 +563,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
               let canonicalRows = groups.sorted(by: { $0.key < $1.key }).first?.value.sorted(by: { $0.path < $1.path }) else {
             return nil
         }
-        return FinalEvidence(destinationCount: groups.count, canonicalRows: canonicalRows)
+        return FinalEvidence(destinationCount: independentCount, canonicalRows: canonicalRows)
     }
 
     private static func destinationIdentity(for row: ResultRow, packagePath: String) -> String? {

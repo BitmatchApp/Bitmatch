@@ -242,6 +242,55 @@ struct PhotographerReportTests {
         #expect(payload.results.count == 4)
     }
 
+    @Test func sameDriveDestinationsCannotSatisfyTwoCopyEvidence() throws {
+        var context = staleContext()
+        context = PhotographerReportContext(
+            job: context.job,
+            cardIngestID: context.cardIngestID,
+            analysis: context.analysis,
+            verifiedDestinationCount: context.verifiedDestinationCount,
+            warnings: context.warnings,
+            independentDestinationCount: 1
+        )
+
+        let payload = try PhotographerReportPayload.make(
+            context: context,
+            results: exactTwoDestinationResults(),
+            finishedAt: locallySafeAt
+        )
+
+        #expect(payload.verifiedDestinationCount == 0)
+        #expect(payload.card.verifiedDestinationCount == 0)
+        #expect(payload.card.localState == .issues)
+    }
+
+    @Test func sameDrivePairKeepsOneCopySafetyWhenRereportedWithStoredCap() throws {
+        let rows = exactTwoDestinationResults()
+        let fingerprint = try PhotographerCardAnalyzer.confirmedFingerprint(results: Array(rows.prefix(2)).sorted { $0.path < $1.path })
+        var context = staleContext()
+        var job = context.job
+        job.requiredLocalCopyCount = 1
+        var card = job.cardIngests[0]
+        card.localState = .locallySafe
+        card.locallySafeAt = locallySafeAt
+        card.provenance.confirmedFingerprint = fingerprint
+        card.verifiedDestinationCount = 1
+        job.cardIngests[0] = card
+        context = PhotographerReportContext(
+            job: job,
+            cardIngestID: card.id,
+            analysis: context.analysis,
+            verifiedDestinationCount: 1,
+            warnings: [],
+            independentDestinationCount: 1
+        )
+
+        let payload = try PhotographerReportPayload.make(context: context, results: rows)
+
+        #expect(payload.isLocallySafe)
+        #expect(payload.verifiedDestinationCount == 1)
+    }
+
     @Test func unverifiedRemoteEvidenceKeepsLocalSafetyWithoutFullyBackedUpTimestamp() throws {
         let rows = exactTwoDestinationResults()
         let fingerprint = try PhotographerCardAnalyzer.confirmedFingerprint(results: Array(rows.prefix(2)).sorted { $0.path < $1.path })

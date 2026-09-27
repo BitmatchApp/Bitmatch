@@ -256,6 +256,13 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Preflight: \(display.title). \(display.detail)")
         }
+        ForEach(presentation.informationalLines, id: \.self) { line in
+            Label(line, systemImage: "clock.arrow.circlepath")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(line)
+        }
     }
 
     // MARK: Advanced

@@ -102,10 +102,10 @@ final class LocalTransferJournal: ObservableObject {
         try store.reauthorize(id: id, resourceIndex: resourceIndex, newURL: newURL)
     }
 
-    func markRunning(id: UUID) throws {
+    func markRunning(id: UUID, independentDestinationCount: Int? = nil) throws {
         defer { refresh() }
         try beforeMarkRunning?(id)
-        try store.markRunning(id: id)
+        try store.markRunning(id: id, independentDestinationCount: independentDestinationCount)
     }
 
     func fail(id: UUID, summary: String) throws {
@@ -155,7 +155,8 @@ final class LocalTransferJournal: ObservableObject {
         summary: String,
         hadIssues: Bool,
         copyDurationSeconds: TimeInterval? = nil,
-        verifyDurationSeconds: TimeInterval? = nil
+        verifyDurationSeconds: TimeInterval? = nil,
+        sourceFingerprint: String? = nil
     ) throws {
         defer { refresh() }
         try store.finish(
@@ -164,8 +165,13 @@ final class LocalTransferJournal: ObservableObject {
             summary: summary,
             hadIssues: hadIssues,
             copyDurationSeconds: copyDurationSeconds,
-            verifyDurationSeconds: verifyDurationSeconds
+            verifyDurationSeconds: verifyDurationSeconds,
+            sourceFingerprint: sourceFingerprint
         )
+    }
+
+    func matchingVerifiedRecord(sourceFingerprint: String) -> LocalTransferRecord? {
+        store.matchingVerifiedRecord(sourceFingerprint: sourceFingerprint)
     }
 
     func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil) throws {

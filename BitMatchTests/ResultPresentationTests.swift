@@ -3,6 +3,26 @@ import XCTest
 import BitMatchEngine
 
 final class ResultPresentationTests: XCTestCase {
+    func testSameDiskDestinationsNeverProduceATwoDestinationCompletionClaim() {
+        struct SameDisk: PhysicalDiskIdentityProviding {
+            func physicalDiskIdentity(for url: URL) -> String? { "disk5" }
+        }
+        let assessment = BackupIndependencePolicy.assess(
+            destinations: [
+                URL(fileURLWithPath: "/Volumes/SHUTTLE A"),
+                URL(fileURLWithPath: "/Volumes/SHUTTLE B"),
+            ],
+            provider: SameDisk()
+        )
+        let presentation = CompletionVerdictPresentation.make(
+            .success,
+            backupCount: assessment.independentCopyCount
+        )
+
+        XCTAssertEqual(presentation.detail, "Copied to 1 destination and verified.")
+        XCTAssertFalse(presentation.detail.contains("2 destinations"))
+    }
+
     func testLiveRowsNameDestinationOnlyWhenBackupsAreMixed() {
         XCTAssertFalse(LiveResultDestinationPolicy.showsDestinationInEachRow(backupCount: 1))
         XCTAssertTrue(LiveResultDestinationPolicy.showsDestinationInEachRow(backupCount: 2))

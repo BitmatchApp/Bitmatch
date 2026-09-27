@@ -85,6 +85,27 @@ struct BackupTargetPolicyTests {
         #expect(refusal("/System/Volumes/Recovery", .userChoice) != nil)
     }
 
+    @Test func cloudStorageAndICloudContainersAreRefusedWhenPicked() {
+        #expect(refusal("/Users/me/Library/CloudStorage/Drive/Backup", .userChoice) != nil)
+        #expect(refusal("/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Backup", .userChoice) != nil)
+    }
+
+    @Test func ubiquitousDestinationIsRefusedWhenPicked() {
+        let cloud = Facts(
+            volumeRootPath: "/Volumes/Remote", volumeID: "REMOTE", volumeName: "Remote",
+            isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: false,
+            isUbiquitousItem: true
+        )
+        #expect(refusal("/Volumes/Remote/Backup", .userChoice, volumes: [cloud]) != nil)
+    }
+
+    @Test func volumeFactsDefaultRemainsNonUbiquitous() {
+        let local = Self.external("/Volumes/LOCAL")
+
+        #expect(!local.isUbiquitousItem)
+        #expect(refusal("/Volumes/LOCAL/Backup", .userChoice, volumes: [local]) == nil)
+    }
+
     /// "Recovery 2" is the name macOS gives a second Recovery mount.
     /// Plant: in `BackupTargetPolicy.isSystemVolumeName`, delete the
     /// `if let space = ...` block that strips the " N" suffix.

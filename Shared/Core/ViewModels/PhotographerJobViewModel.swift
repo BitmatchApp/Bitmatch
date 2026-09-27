@@ -640,7 +640,8 @@ final class PhotographerJobViewModel: ObservableObject {
         jobID: UUID,
         cardID: UUID,
         analysis: CardAnalysis,
-        results: [ResultRow]
+        results: [ResultRow],
+        independentDestinationCount: Int? = nil
     ) throws -> PhotographerFinalizationResult {
         guard var job = jobForRun(jobID) else {
             throw PhotographerJobViewModelError.noActiveJob
@@ -658,7 +659,8 @@ final class PhotographerJobViewModel: ObservableObject {
             cardIngestID: cardID,
             analysis: analysis,
             verifiedDestinationCount: currentCard.verifiedDestinationCount,
-            warnings: duplicateWarning.map { [$0.message] } ?? []
+            warnings: duplicateWarning.map { [$0.message] } ?? [],
+            independentDestinationCount: independentDestinationCount
         )
         let finalized: PhotographerReportPayload.FinalizedCard
         do {
@@ -1039,7 +1041,12 @@ final class PhotographerJobViewModel: ObservableObject {
             cardIngestID: cardID,
             analysis: analysis,
             verifiedDestinationCount: card?.verifiedDestinationCount ?? 0,
-            warnings: duplicateWarning.map { [$0.message] } ?? []
+            warnings: duplicateWarning.map { [$0.message] } ?? [],
+            // The stored verified count was capped by the independence
+            // assessment at finalization. Re-apply it so re-reports score
+            // the same evidence instead of recounting raw groups, which
+            // would flip a capped-safe card back to issues.
+            independentDestinationCount: card?.verifiedDestinationCount
         )
         return PhotographerFinalizationResult(
             context: context,
