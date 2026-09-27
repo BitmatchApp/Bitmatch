@@ -366,11 +366,10 @@ struct BackupAddPathTests {
         )
     }
 
-    /// The reported list: Macintosh HD, Recovery 2 and an internal volume
-    /// never become backups by discovery; a real external drive does.
-    /// Plant: in `MacVolumeAccessModel.handleBackupDrivesUpdate`, pass
-    /// `origin: .userChoice` instead of `.discovered`.
-    @Test func discoveryAddsOnlyTheExternalDrive() {
+    /// Plant: restore the add loop in
+    /// `MacVolumeAccessModel.handleBackupDrivesUpdate`; T7 is selected even
+    /// though the user did not choose it.
+    @Test func discoveryNeverSelectsABackup() {
         let (model, shared) = makeModel()
         typealias Facts = BackupTargetPolicy.VolumeFacts
         model.volumeFacts = { url -> Facts? in
@@ -394,7 +393,7 @@ struct BackupAddPathTests {
             drive("/Volumes/Media"), drive("/Volumes/T7")
         ])
 
-        #expect(shared.destinationURLs.map(\.path) == ["/Volumes/T7"])
+        #expect(shared.destinationURLs.isEmpty)
     }
 
     @Test func discoveryCannotAddOrRemoveBackupsAfterACardIsStaged() async throws {
@@ -492,6 +491,9 @@ struct BackupAddPathTests {
 
         await fixture.operations.release()
         #expect(await waitUntil { !coordinator.isOperationInProgress })
+        // Finish keeps the completed run immutable until the user leaves it.
+        #expect(coordinator.isDestinationSelectionLocked)
+        coordinator.startNewTransfer()
         #expect(!coordinator.isDestinationSelectionLocked)
         #expect(coordinator.addDestination(extra) == nil)
         coordinator.removeDestinationFolder(lockedRoute[0])

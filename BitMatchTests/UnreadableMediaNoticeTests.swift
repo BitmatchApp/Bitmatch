@@ -33,10 +33,21 @@ struct UnreadableMediaNoticeTests {
     /// An APFS external drive's physical-store partition has no file system
     /// of its own; it is not an unreadable card. Fails if the container
     /// partition check is removed from `UnreadableMediaNotice.make`.
+    /// Plant: delete any added reserved GUID from `containerPartitionTypes`;
+    /// its matching expectation below starts producing a false notice.
     @Test func apfsAndOtherContainerPartitionsGetNoNotice() {
         #expect(UnreadableMediaNotice.make(for: media(model: "Disk Image", content: "7C3457EF-0000-11AA-AA11-00306543ECAC")) == nil)
         #expect(UnreadableMediaNotice.make(for: media(model: "T7 Shield", content: "Apple_APFS")) == nil)
         #expect(UnreadableMediaNotice.make(for: media(model: "SSD", content: "426f6f74-0000-11aa-aa11-00306543ecac")) == nil)
+        for reserved in [
+            "E3C9E316-0B5C-4DB8-817D-F92DF00215AE",
+            "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F",
+            "E6D6D379-F507-44C2-A23C-238F2A3DF928",
+            "21686148-6449-6E6F-744E-656564454649",
+            "C12A7328-F81F-11D2-BA4B-00A0C93EC93B",
+        ] {
+            #expect(UnreadableMediaNotice.make(for: media(model: "External disk", content: reserved)) == nil)
+        }
         // An unknown partition type is still explained.
         #expect(UnreadableMediaNotice.make(for: media(model: "Card", content: "EBD0A0A2-B9E5-4433-87C0-68B6B72699C7")) != nil)
     }

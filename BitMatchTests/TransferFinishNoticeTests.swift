@@ -99,4 +99,30 @@ struct TransferFinishNoticeTests {
             kind: .queueFinished
         ))
     }
+
+    /// Plant: in `SharedAppCoordinator.notifyIfTransferEnded`, call the
+    /// source/destination overload with live selection instead of this
+    /// record overload; a later selection can then enter the notification.
+    @Test func finishedRecordBuildsNotificationIdentity() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-notice-\(UUID())", isDirectory: true)
+        let source = root.appendingPathComponent("A001", isDirectory: true)
+        let backup = root.appendingPathComponent("Recorded Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: source),
+            destinations: [try LocalTransferResource(url: backup)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+
+        let notice = TransferFinishNotice.make(
+            state: .completed(.init(success: true, message: "Verified")),
+            record: record, issueCount: 0, kind: .standaloneFinish
+        )
+
+        #expect(notice?.title == "A001 is safe to erase")
+        #expect(notice?.body == "Verified on \(TransferOutcomePresentation.destinationDriveName(backup)).")
+    }
 }

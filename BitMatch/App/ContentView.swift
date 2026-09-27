@@ -388,6 +388,7 @@ struct MacMainView: View {
                 .buttonBorderShape(.roundedRectangle(radius: 6))
                 Button {
                     dismissedAttentionIDs.insert(notice.recordID)
+                    coordinator.dismissAttention(for: notice.recordID)
                 } label: {
                     Image(systemName: "xmark")
                         .frame(width: 24, height: 24)
@@ -476,22 +477,21 @@ struct MacMainView: View {
     // MARK: - Helpers
 
     private var menuPresentation: TransferMenuPresentation {
-        let sourceURL = coordinator.sourceURL
         let outcome = coordinator.showsOutcomeSummary
             ? TransferOutcomePresentation.make(coordinator: coordinator)
             : nil
         return TransferMenuPresentation.make(
             isTransferRunning: coordinator.isOperationInProgress,
             outcome: outcome,
-            sourceName: sourceURL?.lastPathComponent ?? "",
-            sourceIsEjectable: sourceURL.map(CardEjectService.isEjectable) ?? false
+            sourceName: coordinator.outcomeRecord?.title ?? "",
+            sourceIsEjectable: coordinator.outcomeSourceIsEjectable
         )
     }
 
     private func ejectCardFromMenu() {
-        guard menuPresentation.ejectTitle != nil, let sourceURL = coordinator.sourceURL else { return }
+        guard menuPresentation.ejectTitle != nil else { return }
         Task {
-            if let error = await CardEjectService.eject(sourceURL) {
+            if let error = await coordinator.ejectOutcomeSource() {
                 await coordinator.showAlert(title: TransferMenuPresentation.ejectErrorTitle, message: error)
             }
         }

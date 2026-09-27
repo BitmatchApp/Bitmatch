@@ -33,6 +33,11 @@ struct UnreadableMediaNotice: Equatable, Identifiable {
         "52637672-7900-11AA-AA11-00306543ECAC", "Apple_APFS_Recovery",
         "53746F72-6167-11AA-AA11-00306543ECAC", "Apple_CoreStorage",
         "426F6F74-0000-11AA-AA11-00306543ECAC", "Apple_Boot",
+        "E3C9E316-0B5C-4DB8-817D-F92DF00215AE", "Microsoft Reserved",
+        "0657FD6D-A4AB-43C4-84E5-0933C84B4F4F", "Linux swap",
+        "E6D6D379-F507-44C2-A23C-238F2A3DF928", "Linux LVM",
+        "21686148-6449-6E6F-744E-656564454649", "BIOS boot",
+        "C12A7328-F81F-11D2-BA4B-00A0C93EC93B", "EFI System Partition",
     ]
 
     let id: String

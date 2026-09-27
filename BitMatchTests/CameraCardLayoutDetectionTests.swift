@@ -161,6 +161,22 @@ struct CameraCardLayoutDetectionTests {
         }
     }
 
+    /// Plant: in `VolumeAnalysis.rootAnchoredCameraName`, replace the
+    /// classifier with the recursive orchestrator. These loose clips then
+    /// satisfy its extension-count heuristic and get a camera name.
+    @Test func looseAndDeepMediaAreNotRootAnchoredCardLayouts() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-loose-media-\(UUID())", isDirectory: true)
+        let deep = root.appendingPathComponent("Projects/Yesterday/Camera Backup/Clips", isDirectory: true)
+        try FileManager.default.createDirectory(at: deep, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        for index in 0..<12 {
+            try Data([0]).write(to: deep.appendingPathComponent("clip-\(index).mov"))
+        }
+        #expect(CardLayoutClassifier.classify(at: root) == nil)
+        #expect(VolumeAnalysis.rootAnchoredCameraName(at: root) == nil)
+    }
+
     /// Promise 5: the Mac auto-detect and the label pipeline name the same
     /// brand for every layout, because both ask CardLayoutClassifier.
     /// Plant: in CameraStructureDetector.performDetection change

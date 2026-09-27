@@ -412,8 +412,16 @@ nonisolated enum VolumeAnalysis {
             isHidden: values.isHidden ?? false, isAppDiskImage: isAppImage
         )
         guard ConnectedDrivesPresentation.isVisible(volume) else { return nil }
-        volume.cameraName = CameraDetectionOrchestrator.shared.detectCamera(at: url)
+        // Connected-drive roles and auto-queue accept only a bounded,
+        // root-anchored card layout. Do not run recursive loose-file camera
+        // heuristics over an arbitrary mounted backup drive.
+        volume.cameraName = rootAnchoredCameraName(at: url)
         return volume
+    }
+
+    static func rootAnchoredCameraName(at url: URL) -> String? {
+        guard let layout = CardLayoutClassifier.classify(at: url) else { return nil }
+        return layout.brand ?? "Generic"
     }
 
         static func analyzeVolume(at url: URL, facts: DiskFacts?, cameraInfo: String?) -> DetectedVolume? {

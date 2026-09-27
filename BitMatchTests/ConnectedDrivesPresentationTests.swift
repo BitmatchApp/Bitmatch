@@ -25,7 +25,7 @@ struct ConnectedDrivesPresentationTests {
             destinationURLs: [URL(fileURLWithPath: "/Volumes/Backup/Shoot")],
             queuedSourceURLs: [URL(fileURLWithPath: "/Volumes/Waiting/DCIM")]
         )
-        #expect(rows.map(\.displayName) == ["Next", "Waiting 2"])
+        #expect(rows.map(\.displayName) == ["Next"])
         #expect(Presentation.queueCandidates(
             volumes: [volume("Card")], sourceURL: URL(fileURLWithPath: "/Volumes/Card"),
             destinationURLs: [], queuedSourceURLs: []
@@ -50,7 +50,19 @@ struct ConnectedDrivesPresentationTests {
             sourceURL: URL(fileURLWithPath: "/Volumes/Card"),
             destinationURLs: [], queuedSourceURLs: []
         )
-        #expect(rows.map(\.displayName) == ["A002", "SD Slot", "Untitled SD"])
+        #expect(rows.map(\.displayName) == ["A002"])
+    }
+
+    /// Plant: add `|| $0.isRemovable` back to the `cardURLs` filter in
+    /// `queueCandidates`; the loose-footage shuttle is offered as a card.
+    @Test func removableBackupWithLooseFootageIsNotAQueueCandidate() {
+        let shuttle = volume("Yesterday's Shuttle")
+        let rows = Presentation.queueCandidates(
+            volumes: [shuttle], sourceURL: URL(fileURLWithPath: "/Volumes/Current Card"),
+            destinationURLs: [], queuedSourceURLs: []
+        )
+        #expect(rows.isEmpty)
+        #expect(Presentation.make(volumes: [shuttle], sourceURL: nil, destinationURLs: []).first?.role == .backup)
     }
 
     @Test func hidesBootSystemHiddenAndAppImageVolumes() {

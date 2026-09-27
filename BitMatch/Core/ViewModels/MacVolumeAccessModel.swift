@@ -78,6 +78,7 @@ final class MacVolumeAccessModel: ObservableObject {
             .store(in: &cancellables)
         shared.$destinationURLs.dropFirst()
             .sink { [weak self] urls in
+                guard self?.shared?.isReplayingQueuedTransfer != true else { return }
                 if !urls.isEmpty { self?.saveLastDestinations(urls) }
             }
             .store(in: &cancellables)
@@ -159,37 +160,13 @@ final class MacVolumeAccessModel: ObservableObject {
     /// Internal (not private) so tests can drive the discovery policy
     /// without fabricating volume-monitor notifications.
     func handleBackupDrivesUpdate(_ drives: [VolumeMonitorService.DetectedVolume]) {
-        // Staging snapshots one shared backup route for the entire batch.
-        // Discovery must not auto-add or auto-remove behind that lock.
-        guard shared?.isDestinationSelectionLocked != true else { return }
-        // Check if any current destinations are no longer available
+        // Discovery reports availability only. Backup selection is always an
+        // explicit user action, so drive arrival/removal cannot rewrite a
+        // live setup or a finished run's evidence.
         let driveURLs = Set(drives.map { $0.url.path })
-        let removedDestinations = destinationURLs.filter { destination in
-            !driveURLs.contains(destination.path) && !FileManager.default.fileExists(atPath: destination.path)
-        }
-
-        for removed in removedDestinations {
-            SharedLogger.info("Auto-removing unavailable destination: \(removed.lastPathComponent)", category: .transfer)
-            removeDestination(removed)
-        }
-
         // A dismissal expires when its drive disappears from discovery:
         // an unplug/replug cycle is a new arrival, not a resurrection.
         dismissedDestinationPaths = dismissedDestinationPaths.filter { driveURLs.contains($0) }
-
-        // Auto-add new backup drives as destinations, but never undo an
-        // explicit removal while the drive is still present, and never add
-        // what `BackupTargetPolicy` refuses for discovery (the startup disk,
-        // system volumes, internal volumes, the source's drive). Refusals
-        // are logged, not shown: the user did not ask for this add.
-        for drive in drives {
-            if !destinationURLs.contains(drive.url) && !dismissedDestinationPaths.contains(drive.url.path) {
-                // The coordinator logs a refusal.
-                if shared?.addDestination(drive.url, origin: .discovered, facts: volumeFacts) == nil {
-                    SharedLogger.info("Auto-added backup drive: \(drive.displayName)", category: .transfer)
-                }
-            }
-        }
     }
 
     // MARK: - Public Methods

@@ -4,9 +4,7 @@ import Testing
 @testable import BitMatch
 import BitMatchEngine
 
-/// Rediscovery must not undo an explicit destination removal. A removed
-/// drive stays out while it remains visible to discovery; disappearing
-/// (unplug) and reappearing treats it as a new arrival again.
+/// Discovery never mutates backup selection; only explicit actions do.
 @MainActor
 struct DestinationDismissalTests {
     /// Discovery writes through the shared coordinator, which owns the backups.
@@ -17,7 +15,7 @@ struct DestinationDismissalTests {
         )
         let model = MacVolumeAccessModel(shared: shared, enableVolumeMonitoring: false)
         // The drives are not mounted: describe each as a whole external
-        // drive, which `BackupTargetPolicy` lets discovery add.
+        // drive so explicit test selections pass `BackupTargetPolicy`.
         model.volumeFacts = { url in
             BackupTargetPolicy.VolumeFacts(
                 volumeRootPath: url.path, volumeID: url.path, volumeName: url.lastPathComponent,
@@ -39,38 +37,32 @@ struct DestinationDismissalTests {
         )
     }
 
-    @Test func removedDestinationIsNotReaddedByRediscovery() async throws {
+    /// Plant: restore either add/remove loop in `handleBackupDrivesUpdate`;
+    /// one of these discovery changes mutates the explicit selection.
+    @Test func discoveryNeitherAddsNorRemovesDestinations() async throws {
         #if os(macOS)
         let (viewModel, shared) = makeModel()
-        let drive = drive(at: "/Volumes/DISMISSED")
+        let discovered = drive(at: "/Volumes/DISMISSED")
 
-        viewModel.handleBackupDrivesUpdate([drive])
-        #expect(shared.destinationURLs.map(\.path) == [drive.url.path])
-
-        viewModel.removeDestination(drive.url)
-        #expect(shared.destinationURLs.isEmpty)
-
-        // Same drive still visible to discovery: must stay out.
-        viewModel.handleBackupDrivesUpdate([drive])
-        #expect(shared.destinationURLs.isEmpty)
+        let chosen = drive(at: "/Volumes/CHOSEN")
+        _ = viewModel.addDestination(chosen.url)
+        viewModel.handleBackupDrivesUpdate([discovered])
+        #expect(shared.destinationURLs.map(\.path) == [chosen.url.path])
+        viewModel.handleBackupDrivesUpdate([])
+        #expect(shared.destinationURLs.map(\.path) == [chosen.url.path])
         #else
         #expect(true)
         #endif
     }
 
-    @Test func repluggedDriveIsTreatedAsNewArrival() async throws {
+    @Test func repluggedDriveStillRequiresExplicitSelection() async throws {
         #if os(macOS)
         let (viewModel, shared) = makeModel()
         let drive = drive(at: "/Volumes/REPLUGGED")
 
-        viewModel.handleBackupDrivesUpdate([drive])
-        viewModel.removeDestination(drive.url)
-
-        // Drive disappears (unplugged): dismissal expires.
         viewModel.handleBackupDrivesUpdate([])
-        // Drive reappears: treated as a new arrival, auto-added again.
         viewModel.handleBackupDrivesUpdate([drive])
-        #expect(shared.destinationURLs.map(\.path) == [drive.url.path])
+        #expect(shared.destinationURLs.isEmpty)
         #else
         #expect(true)
         #endif

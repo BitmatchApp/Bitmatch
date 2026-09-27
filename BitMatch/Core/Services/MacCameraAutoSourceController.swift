@@ -39,7 +39,8 @@ final class MacCameraAutoSourceController: ObservableObject {
     /// Selects a detected card as the source when the preferences allow it,
     /// nothing is chosen yet, and the card can actually be read.
     func cardDetected(at sourceURL: URL) {
-        guard let shared, shared.reportSettings.enableAutoCameraDetection else { return }
+        guard let shared, shared.reportSettings.enableAutoCameraDetection,
+              !shared.isOperationInProgress, !shared.showsOutcomeSummary else { return }
         let shouldSelect = AutomaticSourceSelectionPolicy.shouldSelect(
             automaticSelectionEnabled: shared.reportSettings.autoPopulateSource,
             hasExistingSource: shared.sourceURL != nil,

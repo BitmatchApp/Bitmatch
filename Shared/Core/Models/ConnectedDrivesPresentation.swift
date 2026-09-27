@@ -73,10 +73,9 @@ nonisolated enum ConnectedDrivesPresentation {
     static func queueCandidates(
         volumes: [Volume], sourceURL: URL, destinationURLs: [URL], queuedSourceURLs: [URL]
     ) -> [Row] {
-        // Only cards: a detected camera card, or removable media such as a
-        // card in a reader (a built-in SD slot reports internal too). A
-        // backup SSD is never offered as the next card.
-        let cardURLs = Set(volumes.filter { $0.cameraName != nil || $0.isRemovable }.map(\.url))
+        // Only a root-anchored card layout earns the card role. Removability
+        // alone also describes ordinary shuttle and backup drives.
+        let cardURLs = Set(volumes.filter { $0.cameraName != nil }.map(\.url))
         return make(volumes: volumes, sourceURL: sourceURL, destinationURLs: destinationURLs).filter { row in
             cardURLs.contains(row.url) && row.state == .none
                 && !queuedSourceURLs.contains { contains($0, in: row.url) }

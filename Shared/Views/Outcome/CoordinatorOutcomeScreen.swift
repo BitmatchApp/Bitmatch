@@ -6,6 +6,8 @@ extension TransferOutcomePresentation {
     @MainActor
     static func make(coordinator: SharedAppCoordinator) -> Self {
         let record = coordinator.outcomeRecord
+        let rows = record?.results ?? coordinator.results
+        let recordedIssueCount = rows.filter { !$0.isSuccessStatus }.count
         let duration: TimeInterval? = record.flatMap { record in
             guard let started = record.startedAt, let ended = record.endedAt else { return nil }
             return ended.timeIntervalSince(started)
@@ -13,15 +15,15 @@ extension TransferOutcomePresentation {
         let isFinished = record.map { $0.state != .queued && $0.state != .running } ?? false
         return make(
             state: coordinator.operationState,
-            rows: coordinator.results,
-            destinations: coordinator.destinationURLs,
-            hasErrors: coordinator.hasErrors,
+            rows: rows,
+            destinations: record?.destinations.map(\.url) ?? [],
+            hasErrors: record == nil ? coordinator.hasErrors : recordedIssueCount > 0,
             hasCriticalErrors: coordinator.hasCriticalErrors,
-            errorCount: coordinator.errorCount,
+            errorCount: record == nil ? coordinator.errorCount : recordedIssueCount,
             warningCount: coordinator.warningCount,
             duration: duration,
-            sourceFileCount: coordinator.sourceFolderInfo?.fileCount,
-            sourceBytes: coordinator.sourceFolderInfo?.totalSize,
+            sourceFileCount: nil,
+            sourceBytes: nil,
             verificationMode: record?.verificationMode,
             canRetry: isFinished && record?.canRetry == true,
             canExport: isFinished,
@@ -57,9 +59,10 @@ struct CoordinatorOutcomeScreen<ProjectEvidence: View>: View {
 
     var body: some View {
         let presentation = TransferOutcomePresentation.make(coordinator: coordinator)
+        let rows = coordinator.outcomeRecord?.results ?? coordinator.results
         OutcomeScreen(
             presentation: presentation,
-            rows: coordinator.results,
+            rows: rows,
             // Only the answer to this screen's own Retry; older queue
             // messages belong to Transfers.
             notice: retryRequested ? coordinator.queueMessage : nil,
@@ -75,7 +78,7 @@ struct CoordinatorOutcomeScreen<ProjectEvidence: View>: View {
     /// preference, and only once eject itself is possible.
     private var autoEjectPreference: Binding<Bool>? {
         #if os(macOS)
-        guard let sourceURL = coordinator.sourceURL, CardEjectService.isEjectable(sourceURL) else { return nil }
+        guard coordinator.outcomeSourceIsEjectable else { return nil }
         return Binding(
             get: { coordinator.autoEjectWhenSafe },
             set: { coordinator.autoEjectWhenSafe = $0 }
@@ -100,10 +103,8 @@ struct CoordinatorOutcomeScreen<ProjectEvidence: View>: View {
         }
         var eject: (() async -> String?)?
         #if os(macOS)
-        if presentation.canEject,
-           let sourceURL = coordinator.sourceURL,
-           CardEjectService.isEjectable(sourceURL) {
-            eject = { await CardEjectService.eject(sourceURL) }
+        if presentation.canEject, coordinator.outcomeSourceIsEjectable {
+            eject = { await coordinator.ejectOutcomeSource() }
         }
         #endif
         return OutcomeActions(

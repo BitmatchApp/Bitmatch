@@ -207,6 +207,7 @@ public final class TransferJournal: Sendable {
                 for index in recovered.indices where recovered[index].state == .running {
                     recovered[index].state = .interrupted
                     recovered[index].summary = "Interrupted. Reconnect the original folders and retry to check the copies."
+                    recovered[index].endedAt = Date()
                 }
                 // Publish interruption even if the recovery write fails; never display a stale running claim.
                 initial.records = recovered

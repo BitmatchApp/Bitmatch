@@ -479,6 +479,57 @@ struct NewTransferSelectionTests {
     }
 }
 
+/// Finished-run evidence must be immutable even while Setup selections move.
+@MainActor
+struct FinishedRunSnapshotTests {
+    /// Plant: in `TransferOutcomePresentation.make(coordinator:)`, replace
+    /// `record?.destinations` and nil evidence overrides with the
+    /// coordinator's live destinations and source folder info.
+    @Test func finishPresentationUsesJournalDestinationsAndResultEvidence() throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let journal = LocalTransferJournal(fileURL: folders.journalURL)
+        var camera = CameraLabelSettings()
+        camera.label = "A001"
+        let id = try journal.enqueue(
+            sourceURL: folders.source, destinationURLs: [folders.primary],
+            verificationMode: .standard, cameraSettings: camera,
+            reportSettings: ReportPrefs(), generateASCMHL: false
+        )
+        try journal.markRunning(id: id)
+        try journal.finish(
+            id: id,
+            results: [ResultRow(
+                path: "DCIM/A.mov", status: ResultOutcome.verified.statusText,
+                size: 12_345, checksum: "abc", destination: "primary",
+                destinationPath: folders.primary.appendingPathComponent("DCIM/A.mov").path
+            )],
+            summary: "Verified", hadIssues: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: journal, projectStore: InMemoryPhotographerJobStore()
+        )
+        coordinator.reviewQueuedTransfer(id)
+        coordinator.destinationURLs = [folders.secondary]
+        coordinator.sourceURL = folders.secondary
+        coordinator.results = [ResultRow(
+            path: "other.mov", status: ResultOutcome.verified.statusText,
+            size: 99_999, checksum: "live", destination: "secondary"
+        )]
+
+        let presentation = TransferOutcomePresentation.make(coordinator: coordinator)
+        let recordedName = TransferOutcomePresentation.destinationDriveName(folders.primary)
+        let liveName = TransferOutcomePresentation.destinationDriveName(folders.secondary)
+        #expect(presentation.cardName == folders.source.lastPathComponent)
+        #expect(presentation.verdict.detail.contains("1 file"))
+        #expect(presentation.verdict.detail.contains(ByteCountPresentation.fileSize(12_345)))
+        #expect(presentation.verdict.detail.contains(recordedName))
+        #expect(!presentation.verdict.detail.contains(liveName) || recordedName == liveName)
+        #expect(presentation.copySummary.contains(recordedName))
+    }
+}
+
 /// Audit H12: one composed VoiceOver label per file result row, so a row
 /// isn't four or five separate stops (icon, name, size, destination) with
 /// no column header to say what a bare number means.

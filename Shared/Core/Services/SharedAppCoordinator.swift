@@ -90,6 +90,11 @@ class SharedAppCoordinator: ObservableObject {
     private var queueFinishNotificationWasPosted = false
     private var queueStopWasRequested = false
     private var queueSessionSourceVolumeIDs: Set<String> = []
+    private struct ReviewedSelectionSnapshot {
+        let destinations: [URL]
+        let verificationMode: VerificationMode
+    }
+    private var reviewedSelectionSnapshot: ReviewedSelectionSnapshot?
     @Published var photographerJobViewModel: PhotographerJobViewModel
     /// Setup's Quick/Project choice. Held here, not in a view, so every
     /// Start (button, ⌘R) obeys it: choosing Project blocks Start until a
@@ -280,28 +285,26 @@ class SharedAppCoordinator: ObservableObject {
             pausedID = persistedSession.pausedRecordID.flatMap { existingIDs.contains($0) ? $0 : nil }
             sessionEnded = persistedSession.ended
         } else {
-            recoveredOrder = selectedJournal.records.reversed().filter {
-                $0.projectID == nil && (
-                    $0.state == .queued || $0.state == .running
-                        || ($0.state == .interrupted && $0.endedAt == nil)
-                )
-            }.map(\.id)
+            // Queue membership is session state, not transfer-history state.
+            // Without a session file, old queued/interrupted records remain
+            // visible in History but cannot silently become today's queue.
+            recoveredOrder = []
         }
         let recoveredSessionIDs = Set(recoveredOrder)
         if persistedSession == nil {
             pausedID = selectedJournal.records.first {
-                recoveredSessionIDs.contains($0.id) && Self.isQueueProblemState($0.state)
+                recoveredSessionIDs.contains($0.id) && Self.isQueueProblem($0)
             }?.id
         } else {
             let skipped = skippedIDs
             let savedPauseIsStillValid = pausedID.flatMap { paused in
                 selectedJournal.records.first {
-                    $0.id == paused && Self.isQueueProblemState($0.state) && !skipped.contains($0.id)
+                    $0.id == paused && Self.isQueueProblem($0) && !skipped.contains($0.id)
                 }
             } != nil
             if !savedPauseIsStillValid && !sessionEnded {
                 pausedID = selectedJournal.records.first {
-                    recoveredSessionIDs.contains($0.id) && Self.isQueueProblemState($0.state)
+                    recoveredSessionIDs.contains($0.id) && Self.isQueueProblem($0)
                         && !skipped.contains($0.id)
                 }?.id
             }
@@ -461,10 +464,11 @@ class SharedAppCoordinator: ObservableObject {
             notifyFinish: generalSettings.notifyWhenTransferOrQueueFinishes,
             notifyEachQueuedCard: generalSettings.notifyForEachCardInQueue
         ) else { return }
-        guard let notice = TransferFinishNotice.make(
+        let finishedRecord = outcomeRecord
+        guard let finishedRecord,
+              let notice = TransferFinishNotice.make(
             state: state,
-            sourceName: sourceURL?.lastPathComponent ?? "",
-            destinations: destinationURLs,
+            record: finishedRecord,
             issueCount: issueCount,
             kind: kind
         ) else { return }
@@ -650,9 +654,10 @@ class SharedAppCoordinator: ObservableObject {
 
     /// The route is immutable for the lifetime of a staged batch, including
     /// the interval when its final card is running and there are no queued
-    /// records left. Failed/completed history does not keep Setup locked.
+    /// records left. The current Finish screen also freezes its run context;
+    /// older completed History records do not keep Setup locked.
     var isDestinationSelectionLocked: Bool {
-        transferJournal.records.contains { record in
+        isOperationInProgress || showsOutcomeSummary || transferJournal.records.contains { record in
             queueSessionRecordIDs.contains(record.id)
                 && record.projectID == nil
                 && (record.state == .queued || record.state == .running)
@@ -718,7 +723,9 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Operation Control
 
     var queuedCardCount: Int {
-        transferJournal.records.filter { $0.state == .queued && $0.projectID == nil }.count
+        transferJournal.records.filter {
+            queueSessionRecordIDs.contains($0.id) && $0.state == .queued && $0.projectID == nil
+        }.count
     }
 
     /// One-time cards staged from Setup, in the order they will run. Setup
@@ -909,8 +916,14 @@ class SharedAppCoordinator: ObservableObject {
         if queueSessionEnded && !hasWaitingQueueSessionRecord {
             clearQueueSessionState()
         }
-        let waiting = transferJournal.records.filter { $0.state == .queued && $0.projectID == nil }
-        for id in waiting.reversed().map(\.id) { addQueueSessionRecord(id) }
+        let allWaiting = transferJournal.records.filter { $0.state == .queued && $0.projectID == nil }
+        // Legacy/test callers can explicitly run a journal assembled before
+        // the coordinator exists. Once a session has membership, never pull
+        // unrelated old History records into it.
+        if queueSessionRecordIDs.isEmpty {
+            for id in allWaiting.reversed().map(\.id) { addQueueSessionRecord(id) }
+        }
+        let waiting = allWaiting.filter { queueSessionRecordIDs.contains($0.id) }
         guard !waiting.isEmpty else { return }
         queueFinishNotificationWasPosted = false
         queueSessionEnded = false
@@ -929,11 +942,13 @@ class SharedAppCoordinator: ObservableObject {
     func skipPausedCardAndContinue(_ expectedID: UUID) {
         guard queuePausedRecordID == expectedID,
               let record = transferJournal.records.first(where: { $0.id == expectedID }),
-              Self.isQueueProblemState(record.state) else { return }
+              Self.isQueueProblem(record) else { return }
         skippedQueueAttentionIDs.insert(expectedID)
         queuePausedRecordID = nil
         queueMessage = nil
-        if transferJournal.records.contains(where: { $0.state == .queued && $0.projectID == nil }) {
+        if transferJournal.records.contains(where: {
+            queueSessionRecordIDs.contains($0.id) && $0.state == .queued && $0.projectID == nil
+        }) {
             persistQueueSession()
             startQueue()
         } else {
@@ -954,7 +969,7 @@ class SharedAppCoordinator: ObservableObject {
     func removePausedCardFromQueue(_ expectedID: UUID) throws {
         guard queuePausedRecordID == expectedID,
               let record = transferJournal.records.first(where: { $0.id == expectedID }),
-              Self.isQueueProblemState(record.state) else {
+              Self.isQueueProblem(record) else {
             throw FileOperationError.unsafeOperation("Only the card pausing this queue can be removed.")
         }
         queueSessionRecordIDs.remove(expectedID)
@@ -997,8 +1012,17 @@ class SharedAppCoordinator: ObservableObject {
         default: return
         }
         reviewedQueueAttentionIDs.insert(id)
+        standaloneAttentionRecordIDsSinceLaunch.remove(id)
         reviewedQueueRecordID = id
         activeJournalRecordID = id
+        if reviewedSelectionSnapshot == nil {
+            reviewedSelectionSnapshot = ReviewedSelectionSnapshot(
+                destinations: destinationURLs,
+                verificationMode: verificationMode
+            )
+        }
+        isReplayingQueuedTransfer = true
+        defer { isReplayingQueuedTransfer = false }
         sourceURL = record.source.url
         destinationURLs = record.destinations.map(\.url)
         verificationMode = record.verificationMode
@@ -1025,10 +1049,10 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     var hasUnresolvedQueueRecords: Bool {
-        transferJournal.records.contains { record in
-            queueSessionRecordIDs.contains(record.id)
-                && Self.isQueueProblemState(record.state)
-                && !skippedQueueAttentionIDs.contains(record.id)
+        guard let pausedID = queuePausedRecordID,
+              !skippedQueueAttentionIDs.contains(pausedID) else { return false }
+        return transferJournal.records.contains {
+            $0.id == pausedID && Self.isQueueProblem($0)
         }
     }
 
@@ -1052,6 +1076,7 @@ class SharedAppCoordinator: ObservableObject {
 
     func retryTransfer(_ id: UUID, generateASCMHL: Bool? = nil) {
         do {
+            standaloneAttentionRecordIDsSinceLaunch.remove(id)
             let retryID = try transferJournal.requeue(id: id, generateASCMHL: generateASCMHL)
             queueSessionRecordIDs.remove(id)
             queueSessionRecordIDs.insert(retryID)
@@ -1091,7 +1116,9 @@ class SharedAppCoordinator: ObservableObject {
             return
         }
         #endif
-        guard let record = transferJournal.records.last(where: { $0.state == .queued && $0.projectID == nil }) else {
+        guard let record = transferJournal.records.last(where: {
+            queueSessionRecordIDs.contains($0.id) && $0.state == .queued && $0.projectID == nil
+        }) else {
             endQueueSession()
             return
         }
@@ -1164,8 +1191,9 @@ class SharedAppCoordinator: ObservableObject {
     }
 
 
-    private static func isQueueProblemState(_ state: LocalTransferState) -> Bool {
-        state == .issues || state == .failed || state == .interrupted || state == .cancelled
+    private static func isQueueProblem(_ record: LocalTransferRecord) -> Bool {
+        let safety = TransferLibraryPresentation.safetyState(for: record)
+        return safety == .needsAttention || safety == .failed || safety == .interrupted
     }
 
     func startOperation() async { await executeOperation(journalRecordID: nil) }
@@ -1465,7 +1493,7 @@ class SharedAppCoordinator: ObservableObject {
         let belongs = belongsToQueueSession
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
         switch safety {
-        case .needsAttention, .failed, .interrupted, .copiedNotVerified:
+        case .needsAttention, .failed, .interrupted:
             if belongs {
                 pauseQueueAttempt(recordID: recordID, message: record.summary)
             } else {
@@ -1474,6 +1502,10 @@ class SharedAppCoordinator: ObservableObject {
             }
         case .safeToErase:
             transferSignals.send(.safeToErase)
+        case .copiedNotVerified:
+            // Quick mode completed exactly as requested. It remains amber,
+            // but it neither pauses a queue nor requests critical attention.
+            break
         default:
             break
         }
@@ -1490,6 +1522,10 @@ class SharedAppCoordinator: ObservableObject {
     private func signalQueueAttentionIfNeeded(for id: UUID) {
         guard !reviewedQueueAttentionIDs.contains(id) else { return }
         transferSignals.send(.attention)
+    }
+
+    func dismissAttention(for id: UUID) {
+        standaloneAttentionRecordIDsSinceLaunch.remove(id)
     }
 
     func markQueueSourceEjected(_ id: UUID) {
@@ -1515,6 +1551,23 @@ class SharedAppCoordinator: ObservableObject {
         if let error = await ejector(access.sourceURL) { return error }
         markQueueSourceEjected(id)
         return nil
+    }
+
+    /// Ejects the source captured by the finished record, never the live
+    /// Setup selection. The journal holds the original resource identity
+    /// open for the duration of the eject request.
+    func ejectOutcomeSource(
+        using ejector: @Sendable (URL) async -> String? = { await CardEjectService.eject($0) }
+    ) async -> String? {
+        guard let id = outcomeRecord?.id else { return "No finished card is available to eject." }
+        return await ejectQueueSource(id, using: ejector)
+    }
+
+    var outcomeSourceIsEjectable: Bool {
+        guard let id = outcomeRecord?.id,
+              let access = try? transferJournal.prepareSourceForEjection(id: id) else { return false }
+        defer { access.release() }
+        return CardEjectService.isEjectable(access.sourceURL)
     }
     #endif
 
@@ -1885,9 +1938,18 @@ class SharedAppCoordinator: ObservableObject {
         if !hasWaitingCards && (queueSessionEnded || !hasUnresolvedQueueRecords) {
             clearQueueSessionState()
         }
+        let reviewedSetup = reviewedSelectionSnapshot
+        reviewedSelectionSnapshot = nil
         reviewedQueueRecordID = nil
         resetForNewOperation()
         sourceURL = nil
+        if let reviewedSetup {
+            isReplayingQueuedTransfer = true
+            destinationURLs = reviewedSetup.destinations
+            verificationMode = reviewedSetup.verificationMode
+            isReplayingQueuedTransfer = false
+        }
+        standaloneAttentionRecordIDsSinceLaunch.removeAll()
     }
 
     func resetForNewOperation() {

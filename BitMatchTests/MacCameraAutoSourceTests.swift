@@ -53,4 +53,18 @@ struct MacCameraAutoSourceTests {
 
         #expect(shared.sourceURL == nil)
     }
+
+    /// Plant: remove the `showsOutcomeSummary` guard in `cardDetected`; a
+    /// newly inserted card replaces the finished run while Finish is shown.
+    @Test func finishScreenLocksAutomaticSourceSelection() throws {
+        let (controller, shared, folders) = try makeController()
+        defer { folders.cleanup() }
+        shared.reportSettings.enableAutoCameraDetection = true
+        shared.reportSettings.autoPopulateSource = true
+        shared.operationState = .completed(.init(success: true, message: "Verified"))
+
+        controller.cardDetected(at: folders.source)
+
+        #expect(shared.sourceURL == nil)
+    }
 }

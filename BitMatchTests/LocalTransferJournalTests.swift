@@ -14,6 +14,8 @@ struct LocalTransferJournalTests {
         return (root, source, destination, root.appendingPathComponent("journal.json"))
     }
 
+    /// Plant: delete `recovered[index].endedAt = Date()` from
+    /// `TransferJournal.init`; the recovered attempt has no terminal time.
     @Test func runningAttemptBecomesInterruptedOnRelaunch() throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -31,6 +33,7 @@ struct LocalTransferJournalTests {
         #expect(restored.records.first?.cameraSettings.label == "A001")
         #expect(restored.records.first?.generateASCMHL == false)
         #expect(restored.records.first?.results.isEmpty == true)
+        #expect(restored.records.first?.endedAt != nil)
 
     }
 

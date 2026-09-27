@@ -500,7 +500,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertNil(coordinator.queuePausedRecordID)
     }
 
-    func testRelaunchRestoresInterruptedPauseAndBlocksRunUntilSkip() async throws {
+    /// Plant: restore the no-session journal fallback in
+    /// `SharedAppCoordinator.init`; the old interrupted record pauses Setup.
+    func testRelaunchWithoutSessionKeepsInterruptedHistoryOutOfQueue() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
         let next = f.root.appendingPathComponent("A002")
@@ -516,27 +518,18 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             try journal.markRunning(id: interruptedID)
         }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
-        let service = QueueRecordingOperations()
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
         )
-        XCTAssertEqual(coordinator.queuePausedRecordID, interruptedID)
-        XCTAssertTrue(coordinator.hasUnresolvedQueueRecords)
-        XCTAssertFalse(coordinator.queueRunCommandEnabled)
-        coordinator.startQueue()
-        let startsBeforeSkip = await service.starts
-        XCTAssertTrue(startsBeforeSkip.isEmpty)
-
-        coordinator.skipPausedCardAndContinue(interruptedID)
-        let advanced = await waitUntil { @MainActor in
-            journal.records.first(where: { $0.id == waitingID })?.state != .queued
-        }
-        XCTAssertTrue(advanced)
-        let startsAfterSkip = await service.starts
-        XCTAssertEqual(startsAfterSkip.count, 1)
+        XCTAssertNil(coordinator.queuePausedRecordID)
+        XCTAssertFalse(coordinator.hasUnresolvedQueueRecords)
+        XCTAssertTrue(coordinator.queueSessionRecordIDs.isEmpty)
+        XCTAssertEqual(journal.records.first(where: { $0.id == interruptedID })?.state, .interrupted)
+        XCTAssertNotNil(journal.records.first(where: { $0.id == interruptedID })?.endedAt)
+        XCTAssertEqual(journal.records.first(where: { $0.id == waitingID })?.state, .queued)
     }
 
-    func testRemovingPausedCardClearsQueueButKeepsHistoryEvidence() throws {
+    func testOldInterruptedCardNeedsNoRemovalAndKeepsHistoryEvidence() throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
         let interruptedID: UUID
@@ -554,14 +547,45 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
             transferJournal: journal
         )
-        XCTAssertEqual(coordinator.queuePausedRecordID, interruptedID)
-
-        try coordinator.removePausedCardFromQueue(interruptedID)
-
         XCTAssertNil(coordinator.queuePausedRecordID)
         XCTAssertTrue(coordinator.queuePresentation.rows.isEmpty)
         XCTAssertNotNil(journal.records.first(where: { $0.id == interruptedID }))
         XCTAssertEqual(journal.records.first(where: { $0.id == interruptedID })?.state, .interrupted)
+    }
+
+    /// Plant: make `hasUnresolvedQueueRecords` scan every terminal session
+    /// record instead of the visible paused record; removing this card then
+    /// leaves Setup disabled with no pause banner.
+    func testRemovingPausedCardCannotLeaveHiddenRecordBlockingStart() throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let other = f.root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let first = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        let second = try journal.enqueue(
+            sourceURL: other, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.fail(id: first, summary: "First failed")
+        try journal.fail(id: second, summary: "Second failed")
+        try journal.saveQueueSession(PersistedQueueSession(
+            recordIDs: [first, second], skippedRecordIDs: [], pausedRecordID: first, ended: false
+        ))
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+
+        try coordinator.removePausedCardFromQueue(first)
+
+        XCTAssertNil(coordinator.queuePausedRecordID)
+        XCTAssertFalse(coordinator.hasUnresolvedQueueRecords)
+        XCTAssertNotNil(journal.records.first(where: { $0.id == first }))
+        XCTAssertNotNil(journal.records.first(where: { $0.id == second }))
     }
 
     func testCleanRelaunchRestoresEndedFailureRowAndSkipGate() async throws {
@@ -834,6 +858,57 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(UserDefaults.standard.bool(forKey: "BitMatchGenerateASCMHL"), true)
     }
 
+    /// Plant: delete the review snapshot/restore block in
+    /// `reviewQueuedTransfer` and `startNewTransfer`; the reviewed Quick
+    /// record becomes the user's next mode and backups.
+    func testReviewRestoresUsersModeAndBackupsWithoutSavingRecordSnapshot() throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let savedMode = UserDefaults.standard.object(forKey: "lastVerificationMode")
+        defer {
+            if let savedMode { UserDefaults.standard.set(savedMode, forKey: "lastVerificationMode") }
+            else { UserDefaults.standard.removeObject(forKey: "lastVerificationMode") }
+        }
+        let reviewBackup = f.root.appendingPathComponent("review-backup")
+        let userBackup = f.root.appendingPathComponent("user-backup")
+        try FileManager.default.createDirectory(at: reviewBackup, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: userBackup, withIntermediateDirectories: true)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [reviewBackup], verificationMode: .quick,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), generateASCMHL: false
+        )
+        try journal.markRunning(id: id)
+        try journal.finish(
+            id: id,
+            results: [ResultRow(path: "clip.mov", status: ResultOutcome.copiedUnverified.statusText,
+                                size: 3, checksum: nil, destination: "review-backup")],
+            summary: "Copied", hadIssues: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+        let model = MacVolumeAccessModel(shared: coordinator, enableVolumeMonitoring: false)
+        let suiteName = "BitMatchTests.review-\(UUID())"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        model.lastUsedDefaults = defaults
+        coordinator.verificationMode = .paranoid
+        coordinator.destinationURLs = [userBackup]
+        XCTAssertEqual(defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
+
+        coordinator.reviewQueuedTransfer(id)
+        XCTAssertEqual(defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVerificationMode"), VerificationMode.paranoid.rawValue)
+        coordinator.startNewTransfer()
+
+        XCTAssertEqual(coordinator.verificationMode, .paranoid)
+        XCTAssertEqual(coordinator.destinationURLs, [userBackup])
+        XCTAssertEqual(defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
+        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVerificationMode"), VerificationMode.paranoid.rawValue)
+    }
+
     func testReadableReplacementAtSamePathIsNeitherCountedNorEjected() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -860,6 +935,41 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(callCount, 0)
     }
 
+    /// Plant: in `ejectOutcomeSource`, eject `sourceURL` directly instead of
+    /// resolving the outcome record with `prepareSourceForEjection`; this
+    /// records the newly selected folder instead of the finished card.
+    func testOutcomeEjectUsesFinishedJournalSourceNotLiveSelection() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let other = f.root.appendingPathComponent("next-card")
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: id)
+        try journal.finish(
+            id: id,
+            results: [ResultRow(path: "clip.mov", status: ResultOutcome.verified.statusText,
+                                size: 4, checksum: "abc", destination: "backup",
+                                destinationPath: f.destination.appendingPathComponent("clip.mov").path)],
+            summary: "Verified", hadIssues: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+        coordinator.reviewQueuedTransfer(id)
+        coordinator.sourceURL = other
+        let recorder = EjectRecorder()
+
+        let error = await coordinator.ejectOutcomeSource { url in await recorder.record(url) }
+        XCTAssertNil(error)
+        let ejected = await recorder.urls
+        XCTAssertEqual(ejected.map { $0.resolvingSymlinksInPath() }, [f.source.resolvingSymlinksInPath()])
+    }
+
     func testReviewQueuedTransferRejectsWaitingStateBeforeMutation() throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -876,7 +986,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.operationState, .notStarted)
     }
 
-    func testStandaloneAttentionAddsDockBadgeCountSinceLaunch() async throws {
+    /// Plant: delete `standaloneAttentionRecordIDsSinceLaunch.remove(id)`
+    /// from `dismissAttention`; the Dock "!" survives dismissal.
+    func testStandaloneAttentionAddsAndDismissesDockBadgeCount() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
@@ -894,7 +1006,90 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             reviewedIDs: coordinator.reviewedQueueAttentionIDs,
             standaloneAttentionCount: coordinator.standaloneAttentionRecordIDsSinceLaunch.count
         ), 1)
+        let id = try XCTUnwrap(coordinator.standaloneAttentionRecordIDsSinceLaunch.first)
+        coordinator.dismissAttention(for: id)
+        XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
     }
+
+    /// Plant: include `.copiedNotVerified` in the pausing branch of
+    /// `handleAttemptTerminal`; the first Quick card then stops this queue.
+    func testQuickQueueContinuesAndDoesNotAddAttentionBadge() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let second = f.root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data("two".utf8).write(to: second.appendingPathComponent("clip.mov"))
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QuickQueueRecordingOperations()),
+            transferJournal: journal
+        )
+        var reports = ReportPrefs()
+        reports.makeReport = false
+        _ = try coordinator.enqueue(
+            source: f.source, destinations: [f.destination], verificationMode: .quick,
+            generateASCMHL: false, reportSettings: reports
+        )
+        _ = try coordinator.enqueue(
+            source: second, destinations: [f.destination], verificationMode: .quick,
+            generateASCMHL: false, reportSettings: reports
+        )
+
+        coordinator.startQueue()
+        let ended = await waitUntil { @MainActor in coordinator.queueSessionEnded }
+        XCTAssertTrue(ended)
+        XCTAssertNil(coordinator.queuePausedRecordID)
+        XCTAssertEqual(coordinator.queuePresentation.tally.copiedNotVerified, 2)
+        XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
+    }
+
+    /// Plant: delete `standaloneAttentionRecordIDsSinceLaunch.removeAll()`
+    /// from `startNewTransfer`; the Dock badge remains into the next setup.
+    func testNewTransferClearsStandaloneDockAttention() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: LocalTransferJournal(fileURL: f.journalURL)
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+        await coordinator.startOperation()
+        XCTAssertFalse(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
+        coordinator.startNewTransfer()
+        XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
+    }
+}
+
+private final class QuickQueueRecordingOperations: FileOperationsService, @unchecked Sendable {
+    func performFileOperation(
+        sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
+        settings: CameraLabelSettings, estimatedTotalBytes: Int64?,
+        progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?
+    ) async throws -> FileOperation {
+        let sourceFile = sourceURL.appendingPathComponent("clip.mov")
+        let rows = destinationURLs.map { destination in
+            FileOperationResult(
+                sourceURL: sourceFile,
+                destinationURL: destination.appendingPathComponent("clip.mov"),
+                success: true, error: nil, fileSize: 3,
+                verificationResult: nil, processingTime: 0
+            )
+        }
+        return FileOperation(
+            sourceURL: sourceURL, destinationURLs: destinationURLs,
+            startTime: Date(), endTime: Date(), results: rows,
+            sourceManifest: [sourceFile],
+            verificationMode: verificationMode, settings: settings,
+            estimatedTotalBytes: estimatedTotalBytes
+        )
+    }
+
+    func cancelOperation() {}
+    func pauseOperation() async {}
+    func resumeOperation() async {}
 }
 
 private struct QueueFixture {
@@ -938,9 +1133,10 @@ private actor QueueGate {
 }
 
 private actor EjectRecorder {
-    private(set) var callCount = 0
+    private(set) var urls: [URL] = []
+    var callCount: Int { urls.count }
     func record(_ url: URL) -> String? {
-        callCount += 1
+        urls.append(url)
         return nil
     }
 }

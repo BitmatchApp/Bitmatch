@@ -1,5 +1,6 @@
 // TransferFinishNotice.swift - What the "transfer finished" notification says.
 import Foundation
+import BitMatchEngine
 
 /// The notification sent when a transfer ends while BitMatch is in the
 /// background. Only a real success says the card is safe to erase
@@ -13,6 +14,21 @@ struct TransferFinishNotice: Equatable, Sendable {
         self.title = title
         self.body = body
         self.kind = kind
+    }
+
+    static func make(
+        state: OperationState,
+        record: LocalTransferRecord,
+        issueCount: Int,
+        kind: TransferNotificationKind
+    ) -> TransferFinishNotice? {
+        make(
+            state: state,
+            sourceName: record.title,
+            destinations: record.destinations.map(\.url),
+            issueCount: issueCount,
+            kind: kind
+        )
     }
 
     /// `nil` while a transfer is active or has not started. `kind` is how
