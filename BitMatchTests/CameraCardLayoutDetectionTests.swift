@@ -9,7 +9,7 @@ import Testing
 /// - Guards pin detection that is right today. Each names the one-line
 ///   production change that should make it fail.
 /// - `withKnownIssue` tests record detection that is wrong today (see
-///   docs/audits/2026-09-25-camera-detection.md). They are strict: when a
+///   the 2026-09-25 camera-detection audit). They are strict: when a
 ///   fix lands, the known issue stops reproducing, the test fails, and the
 ///   wrapper should be removed so the test becomes a guard.
 ///

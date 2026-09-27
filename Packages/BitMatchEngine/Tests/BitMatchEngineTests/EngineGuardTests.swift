@@ -1,5 +1,5 @@
 // EngineGuardTests.swift
-// Guards for the engine-package move (docs/superpowers/plans/2026-09-25-engine-package.md,
+// Guards for the engine-package move (the 2026-09-25 engine-package plan,
 // §6 invariants and §8). Each test names the one-line bug that must turn it red.
 import CryptoKit
 import Foundation

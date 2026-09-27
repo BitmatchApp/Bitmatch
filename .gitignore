@@ -26,3 +26,6 @@ mac-build.log
 .superpowers/
 .worktrees/
 Pods/
+
+# Local planning notes, audits and design drafts (not published)
+docs/internal/

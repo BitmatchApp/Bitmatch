@@ -39,7 +39,7 @@ Target shape: an engine package (`CardSource`, `DestinationWriter`, `ChecksumEng
 
 ## Decisions, 2026-09-25
 
-Mike delegated these to the recommendations; the plans in `docs/superpowers/plans/` should follow them.
+Mike delegated these to the recommendations; implementation plans should follow them.
 
 **Verification (P2)**
 - The overall verdict for a Quick transfer stays amber (already the case). Per-file rows say "Copied, not verified" without a green check, and a Quick Compare says "Sizes match, not verified" in amber.

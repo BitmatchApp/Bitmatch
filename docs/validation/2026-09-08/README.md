@@ -13,7 +13,7 @@ New coverage includes independent queue settings, two real card copies with inde
 
 ## Visual checks
 
-Mac setup was checked at 680 points and around 1,000 points wide. The [current README screenshot](../../../screenshot.png) shows a real source containing 12 disposable text files and two local scratch folders, before copying. The [Mac queue form](mac-add-transfer.png) was checked at 480 points wide after correcting its missing padding.
+Mac setup was checked at 680 points and around 1,000 points wide. The README screenshot at the time showed a real source containing 12 disposable text files and two local scratch folders, before copying. The [Mac queue form](mac-add-transfer.png) was checked at 480 points wide after correcting its missing padding.
 
 The shared Transfers screen was opened through each platform's navigation on an [iPhone 17 Pro simulator](iphone-transfers.png) at 402 points wide and an [iPad Air simulator](ipad-transfers.png) at 820 points wide. Advanced verification settings and the queue form were also inspected. These are simulator layout checks, not physical-device transfer tests. A complete live mobile offload and iPad multitasking layout check were not performed.
 

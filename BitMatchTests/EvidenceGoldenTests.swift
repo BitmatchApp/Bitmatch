@@ -1,5 +1,5 @@
 // EvidenceGoldenTests.swift
-// T14 in docs/superpowers/plans/2026-09-25-engine-package.md: the evidence
+// Task T14 of the engine-package move: the evidence
 // files must stay byte-identical while the engine moves into a package
 // (Promise 3). The literals below were produced by main at 3dcd279, before
 // any engine code moved. Paths do not exist, so the drive, free-space and

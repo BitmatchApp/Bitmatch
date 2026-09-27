@@ -4,7 +4,7 @@
 // Folder trees that real cameras write to their cards, built as empty
 // placeholder files for camera-detection tests. Each layout records where
 // its shape comes from and what is only inferred. Audit:
-// docs/audits/2026-09-25-camera-detection.md.
+// the 2026-09-25 camera-detection audit.
 //
 // Files are empty unless `contents` gives text. Detection that reads file
 // headers (RAF, CR3) therefore sees no model and falls back to the brand.

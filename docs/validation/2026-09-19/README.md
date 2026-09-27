@@ -76,8 +76,8 @@ retry exhaustion, pause, and terminal-state protection.
   devices, disconnect/reconnect runs, full destinations, or iOS
   interruption/relaunch results were recorded. The physical-results table
   below stays "Not tested".
-- Receiving-tool acceptance for ASC inventories (Hedge/OffShoot, ShotPut
-  Pro, Silverstack) and production camera media.
+- Receiving-tool acceptance for ASC inventories (other offload and DIT
+  tools) and production camera media.
 - Version bump, signing, notarization, and publishing. The build checks above
   pass; the recorded Mac test run still had the failure described above.
 

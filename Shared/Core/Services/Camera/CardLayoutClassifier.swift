@@ -120,7 +120,7 @@ enum DetectionConfidence {
 
 /// The one place that decides a card's brand from its folder layout.
 ///
-/// Used by all three detection paths (docs/audits/2026-09-25-camera-detection.md,
+/// Used by all three detection paths (the 2026-09-25 camera-detection audit,
 /// finding B and Promise 5):
 /// - `CameraStructureDetector` (Mac auto-detect),
 /// - `CameraDetectionOrchestrator` (labels; its first step), and through it
