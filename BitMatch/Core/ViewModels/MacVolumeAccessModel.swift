@@ -269,7 +269,12 @@ final class MacVolumeAccessModel: ObservableObject {
                 
                 // Security 17: store bookmark in Keychain instead of UserDefaults
                 let key = "volumesDirectoryBookmark"
+                // Also in UserDefaults: a failed Keychain write (seen in the
+                // signed sandboxed build) lost the grant at every quit, so
+                // BitMatch asked again at every launch. The bookmark is not a
+                // secret: only this app's signature can resolve it.
                 _ = KeychainHelper.save(bookmarkData, forKey: key)
+                UserDefaults.standard.set(bookmarkData, forKey: key)
                 UserDefaults.standard.set(selectedURL.path, forKey: "volumesDirectoryPath")
 
                 SharedLogger.info("Saved volumes directory bookmark for: \(selectedURL.path)", category: .transfer)
