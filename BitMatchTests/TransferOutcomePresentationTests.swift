@@ -193,7 +193,7 @@ struct TransferOutcomePresentationTests {
 
     @Test func newTransferHelpSaysItKeepsTheBackups() {
         let outcome = make(state: .cancelled, rows: partialRows)
-        #expect(outcome.newTransferHelp == "Start again with the same backups")
+        #expect(outcome.newTransferHelp == "Start again with the same destinations")
     }
 
     // Plant: in `statusLabel(for:)`, return `status` for every case.

@@ -243,8 +243,8 @@ struct TransferLibraryPresentationTests {
     /// `destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"` to
     /// always return `"\(destinationCount) backups"`.
     @Test func detailLineSingularizesOneBackupAndOneFile() {
-        #expect(TransferLibraryPresentation.detailLine(destinationCount: 1, fileCount: 1) == "1 backup · 1 file")
-        #expect(TransferLibraryPresentation.detailLine(destinationCount: 2, fileCount: 128) == "2 backups · 128 files")
+        #expect(TransferLibraryPresentation.detailLine(destinationCount: 1, fileCount: 1) == "1 destination · 1 file")
+        #expect(TransferLibraryPresentation.detailLine(destinationCount: 2, fileCount: 128) == "2 destinations · 128 files")
     }
 }
 

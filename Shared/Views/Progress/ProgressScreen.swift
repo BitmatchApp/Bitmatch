@@ -135,15 +135,15 @@ struct ProgressScreen: View {
 
     private var destinationSummary: String {
         let names = presentation.destinationNames
-        guard !names.isEmpty else { return "backups" }
+        guard !names.isEmpty else { return "destinations" }
         if names.count == 1 { return names[0] }
         if names.count == 2 { return "\(names[0]) and \(names[1])" }
-        return "\(names.count) backups"
+        return "\(names.count) destinations"
     }
 
     private var fullProgressSubtitle: String {
         let names = presentation.destinationNames
-        let destinations = names.isEmpty ? "backups" : names.joined(separator: ", ")
+        let destinations = names.isEmpty ? "destinations" : names.joined(separator: ", ")
         return ["to \(destinations)", presentation.elapsed.map { "\($0) elapsed" }]
             .compactMap { $0 }.joined(separator: " · ")
     }
@@ -270,7 +270,7 @@ struct ProgressScreen: View {
     private var destinationList: some View {
         if !presentation.destinations.isEmpty {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Backups")
+                Text("Destinations")
                     .font(.headline)
                     .accessibilityAddTraits(.isHeader)
                 LazyVStack(alignment: .leading, spacing: 0) {
@@ -343,7 +343,7 @@ private struct DestinationProgressRowView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .help(row.helpPath)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Backup \(row.name), \(row.stateLabel)")
+        .accessibilityLabel("Destination \(row.name), \(row.stateLabel)")
         .accessibilityValue(row.countText ?? "")
     }
 

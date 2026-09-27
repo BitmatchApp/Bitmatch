@@ -55,7 +55,7 @@ struct ConnectedDrivesView: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text("Allow BitMatch to use your drives")
                     .font(.subheadline)
-                Text("Needed once to read cards and write backups.")
+                Text("Needed once to read cards and write destinations.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -87,7 +87,7 @@ struct ConnectedDrivesView: View {
                 Label("Card", systemImage: "checkmark")
                     .foregroundStyle(.secondary)
             case .isBackup:
-                Label("Backup", systemImage: "checkmark")
+                Label("Destination", systemImage: "checkmark")
                     .foregroundStyle(.secondary)
             case .none:
                 ViewThatFits(in: .horizontal) {
@@ -107,8 +107,8 @@ struct ConnectedDrivesView: View {
         Button("Use as card") { useAsCard(row.url) }
             .accessibilityLabel("Use \(row.displayName) as card")
             .disabled(actionsDisabled)
-        Button("Add as backup") { addAsBackup(row.url) }
-            .accessibilityLabel("Add \(row.displayName) as backup")
+        Button("Add as destination") { addAsBackup(row.url) }
+            .accessibilityLabel("Add \(row.displayName) as destination")
             .disabled(actionsDisabled)
     }
 }

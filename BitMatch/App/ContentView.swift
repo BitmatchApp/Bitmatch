@@ -38,6 +38,13 @@ private struct MacNoticeHeightKey: PreferenceKey {
     }
 }
 
+private struct MacOutcomeContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 @MainActor
 private struct MacHostingWindowReader: NSViewRepresentable {
     @Binding var window: NSWindow?
@@ -96,6 +103,7 @@ struct MacMainView: View {
     
     // Dynamic window height management
     @State private var measuredScrollableContentHeight: CGFloat = 0
+    @State private var measuredOutcomeContentHeight: CGFloat = 0
     @State private var measuredNoticeHeight: CGFloat = 0
     @State private var hostingWindow: NSWindow?
     @State private var transferOptionsExpanded = false
@@ -468,6 +476,11 @@ struct MacMainView: View {
                 )
             }
         })
+        .background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: MacOutcomeContentHeightKey.self, value: proxy.size.height)
+            }
+        }
     }
     
     private var darkBackground: some View {
@@ -549,9 +562,15 @@ struct MacMainView: View {
         guard let window = hostingWindow, measuredScrollableContentHeight > 0 else { return }
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
+        // A vertical ScrollView can retain the previous setup viewport as its
+        // measured content height. The finish screen reports its own intrinsic
+        // height so the same window policy can shrink away that empty space.
+        let contentHeight = coordinator.showsOutcomeSummary && measuredOutcomeContentHeight > 0
+            ? measuredOutcomeContentHeight + 44
+            : measuredScrollableContentHeight
         let newFrame = MacWindowFramePolicy.fittedFrame(
             currentFrame: window.frame,
-            measuredContentHeight: measuredScrollableContentHeight + measuredNoticeHeight,
+            measuredContentHeight: contentHeight + measuredNoticeHeight,
             windowChromeHeight: chromeHeight,
             visibleFrame: visibleFrame
         )
@@ -609,6 +628,10 @@ struct MacMainView: View {
             }
             .onPreferenceChange(MacNoticeHeightKey.self) { height in
                 measuredNoticeHeight = height
+                resizeWindowToMeasuredContent()
+            }
+            .onPreferenceChange(MacOutcomeContentHeightKey.self) { height in
+                measuredOutcomeContentHeight = height
                 resizeWindowToMeasuredContent()
             }
             .onChange(of: hostingWindow != nil) { _, hasWindow in

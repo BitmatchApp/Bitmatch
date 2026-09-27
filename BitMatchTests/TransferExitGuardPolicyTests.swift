@@ -4,7 +4,7 @@ import Testing
 struct TransferExitGuardPolicyTests {
     @Test func warningCopyMatchesTheTransferRisk() {
         #expect(TransferExitGuardPolicy.title == "Stop this transfer?")
-        #expect(TransferExitGuardPolicy.message == "Files copied so far stay on the backups, but the card is not verified.")
+        #expect(TransferExitGuardPolicy.message == "Files copied so far stay on the destinations, but the card is not verified.")
         #expect(TransferExitGuardPolicy.keepCopyingTitle == "Keep Copying")
         #expect(TransferExitGuardPolicy.stopTransferTitle == "Stop Transfer")
     }

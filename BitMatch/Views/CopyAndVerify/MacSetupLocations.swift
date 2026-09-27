@@ -31,7 +31,7 @@ struct MacSetupLocations: View {
         let volumeAccess = self.volumeAccess
         return SetupLocationsPlatform(
             pickSource: { Self.chooseFolders(multiple: false, prompt: "Choose Source").first },
-            pickBackups: { Self.chooseFolders(multiple: true, prompt: "Add Backup") },
+            pickBackups: { Self.chooseFolders(multiple: true, prompt: "Add Destination") },
             addBackup: { volumeAccess.addDestination($0) },
             removeBackup: { volumeAccess.removeDestination($0) },
             capacity: SetupLocationsPresentation.capacity,

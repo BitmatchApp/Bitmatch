@@ -57,7 +57,7 @@ struct SetupLocationSelection {
     func addBackups(_ urls: [URL]) -> [String] {
         guard !coordinator.isOperationInProgress else { return [] }
         guard coordinator.stagedSetupTransfers.isEmpty else {
-            return ["Remove the staged cards before changing backups."]
+            return ["Remove the staged cards before changing destinations."]
         }
         let coordinator = self.coordinator
         return DestinationSelectionPolicy.addBackups(
@@ -142,7 +142,7 @@ struct CoordinatorSetupLocations: View {
                     id: record.id,
                     title: record.title,
                     path: record.source.url.path,
-                    detail: record.destinations.count == 1 ? "1 backup · Ready" : "\(record.destinations.count) backups · Ready"
+                    detail: record.destinations.count == 1 ? "1 destination · Ready" : "\(record.destinations.count) destinations · Ready"
                 )
             },
             destinationURLs: coordinator.destinationURLs,
@@ -162,7 +162,7 @@ struct CoordinatorSetupLocations: View {
         guard !coordinator.canEnqueueSelection else { return nil }
         if coordinator.isAnalysingSource { return "Analyzing source…" }
         if let blocker = coordinator.operationReadinessAssessment.blockingIssues.first { return blocker }
-        if coordinator.destinationURLs.isEmpty { return "Choose at least one backup first." }
+        if coordinator.destinationURLs.isEmpty { return "Choose at least one destination first." }
         return "This card is not ready to add."
     }
 
@@ -250,7 +250,7 @@ struct CoordinatorSetupLocations: View {
             },
             replaceBackup: { index, providers in
                 guard providers.count == 1 else {
-                    presentRefusals(["Drop one folder onto a backup to replace it"], platform: platform)
+                    presentRefusals(["Drop one folder onto a destination to replace it"], platform: platform)
                     return false
                 }
                 loadDroppedURLs(providers) { urls in

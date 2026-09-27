@@ -32,7 +32,7 @@ final class MacOSFileSystemService: FileSystemService, Sendable {
             panel.canChooseDirectories = true
             panel.allowsMultipleSelection = true
             panel.prompt = "Select Destinations"
-            panel.message = "Choose one or more backup destinations"
+            panel.message = "Choose one or more destinations"
             
             if panel.runModal() == .OK {
                 return panel.urls

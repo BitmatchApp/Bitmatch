@@ -65,8 +65,8 @@ struct DestinationSelectionPolicyTests {
     /// A `BackupTargetPolicy` refusal comes back with its own message.
     /// Plant: in `evaluateBackup`, delete the `backupRefusal(url, source)` check.
     @Test func backupTargetPolicyRefusalIsShown() {
-        #expect(backup(raidA, refusal: "RAID_A is a macOS system volume and cannot be a backup.")
-            == .reject("RAID_A is a macOS system volume and cannot be a backup."))
+        #expect(backup(raidA, refusal: "RAID_A is a macOS system volume and cannot be a destination.")
+            == .reject("RAID_A is a macOS system volume and cannot be a destination."))
     }
 
     /// The default rule is the real `BackupTargetPolicy`.
@@ -96,7 +96,7 @@ struct DestinationSelectionPolicyTests {
             isSystemFolder: { _ in false }
         )
 
-        #expect(decision == .reject("Source conflicts with backup Shoot"))
+        #expect(decision == .reject("Source conflicts with destination Shoot"))
     }
 
     /// Plant: in `DestinationSelectionPolicy.folderRefusal`, delete the
@@ -159,10 +159,10 @@ struct DestinationSelectionPolicyTests {
     @Test func addRefusalIsShown() {
         let coordinator = makeCoordinator()
 
-        let refusals = selection(coordinator, add: { _ in "RAID_B is the source's own drive and cannot be its backup." })
+        let refusals = selection(coordinator, add: { _ in "RAID_B is the source's own drive and cannot be its destination." })
             .addBackups([raidB])
 
-        #expect(refusals == ["RAID_B is the source's own drive and cannot be its backup."])
+        #expect(refusals == ["RAID_B is the source's own drive and cannot be its destination."])
         #expect(coordinator.destinationURLs.isEmpty)
     }
 
@@ -175,7 +175,7 @@ struct DestinationSelectionPolicyTests {
 
         let refusals = selection(coordinator).chooseSource(URL(fileURLWithPath: "/Volumes/RAID_A", isDirectory: true))
 
-        #expect(refusals == ["Source conflicts with backup Shoot"])
+        #expect(refusals == ["Source conflicts with destination Shoot"])
         #expect(coordinator.sourceURL == card)
     }
 

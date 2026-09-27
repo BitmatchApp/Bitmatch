@@ -262,6 +262,10 @@ final class FolderInfoService: ObservableObject {
             while let file = enumerator.nextObject() {
                 if Task.isCancelled { return nil }
                 guard let fileURL = file as? URL else { continue }
+                if enumerator.level == 1, CardSource.isRootVolumeMetadataDirectory(fileURL) {
+                    enumerator.skipDescendants()
+                    continue
+                }
                 guard let rv = try? fileURL.resourceValues(forKeys: Set(fastKeys)) else { continue }
                 if rv.isSymbolicLink == true { continue }
                 if rv.isRegularFile == true {
@@ -313,8 +317,12 @@ final class FolderInfoService: ObservableObject {
 
             while let file = enumerator.nextObject() {
                 if Task.isCancelled { return nil }
+                guard let fileURL = file as? URL else { continue }
+                if enumerator.level == 1, CardSource.isRootVolumeMetadataDirectory(fileURL) {
+                    enumerator.skipDescendants()
+                    continue
+                }
                 autoreleasepool {
-                    guard let fileURL = file as? URL else { return }
                     guard let rv = try? fileURL.resourceValues(forKeys: Set(fileEnumKeys)) else { return }
                     if rv.isSymbolicLink == true { return }
 

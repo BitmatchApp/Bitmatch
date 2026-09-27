@@ -17,7 +17,7 @@ struct TransferPlanStatusDisplay: Equatable {
     static func make(_ status: TransferPlanPresentation.Status) -> Self {
         switch status {
         case .ready:
-            Self(title: "Ready to transfer", detail: "Source and backups are ready.", symbol: "checkmark.circle.fill", tone: .success)
+            Self(title: "Ready to transfer", detail: "Source and destinations are ready.", symbol: "checkmark.circle.fill", tone: .success)
         case .analyzing(let message):
             Self(title: "Analyzing", detail: message, symbol: "arrow.triangle.2.circlepath", tone: .info)
         case .warning(let warnings):
@@ -135,7 +135,7 @@ struct TransferPlanPresentation: Equatable {
     private static func actionTitle(nextStep: NextStep?, verificationMode: VerificationMode) -> String {
         switch nextStep {
         case .chooseSource: "Choose a source to start"
-        case .addBackup: "Add a backup to start"
+        case .addBackup: "Add a destination to start"
         case nil:
             verificationMode == .quick
                 ? "Start copy without checksum verification"
@@ -157,7 +157,7 @@ struct TransferPlanPresentation: Equatable {
             return .incomplete("Choose a source folder")
         }
         guard !destinationURLs.isEmpty else {
-            return .incomplete("Add at least one backup destination")
+            return .incomplete("Add at least one destination")
         }
         if isAnalyzing {
             return .analyzing("Analyzing source…")
@@ -181,10 +181,10 @@ struct TransferPlanPresentation: Equatable {
 
     private static func destinationDetail(for destinationCount: Int) -> String {
         guard destinationCount > 0 else {
-            return "Add at least one backup"
+            return "Add at least one destination"
         }
         let count = formattedCount(destinationCount)
-        return destinationCount == 1 ? "\(count) backup selected" : "\(count) backups selected"
+        return destinationCount == 1 ? "\(count) destination selected" : "\(count) destinations selected"
     }
 
     private static func optionSummary(

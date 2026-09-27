@@ -25,7 +25,7 @@ nonisolated enum DestinationIdentityPresentation {
             return name
         }
         let fallback = url.lastPathComponent
-        return fallback.isEmpty ? "Backup" : fallback
+        return fallback.isEmpty ? "Destination" : fallback
     }
 
     /// A compact secondary label for live progress. The complete path stays

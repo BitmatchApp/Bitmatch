@@ -105,7 +105,7 @@ struct TransferCompletionVerdictTests {
         #expect(verdict([verified], mhl: true, handoff: ["SSD: ASC MHL — disk full"]) == .init(success: false, message: "All files copied and verified; SSD: ASC MHL — disk full"))
         #expect(verdict([verified], report: "disk full") == .init(success: false, message: "All files copied and verified; the report could not be saved: disk full"))
         #expect(verdict([verified], project: .init(didPersist: false, locallySafe: nil)) == .init(success: false, message: "All files copied and verified; the project record was not saved"))
-        #expect(verdict([verified], project: .init(didPersist: true, locallySafe: false)) == .init(success: false, message: "All files copied and verified; the card is not yet verified on all the project's backups"))
+        #expect(verdict([verified], project: .init(didPersist: true, locallySafe: false)) == .init(success: false, message: "All files copied and verified; the card is not yet verified on all the project's destinations"))
         #expect(verdict([verified], project: .init(didPersist: true, locallySafe: true)).success)
     }
 

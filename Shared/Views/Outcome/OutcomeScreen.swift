@@ -316,7 +316,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
             Label("Retry Transfer", systemImage: "arrow.clockwise")
                 .frame(maxWidth: layout == .compact ? .infinity : nil, minHeight: Self.minTarget)
         }
-        .accessibilityHint("Runs this transfer again from the same card to the same backups. The earlier attempt stays in history.")
+        .accessibilityHint("Runs this transfer again from the same card to the same destinations. The earlier attempt stays in history.")
         if prominent {
             button.buttonStyle(.borderedProminent)
         } else {
@@ -374,7 +374,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
                     }
                     if let bytes = presentation.bytesVerified {
                         countLine(
-                            "\(ByteCountPresentation.fileSize(bytes)) verified across all backups",
+                            "\(ByteCountPresentation.fileSize(bytes)) verified across all destinations",
                             systemImage: "externaldrive"
                         )
                     }

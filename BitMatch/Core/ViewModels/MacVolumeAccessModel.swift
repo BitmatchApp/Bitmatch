@@ -237,7 +237,7 @@ final class MacVolumeAccessModel: ObservableObject {
         openPanel.canChooseDirectories = true
         openPanel.canChooseFiles = false
         openPanel.title = "Grant Access to All Volumes"
-        openPanel.message = "BitMatch needs your permission once to read cards and write backups on your drives. Select the Volumes folder and click Allow."
+        openPanel.message = "BitMatch needs your permission once to read cards and write destinations on your drives. Select the Volumes folder and click Allow."
         openPanel.prompt = "Allow"
         
         // Pre-select the /Volumes directory

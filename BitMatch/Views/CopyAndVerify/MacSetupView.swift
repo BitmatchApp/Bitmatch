@@ -55,8 +55,6 @@ private struct MacCameraLabelSlot: View {
     var body: some View {
         CameraLabelView(
             settings: $cameraLabels.settings,
-            detectedCamera: cameraLabels.detectedCamera,
-            fingerprint: cameraLabels.currentFingerprint,
             sourceURL: coordinator.sourceURL
         )
     }

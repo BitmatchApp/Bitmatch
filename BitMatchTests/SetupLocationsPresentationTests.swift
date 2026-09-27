@@ -105,7 +105,7 @@ struct SetupLocationsPresentationTests {
 
     @Test func stagedSourcesStaySeparateAndAddingRequiresAReadyCurrentCard() {
         let staged = SetupLocationsPresentation.StagedSource(
-            id: UUID(), title: "A_CAM", path: "/Volumes/A_CAM", detail: "2 backups · Ready"
+            id: UUID(), title: "A_CAM", path: "/Volumes/A_CAM", detail: "2 destinations · Ready"
         )
         let presentation = SetupLocationsPresentation.make(
             sourceURL: card,

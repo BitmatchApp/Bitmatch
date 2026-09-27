@@ -129,7 +129,7 @@ struct MacQueueSection: View {
             }
 
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Text("Backups").font(.caption).foregroundStyle(.secondary)
+                Text("Destinations").font(.caption).foregroundStyle(.secondary)
                 ForEach(draftDestinations, id: \.self) { destination in
                     HStack(spacing: 4) {
                         Text(destination.lastPathComponent).lineLimit(1)
@@ -143,7 +143,7 @@ struct MacQueueSection: View {
                     .padding(.horizontal, 7).padding(.vertical, 4)
                     .background(Color.primary.opacity(0.07), in: Capsule())
                 }
-                Button("Add Backup…") { choosingBackups = true }
+                Button("Add destination…") { choosingBackups = true }
                     .controlSize(.small)
                 Spacer(minLength: 0)
             }

@@ -212,7 +212,7 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.title == "Start 2 Cards")
-        #expect(presentation.readyLine == "2 cards will run as separate verified transfers to 1 backup.")
+        #expect(presentation.readyLine == "2 cards will run as separate verified transfers to 1 destination.")
     }
 
     @Test func emptySourceDisablesStartWithAReason() {

@@ -118,7 +118,7 @@ struct MasterReportScreen: View {
             Text("Master report")
                 .font(.title2.weight(.semibold))
                 .accessibilityAddTraits(.isHeader)
-            Text("Collect one day's BitMatch reports from a backup drive into one PDF for the production.")
+            Text("Collect one day's BitMatch reports from a destination drive into one PDF for the production.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -281,7 +281,7 @@ struct MasterReportScreen: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("No BitMatch reports from \(dayText)")
                 .font(.headline)
-            Text("BitMatch looks for the reports it writes beside each backup, by the day they were written. Pick another day, or a different drive or folder.")
+            Text("BitMatch looks for the reports it writes beside each destination, by the day they were written. Pick another day, or a different drive or folder.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

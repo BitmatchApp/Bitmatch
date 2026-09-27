@@ -244,22 +244,22 @@ struct SetupLocationsView: View {
 
     private var backupsBox: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionTitle("Backups")
+            sectionTitle("Destinations")
             if presentation.backups.isEmpty {
                 SetupLocationPicker(
                     symbol: "externaldrive.badge.plus",
-                    title: "Add backup…",
+                    title: "Add destination…",
                     detail: drops == nil
-                        ? "A folder on each backup drive, from Files"
-                        : "A folder on each backup drive, or drag them here",
+                        ? "A folder on each destination drive, from Files"
+                        : "A folder on each destination drive, or drag them here",
                     isTargeted: isAddTargeted,
                     isHighlighted: presentation.highlightsBackups,
                     isEnabled: presentation.canEditBackups,
                     action: actions.pickBackups,
                     minimumHeight: pickerMinimumHeight
                 )
-                .accessibilityLabel("Add backup")
-                .accessibilityHint("Opens a folder picker for one or more backups")
+                .accessibilityLabel("Add destination")
+                .accessibilityHint("Opens a folder picker for one or more destinations")
                 .fileDrop(isTargeted: $isAddTargeted, enabled: presentation.canEditBackups, perform: drops?.addBackups)
             } else {
                 VStack(alignment: .leading, spacing: 8) {
@@ -299,11 +299,11 @@ struct SetupLocationsView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .accessibilityElement(children: .combine)
-            .accessibilityLabel(["Backup: \(backup.title)", backup.capacity].compactMap { $0 }.joined(separator: ", "))
+            .accessibilityLabel(["Destination: \(backup.title)", backup.capacity].compactMap { $0 }.joined(separator: ", "))
             if presentation.canEditBackups {
                 removeButton(
-                    label: "Remove backup \(backup.title)",
-                    hint: "Removes \(backup.title) from the backups",
+                    label: "Remove destination \(backup.title)",
+                    hint: "Removes \(backup.title) from the destinations",
                     action: { actions.removeBackup(backup.url) }
                 )
             }
@@ -329,7 +329,7 @@ struct SetupLocationsView: View {
 
     private var addMoreButton: some View {
         Button(action: actions.pickBackups) {
-            Label("Add backup…", systemImage: "plus.circle")
+            Label("Add destination…", systemImage: "plus.circle")
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 44)
                 .contentShape(RoundedRectangle(cornerRadius: 10))
@@ -343,8 +343,8 @@ struct SetupLocationsView: View {
                     style: StrokeStyle(lineWidth: isAddMoreTargeted ? 2 : 1, dash: isAddMoreTargeted ? [] : [5, 4])
                 )
         )
-        .accessibilityLabel("Add another backup")
-        .accessibilityHint("Opens a folder picker for one or more backups")
+        .accessibilityLabel("Add another destination")
+        .accessibilityHint("Opens a folder picker for one or more destinations")
         .fileDrop(isTargeted: $isAddMoreTargeted, enabled: presentation.canEdit, perform: drops?.addBackups)
     }
 

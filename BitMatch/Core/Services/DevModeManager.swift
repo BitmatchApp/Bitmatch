@@ -177,7 +177,7 @@ final class DevModeManager: ObservableObject {
         }
         // The same rule as every other add (`BackupTargetPolicy`).
         if let refusal = coordinator.addDestination(backup, origin: .userChoice) {
-            report("The test backup was refused: \(refusal)")
+            report("The test destination was refused: \(refusal)")
             return false
         }
         coordinator.verificationMode = verificationMode

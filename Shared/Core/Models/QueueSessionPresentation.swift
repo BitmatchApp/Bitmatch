@@ -240,14 +240,14 @@ struct QueueSessionPresentation: Equatable, Sendable {
     }
 
     static func destinationSummary(_ names: [String]) -> String {
-        guard let first = names.first else { return "No backups" }
+        guard let first = names.first else { return "No destinations" }
         let allOnOneDrive = names.allSatisfy {
             $0.compare(first, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame
         }
         if allOnOneDrive {
-            return names.count == 1 ? "1 backup on \(first)" : "\(names.count) backups on \(first)"
+            return names.count == 1 ? "1 destination on \(first)" : "\(names.count) destinations on \(first)"
         }
-        return "\(names.count) backups: \(names.joined(separator: ", "))"
+        return "\(names.count) destinations: \(names.joined(separator: ", "))"
     }
 
     static func deduplicatedCause(_ cause: String) -> String {

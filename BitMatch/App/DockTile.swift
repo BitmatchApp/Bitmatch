@@ -13,7 +13,7 @@ enum DockTileState: Equatable {
     /// `percent` is 0...100, whole numbers.
     case running(percent: Int)
     case paused(percent: Int)
-    /// Every file on every backup verified: the card is safe to erase.
+    /// Every file on every destination verified: the card is safe to erase.
     case verified
     /// Finished, but something needs a look (not verified, or issues).
     case needsReview

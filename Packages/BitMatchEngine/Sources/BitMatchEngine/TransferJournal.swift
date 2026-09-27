@@ -161,7 +161,7 @@ public enum LocalTransferJournalError: LocalizedError, Sendable {
         case .unavailable(let name): return "Reconnect or reselect \(name). Its original folder could not be confirmed."
         case .busy: return "Transfer history is already open in another app instance. Close it before starting another transfer."
         case .invalidState: return "This transfer cannot be started in its current state."
-        case .missingDestinations: return "Choose at least one backup."
+        case .missingDestinations: return "Choose at least one destination."
         case .unreadableJournal(let message): return "Transfer history could not be loaded: \(message)"
         case .identityMismatch(let name):
             return "\(name) is not the original folder. Pick the original drive and folder, or start a new transfer instead."

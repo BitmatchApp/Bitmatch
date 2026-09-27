@@ -43,7 +43,7 @@ enum MasterReportNextStep: Equatable {
 /// names the next step while one is missing, like Copy's Start button.
 struct MasterReportPresentation: Equatable {
     static let locationTitle = "Choose drive or folder…"
-    static let locationDetail = "The backup drive, or a folder on it, with the day's BitMatch reports"
+    static let locationDetail = "The destination drive, or a folder on it, with the day's BitMatch reports"
 
     let actionTitle: String
     let canGenerate: Bool

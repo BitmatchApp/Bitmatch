@@ -650,7 +650,7 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     private static let destinationSelectionLockedMessage =
-        "Backups are locked while staged or running queue cards use them. Remove those cards or let the batch finish first."
+        "Destinations are locked while staged or running queue cards use them. Remove those cards or let the batch finish first."
 
     /// The route is immutable for the lifetime of a staged batch, including
     /// the interval when its final card is running and there are no queued
@@ -782,7 +782,7 @@ class SharedAppCoordinator: ObservableObject {
 
     func enqueueSelection() throws {
         guard canEnqueueSelection, let sourceURL else {
-            throw FileOperationError.unsafeOperation("Choose a source and backups for a one-time transfer first.")
+            throw FileOperationError.unsafeOperation("Choose a source and destinations for a one-time transfer first.")
         }
         try enqueue(source: sourceURL, destinations: destinationURLs)
         self.sourceURL = nil
@@ -799,7 +799,7 @@ class SharedAppCoordinator: ObservableObject {
             try enqueueSelection()
         }
         guard !stagedSetupTransfers.isEmpty else {
-            throw FileOperationError.unsafeOperation("Choose a source and backups first.")
+            throw FileOperationError.unsafeOperation("Choose a source and destinations first.")
         }
         startQueue()
     }

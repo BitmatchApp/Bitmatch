@@ -221,7 +221,7 @@ struct TransferLibraryView: View {
             }
             Text("Source: \(record.source.url.path)").textSelection(.enabled)
             ForEach(record.destinations.indices, id: \.self) { index in
-                Text("Backup: \(record.destinations[index].url.path)").textSelection(.enabled)
+                Text("Destination: \(record.destinations[index].url.path)").textSelection(.enabled)
             }
             if actions.retryWithoutASCMHL {
                 Button("Retry without ASC MHL") {
@@ -235,7 +235,7 @@ struct TransferLibraryView: View {
             ForEach(record.results.prefix(100)) { row in
                 VStack(alignment: .leading) {
                     Text(row.fileName)
-                    Text("\(row.destination ?? "Backup"): \(row.status)").foregroundStyle(.secondary)
+                    Text("\(row.destination ?? "Destination"): \(row.status)").foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -268,7 +268,7 @@ private struct OptionalSearchable: ViewModifier {
 
     func body(content: Content) -> some View {
         if isActive {
-            content.searchable(text: $text, prompt: "Search cards, jobs, or backups")
+            content.searchable(text: $text, prompt: "Search cards, jobs, or destinations")
         } else {
             content
         }
@@ -311,7 +311,7 @@ struct ReauthorizeLocationsView: View {
         let resources = [record.source] + record.destinations
         let urls = resources.map(\.url)
         return urls.indices.map { i in
-            (index: i, title: i == 0 ? "Source" : "Backup \(i)", path: urls[i].path,
+            (index: i, title: i == 0 ? "Source" : "Destination \(i)", path: urls[i].path,
              identityCanBeConfirmed: resources[i].volumeID != nil && resources[i].resourceID != nil)
         }
     }

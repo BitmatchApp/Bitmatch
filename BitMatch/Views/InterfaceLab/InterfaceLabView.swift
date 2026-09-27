@@ -196,7 +196,7 @@ struct InterfaceLabView: View {
 
     private var setup: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle(InterfaceLabCopy.setupTitle, detail: "Review the source and backup route before anything starts.")
+            sectionTitle(InterfaceLabCopy.setupTitle, detail: "Review the source and destination route before anything starts.")
             HStack(alignment: .top, spacing: 12) {
                 Button { toggleRouteEndpoint(.source) } label: {
                     routeCard(title: "SOURCE", value: sourceValue, detail: sourceDetail, icon: "camera.fill", tint: .orange, actionTitle: "Change", selected: selectedRouteEndpoint == .source)
@@ -204,7 +204,7 @@ struct InterfaceLabView: View {
                 .buttonStyle(.plain)
                 Image(systemName: "arrow.right").padding(.top, 46).foregroundColor(.white.opacity(0.36))
                 Button { toggleRouteEndpoint(.destinations) } label: {
-                    routeCard(title: "BACKUPS", value: backupValue, detail: backupDetail, icon: "externaldrive.fill", tint: .blue, actionTitle: "Change", selected: selectedRouteEndpoint == .destinations)
+                    routeCard(title: "DESTINATIONS", value: backupValue, detail: backupDetail, icon: "externaldrive.fill", tint: .blue, actionTitle: "Change", selected: selectedRouteEndpoint == .destinations)
                 }
                 .buttonStyle(.plain)
             }
@@ -233,7 +233,7 @@ struct InterfaceLabView: View {
         VStack(alignment: .leading, spacing: 14) {
             sectionTitle("Transfer progress", detail: "The only controls you need stay visible while the proof accumulates.")
             VStack(alignment: .leading, spacing: 12) {
-                HStack { Label(transferPhase, systemImage: transferPhase == "Verifying" ? "checkmark.shield.fill" : (transferPhase == "Paused" ? "pause.circle.fill" : "arrow.right.circle.fill")).font(.system(size: 15, weight: .semibold)).foregroundColor(transferPhase == "Paused" ? .orange : .green); Spacer(); Text("A_CAM → 3 backups").font(.system(size: 11)).foregroundColor(.white.opacity(0.6)) }
+                HStack { Label(transferPhase, systemImage: transferPhase == "Verifying" ? "checkmark.shield.fill" : (transferPhase == "Paused" ? "pause.circle.fill" : "arrow.right.circle.fill")).font(.system(size: 15, weight: .semibold)).foregroundColor(transferPhase == "Paused" ? .orange : .green); Spacer(); Text("A_CAM → 3 destinations").font(.system(size: 11)).foregroundColor(.white.opacity(0.6)) }
                 ProgressView(value: progress).tint(.green)
                 HStack { Text("\(Int(progress * 100))% complete · 302 of 486 files").font(.system(size: 11, design: .monospaced)).foregroundColor(.white.opacity(0.7)); Spacer(); Text("1.2 GB/s · 04:18 left").font(.system(size: 11, design: .monospaced)).foregroundColor(.white.opacity(0.55)) }
                 Slider(value: $progress, in: 0...1).tint(.green)
@@ -336,7 +336,7 @@ struct InterfaceLabView: View {
 
     private var settings: some View {
         VStack(alignment: .leading, spacing: 14) {
-            sectionTitle("Saved destinations", detail: "Manage reusable backup locations once; choose them quickly on set.")
+            sectionTitle("Saved destinations", detail: "Manage reusable destination locations once; choose them quickly on set.")
             ForEach(syntheticDestinations, id: \.0) { profile in
                 HStack {
                     Image(systemName: profile.1.contains("SFTP") ? "network" : "externaldrive.fill")
@@ -434,8 +434,8 @@ struct InterfaceLabView: View {
                         backupValue = "2 local + 1 off-site"
                         backupDetail = "Primary, safety, and cloud evidence"
                     }
-                    routeChoice("2 local backups", detail: "Primary and safety drives") {
-                        backupValue = "2 local backups"
+                    routeChoice("2 local destinations", detail: "Primary and safety drives") {
+                        backupValue = "2 local destinations"
                         backupDetail = "Primary and safety drives"
                     }
                 }

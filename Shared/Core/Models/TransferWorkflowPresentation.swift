@@ -14,7 +14,7 @@ enum TransferWorkflowPresentation: CaseIterable, Equatable, Sendable {
     var detail: String {
         switch self {
         case .quick: "Copy, verify, and finish"
-        case .project: "Organize cards by job and track backups"
+        case .project: "Organize cards by job and track copies"
         }
     }
 

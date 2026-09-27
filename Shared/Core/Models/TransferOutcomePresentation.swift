@@ -249,7 +249,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             canExport: canExport,
             primaryAction: allowsRetry && needsRetry ? .retry : .newTransfer,
             showsNewTransfer: showsNewTransfer,
-            newTransferHelp: destinations.isEmpty ? nil : "Start again with the same backups",
+            newTransferHelp: destinations.isEmpty ? nil : "Start again with the same destinations",
             copySummary: makeCopySummary(
                 safetyState: safetyState,
                 cardName: card,
@@ -525,7 +525,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         case .interrupted:
             // The interrupted headline carries the card warning itself, since
             // `bannerGuidance` is suppressed for this state (no duplication).
-            return "The transfer stopped before every backup was verified. Do not erase the card."
+            return "The transfer stopped before every destination was verified. Do not erase the card."
         case .waiting, .preparing, .copying, .verifying:
             return fallback
         }
@@ -533,7 +533,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
 
     private static func naturalList(_ values: [String]) -> String {
         switch values.count {
-        case 0: return "the selected backups"
+        case 0: return "the selected destinations"
         case 1: return values[0]
         case 2: return "\(values[0]) and \(values[1])"
         default: return values.dropLast().joined(separator: ", ") + ", and " + values.last!

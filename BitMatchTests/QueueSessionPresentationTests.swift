@@ -123,9 +123,9 @@ struct QueueSessionPresentationTests {
     @Test func repeatedDestinationDriveNamesCollapseToACount() {
         #expect(QueueSessionPresentation.destinationSummary(
             ["Macintosh HD", "Macintosh HD", "Macintosh HD"]
-        ) == "3 backups on Macintosh HD")
+        ) == "3 destinations on Macintosh HD")
         #expect(QueueSessionPresentation.destinationSummary(["RAID A", "RAID B"])
-            == "2 backups: RAID A, RAID B")
+            == "2 destinations: RAID A, RAID B")
     }
 
     @Test func stoppedAndUnfinishedCopySummaryUseTheirActualTitles() throws {

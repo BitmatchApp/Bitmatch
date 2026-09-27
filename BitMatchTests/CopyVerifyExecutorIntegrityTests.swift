@@ -130,7 +130,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertEqual(harness.completedRows.count, 1)
         XCTAssertTrue(harness.completedRows[0].isSuccessStatus)
         XCTAssertEqual(harness.terminalInfo?.success, false)
-        XCTAssertTrue(harness.terminalInfo?.message.contains("the card is not yet verified on all the project's backups") == true)
+        XCTAssertTrue(harness.terminalInfo?.message.contains("the card is not yet verified on all the project's destinations") == true)
     }
     func testEmptyAuthoritativeResultsCannotCompleteSuccessfully() async throws {
         let harness = ExecutorHarness(returnedResults: [], emittedResults: [])

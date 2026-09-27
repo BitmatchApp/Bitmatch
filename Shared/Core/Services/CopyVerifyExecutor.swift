@@ -125,7 +125,7 @@ final class CopyVerifyExecutor {
         defer { backgroundTaskService.endOperation() }
 
         // Keep the Mac from idle-sleeping until this operation ends.
-        let keepAwake = TransferKeepAwake(preventer: sleepPreventer, reason: "Copying and verifying backups")
+        let keepAwake = TransferKeepAwake(preventer: sleepPreventer, reason: "Copying and verifying destinations")
         defer { keepAwake.release() }
 
         // Initialize timing

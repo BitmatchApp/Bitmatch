@@ -125,7 +125,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Choose a source, then a folder on each backup drive.")
+            Text("Choose a source, then a folder on each destination drive.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -284,12 +284,16 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             .tint(start.canStart ? Color.accentColor : Color.gray)
             .disabled(!start.canStart)
             .shadow(
-                color: start.canStart ? Color.accentColor.opacity(0.38) : .clear,
-                radius: start.canStart ? 8 : 0
+                color: start.canStart
+                    ? Color.accentColor.opacity(reduceMotion ? 0.30 : (readyGlowPulse ? 0.32 : 0.16))
+                    : .clear,
+                radius: start.canStart ? (reduceMotion ? 9 : (readyGlowPulse ? 14 : 7)) : 0
             )
-            .shadow(
-                color: start.canStart && readyGlowPulse ? Color.accentColor.opacity(0.32) : .clear,
-                radius: readyGlowPulse ? 16 : 0
+            .animation(
+                start.canStart && !reduceMotion
+                    ? .easeInOut(duration: 1.6).repeatForever(autoreverses: true)
+                    : nil,
+                value: readyGlowPulse
             )
             .accessibilityLabel(start.title)
             .accessibilityHint(start.accessibilityHint)
@@ -309,16 +313,12 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         }
         .frame(maxWidth: 380)
         .frame(maxWidth: .infinity, alignment: .center)
-        .onChange(of: start.canStart) { wasReady, isReady in
-            guard isReady, !wasReady, !reduceMotion else {
-                if !isReady { readyGlowPulse = false }
-                return
-            }
-            withAnimation(.easeOut(duration: 0.25)) { readyGlowPulse = true }
-            Task { @MainActor in
-                try? await Task.sleep(for: .milliseconds(250))
-                withAnimation(.easeInOut(duration: 0.35)) { readyGlowPulse = false }
-            }
+        .onAppear { readyGlowPulse = start.canStart && !reduceMotion }
+        .onChange(of: start.canStart) { _, isReady in
+            readyGlowPulse = isReady && !reduceMotion
+        }
+        .onChange(of: reduceMotion) { _, shouldReduceMotion in
+            readyGlowPulse = start.canStart && !shouldReduceMotion
         }
     }
 }

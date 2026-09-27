@@ -401,7 +401,7 @@ struct SettingsSheetView: View {
                 }
 
                 Section {
-                    Text("Every backup is checked against your card before BitMatch calls it verified. This sets how thoroughly that check runs.")
+                    Text("Every destination is checked against your card before BitMatch calls it verified. This sets how thoroughly that check runs.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 } header: {
@@ -428,7 +428,7 @@ struct SettingsSheetView: View {
                 }
 
                 Section {
-                    Text("A report is a record of what happened during a transfer, saved next to your backups so you can hand it to anyone.")
+                    Text("A report is a record of what happened during a transfer, saved next to your destinations so you can hand it to anyone.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 } header: {
@@ -447,8 +447,23 @@ struct SettingsSheetView: View {
                     }
                 }
 
-                Section("Backups") {
+                Section("Off-site") {
                     RemoteDestinationSettingsSection(coordinator: coordinator)
+                }
+
+                Section("Camera folder naming") {
+                    Picker("Label position", selection: $coordinator.cameraLabelSettings.position) {
+                        ForEach(CameraLabelSettings.LabelPosition.allCases, id: \.self) { position in
+                            Text(position.rawValue).tag(position)
+                        }
+                    }
+                    Picker("Separator", selection: $coordinator.cameraLabelSettings.separator) {
+                        ForEach(CameraLabelSettings.Separator.allCases, id: \.self) { separator in
+                            Text(separator.displayName).tag(separator)
+                        }
+                    }
+                    Toggle("Auto-number if folder exists", isOn: $coordinator.cameraLabelSettings.autoNumber)
+                    Toggle("Group files by camera type in subfolders", isOn: $coordinator.cameraLabelSettings.groupByCamera)
                 }
 
                 #if os(iOS)

@@ -50,24 +50,28 @@ struct PreferencesWindow: View {
             case .cameras: return "camera"
             }
         }
+
+        var title: String {
+            self == .backups ? "Off-site" : rawValue
+        }
     }
 
     var body: some View {
         TabView(selection: $selectedPane) {
             settingsPane(generalPreferences, pane: .general)
-                .tabItem { Label(PreferencesPane.general.rawValue, systemImage: PreferencesPane.general.icon) }
+                .tabItem { Label(PreferencesPane.general.title, systemImage: PreferencesPane.general.icon) }
                 .tag(PreferencesPane.general)
             settingsPane(verificationPreferences, pane: .verification)
-                .tabItem { Label(PreferencesPane.verification.rawValue, systemImage: PreferencesPane.verification.icon) }
+                .tabItem { Label(PreferencesPane.verification.title, systemImage: PreferencesPane.verification.icon) }
                 .tag(PreferencesPane.verification)
             settingsPane(backupsPreferences, pane: .backups)
-                .tabItem { Label(PreferencesPane.backups.rawValue, systemImage: PreferencesPane.backups.icon) }
+                .tabItem { Label(PreferencesPane.backups.title, systemImage: PreferencesPane.backups.icon) }
                 .tag(PreferencesPane.backups)
             settingsPane(reportPreferences, pane: .reports)
-                .tabItem { Label(PreferencesPane.reports.rawValue, systemImage: PreferencesPane.reports.icon) }
+                .tabItem { Label(PreferencesPane.reports.title, systemImage: PreferencesPane.reports.icon) }
                 .tag(PreferencesPane.reports)
             settingsPane(camerasPreferences, pane: .cameras)
-                .tabItem { Label(PreferencesPane.cameras.rawValue, systemImage: PreferencesPane.cameras.icon) }
+                .tabItem { Label(PreferencesPane.cameras.title, systemImage: PreferencesPane.cameras.icon) }
                 .tag(PreferencesPane.cameras)
         }
         .frame(width: 680, height: preferredHeight)
@@ -174,7 +178,7 @@ struct PreferencesWindow: View {
         .toggleStyle(.switch)
     }
 
-    // MARK: - Backups
+    // MARK: - Off-site
 
     @ViewBuilder
     private var backupsPreferences: some View {
@@ -195,7 +199,7 @@ struct PreferencesWindow: View {
             } header: {
                 Text("Reports")
             } footer: {
-                Text("Reports record what happened and are saved beside each backup.")
+                Text("Reports record what happened and are saved beside each destination.")
             }
 
             if coordinator.reportSettings.makeReport {
@@ -256,6 +260,25 @@ struct PreferencesWindow: View {
     @ViewBuilder
     private var camerasPreferences: some View {
         Form {
+            Section {
+                Picker("Label position", selection: $coordinator.cameraLabelSettings.position) {
+                    ForEach(CameraLabelSettings.LabelPosition.allCases, id: \.self) { position in
+                        Text(position.rawValue).tag(position)
+                    }
+                }
+                Picker("Separator", selection: $coordinator.cameraLabelSettings.separator) {
+                    ForEach(CameraLabelSettings.Separator.allCases, id: \.self) { separator in
+                        Text(separator.displayName).tag(separator)
+                    }
+                }
+                Toggle("Auto-number if folder exists", isOn: $coordinator.cameraLabelSettings.autoNumber)
+                Toggle("Group files by camera type in subfolders", isOn: $coordinator.cameraLabelSettings.groupByCamera)
+            } header: {
+                Text("Folder naming")
+            } footer: {
+                Text("These settings apply to camera labels on every transfer.")
+            }
+
             Section {
                 Toggle("Detect camera cards automatically", isOn: $coordinator.reportSettings.enableAutoCameraDetection)
                     .onChange(of: coordinator.reportSettings.enableAutoCameraDetection) { _, newValue in

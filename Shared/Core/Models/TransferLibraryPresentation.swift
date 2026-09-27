@@ -163,7 +163,7 @@ enum TransferLibraryPresentation {
     /// The row's secondary line, next to the date: how many backups and how
     /// many files this transfer covers. Singular/plural for both nouns.
     static func detailLine(destinationCount: Int, fileCount: Int) -> String {
-        let backups = destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"
+        let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
         let files = fileCount == 1 ? "1 file" : "\(fileCount) files"
         return "\(backups) · \(files)"
     }

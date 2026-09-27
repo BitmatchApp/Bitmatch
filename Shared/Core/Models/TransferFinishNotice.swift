@@ -78,7 +78,7 @@ struct TransferFinishNotice: Equatable, Sendable {
 
     private static func naturalList(_ values: [String]) -> String {
         switch values.count {
-        case 0: return "the selected backups"
+        case 0: return "the selected destinations"
         case 1: return values[0]
         case 2: return "\(values[0]) and \(values[1])"
         default: return values.dropLast().joined(separator: ", ") + ", and " + values.last!

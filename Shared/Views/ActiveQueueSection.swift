@@ -55,7 +55,7 @@ struct ActiveQueueSection: View {
             }
             .buttonStyle(.bordered)
             .disabled(!canAddCard)
-            .accessibilityHint("Choose another card to run with the current backups")
+            .accessibilityHint("Choose another card to run with the current destinations")
 
             if let errorMessage {
                 Text(errorMessage)

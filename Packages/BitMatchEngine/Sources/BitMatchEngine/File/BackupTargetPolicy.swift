@@ -132,14 +132,14 @@ public enum BackupTargetPolicy: Sendable {
             return "\(name) is the startup disk. Choose a folder on it instead."
         }
         if PathContainment.isWithin(path, root: "/System") {
-            return "\(name) is a macOS system volume and cannot be a backup."
+            return "\(name) is a macOS system volume and cannot be a destination."
         }
         if let targetFacts, isVolumeRoot {
             if targetFacts.isRootFileSystem {
                 return "\(name) is the startup disk. Choose a folder on it instead."
             }
             if targetFacts.isInternal == true, isSystemVolumeName(targetFacts.volumeName ?? name) {
-                return "\(name) is a macOS system volume and cannot be a backup."
+                return "\(name) is a macOS system volume and cannot be a destination."
             }
         }
         if let source {
@@ -149,7 +149,7 @@ public enum BackupTargetPolicy: Sendable {
                 sourcePath: canonicalPath(source), sourceFacts: sourceFacts
             ) {
                 if isVolumeRoot || path == sharedRoot {
-                    return "\(name) is the source's own drive and cannot be its backup."
+                    return "\(name) is the source's own drive and cannot be its destination."
                 }
                 // Same volume, so either side's facts describe it. Without
                 // any, BitMatch cannot rule out the source card: fail closed.

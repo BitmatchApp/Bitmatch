@@ -3,6 +3,7 @@ import Combine
 import Foundation
 import Testing
 @testable import BitMatch
+import BitMatchEngine
 
 /// The selection and its folder scan live in `SharedAppCoordinator` and
 /// `FolderInfoService` on every platform. The scan must not publish a
@@ -19,6 +20,30 @@ struct SharedSelectionTests {
             try Data("x".utf8).write(to: dir.appendingPathComponent("f\(index).txt"))
         }
         return dir
+    }
+
+    /// Setup's count uses the engine's rules: root volume metadata (.fseventsd)
+    /// is skipped by both, and both treat "._" files the same way.
+    /// Plant: drop the root-metadata skip from `FolderInfoService`.
+    @Test func setupCountMatchesEngineManifestForVolumeMetadata() async throws {
+        let fileManager = FileManager.default
+        let root = fileManager.temporaryDirectory
+            .appendingPathComponent("volume-root-\(UUID().uuidString)", isDirectory: true)
+        let metadata = root.appendingPathComponent(".fseventsd", isDirectory: true)
+        try fileManager.createDirectory(at: metadata, withIntermediateDirectories: true)
+        try Data("metadata".utf8).write(to: metadata.appendingPathComponent("fseventsd-uuid"))
+        try Data("sidecar".utf8).write(to: root.appendingPathComponent("._clip.mov"))
+        try Data("media".utf8).write(to: root.appendingPathComponent("clip.mov"))
+        defer { try? fileManager.removeItem(at: root) }
+
+        let manifest = try CardSource.enumerateRegularFiles(base: root)
+        let service = FolderInfoService()
+        await service.updateSource(root)
+        #expect(await waitUntil(timeout: .seconds(3)) { !service.isAwaitingSourceInfo(for: root) })
+
+        #expect(manifest.map(\.relativePath).contains("clip.mov"))
+        #expect(!manifest.map(\.relativePath).contains(".fseventsd/fseventsd-uuid"))
+        #expect(service.sourceFolderInfo?.fileCount == manifest.count)
     }
 
     /// Belt and braces: cancelling the old scan and the generation guard

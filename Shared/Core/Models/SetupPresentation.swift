@@ -123,7 +123,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 readyLine: nil,
                 accessibilityHint: step == .chooseSource
                     ? "Choose the card or folder to copy first"
-                    : "Add a folder on a backup drive first"
+                    : "Add a folder on a destination drive first"
             )
         }
 
@@ -177,7 +177,7 @@ struct StartButtonPresentation: Equatable, Sendable {
             accessibilityHint: canStart
                 ? (cardCount > 1
                     ? "Starts each card as its own verified transfer and leaves every source unchanged"
-                    : "Copies files to each backup and leaves the source unchanged")
+                    : "Copies files to each destination and leaves the source unchanged")
                 : (blocker ?? "Not ready to start")
         )
     }
@@ -188,12 +188,12 @@ struct StartButtonPresentation: Equatable, Sendable {
 
     private static func readyCardsLine(cardCount: Int, destinationCount: Int) -> String {
         let cards = cardCount == 1 ? "1 card" : "\(cardCount) cards"
-        let backups = destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"
+        let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
         return "\(cards) will run as separate verified transfers to \(backups)."
     }
 
     private static func readyLine(fileCount: Int?, bytes: Int64?, destinationCount: Int) -> String {
-        let backups = destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"
+        let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
         guard let fileCount, let bytes else {
             return "Copies to \(backups). Source files stay in place."
         }

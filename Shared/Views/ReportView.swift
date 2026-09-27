@@ -768,7 +768,7 @@ struct ReportView: View {
         case .waiting, .preparing, .copying, .verifying:
             return "The card is not safe to erase because verification did not finish."
         case .safeToErase:
-            return "Every file on every backup was verified."
+            return "Every file on every destination was verified."
         }
     }
 

@@ -3,14 +3,13 @@ import SwiftUI
 import BitMatchEngine
 
 /// The iPad and iPhone slots for the shared Setup screen (UI plan step
-/// 4.8): the Files picker for the shared source and backup boxes, the
+/// 4.8): the Files picker for the shared source and destination boxes, the
 /// project setup form, the camera label editor and this job's cards.
 /// Readiness, the boxes themselves, the workflow choice, the preflight
 /// card, Advanced and Start are what the Mac shows. Needs no environment
 /// objects.
 struct CopyAndVerifyView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
-    @State private var cameraLabelExpanded = false
     @State private var optionsExpanded = false
 
     var body: some View {
@@ -20,20 +19,20 @@ struct CopyAndVerifyView: View {
         ) { context in
             IOSSetupLocations(coordinator: coordinator, context: context)
         } problems: {
-            // iOS reports no unreadable cards: the Files app shows only what
-            // it can read.
             EmptyView()
         } projectSetup: {
             ProjectSetupCard(coordinator: coordinator) {
-                // SFTP management (adding/editing a destination) is a
-                // documented Mac-only exception (AGENTS.md); this device
-                // can still see and pick a destination already saved there.
+                // SFTP management is a documented Mac-only exception. This
+                // device can still choose a destination saved on the Mac.
                 IOSRemoteBackupSummary(coordinator: coordinator)
             }
         } labelContent: {
-            CollapsibleLabelingSection(
-                coordinator: coordinator,
-                isExpanded: $cameraLabelExpanded
+            CameraLabelEditor(
+                settings: Binding(
+                    get: { coordinator.cameraLabelSettings },
+                    set: { coordinator.cameraLabelSettings = $0 }
+                ),
+                sourceURL: coordinator.sourceURL
             )
         } projectEvidence: {
             if let job = coordinator.photographerJobViewModel.dashboardJob {
@@ -44,7 +43,6 @@ struct CopyAndVerifyView: View {
             }
         }
         .padding(.horizontal, 20)
-        .animation(.spring(response: 0.3, dampingFraction: 0.9), value: cameraLabelExpanded)
     }
 }
 
@@ -106,9 +104,8 @@ private struct MobileProjectEvidenceView: View {
 }
 
 /// Off-site backup on iPad and iPhone: this device can see and pick a
-/// destination already saved in BitMatch on the Mac, but cannot add, edit
-/// or authenticate one. SFTP management is the documented Mac-only
-/// exception (AGENTS.md); the upload itself also continues on the Mac.
+/// destination already saved in BitMatch on the Mac, but cannot add, edit,
+/// or authenticate one. The upload itself also continues on the Mac.
 private struct IOSRemoteBackupSummary: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @State private var isExpanded = false
@@ -139,10 +136,9 @@ private struct IOSRemoteBackupSummary: View {
     }
 }
 
-/// The iPad and iPhone pickers for the shared source and backup boxes
-/// (`CoordinatorSetupLocations`): the Files picker, with a refusal shown
-/// as an alert. No drag and drop: a folder dragged in from Files does not
-/// bring lasting access with it.
+/// The iPad and iPhone pickers for the shared source and destination boxes.
+/// The Files picker shows refusals as an alert. Drag and drop cannot provide
+/// lasting access on iOS, so this surface accepts picker selections only.
 private struct IOSSetupLocations: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     let context: SetupLocationsContext
@@ -169,230 +165,5 @@ private struct IOSSetupLocations: View {
                 acceptsDrops: false
             )
         )
-    }
-}
-
-struct CollapsibleLabelingSection: View {
-    @ObservedObject var coordinator: SharedAppCoordinator
-    @Binding var isExpanded: Bool
-    
-    var body: some View {
-        VStack(spacing: 0) {
-            // Header (always visible)
-            Button {
-                withAnimation(.spring(response: 0.3, dampingFraction: 0.9)) {
-                    isExpanded.toggle()
-                }
-            } label: {
-                HStack {
-                    Image(systemName: "textformat")
-                        .font(.system(size: 16))
-                        .foregroundColor(.orange)
-                    
-                    Text("FOLDER LABELING")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.9))
-                        .tracking(0.5)
-                    
-                    Spacer()
-                    
-                    // Preview when collapsed
-                    if !isExpanded && !coordinator.cameraLabelSettings.label.isEmpty {
-                        Text("\"\(coordinator.cameraLabelSettings.label)\"")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.orange.opacity(0.8))
-                            .lineLimit(1)
-                    }
-                    
-                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.6))
-                }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-            }
-            .buttonStyle(.plain)
-            .accessibilityValue(isExpanded ? "Expanded" : "Collapsed")
-            
-            // Expanded content
-            if isExpanded {
-                VStack(spacing: 16) {
-                    Divider().overlay(Color.white.opacity(0.1))
-                    
-                    VStack(spacing: 16) {
-                        // Camera label field
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Camera Label")
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.white.opacity(0.9))
-                            
-                            TextField(
-                                "Enter camera name (e.g., A-Cam, B-Cam)",
-                                text: Binding(
-                                    get: { coordinator.cameraLabelSettings.label },
-                                    set: { coordinator.cameraLabelSettings.label = $0 }
-                                )
-                            )
-                                .textFieldStyle(.plain)
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 10)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 8)
-                                        .fill(Color.white.opacity(0.05))
-                                        .overlay(
-                                            RoundedRectangle(cornerRadius: 8)
-                                                .stroke(Color.white.opacity(0.1), lineWidth: 1)
-                                        )
-                                )
-                                .foregroundColor(.white)
-                                // Audit H4: the visible title is a separate
-                                // Text, so VoiceOver would otherwise read
-                                // only the example text.
-                                .accessibilityLabel("Camera label")
-                        }
-                        
-                        // Quick presets (wrapped layout)
-                        VStack(alignment: .leading, spacing: 8) {
-                            Text("Quick Presets")
-                                .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(.white.opacity(0.7))
-                            
-                            LazyVGrid(columns: [
-                                GridItem(.adaptive(minimum: 60), spacing: 8)
-                            ], spacing: 8) {
-                                ForEach(["A-Cam", "B-Cam", "C-Cam", "Main", "Audio", "Drone"], id: \.self) { preset in
-                                    Button {
-                                        coordinator.cameraLabelSettings.label = preset
-                                    } label: {
-                                        Text(preset)
-                                            .font(.system(size: 11, weight: .medium))
-                                            .foregroundColor(.white)
-                                            .padding(.horizontal, 10)
-                                            .padding(.vertical, 6)
-                                            .background(
-                                                RoundedRectangle(cornerRadius: 6)
-                                                    .fill(Color.orange.opacity(0.1))
-                                            )
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                        
-                        // Settings grid
-                        VStack(spacing: 12) {
-                            HStack(spacing: 16) {
-                                // Position
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Position")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(.white.opacity(0.7))
-                                    HStack(spacing: 6) {
-                                        positionChip(title: "Prefix", position: .prefix)
-                                        positionChip(title: "Suffix", position: .suffix)
-                                    }
-                                }
-                                
-                                Spacer()
-                                
-                                // Separator
-                                VStack(alignment: .leading, spacing: 6) {
-                                    Text("Separator")
-                                        .font(.system(size: 11, weight: .medium))
-                                        .foregroundColor(.white.opacity(0.7))
-                                    HStack(spacing: 4) {
-                                        ForEach(CameraLabelSettings.Separator.allCases.prefix(3), id: \.self) { sep in
-                                            separatorChip(sep)
-                                        }
-                                    }
-                                }
-                            }
-                            
-                            // Toggles
-                            VStack(spacing: 8) {
-                                Toggle(
-                                    "Auto-number if folder exists",
-                                    isOn: Binding(
-                                        get: { coordinator.cameraLabelSettings.autoNumber },
-                                        set: { coordinator.cameraLabelSettings.autoNumber = $0 }
-                                    )
-                                )
-                                    .font(.system(size: 13, weight: .medium))
-                                    .foregroundColor(.white.opacity(0.9))
-
-                                Toggle(
-                                    "Group files by camera type in subfolders",
-                                    isOn: Binding(
-                                        get: { coordinator.cameraLabelSettings.groupByCamera },
-                                        set: { coordinator.cameraLabelSettings.groupByCamera = $0 }
-                                    )
-                                )
-                                .font(.system(size: 13, weight: .medium))
-                                .foregroundColor(.white.opacity(0.9))
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.bottom, 16)
-                }
-                .transition(.asymmetric(
-                    insertion: .opacity.combined(with: .scale(scale: 0.95, anchor: .top)),
-                    removal: .opacity.combined(with: .scale(scale: 1.05, anchor: .top))
-                ))
-            }
-        }
-        .background(
-            RoundedRectangle(cornerRadius: 12)
-                .fill(Color.orange.opacity(0.03))
-                .overlay(
-                    RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.orange.opacity(0.1), lineWidth: 1)
-                )
-        )
-    }
-    
-    // MARK: - Helpers
-
-    // Audit M1/M7: chips showed selection by fill color alone, at well
-    // under the 44pt touch target, and (for separators) with no spoken name.
-    private func positionChip(title: String, position: CameraLabelSettings.LabelPosition) -> some View {
-        let selected = coordinator.cameraLabelSettings.position == position
-        return Button {
-            coordinator.cameraLabelSettings.position = position
-        } label: {
-            Text(title)
-                .font(.system(size: 10, weight: .semibold))
-                .foregroundColor(selected ? .black : .white.opacity(0.8))
-                .padding(.horizontal, 8)
-                .frame(minWidth: 44, minHeight: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(selected ? Color.orange : Color.white.opacity(0.06))
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(selected ? .isSelected : [])
-    }
-
-    private func separatorChip(_ sep: CameraLabelSettings.Separator) -> some View {
-        let selected = coordinator.cameraLabelSettings.separator == sep
-        return Button {
-            coordinator.cameraLabelSettings.separator = sep
-        } label: {
-            Text(sep.rawValue)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .foregroundColor(selected ? .black : .white.opacity(0.8))
-                .padding(.horizontal, 6)
-                .frame(minWidth: 44, minHeight: 44)
-                .background(
-                    RoundedRectangle(cornerRadius: 4)
-                        .fill(selected ? Color.orange : Color.white.opacity(0.06))
-                )
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(sep.displayName)
-        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 }

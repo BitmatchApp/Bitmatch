@@ -148,13 +148,13 @@ public enum TransferCompletion: Sendable {
         // Backups are never nested (setup refuses it); if two roots still
         // claim the same result, the coverage cannot be trusted.
         if rootsByIndex.values.contains(where: { $0 > 1 }) {
-            issues.append("Some results belong to more than one selected backup")
+            issues.append("Some results belong to more than one selected destination")
         }
         let unassignedCount = entries.indices.filter { !assignedIndices.contains($0) }.count
         if unassignedCount > 0 {
             issues.append(unassignedCount == 1
-                ? "1 result does not belong to a selected backup"
-                : "\(unassignedCount) results do not belong to a selected backup")
+                ? "1 result does not belong to a selected destination"
+                : "\(unassignedCount) results do not belong to a selected destination")
         }
         return CoverageAnalysis(destinations: destinationCoverage, issues: issues)
     }
@@ -370,7 +370,7 @@ public enum TransferCompletion: Sendable {
         if !project.didPersist {
             completionMessage += "; the project record was not saved"
         } else if project.locallySafe == false {
-            completionMessage += "; the card is not yet verified on all the project's backups"
+            completionMessage += "; the card is not yet verified on all the project's destinations"
         }
         if !handoffIssues.isEmpty {
             completionMessage += "; " + handoffIssues.joined(separator: "; ")

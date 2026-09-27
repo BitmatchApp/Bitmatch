@@ -22,7 +22,7 @@ struct TransferPlanPresentationTests {
         )
 
         #expect(plan.sourceTitle == "Choose source")
-        #expect(plan.destinationDetail == "Add at least one backup")
+        #expect(plan.destinationDetail == "Add at least one destination")
         #expect(plan.status == .incomplete("Choose a source folder"))
         #expect(!plan.canStart)
     }
@@ -157,7 +157,7 @@ struct TransferPlanPresentationTests {
         let display = TransferPlanStatusDisplay.make(.ready)
 
         #expect(display.title == "Ready to transfer")
-        #expect(display.detail == "Source and backups are ready.")
+        #expect(display.detail == "Source and destinations are ready.")
         #expect(display.symbol == "checkmark.circle.fill")
         #expect(display.tone == .success)
     }
@@ -217,7 +217,7 @@ struct TransferPlanPresentationTests {
         let plan = plan(source: sourceURL, destinations: [])
         #expect(plan.nextStep == .addBackup)
         #expect(!plan.showsStatusBanner)
-        #expect(plan.actionTitle == "Add a backup to start")
+        #expect(plan.actionTitle == "Add a destination to start")
         #expect(!plan.canStart)
     }
 

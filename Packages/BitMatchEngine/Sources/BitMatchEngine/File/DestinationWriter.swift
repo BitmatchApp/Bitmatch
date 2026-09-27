@@ -119,7 +119,7 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
     /// Makes a just-published name durable: the directory entry itself is
     /// flushed, so a power cut cannot lose the file's name after "verified".
     public static func synchronizeDirectory(_ parentFD: Int32) throws {
-        guard fsync(parentFD) == 0 else { throw posixError("Unable to save the backup folder on the drive") }
+        guard fsync(parentFD) == 0 else { throw posixError("Unable to save the destination folder on the drive") }
     }
 
     public static func removeItem(named name: String, relativeTo parentFD: Int32) {

@@ -153,7 +153,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
 
     static let cancelConfirmationTitle = "Cancel this transfer?"
     static let cancelConfirmationMessage =
-        "Copying and verifying stop now. The card is not changed, but the backups will be incomplete, so do not erase the card."
+        "Copying and verifying stop now. The card is not changed, but the destinations will be incomplete, so do not erase the card."
     static let cancelConfirmationAction = "Cancel transfer"
     static let cancelKeepAction = "Keep going"
 
@@ -297,7 +297,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
             }
         }
         guard backupCount > 0 else { return sourceName }
-        let backups = backupCount == 1 ? "1 backup" : "\(backupCount) backups"
+        let backups = backupCount == 1 ? "1 destination" : "\(backupCount) destinations"
         guard let sourceName, !sourceName.isEmpty else { return "To \(backups)" }
         return "\(sourceName) to \(backups)"
     }

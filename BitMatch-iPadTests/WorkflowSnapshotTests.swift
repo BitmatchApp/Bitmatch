@@ -259,7 +259,7 @@ private final class SnapshotFixture {
             ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path),
             ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: secondBackup.lastPathComponent, destinationPath: secondBackup.appendingPathComponent("DCIM/clip.txt").path)
         ]
-        coordinator.operationState = .completed(OperationCompletionInfo(success: true, message: "Copied and verified 4 files to 2 backups"))
+        coordinator.operationState = .completed(OperationCompletionInfo(success: true, message: "Copied and verified 4 files to 2 destinations"))
     }
 
     func seedInterruptedTransfer() throws {

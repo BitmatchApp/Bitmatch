@@ -28,12 +28,12 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
         )
         switch safetyState {
         case .safeToErase:
-            let backups = backupCount == 1 ? "1 backup" : "\(backupCount) backups"
+            let backups = backupCount == 1 ? "1 destination" : "\(backupCount) destinations"
             return Self(
                 title: safetyState.headline(cardName: cardName),
                 detail: "Copied to \(backups) and verified.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Every file on every backup was read back and matched the card."
+                sourceGuidance: "Every file on every destination was read back and matched the card."
             )
         case .copiedNotVerified:
             return Self(
@@ -76,7 +76,7 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
         if state == .cancelled {
             return Self(
                 title: CardSafetyState.interrupted.headline(cardName: cardName),
-                detail: "The transfer stopped before every backup was verified.",
+                detail: "The transfer stopped before every destination was verified.",
                 symbol: CardSafetyState.interrupted.symbol,
                 sourceGuidance: "Do not erase \(card)."
             )

@@ -1,6 +1,6 @@
 enum TransferExitGuardPolicy {
     static let title = "Stop this transfer?"
-    static let message = "Files copied so far stay on the backups, but the card is not verified."
+    static let message = "Files copied so far stay on the destinations, but the card is not verified."
     static let keepCopyingTitle = "Keep Copying"
     static let stopTransferTitle = "Stop Transfer"
 

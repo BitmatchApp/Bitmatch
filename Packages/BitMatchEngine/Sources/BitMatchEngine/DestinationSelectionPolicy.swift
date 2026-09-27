@@ -87,7 +87,7 @@ public enum DestinationSelectionPolicy: Sendable {
         if let conflict = backups.first(where: {
             SafetyValidator.destinationSafetyIssue(source: url, destination: $0) != nil
         }) {
-            return .reject("Source conflicts with backup \(conflict.lastPathComponent)")
+            return .reject("Source conflicts with destination \(conflict.lastPathComponent)")
         }
         return .accept
     }

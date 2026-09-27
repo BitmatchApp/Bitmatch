@@ -15,7 +15,6 @@ struct TransferOptionsSection<LabelContent: View>: View {
     private let cameraLabel: String?
     private let showsLabelContent: Bool
     private let labelContent: LabelContent
-    @State private var availableWidth: CGFloat = 0
 
     /// Setup: camera label (a platform slot), verification, ASC MHL and reports.
     init(
@@ -47,20 +46,11 @@ struct TransferOptionsSection<LabelContent: View>: View {
     var body: some View {
         let options = presentation
         DisclosureGroup(isExpanded: $isExpanded) {
-            Group {
-                if showsLabelContent && AdaptiveNavigationPolicy.presentation(for: availableWidth) == .sidebar {
-                    HStack(alignment: .top, spacing: 24) {
-                        labelContent.frame(maxWidth: .infinity, alignment: .topLeading)
-                        recordsColumn(options).frame(maxWidth: .infinity, alignment: .topLeading)
-                    }
-                } else {
-                    VStack(alignment: .leading, spacing: 12) {
-                        if showsLabelContent {
-                            labelContent
-                            Divider()
-                        }
-                        recordsColumn(options)
-                    }
+            VStack(alignment: .leading, spacing: 12) {
+                recordsColumn(options)
+                if showsLabelContent {
+                    Divider()
+                    labelContent
                 }
             }
             .padding(.top, 10)
@@ -82,21 +72,14 @@ struct TransferOptionsSection<LabelContent: View>: View {
             .touchTarget()
         }
         .accessibilityHint(showsLabelContent
-            ? "Shows camera labels, verification, and report settings"
+            ? "Shows verification, handoff, report, and camera label settings"
             : "Shows verification settings")
-        .background(
-            GeometryReader { proxy in
-                Color.clear
-                    .onAppear { availableWidth = proxy.size.width }
-                    .onChange(of: proxy.size.width) { _, width in availableWidth = width }
-            }
-        )
     }
 
     @ViewBuilder
     private func recordsColumn(_ presentation: TransferOptionsPresentation) -> some View {
         VStack(alignment: .leading, spacing: 12) {
-                    VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 8) {
                 LabeledContent("Verification") {
                     Picker("Verification", selection: $verificationMode) {
                         ForEach(VerificationMode.allCases) { Text($0.rawValue).tag($0) }
