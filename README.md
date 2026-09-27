@@ -44,7 +44,12 @@ For indie filmmakers, YouTubers, photographers, and small productions that don't
 
 ## Download
 
-Signed and notarized macOS build on the [Releases page](https://github.com/BitmatchApp/Bitmatch/releases/latest). Supports Apple Silicon and Intel Macs.
+Signed and notarized macOS build on the [Releases page](https://github.com/BitmatchApp/Bitmatch/releases/latest), or with [Homebrew](https://brew.sh):
+
+```sh
+brew install --cask bitmatchapp/tap/bitmatch
+```
+ Supports Apple Silicon and Intel Macs.
 
 Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now; they require **iPadOS/iOS 18.5 or newer**.
 
