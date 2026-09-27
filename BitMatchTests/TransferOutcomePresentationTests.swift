@@ -575,6 +575,12 @@ struct OutcomeFailureWithoutJournalTests {
         let blockedParent = root.appendingPathComponent("blocked")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        // A non-empty source keeps the Empty-Source guard from racing the
+        // background source scan: with an empty dir the scan can publish
+        // fileCount == 0 before startOperation captures sourceInfo, taking
+        // the Empty-Source path (queueMessage stays nil) instead of the
+        // journal-failure path this test pins.
+        try Data(repeating: 0x2a, count: 4096).write(to: source.appendingPathComponent("clip.bin"))
         try Data("not a directory".utf8).write(to: blockedParent)
         defer { try? FileManager.default.removeItem(at: root) }
 
