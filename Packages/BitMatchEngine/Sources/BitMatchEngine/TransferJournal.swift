@@ -414,6 +414,27 @@ public final class TransferJournal: Sendable {
         }
     }
 
+    /// Reorders the selected queued records without disturbing completed,
+    /// running, project, or unrelated queued records. The input is run order;
+    /// the journal stores newest first, so those records occupy their existing
+    /// slots in reverse order.
+    public func reorderQueued(idsInRunOrder orderedIDs: [UUID]) throws {
+        try commit { records in
+            let selectedIDs = Set(orderedIDs)
+            guard selectedIDs.count == orderedIDs.count,
+                  selectedIDs.allSatisfy({ id in
+                      records.contains { $0.id == id && $0.state == .queued }
+                  }) else {
+                throw LocalTransferJournalError.invalidState
+            }
+            let recordsByID = Dictionary(uniqueKeysWithValues: records.map { ($0.id, $0) })
+            var replacements = orderedIDs.reversed().compactMap { recordsByID[$0] }.makeIterator()
+            return records.map { record in
+                selectedIDs.contains(record.id) ? (replacements.next() ?? record) : record
+            }
+        }
+    }
+
     public func finish(id: UUID, results: [ResultRow], summary: String, hadIssues: Bool) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }

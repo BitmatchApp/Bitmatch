@@ -10,6 +10,8 @@ struct ActiveQueueSection: View {
     @State private var choosingSource = false
     @State private var errorMessage: String?
     @State private var reauthorizeRecord: LocalTransferRecord?
+    @State private var selectedWaitingID: UUID?
+    @FocusState private var focusedWaitingID: UUID?
 
     var body: some View {
         Group {
@@ -31,8 +33,9 @@ struct ActiveQueueSection: View {
                 )
             }
             HStack {
-                Text(presentation.headerTitle ?? "Queue")
+                Text(presentation.summaryTitle ?? presentation.headerTitle ?? "Queue")
                     .font(.headline)
+                    .accessibilityAddTraits(.isHeader)
                 Spacer()
                 if coordinator.queueIsRunning {
                     Button("Stop Queue") { coordinator.stopQueueAfterCurrentTransfer() }
@@ -45,17 +48,19 @@ struct ActiveQueueSection: View {
             }
 
             ForEach(presentation.rows) { row in
-                queueRow(row)
+                reorderableQueueRow(row, rows: presentation.rows)
                 if row.id != presentation.rows.last?.id { Divider() }
             }
 
-            Button { choosingSource = true } label: {
-                Label("Add Card", systemImage: "plus")
-                    .frame(maxWidth: .infinity, minHeight: 44)
+            if !presentation.showsQueueSummary {
+                Button { choosingSource = true } label: {
+                    Label("Add Card", systemImage: "plus")
+                        .frame(maxWidth: .infinity, minHeight: 44)
+                }
+                .buttonStyle(.bordered)
+                .disabled(!canAddCard)
+                .accessibilityHint("Choose another card to run with the current destinations")
             }
-            .buttonStyle(.bordered)
-            .disabled(!canAddCard)
-            .accessibilityHint("Choose another card to run with the current destinations")
 
             if let errorMessage {
                 Text(errorMessage)
@@ -95,6 +100,7 @@ struct ActiveQueueSection: View {
         coordinator.runningOneTimeTransfer != nil
             || coordinator.queueIsRunning
             || coordinator.queuePausedRecordID != nil
+            || (coordinator.queueSessionEnded && coordinator.queuePresentation.isMultiCard)
             || coordinator.queuePresentation.rows.contains { $0.safetyState == .waiting }
     }
 
@@ -128,7 +134,8 @@ struct ActiveQueueSection: View {
             Label(row.statusText, systemImage: row.safetyState.symbol)
                 .font(.caption)
                 .foregroundStyle(row.safetyState.tint.color)
-            if coordinator.queuePausedRecordID != row.id {
+            if coordinator.queuePausedRecordID != row.id,
+               row.safetyState == .waiting || row.action == .review {
                 Menu {
                     rowActions(row)
                 } label: {
@@ -137,7 +144,53 @@ struct ActiveQueueSection: View {
                 .accessibilityLabel("Actions for \(row.cardName)")
             }
         }
+        .padding(.horizontal, 6)
+        .background(
+            selectedWaitingID == row.id ? Color.accentColor.opacity(0.12) : Color.clear,
+            in: RoundedRectangle(cornerRadius: 8)
+        )
+        .contentShape(Rectangle())
+        .onTapGesture {
+            guard row.safetyState == .waiting else { return }
+            selectedWaitingID = row.id
+            focusedWaitingID = row.id
+        }
         .accessibilityElement(children: .contain)
+    }
+
+    @ViewBuilder
+    private func reorderableQueueRow(_ row: QueueSessionRow, rows: [QueueSessionRow]) -> some View {
+        if row.safetyState == .waiting {
+            queueRow(row)
+                .focusable()
+                .focused($focusedWaitingID, equals: row.id)
+                .draggable(row.id.uuidString)
+                .dropDestination(for: String.self) { values, _ in
+                    guard let value = values.first, let draggedID = UUID(uuidString: value) else { return false }
+                    return moveWaitingCard(draggedID, to: row.id, rows: rows)
+                }
+                .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+                    guard press.modifiers.contains(.option) else { return .ignored }
+                    moveWaitingCard(row.id, offset: -1, rows: rows)
+                    return .handled
+                }
+                .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+                    guard press.modifiers.contains(.option) else { return .ignored }
+                    moveWaitingCard(row.id, offset: 1, rows: rows)
+                    return .handled
+                }
+                .onKeyPress(.delete) {
+                    perform { try coordinator.removeQueuedTransfer(row.id) }
+                    return .handled
+                }
+                .accessibilityAction(named: "Move up") { moveWaitingCard(row.id, offset: -1, rows: rows) }
+                .accessibilityAction(named: "Move down") { moveWaitingCard(row.id, offset: 1, rows: rows) }
+                .accessibilityAction(named: "Remove from queue") {
+                    perform { try coordinator.removeQueuedTransfer(row.id) }
+                }
+        } else {
+            queueRow(row)
+        }
     }
 
     @ViewBuilder
@@ -161,6 +214,33 @@ struct ActiveQueueSection: View {
     private func perform(_ action: () throws -> Void) {
         do { try action(); errorMessage = nil }
         catch { errorMessage = error.localizedDescription }
+    }
+
+    private func moveWaitingCard(_ id: UUID, offset: Int, rows: [QueueSessionRow]) {
+        let waiting = rows.filter { $0.safetyState == .waiting }
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        let destination = index + offset
+        guard waiting.indices.contains(destination) else { return }
+        perform { try coordinator.moveQueuedTransfer(id: id, to: destination) }
+        selectedWaitingID = id
+        focusedWaitingID = id
+    }
+
+    @discardableResult
+    private func moveWaitingCard(_ id: UUID, to targetID: UUID, rows: [QueueSessionRow]) -> Bool {
+        let waiting = rows.filter { $0.safetyState == .waiting }
+        guard let destination = waiting.firstIndex(where: { $0.id == targetID }),
+              waiting.contains(where: { $0.id == id }) else { return false }
+        do {
+            try coordinator.moveQueuedTransfer(id: id, to: destination)
+            errorMessage = nil
+            selectedWaitingID = id
+            focusedWaitingID = id
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
     }
 
     private func removePausedCard(_ id: UUID) {

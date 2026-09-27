@@ -20,6 +20,8 @@ struct MacQueueSection: View {
     @State private var isDropTargeted = false
     @State private var reauthorizeRecord: LocalTransferRecord?
     @FocusState private var editorFocus: EditorFocus?
+    @FocusState private var focusedQueueRowID: UUID?
+    @FocusState private var focusedGhostURL: URL?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @EnvironmentObject private var volumeAccess: MacVolumeAccessModel
 
@@ -30,8 +32,9 @@ struct MacQueueSection: View {
 
     var body: some View {
         let presentation = coordinator.queuePresentation
+        let offers = connectedCardOffers
         VStack(alignment: .leading, spacing: 12) {
-            if !presentation.rows.isEmpty {
+            if !presentation.rows.isEmpty || !offers.isEmpty {
                 if presentation.pausedTitle != nil, coordinator.queuePausedRecordID != nil {
                     QueuePauseBanner(
                         presentation: presentation,
@@ -58,7 +61,7 @@ struct MacQueueSection: View {
                             .disabled(!coordinator.queueRunCommandEnabled)
                     }
                 }
-                queueRows(presentation.rows)
+                queueRows(presentation.rows, ghostRows: offers)
             } else {
                 Text("Queue")
                     .font(.headline)
@@ -192,6 +195,13 @@ struct MacQueueSection: View {
         ).filter { cardURLs.contains($0.url) && $0.state == .none }
     }
 
+    private var connectedCardOffers: [ConnectedDrivesPresentation.Row] {
+        QueueConnectedCardPresentation.ghostRows(
+            isTransferOrQueueRunning: coordinator.runningOneTimeTransfer != nil || coordinator.queueIsRunning,
+            eligibleRows: coordinator.queueCandidates(volumes: volumeMonitor.connectedVolumes)
+        )
+    }
+
     private var connectedCardSelection: Binding<URL?> {
         Binding(
             get: { draftSource },
@@ -259,19 +269,83 @@ struct MacQueueSection: View {
     }
 
     @ViewBuilder
-    private func queueRows(_ rows: [QueueSessionRow]) -> some View {
-        if rows.count > 2 {
+    private func queueRows(
+        _ rows: [QueueSessionRow],
+        ghostRows: [ConnectedDrivesPresentation.Row]
+    ) -> some View {
+        if rows.count + ghostRows.count > 2 {
             ScrollView {
                 LazyVStack(spacing: 8) {
-                    ForEach(rows) { row in queueRow(row) }
+                    ForEach(rows) { row in reorderableQueueRow(row, rows: rows) }
+                    ForEach(ghostRows) { row in ghostRow(row) }
                 }
             }
             .frame(maxHeight: 160)
         } else {
             VStack(spacing: 8) {
-                ForEach(rows) { row in queueRow(row) }
+                ForEach(rows) { row in reorderableQueueRow(row, rows: rows) }
+                ForEach(ghostRows) { row in ghostRow(row) }
             }
         }
+    }
+
+    @ViewBuilder
+    private func reorderableQueueRow(_ row: QueueSessionRow, rows: [QueueSessionRow]) -> some View {
+        if row.safetyState == .waiting {
+            queueRow(row)
+                .focusable()
+                .focused($focusedQueueRowID, equals: row.id)
+                .draggable(row.id.uuidString)
+                .dropDestination(for: String.self) { values, _ in
+                    guard let value = values.first, let draggedID = UUID(uuidString: value) else { return false }
+                    return moveWaitingCard(draggedID, to: row.id, rows: rows)
+                }
+                .onKeyPress(.upArrow, phases: [.down, .repeat]) { press in
+                    guard press.modifiers.contains(.option) else { return .ignored }
+                    moveWaitingCard(row.id, offset: -1, rows: rows)
+                    return .handled
+                }
+                .onKeyPress(.downArrow, phases: [.down, .repeat]) { press in
+                    guard press.modifiers.contains(.option) else { return .ignored }
+                    moveWaitingCard(row.id, offset: 1, rows: rows)
+                    return .handled
+                }
+                .onKeyPress(.delete) {
+                    remove(row.id)
+                    return .handled
+                }
+                .accessibilityAction(named: "Move up") { moveWaitingCard(row.id, offset: -1, rows: rows) }
+                .accessibilityAction(named: "Move down") { moveWaitingCard(row.id, offset: 1, rows: rows) }
+                .accessibilityAction(named: "Remove from queue") { remove(row.id) }
+        } else {
+            queueRow(row)
+        }
+    }
+
+    private func ghostRow(_ row: ConnectedDrivesPresentation.Row) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "sdcard")
+                .foregroundStyle(.secondary)
+                .accessibilityHidden(true)
+            Text("\(row.displayName) is connected")
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 8)
+            Button("Queue next") { queueNext(row) }
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Queue \(row.displayName) next")
+        }
+        .frame(minHeight: 46)
+        .padding(.horizontal, 8)
+        .background(Color.accentColor.opacity(0.06), in: RoundedRectangle(cornerRadius: 8))
+        .focusable()
+        .focused($focusedGhostURL, equals: row.url)
+        .onKeyPress(.return) {
+            queueNext(row)
+            return .handled
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(row.displayName) is connected")
     }
 
     private func queueRow(_ row: QueueSessionRow) -> some View {
@@ -306,7 +380,10 @@ struct MacQueueSection: View {
             in: RoundedRectangle(cornerRadius: 8)
         )
         .contentShape(Rectangle())
-        .onTapGesture { selectedID = row.id }
+        .onTapGesture {
+            selectedID = row.id
+            focusedQueueRowID = row.safetyState == .waiting ? row.id : nil
+        }
         .contextMenu {
             if row.safetyState == .waiting {
                 Button("Move to Top") { moveToTop(row.id) }
@@ -352,6 +429,52 @@ struct MacQueueSection: View {
         catch { errorMessage = error.localizedDescription }
     }
 
+    private func moveWaitingCard(_ id: UUID, offset: Int, rows: [QueueSessionRow]) {
+        let waiting = rows.filter { $0.safetyState == .waiting }
+        guard let index = waiting.firstIndex(where: { $0.id == id }) else { return }
+        let destination = index + offset
+        guard waiting.indices.contains(destination) else { return }
+        do {
+            try coordinator.moveQueuedTransfer(id: id, to: destination)
+            selectedID = id
+            focusedQueueRowID = id
+            errorMessage = nil
+        } catch { errorMessage = error.localizedDescription }
+    }
+
+    @discardableResult
+    private func moveWaitingCard(_ id: UUID, to targetID: UUID, rows: [QueueSessionRow]) -> Bool {
+        let waiting = rows.filter { $0.safetyState == .waiting }
+        guard let destination = waiting.firstIndex(where: { $0.id == targetID }),
+              waiting.contains(where: { $0.id == id }) else { return false }
+        do {
+            try coordinator.moveQueuedTransfer(id: id, to: destination)
+            selectedID = id
+            focusedQueueRowID = id
+            errorMessage = nil
+            return true
+        } catch {
+            errorMessage = error.localizedDescription
+            return false
+        }
+    }
+
+    private func queueNext(_ row: ConnectedDrivesPresentation.Row) {
+        let enqueue = {
+            do {
+                try coordinator.enqueueNext(source: row.url)
+                errorMessage = nil
+            } catch { errorMessage = error.localizedDescription }
+        }
+        guard volumeAccess.needsDriveAccess else {
+            enqueue()
+            return
+        }
+        volumeAccess.requestVolumeAccess { granted in
+            if granted { enqueue() }
+        }
+    }
+
     private func eject(_ id: UUID) {
         Task {
             if let error = await coordinator.ejectQueueSource(id) { errorMessage = error }
@@ -378,15 +501,11 @@ struct MacQueueSummaryView: View {
         VStack(alignment: .leading, spacing: 12) {
             Text(presentation.summaryTitle ?? "Queue finished")
                 .font(.title2.weight(.semibold))
-            Text(presentation.tally.text).foregroundStyle(.secondary)
             HStack(spacing: 8) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Button(presentation.ejectButtonTitle) { ejectAll(presentation.ejectableCardIDs) }
+                if presentation.showsEjectAllButton {
+                    Button("Eject all safe cards") { ejectAllSafeCards() }
                         .buttonStyle(.borderedProminent)
-                        .disabled(presentation.ejectableCardIDs.isEmpty)
-                    if let reason = presentation.ejectDisabledReason {
-                        Text(reason).font(.caption).foregroundStyle(.secondary)
-                    }
+                        .accessibilityLabel("Eject all safe cards")
                 }
                 Button("Copy Summary") { TransferSummaryPasteboard.copy(presentation.copySummary) }
                 if presentation.showsExportReport {
@@ -432,13 +551,9 @@ struct MacQueueSummaryView: View {
         }
     }
 
-    private func ejectAll(_ ids: [UUID]) {
+    private func ejectAllSafeCards() {
         Task {
-            for id in ids {
-                if let error = await coordinator.ejectQueueSource(id) {
-                    errorMessage = error
-                }
-            }
+            errorMessage = await coordinator.ejectAllSafeQueueSources()
         }
     }
 }

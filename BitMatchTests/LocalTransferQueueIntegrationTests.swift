@@ -728,7 +728,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
 
         XCTAssertTrue(coordinator.queueSessionEnded)
         XCTAssertFalse(coordinator.queueIsRunning)
-        XCTAssertEqual(coordinator.queuePresentation.summaryTitle, "Queue finished")
+        XCTAssertEqual(coordinator.queuePresentation.summaryTitle, "2 failed")
         XCTAssertTrue(coordinator.queuePresentation.showsQueueSummary)
         let persisted = try XCTUnwrap(journal.loadQueueSession())
         XCTAssertTrue(persisted.ended)
@@ -933,6 +933,94 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertNotNil(error)
         let callCount = await recorder.callCount
         XCTAssertEqual(callCount, 0)
+    }
+
+    func testMoveQueuedTransferReordersJournalAndSessionAndRejectsNonWaitingRows() throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let second = f.root.appendingPathComponent("A002")
+        let third = f.root.appendingPathComponent("A003")
+        for source in [second, third] {
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+            try Data(source.lastPathComponent.utf8).write(to: source.appendingPathComponent("clip.mov"))
+        }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+        let firstID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
+        let secondID = try coordinator.enqueue(source: second, destinations: [f.destination])
+        let thirdID = try coordinator.enqueue(source: third, destinations: [f.destination])
+
+        try coordinator.moveQueuedTransfer(id: thirdID, to: 0)
+
+        XCTAssertEqual(coordinator.queuePresentation.rows.map(\.id), [thirdID, firstID, secondID])
+        XCTAssertEqual(try XCTUnwrap(journal.loadQueueSession()).recordIDs, [thirdID, firstID, secondID])
+        XCTAssertEqual(
+            journal.records.reversed().filter { $0.state == .queued }.map(\.id),
+            [thirdID, firstID, secondID]
+        )
+
+        try journal.markRunning(id: firstID)
+        XCTAssertThrowsError(try coordinator.moveQueuedTransfer(id: firstID, to: 0))
+        try journal.finish(
+            id: firstID,
+            results: [ResultRow(
+                path: "clip.mov", status: ResultOutcome.verified.statusText,
+                size: 4, checksum: "abc", destination: "backup"
+            )],
+            summary: "Verified", hadIssues: false
+        )
+        XCTAssertThrowsError(try coordinator.moveQueuedTransfer(id: firstID, to: 0))
+    }
+
+    func testEjectAllSafeCardsSkipsUnsafeRowsContinuesAndReportsFailures() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let second = f.root.appendingPathComponent("A002")
+        let unsafe = f.root.appendingPathComponent("A003")
+        for source in [second, unsafe] {
+            try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+            try Data(source.lastPathComponent.utf8).write(to: source.appendingPathComponent("clip.mov"))
+        }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal
+        )
+        let firstID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
+        let secondID = try coordinator.enqueue(source: second, destinations: [f.destination])
+        let unsafeID = try coordinator.enqueue(source: unsafe, destinations: [f.destination])
+        for id in [firstID, secondID, unsafeID] {
+            try journal.markRunning(id: id)
+            let isSafe = id != unsafeID
+            try journal.finish(
+                id: id,
+                results: [ResultRow(
+                    path: "clip.mov",
+                    status: isSafe ? ResultOutcome.verified.statusText : ResultOutcome.failed.statusText,
+                    size: 4, checksum: isSafe ? "abc" : nil, destination: "backup"
+                )],
+                summary: isSafe ? "Verified" : "Mismatch", hadIssues: !isSafe
+            )
+        }
+        let recorder = EjectRecorder()
+
+        let error = await coordinator.ejectAllSafeQueueSources { url in
+            _ = await recorder.record(url)
+            return url.resolvingSymlinksInPath() == second.resolvingSymlinksInPath() ? "Drive is busy" : nil
+        }
+
+        let recordedURLs = await recorder.urls
+        let attempted = recordedURLs.map { $0.resolvingSymlinksInPath() }
+        XCTAssertEqual(attempted, [f.source.resolvingSymlinksInPath(), second.resolvingSymlinksInPath()])
+        XCTAssertFalse(attempted.contains(unsafe.resolvingSymlinksInPath()))
+        XCTAssertTrue(error?.contains("A002: Drive is busy") == true)
+        XCTAssertFalse(error?.contains("A003") == true)
+        XCTAssertEqual(coordinator.queuePresentation.rows.first { $0.id == firstID }?.action, .ejected)
+        XCTAssertEqual(coordinator.queuePresentation.rows.first { $0.id == secondID }?.action, .eject)
+        XCTAssertEqual(coordinator.queuePresentation.rows.first { $0.id == unsafeID }?.action, .review)
     }
 
     /// Plant: in `ejectOutcomeSource`, eject `sourceURL` directly instead of

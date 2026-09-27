@@ -70,13 +70,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
 
     var isMultiCard: Bool { rows.count >= 2 }
     var showsQueueSummary: Bool { summaryTitle != nil }
-    var ejectButtonTitle: String {
-        let noun = ejectableCardIDs.count == 1 ? "Card" : "Cards"
-        return "Eject \(ejectableCardIDs.count) Verified \(noun)"
-    }
-    var ejectDisabledReason: String? {
-        ejectableCardIDs.isEmpty ? "No verified cards are still connected." : nil
-    }
+    var showsEjectAllButton: Bool { ejectableCardIDs.count >= 2 }
 
     static func make(
         records: [LocalTransferRecord],
@@ -130,11 +124,21 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let paused = pausedRecordID.flatMap { id in rows.first { $0.id == id } }
         let hasWaiting = rows.contains { $0.safetyState == .waiting }
         let hasRunCard = rows.contains { $0.safetyState != .waiting }
-        let summaryTitle = running == nil && rows.count >= 2 && hasRunCard
-            ? (hasWaiting ? "Queue stopped" : "Queue finished") : nil
+        let summaryTitle: String?
+        if running == nil && rows.count >= 2 && hasRunCard {
+            if !hasWaiting && tally.safeToErase == rows.count {
+                let noun = rows.count == 1 ? "card" : "cards"
+                summaryTitle = "\(rows.count) \(noun) safe to erase"
+            } else {
+                summaryTitle = tally.text
+            }
+        } else {
+            summaryTitle = nil
+        }
         let components = Calendar.current.dateComponents([.hour, .minute], from: now)
         let time = String(format: "%02d:%02d", components.hour ?? 0, components.minute ?? 0)
-        let firstLine = "\(summaryTitle ?? "Queue") \(time) · \(tally.text)"
+        let summaryPrefix = summaryTitle == nil ? "Queue" : (hasWaiting ? "Queue stopped" : "Queue finished")
+        let firstLine = "\(summaryPrefix) \(time) · \(tally.text)"
         return Self(
             rows: rows,
             tally: tally,
@@ -260,6 +264,17 @@ struct QueueSessionPresentation: Equatable, Sendable {
             return value
         }
         return clauses.joined(separator: "; ")
+    }
+}
+
+enum QueueConnectedCardPresentation {
+    /// A connected card is an offer, not a queued snapshot, until the person
+    /// chooses Queue next. Discovery supplies only root-anchored card layouts.
+    static func ghostRows(
+        isTransferOrQueueRunning: Bool,
+        eligibleRows: [ConnectedDrivesPresentation.Row]
+    ) -> [ConnectedDrivesPresentation.Row] {
+        isTransferOrQueueRunning ? eligibleRows : []
     }
 }
 

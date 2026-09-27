@@ -4,9 +4,31 @@ struct ConnectedDrivesView: View {
     let rows: [ConnectedDrivesPresentation.Row]
     let needsDriveAccess: Bool
     let actionsDisabled: Bool
+    let queueCandidateURLs: Set<URL>
     let requestDriveAccess: () -> Void
     let useAsCard: (URL) -> Void
     let addAsBackup: (URL) -> Void
+    let queueNext: ((ConnectedDrivesPresentation.Row) -> Void)?
+
+    init(
+        rows: [ConnectedDrivesPresentation.Row],
+        needsDriveAccess: Bool,
+        actionsDisabled: Bool,
+        queueCandidateURLs: Set<URL> = [],
+        requestDriveAccess: @escaping () -> Void,
+        useAsCard: @escaping (URL) -> Void,
+        addAsBackup: @escaping (URL) -> Void,
+        queueNext: ((ConnectedDrivesPresentation.Row) -> Void)? = nil
+    ) {
+        self.rows = rows
+        self.needsDriveAccess = needsDriveAccess
+        self.actionsDisabled = actionsDisabled
+        self.queueCandidateURLs = queueCandidateURLs
+        self.requestDriveAccess = requestDriveAccess
+        self.useAsCard = useAsCard
+        self.addAsBackup = addAsBackup
+        self.queueNext = queueNext
+    }
 
     var body: some View {
         Group {
@@ -104,12 +126,18 @@ struct ConnectedDrivesView: View {
 
     @ViewBuilder
     private func buttons(for row: ConnectedDrivesPresentation.Row) -> some View {
-        Button("Use as card") { useAsCard(row.url) }
-            .accessibilityLabel("Use \(row.displayName) as card")
-            .disabled(actionsDisabled)
-        Button("Add as destination") { addAsBackup(row.url) }
-            .accessibilityLabel("Add \(row.displayName) as destination")
-            .disabled(actionsDisabled)
+        if queueCandidateURLs.contains(row.url), let queueNext {
+            Button("Queue \(row.displayName) next") { queueNext(row) }
+                .buttonStyle(.borderedProminent)
+                .accessibilityLabel("Queue \(row.displayName) next")
+        } else {
+            Button("Use as card") { useAsCard(row.url) }
+                .accessibilityLabel("Use \(row.displayName) as card")
+                .disabled(actionsDisabled)
+            Button("Add as destination") { addAsBackup(row.url) }
+                .accessibilityLabel("Add \(row.displayName) as destination")
+                .disabled(actionsDisabled)
+        }
     }
 }
 
@@ -121,25 +149,38 @@ struct MacConnectedDrives: View {
     let platform: SetupLocationsPlatform
 
     var body: some View {
+        let volumes = monitor.connectedVolumes
+        let rows = ConnectedDrivesPresentation.make(
+            volumes: volumes,
+            sourceURL: coordinator.sourceURL?.standardizedFileURL.resolvingSymlinksInPath(),
+            destinationURLs: coordinator.destinationURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
+        ).filter { $0.state == .none }
+        let offers = QueueConnectedCardPresentation.ghostRows(
+            isTransferOrQueueRunning: coordinator.runningOneTimeTransfer != nil || coordinator.queueIsRunning,
+            eligibleRows: coordinator.queueCandidates(volumes: volumes)
+        )
         let selection = SetupLocationSelection(
             coordinator: coordinator,
             addBackup: platform.addBackup,
             removeBackup: platform.removeBackup
         )
         ConnectedDrivesView(
-            rows: ConnectedDrivesPresentation.make(
-                volumes: monitor.connectedVolumes,
-                sourceURL: coordinator.sourceURL?.standardizedFileURL.resolvingSymlinksInPath(),
-                destinationURLs: coordinator.destinationURLs.map { $0.standardizedFileURL.resolvingSymlinksInPath() }
-            ).filter { $0.state == .none },
+            rows: rows,
             needsDriveAccess: volumeAccess.needsDriveAccess,
             actionsDisabled: coordinator.isOperationInProgress || !coordinator.stagedSetupTransfers.isEmpty,
+            queueCandidateURLs: Set(offers.map(\.url)),
             requestDriveAccess: { volumeAccess.requestVolumeAccess() },
             useAsCard: { url in
                 withDriveAccess { show(selection.chooseSource(url)) }
             },
             addAsBackup: { url in
                 withDriveAccess { show(selection.addBackups([url])) }
+            },
+            queueNext: { row in
+                withDriveAccess {
+                    do { try coordinator.enqueueNext(source: row.url) }
+                    catch { show([error.localizedDescription]) }
+                }
             }
         )
         .buttonStyle(.bordered)

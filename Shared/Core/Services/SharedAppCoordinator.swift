@@ -817,7 +817,9 @@ class SharedAppCoordinator: ObservableObject {
             volumes: volumes,
             sourceURL: record.source.url.standardizedFileURL.resolvingSymlinksKeepingCase(),
             destinationURLs: record.destinations.map { $0.url.standardizedFileURL.resolvingSymlinksKeepingCase() },
-            queuedSourceURLs: transferJournal.records.filter { $0.state == .queued }
+            queuedSourceURLs: transferJournal.records.filter {
+                $0.state == .queued || queueSessionRecordIDs.contains($0.id)
+            }
                 .map { $0.source.url.standardizedFileURL.resolvingSymlinksKeepingCase() }
         )
     }
@@ -844,8 +846,8 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     func enqueueNext(source: URL) throws {
-        guard let record = runningOneTimeTransfer else {
-            throw FileOperationError.unsafeOperation("A one-time transfer must be running to queue the next card.")
+        guard let record = queueTemplateRecord else {
+            throw FileOperationError.unsafeOperation("A one-time transfer or queue must be running to queue the next card.")
         }
         // The next card gets the running transfer's own settings, not
         // whatever the setup screen or Preferences hold now.
@@ -993,9 +995,33 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     func moveQueuedTransferToTop(_ id: UUID) throws {
-        try transferJournal.moveQueuedToTop(id: id)
-        queueSessionRecordOrder.removeAll { $0 == id }
-        queueSessionRecordOrder.insert(id, at: 0)
+        if queueSessionRecordOrder.contains(id) {
+            try moveQueuedTransfer(id: id, to: 0)
+        } else {
+            // Legacy queued History rows may predate durable session
+            // membership. Preserve their existing journal-only action.
+            try transferJournal.moveQueuedToTop(id: id)
+        }
+    }
+
+    /// Moves one waiting card to a final index among the waiting rows. Active
+    /// and finished records never enter `waitingIDs`, so they cannot move.
+    func moveQueuedTransfer(id: UUID, to destinationIndex: Int) throws {
+        let recordsByID = Dictionary(uniqueKeysWithValues: transferJournal.records.map { ($0.id, $0) })
+        var waitingIDs = queueSessionRecordOrder.filter { recordsByID[$0]?.state == .queued }
+        guard let sourceIndex = waitingIDs.firstIndex(of: id),
+              waitingIDs.indices.contains(destinationIndex) else {
+            throw FileOperationError.unsafeOperation("Only waiting cards can be reordered.")
+        }
+        guard sourceIndex != destinationIndex else { return }
+        waitingIDs.remove(at: sourceIndex)
+        waitingIDs.insert(id, at: destinationIndex)
+        try transferJournal.reorderQueued(idsInRunOrder: waitingIDs)
+        var reorderedWaitingIDs = waitingIDs.makeIterator()
+        queueSessionRecordOrder = queueSessionRecordOrder.map { recordID in
+            recordsByID[recordID]?.state == .queued
+                ? (reorderedWaitingIDs.next() ?? recordID) : recordID
+        }
         persistQueueSession()
     }
 
@@ -1116,8 +1142,9 @@ class SharedAppCoordinator: ObservableObject {
             return
         }
         #endif
-        guard let record = transferJournal.records.last(where: {
-            queueSessionRecordIDs.contains($0.id) && $0.state == .queued && $0.projectID == nil
+        let recordsByID = Dictionary(uniqueKeysWithValues: transferJournal.records.map { ($0.id, $0) })
+        guard let record = queueSessionRecordOrder.lazy.compactMap({ recordsByID[$0] }).first(where: {
+            $0.state == .queued && $0.projectID == nil
         }) else {
             endQueueSession()
             return
@@ -1551,6 +1578,24 @@ class SharedAppCoordinator: ObservableObject {
         if let error = await ejector(access.sourceURL) { return error }
         markQueueSourceEjected(id)
         return nil
+    }
+
+    /// Ejects only rows that the verified presentation currently marks as
+    /// safe, mounted, and not already ejected. One failure never prevents the
+    /// remaining safe cards from being attempted.
+    func ejectAllSafeQueueSources(
+        using ejector: @Sendable (URL) async -> String? = { await CardEjectService.eject($0) }
+    ) async -> String? {
+        let ids = queuePresentation.ejectableCardIDs
+        var failures: [String] = []
+        for id in ids {
+            let name = transferJournal.records.first(where: { $0.id == id })?.title ?? "Card"
+            if let error = await ejectQueueSource(id, using: ejector) {
+                failures.append("\(name): \(error)")
+            }
+        }
+        guard !failures.isEmpty else { return nil }
+        return "Could not eject " + failures.joined(separator: "; ")
     }
 
     /// Ejects the source captured by the finished record, never the live

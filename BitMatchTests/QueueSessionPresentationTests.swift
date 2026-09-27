@@ -61,7 +61,7 @@ struct QueueSessionPresentationTests {
         )
 
         #expect(presentation.tally.text == "1 safe to erase · 1 copied, not verified · 1 needs attention · 1 failed · 1 interrupted · 1 not started")
-        #expect(presentation.summaryTitle == "Queue stopped")
+        #expect(presentation.summaryTitle == presentation.tally.text)
         #expect(presentation.ejectableCardIDs == [safe.id])
         #expect(presentation.rows.map(\.action) == [.eject, .review, .review, .review, .review, nil])
         #expect(!presentation.rows.dropFirst().contains { $0.safetyState.tint == .green })
@@ -83,8 +83,8 @@ struct QueueSessionPresentationTests {
             mountedSourceIDs: Set([first.id, issue.id]), now: finishedAt
         )
 
-        #expect(presentation.summaryTitle == "Queue finished")
-        #expect(presentation.ejectButtonTitle == "Eject 1 Verified Card")
+        #expect(presentation.summaryTitle == "2 safe to erase · 1 needs attention")
+        #expect(!presentation.showsEjectAllButton)
         #expect(presentation.ejectableCardIDs == [first.id])
         let lines = presentation.copySummary.split(separator: "\n")
         #expect(lines.count == 4)
@@ -142,7 +142,65 @@ struct QueueSessionPresentationTests {
         #expect(stopped.copySummary.hasPrefix("Queue stopped "))
         #expect(waitingOnly.copySummary.hasPrefix("Queue "))
         #expect(!waitingOnly.copySummary.hasPrefix("Queue finished"))
-        #expect(waitingOnly.ejectDisabledReason == "No verified cards are still connected.")
+    }
+
+    @Test func allSafeQueueUsesCardCountAsItsSummaryTitle() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let records = try (1...4).map {
+            try fixture.record(name: "A00\($0)", state: .completed, outcome: .verified, at: Double($0))
+        }
+        let presentation = QueueSessionPresentation.make(
+            records: Array(records.reversed()), sessionIDs: Set(records.map(\.id)),
+            sessionRecordIDsInOrder: records.map(\.id), progress: nil,
+            mountedSourceIDs: Set(records.map(\.id))
+        )
+
+        #expect(presentation.summaryTitle == "4 cards safe to erase")
+        #expect(presentation.showsEjectAllButton)
+    }
+
+    @Test func rowEjectActionRequiresSafeToEraseAndAMountedSource() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let safe = try fixture.record(name: "A001", state: .completed, outcome: .verified, at: 1)
+        let quick = try fixture.record(
+            name: "A002", state: .issues, mode: .quick, outcome: .copiedUnverified, at: 2
+        )
+        let attention = try fixture.record(name: "A003", state: .issues, outcome: .failed, at: 3)
+        let records = [safe, quick, attention]
+        let presentation = QueueSessionPresentation.make(
+            records: records, sessionIDs: Set(records.map(\.id)),
+            sessionRecordIDsInOrder: records.map(\.id), progress: nil,
+            mountedSourceIDs: Set(records.map(\.id))
+        )
+
+        #expect(presentation.rows.map(\.action) == [.eject, .review, .review])
+        #expect(presentation.ejectableCardIDs == [safe.id])
+    }
+
+    @Test func connectedCardGhostRowsRequireRunningStateAndEligibleCards() {
+        let card = ConnectedDrivesPresentation.Volume(
+            name: "A004", url: URL(fileURLWithPath: "/Volumes/A004"),
+            totalBytes: 64, freeBytes: 32, isRemovable: true, isInternal: false,
+            volumeID: "card-4", cameraName: "ARRI"
+        )
+        let backup = ConnectedDrivesPresentation.Volume(
+            name: "Shuttle", url: URL(fileURLWithPath: "/Volumes/Shuttle"),
+            totalBytes: 1_000, freeBytes: 500, isRemovable: true, isInternal: false,
+            volumeID: "backup"
+        )
+        let eligible = ConnectedDrivesPresentation.queueCandidates(
+            volumes: [card, backup], sourceURL: URL(fileURLWithPath: "/Volumes/A003"),
+            destinationURLs: [backup.url], queuedSourceURLs: []
+        )
+
+        #expect(QueueConnectedCardPresentation.ghostRows(
+            isTransferOrQueueRunning: false, eligibleRows: eligible
+        ).isEmpty)
+        #expect(QueueConnectedCardPresentation.ghostRows(
+            isTransferOrQueueRunning: true, eligibleRows: eligible
+        ).map(\.displayName) == ["A004"])
     }
 
     @Test func accessibilityStatusCombinesCardStateCauseAndSafetyWarning() throws {
