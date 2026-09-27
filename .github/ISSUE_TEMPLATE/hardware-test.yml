@@ -5,7 +5,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Follow [the hardware testing procedure](https://github.com/mikecerisano/Bitmatch/blob/main/docs/HARDWARE_TESTING.md) using disposable data. Use the [report template](https://github.com/mikecerisano/Bitmatch/blob/main/docs/HARDWARE_REPORT_TEMPLATE.md) for detailed results. Remove serial numbers, usernames, private paths, and client information from shared evidence.
+        Follow [the hardware testing procedure](https://github.com/BitmatchApp/Bitmatch/blob/main/docs/HARDWARE_TESTING.md) using disposable data. Use the [report template](https://github.com/BitmatchApp/Bitmatch/blob/main/docs/HARDWARE_REPORT_TEMPLATE.md) for detailed results. Remove serial numbers, usernames, private paths, and client information from shared evidence.
   - type: textarea
     id: environment
     attributes:

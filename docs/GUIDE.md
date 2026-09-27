@@ -53,11 +53,11 @@ Source scanning rejects unreadable metadata, unsafe paths, and portable filename
 
 **This is beta software from a one-person project.** I have not tested every camera, drive, filesystem, hub, or OS combination. Try it with disposable files before using it on a job. Keep the source card until every required backup finishes cleanly and you've checked the report. Keep another independent copy of anything you can't replace.
 
-There are automated tests for changing source files, truncated reads, destination conflicts, cancellation, large manifests, and transfer faults. That doesn't mean every drive and hub has been tested. The [validation status](HARDWARE_COMPATIBILITY.md) shows what we actually ran, including failures and things we couldn't test. If you want to help, follow the [hardware testing procedure](HARDWARE_TESTING.md) and send a [hardware test report](https://github.com/mikecerisano/Bitmatch/issues/new?template=hardware-test.yml).
+There are automated tests for changing source files, truncated reads, destination conflicts, cancellation, large manifests, and transfer faults. That doesn't mean every drive and hub has been tested. The [validation status](HARDWARE_COMPATIBILITY.md) shows what we actually ran, including failures and things we couldn't test. If you want to help, follow the [hardware testing procedure](HARDWARE_TESTING.md) and send a [hardware test report](https://github.com/BitmatchApp/Bitmatch/issues/new?template=hardware-test.yml).
 
 Found a transfer problem? Include your app and OS versions, drives and filesystems, verification mode, and what you did. Strip private filenames and client info from shared reports.
 
-The [latest release notes](https://github.com/mikecerisano/Bitmatch/releases/latest) have the current fixes, build checks, and download checksum.
+The [latest release notes](https://github.com/BitmatchApp/Bitmatch/releases/latest) have the current fixes, build checks, and download checksum.
 
 ## Cards and Drives
 

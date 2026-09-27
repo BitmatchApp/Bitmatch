@@ -1,6 +1,6 @@
 # Development validation — 2026-09-06
 
-This run validates the first-transfer presentation changes in [07df297](https://github.com/mikecerisano/Bitmatch/commit/07df297b95c9552169cad6e27d749ceea6c87a87). Tests ran against the working tree before that commit, with the same Swift source. Harness cleanup and setup-log retention were also checked as described below. This is development validation, not a new signed release or physical-device certification.
+This run validates the first-transfer presentation changes in [07df297](https://github.com/BitmatchApp/Bitmatch/commit/07df297b95c9552169cad6e27d749ceea6c87a87). Tests ran against the working tree before that commit, with the same Swift source. Harness cleanup and setup-log retention were also checked as described below. This is development validation, not a new signed release or physical-device certification.
 
 Host: Apple Silicon Mac, macOS 26.6 (25G5057c), Xcode 26.6 (17F113).
 

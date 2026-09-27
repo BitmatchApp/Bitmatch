@@ -4,9 +4,9 @@
 
 For indie filmmakers, YouTubers, photographers, and small productions that don't want a subscription just to copy files.
 
-[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20iPadOS%20%7C%20iOS-blue)](https://github.com/mikecerisano/Bitmatch) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Release](https://img.shields.io/github/v/release/mikecerisano/Bitmatch?include_prereleases)](https://github.com/mikecerisano/Bitmatch/releases)
+[![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20iPadOS%20%7C%20iOS-blue)](https://github.com/BitmatchApp/Bitmatch) [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE) [![Release](https://img.shields.io/github/v/release/BitmatchApp/Bitmatch?include_prereleases)](https://github.com/BitmatchApp/Bitmatch/releases)
 
-[**Download for Mac**](https://github.com/mikecerisano/Bitmatch/releases) · [Release notes](CHANGELOG.md) · [Report a problem](https://github.com/mikecerisano/Bitmatch/issues)
+[**Download for Mac**](https://github.com/BitmatchApp/Bitmatch/releases) · [Release notes](CHANGELOG.md) · [Report a problem](https://github.com/BitmatchApp/Bitmatch/issues)
 
 ![BitMatch on Mac: a card, two destinations, ready to start](docs/screenshots/mac-setup.png)
 
@@ -20,7 +20,7 @@ For indie filmmakers, YouTubers, photographers, and small productions that don't
 
 ## Download
 
-Signed and notarized macOS build on the [Releases page](https://github.com/mikecerisano/Bitmatch/releases). Supports Apple Silicon and Intel Macs.
+Signed and notarized macOS build on the [Releases page](https://github.com/BitmatchApp/Bitmatch/releases). Supports Apple Silicon and Intel Macs.
 
 Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now; they require **iPadOS/iOS 18.5 or newer**.
 
@@ -69,7 +69,7 @@ More detail (queue and recovery, ASC MHL, photographer jobs, SFTP, cards and dri
 
 ## Contributing
 
-PRs welcome. For anything big, start a thread in [Discussions](https://github.com/mikecerisano/Bitmatch/discussions) first so we can talk it through before you sink time into it. BitMatch is supposed to stay simple, and I'd hate for you to build something that doesn't fit.
+PRs welcome. For anything big, start a thread in [Discussions](https://github.com/BitmatchApp/Bitmatch/discussions) first so we can talk it through before you sink time into it. BitMatch is supposed to stay simple, and I'd hate for you to build something that doesn't fit.
 
 Build both the Mac and iPad schemes before submitting. Not a coder? Testing on your own cameras, cards, readers, and drives helps just as much. So does telling me what confused you.
 
