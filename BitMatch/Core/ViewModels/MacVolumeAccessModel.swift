@@ -69,17 +69,29 @@ final class MacVolumeAccessModel: ObservableObject {
     /// Volume facts for `BackupTargetPolicy`. Tests supply their own, since
     /// their drives are not mounted.
     var volumeFacts: (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
-    /// Where last-used backups are kept. Tests supply their own, so they
-    /// never race over the app's list.
-    var lastUsedDefaults: UserDefaults = .standard
+    /// The coordinator's preference store. Tests inject a private suite so
+    /// recents and last-used backups cannot race with another test process.
+    private var defaults: UserDefaults
+    var lastUsedDefaults: UserDefaults {
+        get { defaults }
+        set {
+            defaults = newValue
+            loadRecentFolders()
+        }
+    }
 
     private var sourceURL: URL? { shared?.sourceURL }
     private var destinationURLs: [URL] { shared?.destinationURLs ?? [] }
 
     // MARK: - Initialization
-    init(shared: SharedAppCoordinator, enableVolumeMonitoring: Bool = true) {
+    init(
+        shared: SharedAppCoordinator,
+        enableVolumeMonitoring: Bool = true,
+        defaults: UserDefaults? = nil
+    ) {
         let isSandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
         self.isSandboxed = isSandboxed
+        self.defaults = defaults ?? shared.defaults
         self.needsDriveAccess = DriveAccessPolicy.needsDriveAccess(
             isSandboxed: isSandboxed,
             hasActiveVolumesScope: false
@@ -291,8 +303,8 @@ final class MacVolumeAccessModel: ObservableObject {
                 // BitMatch asked again at every launch. The bookmark is not a
                 // secret: only this app's signature can resolve it.
                 _ = KeychainHelper.save(bookmarkData, forKey: key)
-                UserDefaults.standard.set(bookmarkData, forKey: key)
-                UserDefaults.standard.set(selectedURL.path, forKey: "volumesDirectoryPath")
+                self?.defaults.set(bookmarkData, forKey: key)
+                self?.defaults.set(selectedURL.path, forKey: "volumesDirectoryPath")
 
                 SharedLogger.info("Saved volumes directory bookmark for: \(selectedURL.path)", category: .transfer)
 
@@ -324,8 +336,6 @@ final class MacVolumeAccessModel: ObservableObject {
     }
     
     func loadSavedBookmarks() {
-        let defaults = UserDefaults.standard
-        
         // Security 17: load bookmark from Keychain (fall back to UserDefaults for migration)
         let bookmarkData = KeychainHelper.load(forKey: "volumesDirectoryBookmark") ?? defaults.data(forKey: "volumesDirectoryBookmark")
         if let bookmarkData = bookmarkData {
@@ -414,7 +424,7 @@ final class MacVolumeAccessModel: ObservableObject {
     
     var hasVolumeAccess: Bool {
         return KeychainHelper.load(forKey: "volumesDirectoryBookmark") != nil
-            || UserDefaults.standard.data(forKey: "volumesDirectoryBookmark") != nil
+            || defaults.data(forKey: "volumesDirectoryBookmark") != nil
     }
     
     // MARK: - Smart Defaults Methods
@@ -424,7 +434,7 @@ final class MacVolumeAccessModel: ObservableObject {
     func saveLastDestinations(_ urls: [URL]) {
         guard !urls.contains(where: { StressTestScratch.isScratch($0) }) else { return }
         let paths = urls.prefix(maxRememberedDestinations).map { $0.path }
-        lastUsedDefaults.set(paths, forKey: lastDestinationsKey)
+        defaults.set(paths, forKey: lastDestinationsKey)
     }
     
     /// Last time's backups, all or nothing (`LastBackupsRestorePolicy`):
@@ -435,7 +445,7 @@ final class MacVolumeAccessModel: ObservableObject {
     func loadLastDestinations() -> [URL] {
         let facts = volumeFacts
         return LastBackupsRestorePolicy.backupsToRestore(
-            savedPaths: lastUsedDefaults.stringArray(forKey: lastDestinationsKey) ?? [],
+            savedPaths: defaults.stringArray(forKey: lastDestinationsKey) ?? [],
             exists: { FileManager.default.fileExists(atPath: $0) },
             refusal: { BackupTargetPolicy.refusal(for: $0, origin: .restored, source: nil, facts: facts) }
         )
@@ -452,7 +462,7 @@ final class MacVolumeAccessModel: ObservableObject {
     // MARK: - Recent Folders Management
     private func saveRecentFolder(_ url: URL?, key: String) {
         guard let url = url, !StressTestScratch.isScratch(url) else { return }
-        UserDefaults.standard.set(url.path, forKey: key)
+        defaults.set(url.path, forKey: key)
         updateRecentFolders()
     }
     
@@ -462,13 +472,13 @@ final class MacVolumeAccessModel: ObservableObject {
         // Load from individual keys
         let keys = ["recentLeft", "recentRight", "recentSource", "recentDestination"]
         for key in keys {
-            if let path = UserDefaults.standard.string(forKey: key) {
+            if let path = defaults.string(forKey: key) {
                 folders.append(URL(fileURLWithPath: path))
             }
         }
         
         // Load from list
-        if let recentPaths = UserDefaults.standard.stringArray(forKey: recentFoldersListKey) {
+        if let recentPaths = defaults.stringArray(forKey: recentFoldersListKey) {
             for path in recentPaths {
                 folders.append(URL(fileURLWithPath: path))
             }
@@ -484,6 +494,6 @@ final class MacVolumeAccessModel: ObservableObject {
     private func updateRecentFolders() {
         loadRecentFolders()
         let paths = recentFolders.map { $0.path }
-        UserDefaults.standard.set(paths, forKey: recentFoldersListKey)
+        defaults.set(paths, forKey: recentFoldersListKey)
     }
 }

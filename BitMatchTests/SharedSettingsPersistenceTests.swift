@@ -26,7 +26,7 @@ struct SharedSettingsPersistenceTests {
             platformManager: RecordingPlatformManager(fileOperations: operations),
             transferJournal: journal ?? LocalTransferJournal(fileURL: folders.journalURL),
             projectStore: InMemoryPhotographerJobStore(),
-            preferences: preferences
+            defaults: preferences
         )
     }
 

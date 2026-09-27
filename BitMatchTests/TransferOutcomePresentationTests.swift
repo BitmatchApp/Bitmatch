@@ -431,7 +431,8 @@ struct OutcomeFailureWithoutJournalTests {
         let journal = LocalTransferJournal(fileURL: blockedParent.appendingPathComponent("journal.json"))
         let coordinator = SharedAppCoordinator(
             platformManager: MacOSPlatformManager.shared,
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: .isolatedWorkflowDefaults()
         )
         coordinator.sourceURL = source
         coordinator.destinationURLs = [destination]
@@ -456,7 +457,10 @@ struct NewTransferSelectionTests {
 
     // Plant: delete `sourceURL = nil` from `SharedAppCoordinator.startNewTransfer()`.
     @Test func newTransferClearsTheSource() throws {
-        let coordinator = SharedAppCoordinator(platformManager: MacOSPlatformManager.shared)
+        let coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            defaults: .isolatedWorkflowDefaults()
+        )
         let source = try makeDir()
         let backup = try makeDir()
         defer {
@@ -476,7 +480,10 @@ struct NewTransferSelectionTests {
 
     // Plant: add `destinationURLs = []` to `SharedAppCoordinator.startNewTransfer()`.
     @Test func newTransferKeepsTheBackups() throws {
-        let coordinator = SharedAppCoordinator(platformManager: MacOSPlatformManager.shared)
+        let coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            defaults: .isolatedWorkflowDefaults()
+        )
         let backup = try makeDir()
         defer { try? FileManager.default.removeItem(at: backup) }
         coordinator.destinationURLs = [backup]
@@ -517,7 +524,8 @@ struct FinishedRunSnapshotTests {
         )
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
-            transferJournal: journal, projectStore: InMemoryPhotographerJobStore()
+            transferJournal: journal, projectStore: InMemoryPhotographerJobStore(),
+            defaults: .isolatedWorkflowDefaults()
         )
         coordinator.reviewQueuedTransfer(id)
         coordinator.destinationURLs = [folders.secondary]

@@ -13,7 +13,10 @@ struct ComparePickerSelectionTests {
         #if os(macOS)
         let fileSystem = FakeFileSystemService()
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: PickerTestPlatformManager(fileSystem: fileSystem))
+            SharedAppCoordinator(
+                platformManager: PickerTestPlatformManager(fileSystem: fileSystem),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let existing = URL(fileURLWithPath: "/previously/left")
         await MainActor.run { coordinator.leftURL = existing }
@@ -33,7 +36,10 @@ struct ComparePickerSelectionTests {
         #if os(macOS)
         let fileSystem = FakeFileSystemService()
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: PickerTestPlatformManager(fileSystem: fileSystem))
+            SharedAppCoordinator(
+                platformManager: PickerTestPlatformManager(fileSystem: fileSystem),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let existing = URL(fileURLWithPath: "/previously/right")
         await MainActor.run { coordinator.rightURL = existing }
@@ -53,7 +59,10 @@ struct ComparePickerSelectionTests {
         #if os(macOS)
         let fileSystem = FakeFileSystemService()
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: PickerTestPlatformManager(fileSystem: fileSystem))
+            SharedAppCoordinator(
+                platformManager: PickerTestPlatformManager(fileSystem: fileSystem),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let existing = URL(fileURLWithPath: "/previously/source")
         await MainActor.run { coordinator.sourceURL = existing }
@@ -73,7 +82,10 @@ struct ComparePickerSelectionTests {
         #if os(macOS)
         let fileSystem = FakeFileSystemService()
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: PickerTestPlatformManager(fileSystem: fileSystem))
+            SharedAppCoordinator(
+                platformManager: PickerTestPlatformManager(fileSystem: fileSystem),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let picked = URL(fileURLWithPath: "/picked/source")
         fileSystem.sourceResult = picked
@@ -91,7 +103,10 @@ struct ComparePickerSelectionTests {
         #if os(macOS)
         let fileSystem = FakeFileSystemService()
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: PickerTestPlatformManager(fileSystem: fileSystem))
+            SharedAppCoordinator(
+                platformManager: PickerTestPlatformManager(fileSystem: fileSystem),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let picked = URL(fileURLWithPath: "/picked/left")
         fileSystem.leftResult = picked

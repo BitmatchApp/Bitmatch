@@ -113,14 +113,8 @@ private final class SnapshotFixture {
     let store: UserDefaultsPhotographerJobStore
     let sharedCoordinator: SharedAppCoordinator
     let environment: MacAppEnvironment
-    private let defaults: UserDefaults
     private let isolatedDefaults: UserDefaults
     private let isolatedSuiteName: String
-    private let preferenceKeys = [
-        "lastVerificationMode", "BitMatchGenerateASCMHL", "lastUsedDestinations",
-        "recentLeft", "recentRight", "recentSource", "recentDestination", "recentFoldersList"
-    ]
-    private let originalPreferences: [String: Any]
 
     init() throws {
         root = FileManager.default.temporaryDirectory
@@ -134,17 +128,9 @@ private final class SnapshotFixture {
         try FileManager.default.createDirectory(at: source.appendingPathComponent("DCIM", isDirectory: true), withIntermediateDirectories: true)
         try Data("seeded clip".utf8).write(to: source.appendingPathComponent("DCIM/clip.txt"), options: .atomic)
 
-        let globalDefaults = UserDefaults.standard
-        let keysToRestore = [
-            "lastVerificationMode", "BitMatchGenerateASCMHL", "lastUsedDestinations",
-            "recentLeft", "recentRight", "recentSource", "recentDestination", "recentFoldersList"
-        ]
-        defaults = globalDefaults
-        originalPreferences = keysToRestore.reduce(into: [:]) { result, key in
-            if let value = globalDefaults.object(forKey: key) { result[key] = value }
-        }
         isolatedSuiteName = "BitMatch.WorkflowSnapshots.\(UUID().uuidString)"
         isolatedDefaults = try XCTUnwrap(UserDefaults(suiteName: isolatedSuiteName))
+        isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         store = UserDefaultsPhotographerJobStore(defaults: isolatedDefaults)
         journal = LocalTransferJournal(fileURL: root.appendingPathComponent("transfer-history.json"))
         let viewModel = PhotographerJobViewModel(
@@ -155,7 +141,8 @@ private final class SnapshotFixture {
         sharedCoordinator = SharedAppCoordinator(
             platformManager: MacOSPlatformManager.shared,
             transferJournal: journal,
-            photographerJobViewModel: viewModel
+            photographerJobViewModel: viewModel,
+            defaults: isolatedDefaults
         )
         environment = MacAppEnvironment.makeForTesting(coordinator: sharedCoordinator)
     }
@@ -247,10 +234,6 @@ private final class SnapshotFixture {
     }
 
     func restoreGlobalPreferences() {
-        for key in preferenceKeys {
-            if let value = originalPreferences[key] { defaults.set(value, forKey: key) }
-            else { defaults.removeObject(forKey: key) }
-        }
         isolatedDefaults.removePersistentDomain(forName: isolatedSuiteName)
         try? FileManager.default.removeItem(at: root)
     }

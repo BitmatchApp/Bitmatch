@@ -305,7 +305,8 @@ struct BackupAddPathTests {
     private func makeCoordinator() -> SharedAppCoordinator {
         SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: .isolatedWorkflowDefaults()
         )
     }
 
@@ -505,8 +506,9 @@ struct BackupAddPathTests {
     /// folder and restores the other: a partial set).
     @Test func restoreDoesNotBringBackTheStressTestTempFolder() throws {
         let key = "lastUsedDestinations"
-        let saved = UserDefaults.standard.object(forKey: key)
-        defer { UserDefaults.standard.set(saved, forKey: key) }
+        let suiteName = "BitMatchTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer { defaults.removePersistentDomain(forName: suiteName) }
         let fm = FileManager.default
         let dst = fm.temporaryDirectory
             .appendingPathComponent("bitmatch_stress_dst_\(UUID().uuidString)", isDirectory: true)
@@ -519,8 +521,9 @@ struct BackupAddPathTests {
             try? fm.removeItem(at: dst)
             try? fm.removeItem(at: backup)
         }
-        UserDefaults.standard.set([backup.path, dst.path], forKey: key)
+        defaults.set([backup.path, dst.path], forKey: key)
         let (model, shared) = makeModel()
+        model.lastUsedDefaults = defaults
 
         model.restoreLastDestinations()
 

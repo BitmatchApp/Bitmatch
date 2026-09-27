@@ -20,7 +20,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let secondID = try journal.enqueue(sourceURL: secondSource, destinationURLs: [f.destination], verificationMode: .standard,
                                            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false)
         let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal, defaults: f.defaults)
         coordinator.startQueue()
         let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
             !coordinator.queueIsRunning && !coordinator.isOperationInProgress
@@ -62,7 +62,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         )
         let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal, defaults: f.defaults
         )
 
         coordinator.startQueue()
@@ -87,7 +87,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: true)
         let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal, defaults: f.defaults)
         coordinator.startQueue()
         let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
             !coordinator.queueIsRunning && !coordinator.isOperationInProgress
@@ -117,7 +117,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false)
         let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations), transferJournal: journal, defaults: f.defaults)
         coordinator.startQueue()
         let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
             !coordinator.queueIsRunning && !coordinator.isOperationInProgress
@@ -136,7 +136,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         XCTAssertThrowsError(try coordinator.completionExportDocument(asCSV: false)) { error in
             XCTAssertTrue(error.localizedDescription.contains("No finished transfer"))
         }
@@ -147,7 +147,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         coordinator.currentMode = .compareFolders
         coordinator.isOperationInProgress = true
         coordinator.startQueue()
@@ -166,7 +166,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let service = QueueRecordingOperations()
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: service),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         coordinator.sourceURL = f.source
         coordinator.destinationURLs = [f.destination]
@@ -194,7 +195,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
 
         try coordinator.enqueueInlineCard(
@@ -231,7 +233,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let secondID = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                            cameraSettings: camera, reportSettings: reports, generateASCMHL: false)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         coordinator.cameraLabelSettings.label = "Unsaved changed label"
         coordinator.verificationMode = .quick
         coordinator.sourceURL = f.destination
@@ -257,7 +259,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         try Data("corrupt history".utf8).write(to: f.journalURL)
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         coordinator.sourceURL = f.source
         coordinator.destinationURLs = [f.destination]
         await coordinator.startOperation()
@@ -279,7 +281,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let secondID = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false)
         let service = QueueRecordingOperations(blocked: true)
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         coordinator.startQueue()
         let started = await waitUntil { await service.starts.count == 1 }
         XCTAssertTrue(started)
@@ -304,7 +306,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let service = QueueRecordingOperations(blocked: true)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: service),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         coordinator.sourceURL = f.source
         coordinator.destinationURLs = [f.destination]
@@ -334,7 +337,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let service = QueueRecordingOperations(blocked: true)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: service),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         coordinator.sourceURL = f.source
         coordinator.destinationURLs = [f.destination]
@@ -361,7 +365,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let service = QueueRecordingOperations()
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults
         )
         coordinator.sourceURL = f.source
         coordinator.destinationURLs = [f.destination]
@@ -381,7 +385,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), projectID: UUID())
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         coordinator.startQueue()
         let stopped = await waitUntil { @MainActor in !coordinator.queueIsRunning }
         XCTAssertTrue(stopped)
@@ -398,7 +402,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         try FileManager.default.removeItem(at: f.destination)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
         coordinator.startQueue()
         let stopped = await waitUntil { @MainActor in !coordinator.queueIsRunning }
         XCTAssertTrue(stopped)
@@ -416,7 +420,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         try FileManager.default.removeItem(at: f.source)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
 
         coordinator.startQueue()
         let stopped = await waitUntil { @MainActor in !coordinator.queueIsRunning }
@@ -449,7 +453,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         try journal.moveQueuedToTop(id: missingID)
         try FileManager.default.removeItem(at: missing)
         let service = QueueRecordingOperations()
-        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults)
 
         coordinator.startQueue()
         let paused = await waitUntil { @MainActor in coordinator.queuePausedRecordID == missingID }
@@ -482,7 +486,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         try FileManager.default.removeItem(at: a001)
         try FileManager.default.removeItem(at: a002)
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults
         )
 
         coordinator.startQueue()
@@ -519,7 +523,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults
         )
         XCTAssertNil(coordinator.queuePausedRecordID)
         XCTAssertFalse(coordinator.hasUnresolvedQueueRecords)
@@ -545,7 +549,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         XCTAssertNil(coordinator.queuePausedRecordID)
         XCTAssertTrue(coordinator.queuePresentation.rows.isEmpty)
@@ -577,7 +582,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         ))
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
 
         try coordinator.removePausedCardFromQueue(first)
@@ -603,7 +609,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             try FileManager.default.removeItem(at: missing)
             let coordinator = SharedAppCoordinator(
                 platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-                transferJournal: journal
+                transferJournal: journal,
+                defaults: f.defaults
             )
             coordinator.startQueue()
             let paused = await waitUntil { @MainActor in coordinator.queuePausedRecordID == failedID }
@@ -614,7 +621,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let relaunchedJournal = LocalTransferJournal(fileURL: f.journalURL)
         let relaunched = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: relaunchedJournal
+            transferJournal: relaunchedJournal,
+            defaults: f.defaults
         )
         XCTAssertEqual(relaunched.queuePausedRecordID, failedID)
         XCTAssertTrue(relaunched.hasUnresolvedQueueRecords)
@@ -636,7 +644,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             let journal = LocalTransferJournal(fileURL: f.journalURL)
             let coordinator = SharedAppCoordinator(
                 platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-                transferJournal: journal
+                transferJournal: journal,
+                defaults: f.defaults
             )
             finishedID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
             sourceVolumeID = try XCTUnwrap(journal.records.first(where: { $0.id == finishedID })?.source.volumeID)
@@ -651,7 +660,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let relaunchedJournal = LocalTransferJournal(fileURL: f.journalURL)
         let relaunched = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: relaunchedJournal
+            transferJournal: relaunchedJournal,
+            defaults: f.defaults
         )
         let volume = ConnectedDrivesPresentation.Volume(
             name: "Same card", url: f.source, totalBytes: 64, freeBytes: 32,
@@ -680,7 +690,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         )
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
 
         coordinator.startQueue()
@@ -715,7 +726,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         try FileManager.default.removeItem(at: second)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
 
         coordinator.startQueue()
@@ -748,7 +760,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         try FileManager.default.removeItem(at: missing)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         coordinator.startQueue()
         let paused = await waitUntil { @MainActor in coordinator.queuePausedRecordID == oldID }
@@ -784,7 +797,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         let service = QueueRecordingOperations()
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: service), transferJournal: journal, defaults: f.defaults
         )
         coordinator.startQueue()
         let paused = await waitUntil { @MainActor in coordinator.queuePausedRecordID == id }
@@ -811,7 +824,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
                 fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared
             )),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         try journal.fail(id: originalID, summary: "Try again")
         coordinator.retryTransfer(originalID)
@@ -831,22 +845,16 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
     func testReplayRestoresVerificationAndMHLSettingsWithoutPersistingSnapshot() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
-        let oldMode = UserDefaults.standard.string(forKey: "lastVerificationMode")
-        let oldMHL = UserDefaults.standard.object(forKey: "BitMatchGenerateASCMHL")
-        defer {
-            if let oldMode { UserDefaults.standard.set(oldMode, forKey: "lastVerificationMode") }
-            else { UserDefaults.standard.removeObject(forKey: "lastVerificationMode") }
-            if let oldMHL { UserDefaults.standard.set(oldMHL, forKey: "BitMatchGenerateASCMHL") }
-            else { UserDefaults.standard.removeObject(forKey: "BitMatchGenerateASCMHL") }
-        }
-        UserDefaults.standard.set(VerificationMode.quick.rawValue, forKey: "lastVerificationMode")
-        UserDefaults.standard.set(true, forKey: "BitMatchGenerateASCMHL")
+        f.defaults.set(VerificationMode.quick.rawValue, forKey: "lastVerificationMode")
+        f.defaults.set(true, forKey: "BitMatchGenerateASCMHL")
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         _ = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                 cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), generateASCMHL: false)
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults
         )
+        XCTAssertEqual(coordinator.verificationMode, .quick)
+        XCTAssertTrue(coordinator.generateASCMHL)
         coordinator.verificationMode = .quick
         coordinator.generateASCMHL = true
         coordinator.startQueue()
@@ -854,8 +862,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(stopped)
         XCTAssertEqual(coordinator.verificationMode, .quick)
         XCTAssertTrue(coordinator.generateASCMHL)
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVerificationMode"), VerificationMode.quick.rawValue)
-        XCTAssertEqual(UserDefaults.standard.bool(forKey: "BitMatchGenerateASCMHL"), true)
+        XCTAssertEqual(f.defaults.string(forKey: "lastVerificationMode"), VerificationMode.quick.rawValue)
+        XCTAssertEqual(f.defaults.bool(forKey: "BitMatchGenerateASCMHL"), true)
     }
 
     /// Plant: delete the review snapshot/restore block in
@@ -864,11 +872,6 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
     func testReviewRestoresUsersModeAndBackupsWithoutSavingRecordSnapshot() throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
-        let savedMode = UserDefaults.standard.object(forKey: "lastVerificationMode")
-        defer {
-            if let savedMode { UserDefaults.standard.set(savedMode, forKey: "lastVerificationMode") }
-            else { UserDefaults.standard.removeObject(forKey: "lastVerificationMode") }
-        }
         let reviewBackup = f.root.appendingPathComponent("review-backup")
         let userBackup = f.root.appendingPathComponent("user-backup")
         try FileManager.default.createDirectory(at: reviewBackup, withIntermediateDirectories: true)
@@ -887,26 +890,23 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         )
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         let model = MacVolumeAccessModel(shared: coordinator, enableVolumeMonitoring: false)
-        let suiteName = "BitMatchTests.review-\(UUID())"
-        let defaults = try XCTUnwrap(UserDefaults(suiteName: suiteName))
-        defer { defaults.removePersistentDomain(forName: suiteName) }
-        model.lastUsedDefaults = defaults
         coordinator.verificationMode = .paranoid
         coordinator.destinationURLs = [userBackup]
-        XCTAssertEqual(defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
+        XCTAssertEqual(f.defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
 
         coordinator.reviewQueuedTransfer(id)
-        XCTAssertEqual(defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVerificationMode"), VerificationMode.paranoid.rawValue)
+        XCTAssertEqual(f.defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
+        XCTAssertEqual(f.defaults.string(forKey: "lastVerificationMode"), VerificationMode.paranoid.rawValue)
         coordinator.startNewTransfer()
 
         XCTAssertEqual(coordinator.verificationMode, .paranoid)
         XCTAssertEqual(coordinator.destinationURLs, [userBackup])
-        XCTAssertEqual(defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
-        XCTAssertEqual(UserDefaults.standard.string(forKey: "lastVerificationMode"), VerificationMode.paranoid.rawValue)
+        XCTAssertEqual(f.defaults.stringArray(forKey: "lastUsedDestinations"), [userBackup.path])
+        XCTAssertEqual(f.defaults.string(forKey: "lastVerificationMode"), VerificationMode.paranoid.rawValue)
     }
 
     func testReadableReplacementAtSamePathIsNeitherCountedNorEjected() async throws {
@@ -916,7 +916,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults
         )
         try journal.markRunning(id: id)
         try journal.finish(
@@ -947,7 +947,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         let firstID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
         let secondID = try coordinator.enqueue(source: second, destinations: [f.destination])
@@ -987,7 +988,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         let firstID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
         let secondID = try coordinator.enqueue(source: second, destinations: [f.destination])
@@ -1047,7 +1049,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         )
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         coordinator.reviewQueuedTransfer(id)
         coordinator.sourceURL = other
@@ -1066,7 +1069,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults
         )
         coordinator.reviewQueuedTransfer(id)
         XCTAssertTrue(coordinator.reviewedQueueAttentionIDs.isEmpty)
@@ -1082,7 +1085,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
-            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults
         )
         coordinator.sourceURL = f.source
         coordinator.destinationURLs = [f.destination]
@@ -1111,7 +1114,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QuickQueueRecordingOperations()),
-            transferJournal: journal
+            transferJournal: journal,
+            defaults: f.defaults
         )
         var reports = ReportPrefs()
         reports.makeReport = false
@@ -1185,16 +1189,24 @@ private struct QueueFixture {
     let root: URL
     let source: URL
     let destination: URL
+    let defaultsSuiteName: String
+    let defaults: UserDefaults
     var journalURL: URL { root.appendingPathComponent("history.json") }
     init() throws {
         root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         source = root.appendingPathComponent("source")
         destination = root.appendingPathComponent("backup")
+        defaultsSuiteName = "BitMatchTests.\(UUID().uuidString)"
+        defaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuiteName))
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data("card".utf8).write(to: source.appendingPathComponent("clip.mov"))
     }
-    func cleanup() { try? FileManager.default.removeItem(at: root) }
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
 }
 
 private struct QueueStartSnapshot {

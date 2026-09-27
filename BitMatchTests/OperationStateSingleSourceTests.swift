@@ -13,7 +13,7 @@ import BitMatchEngine
 struct OperationStateSingleSourceTests {
 
     private func makeCoordinator() -> SharedAppCoordinator {
-        SharedAppCoordinator(platformManager: MacOSPlatformManager.shared)
+        SharedAppCoordinator(platformManager: MacOSPlatformManager.shared, defaults: .isolatedWorkflowDefaults())
     }
 
     private func start(_ service: OperationStateService, id: UUID = UUID()) -> UUID {
@@ -89,7 +89,10 @@ struct OperationStateSingleSourceTests {
     /// `requestAutomaticPause` changes the state itself again.
     @Test func automaticPausePausesTheEngine() async {
         let engine = PauseRecordingFileOperations()
-        let coordinator = SharedAppCoordinator(platformManager: PauseRecordingPlatform(fileOperations: engine))
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
         _ = start(coordinator.stateService)
 
         coordinator.stateService.requestAutomaticPause(reason: .lowBattery)
@@ -104,7 +107,10 @@ struct OperationStateSingleSourceTests {
     /// re-checking the state after the engine pause returns.
     @Test func pauseRacingCompletionLeavesTheRunFinished() async {
         let engine = PauseRecordingFileOperations()
-        let coordinator = SharedAppCoordinator(platformManager: PauseRecordingPlatform(fileOperations: engine))
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
         let id = start(coordinator.stateService)
         engine.onPause = {
             await MainActor.run {

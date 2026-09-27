@@ -117,7 +117,8 @@ struct DestinationSelectionPolicyTests {
     private func makeCoordinator() -> SharedAppCoordinator {
         SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: .isolatedWorkflowDefaults()
         )
     }
 

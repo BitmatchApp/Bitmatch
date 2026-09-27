@@ -238,7 +238,8 @@ final class OperationOwnershipTests: XCTestCase {
         defer { fixture.cleanup() }
         let fileOperations = BlockingFileOperationsService()
         let coordinator = SharedAppCoordinator(
-            platformManager: OwnershipPlatformManager(fileOperations: fileOperations)
+            platformManager: OwnershipPlatformManager(fileOperations: fileOperations),
+            defaults: fixture.defaults
         )
         coordinator.sourceURL = fixture.source
         coordinator.destinationURLs = fixture.destinations
@@ -265,6 +266,9 @@ private struct OwnershipTransferFixture {
     let root: URL
     let source: URL
     let destinations: [URL]
+    let defaultsSuiteName: String
+    /// Built on demand from the suite name so the fixture stays Sendable.
+    var defaults: UserDefaults { UserDefaults(suiteName: defaultsSuiteName)! }
 
     init(destinationCount: Int) throws {
         let rootURL = FileManager.default.temporaryDirectory
@@ -276,6 +280,8 @@ private struct OwnershipTransferFixture {
         root = rootURL
         source = sourceURL
         destinations = destinationURLs
+        defaultsSuiteName = "BitMatchTests.\(UUID().uuidString)"
+        UserDefaults(suiteName: defaultsSuiteName)!.removePersistentDomain(forName: defaultsSuiteName)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         for destination in destinations {
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
@@ -285,6 +291,7 @@ private struct OwnershipTransferFixture {
 
     func cleanup() {
         try? FileManager.default.removeItem(at: root)
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
     }
 }
 

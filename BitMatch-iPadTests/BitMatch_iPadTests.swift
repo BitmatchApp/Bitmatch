@@ -80,7 +80,10 @@ struct BitMatch_iPadTests {
     }
 
     @Test @MainActor func sharedCoordinatorOwnsPortableProjectWorkflow() {
-        let coordinator = SharedAppCoordinator()
+        let suiteName = "BitMatchTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let coordinator = SharedAppCoordinator(platformManager: IOSPlatformManager.shared, defaults: defaults)
 
         coordinator.photographerJobViewModel.createWeddingJob(
             clientName: "Acme",
@@ -92,7 +95,10 @@ struct BitMatch_iPadTests {
     }
 
     @Test @MainActor func sharedCoordinatorWillNotStartAnUnpreparedProjectTransfer() async {
-        let coordinator = SharedAppCoordinator()
+        let suiteName = "BitMatchTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let coordinator = SharedAppCoordinator(platformManager: IOSPlatformManager.shared, defaults: defaults)
 
         let started = await coordinator.startProjectOperation()
 

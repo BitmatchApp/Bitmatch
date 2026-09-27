@@ -272,7 +272,8 @@ struct TransferProgressPresentationTests {
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: folders.defaults
         )
         coordinator.destinationURLs = [folders.primary, folders.secondary]
         coordinator.sourceURL = folders.source
@@ -319,7 +320,8 @@ struct TransferProgressPresentationTests {
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: folders.defaults
         )
         coordinator.operationState = .inProgress
         coordinator.progress = progress(stage: .copying, overall: 0.25, files: 1, total: 4, bytes: 4_000)
@@ -348,7 +350,8 @@ struct TransferProgressPresentationTests {
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: folders.defaults
         )
         var shellChanges = 0
         var liveChanges = 0

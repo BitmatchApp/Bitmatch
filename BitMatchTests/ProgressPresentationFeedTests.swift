@@ -11,7 +11,8 @@ struct ProgressPresentationFeedTests {
         SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: folders.defaults
         )
     }
 

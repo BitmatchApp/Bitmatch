@@ -8,6 +8,8 @@ struct CoordinatorFolders {
     let source: URL
     let primary: URL
     let secondary: URL
+    let defaultsSuiteName: String
+    let defaults: UserDefaults
     var journalURL: URL { root.appendingPathComponent("history.json") }
 
     init() throws {
@@ -16,13 +18,20 @@ struct CoordinatorFolders {
         source = root.appendingPathComponent("card", isDirectory: true)
         primary = root.appendingPathComponent("primary", isDirectory: true)
         secondary = root.appendingPathComponent("secondary", isDirectory: true)
+        defaultsSuiteName = "BitMatchTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: defaultsSuiteName)!
+        self.defaults = defaults
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
         for folder in [source, primary, secondary] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         }
         try Data("card".utf8).write(to: source.appendingPathComponent("A.ARW"))
     }
 
-    func cleanup() { try? FileManager.default.removeItem(at: root) }
+    func cleanup() {
+        try? FileManager.default.removeItem(at: root)
+        defaults.removePersistentDomain(forName: defaultsSuiteName)
+    }
 }
 
 /// What the engine was asked to do when a transfer started.
@@ -165,7 +174,8 @@ final class SharedProjectFixture {
             coordinator: SharedAppCoordinator(
                 platformManager: RecordingPlatformManager(fileOperations: operations),
                 transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-                projectStore: store
+                projectStore: store,
+                defaults: folders.defaults
             )
         )
         fixture.coordinator.destinationURLs = [folders.primary, folders.secondary]

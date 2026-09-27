@@ -23,7 +23,10 @@ struct SharedCompareFlowTests {
         try contents.write(to: right.appendingPathComponent("clip.mov"))
 
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: MacOSPlatformManager.shared)
+            SharedAppCoordinator(
+                platformManager: MacOSPlatformManager.shared,
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         await MainActor.run {
             coordinator.results = [
@@ -86,7 +89,12 @@ struct SharedCompareFlowTests {
         try Data("C".utf8).write(to: right.appendingPathComponent("C.txt"))
 
         // Act: drive compare via SharedAppCoordinator
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: MacOSPlatformManager.shared) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(
+                platformManager: MacOSPlatformManager.shared,
+                defaults: .isolatedWorkflowDefaults()
+            )
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .standard
@@ -178,7 +186,12 @@ struct SharedCompareFlowTests {
         try Data("X".utf8).write(to: right.appendingPathComponent("A.txt"))
         try Data("C".utf8).write(to: right.appendingPathComponent("C.txt"))
 
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: MacOSPlatformManager.shared) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(
+                platformManager: MacOSPlatformManager.shared,
+                defaults: .isolatedWorkflowDefaults()
+            )
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .standard
@@ -273,7 +286,7 @@ struct SharedCompareFlowTests {
             checksum: checksum
         )
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: platform)
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
         }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
@@ -311,7 +324,7 @@ struct SharedCompareFlowTests {
             checksum: checksum
         )
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: platform)
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
         }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
@@ -418,7 +431,9 @@ struct SharedCompareFlowTests {
         let platform = ScopeTrackingPlatformManager(
             fileSystem: CancellingCompareFileSystem(left: folder, right: folder)
         )
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: platform) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .standard
@@ -444,7 +459,10 @@ struct SharedCompareFlowTests {
     @Test
     func testCanStartOperationRefusesNestedCompare() async throws {
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: ScopeTrackingPlatformManager(fileSystem: FakeFileSystemService()))
+            SharedAppCoordinator(
+                platformManager: ScopeTrackingPlatformManager(fileSystem: FakeFileSystemService()),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let canStart = await MainActor.run { () -> (nested: Bool, separate: Bool) in
             coordinator.currentMode = .compareFolders
@@ -469,7 +487,9 @@ struct SharedCompareFlowTests {
         let platform = ScopeTrackingPlatformManager(
             fileSystem: CancellingCompareFileSystem(left: left, right: right)
         )
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: platform) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .standard
@@ -499,7 +519,9 @@ struct SharedCompareFlowTests {
             fileSystem: CancellingCompareFileSystem(left: left, right: right),
             checksum: checksum
         )
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: platform) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
+        }
         checksum.onVerify = { await coordinator.cancelOperation() }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
@@ -526,7 +548,9 @@ struct SharedCompareFlowTests {
         let platform = ScopeTrackingPlatformManager(
             fileSystem: CancellingCompareFileSystem(left: left, right: right)
         )
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: platform) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .standard
@@ -555,7 +579,9 @@ struct SharedCompareFlowTests {
         let platform = ScopeTrackingPlatformManager(
             fileSystem: CancellingCompareFileSystem(left: left, right: right)
         )
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: platform) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .quick
@@ -583,7 +609,9 @@ struct SharedCompareFlowTests {
         let platform = ScopeTrackingPlatformManager(
             fileSystem: CancellingCompareFileSystem(left: left, right: right)
         )
-        let coordinator = await MainActor.run { SharedAppCoordinator(platformManager: platform) }
+        let coordinator = await MainActor.run {
+            SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .quick
@@ -608,7 +636,10 @@ struct SharedCompareFlowTests {
     @Test
     func testModeSwitchIsLockedWhileRunning() async throws {
         let coordinator = await MainActor.run {
-            SharedAppCoordinator(platformManager: ScopeTrackingPlatformManager(fileSystem: FakeFileSystemService()))
+            SharedAppCoordinator(
+                platformManager: ScopeTrackingPlatformManager(fileSystem: FakeFileSystemService()),
+                defaults: .isolatedWorkflowDefaults()
+            )
         }
         let (whileRunning, afterwards) = await MainActor.run { () -> (AppMode, AppMode) in
             coordinator.currentMode = .compareFolders

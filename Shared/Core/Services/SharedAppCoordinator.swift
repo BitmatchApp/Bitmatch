@@ -35,6 +35,9 @@ class SharedAppCoordinator: ObservableObject {
     
     // MARK: - Platform Manager
     private let platformManager: PlatformManager
+    /// The single preference store used by the coordinator and the settings
+    /// models it owns. The app uses `.standard`; tests inject isolated suites.
+    let defaults: UserDefaults
     
     // MARK: - Services
     @Published var timingService = OperationTimingService()
@@ -65,10 +68,10 @@ class SharedAppCoordinator: ObservableObject {
         didSet { if !isReplayingQueuedTransfer { reportPrefsStore.save(reportSettings) } }
     }
     private let reportPrefsStore: ReportPrefsStore
-    @Published var generateASCMHL: Bool = UserDefaults.standard.object(forKey: "BitMatchGenerateASCMHL") as? Bool ?? true {
+    @Published var generateASCMHL: Bool {
         didSet {
             if !isReplayingQueuedTransfer {
-                UserDefaults.standard.set(generateASCMHL, forKey: "BitMatchGenerateASCMHL")
+                defaults.set(generateASCMHL, forKey: "BitMatchGenerateASCMHL")
             }
         }
     }
@@ -300,29 +303,20 @@ class SharedAppCoordinator: ObservableObject {
         transferJournal: LocalTransferJournal? = nil,
         projectStore: (any PhotographerJobStore)? = nil,
         photographerJobViewModel: PhotographerJobViewModel? = nil,
-        preferences: UserDefaults? = nil
+        defaults: UserDefaults = .standard
     ) {
         self.platformManager = platformManager
+        self.defaults = defaults
         let environment = ProcessInfo.processInfo.environment
         let isTesting = environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
         let testJournalURL = isTesting ? FileManager.default.temporaryDirectory
             .appendingPathComponent("BitMatchTestJournal-\(UUID().uuidString).json") : nil
-        // Tests get a throwaway suite so they never read or change the
-        // user's saved settings; pass `preferences` to test persistence.
-        let selectedPreferences: UserDefaults
-        if let preferences {
-            selectedPreferences = preferences
-        } else if isTesting, let testDefaults = UserDefaults(suiteName: Self.testPreferencesSuite) {
-            testDefaults.removePersistentDomain(forName: Self.testPreferencesSuite)
-            selectedPreferences = testDefaults
-        } else {
-            selectedPreferences = .standard
-        }
-        self.reportPrefsStore = ReportPrefsStore(defaults: selectedPreferences)
-        let generalSettings = GeneralSettings(defaults: selectedPreferences)
+        self.generateASCMHL = defaults.object(forKey: "BitMatchGenerateASCMHL") as? Bool ?? true
+        self.reportPrefsStore = ReportPrefsStore(defaults: defaults)
+        let generalSettings = GeneralSettings(defaults: defaults)
         self.generalSettings = generalSettings
         self.transferNotifier = TransferNotifier(settings: generalSettings)
-        self.cameraLabels = CameraLabelModel(defaults: selectedPreferences)
+        self.cameraLabels = CameraLabelModel(defaults: defaults)
         let selectedJournal = transferJournal ?? LocalTransferJournal(fileURL: testJournalURL)
         self.transferJournal = selectedJournal
         let existingIDs = Set(selectedJournal.records.map(\.id))
@@ -382,14 +376,21 @@ class SharedAppCoordinator: ObservableObject {
         if let photographerJobViewModel {
             self.photographerJobViewModel = photographerJobViewModel
         } else {
-            let selectedProjectStore = projectStore ?? UserDefaultsPhotographerJobStore()
+            let selectedProjectStore = projectStore ?? UserDefaultsPhotographerJobStore(defaults: defaults)
             self.photographerJobViewModel = PhotographerJobViewModel(
                 store: selectedProjectStore,
                 remoteBackupCoordinator: UnavailableRemoteProjectCoordinator(store: selectedProjectStore),
-                workflowDefaults: selectedPreferences
+                workflowDefaults: defaults
             )
         }
         self.reportSettings = reportPrefsStore.load()
+        // Default first launch to checksum verification; honor last-picked thereafter.
+        if let saved = defaults.string(forKey: "lastVerificationMode"),
+           let mode = VerificationMode.allCases.first(where: { $0.rawValue == saved }) {
+            verificationMode = mode
+        } else {
+            verificationMode = .standard
+        }
         setupBindings()
         self.transferJournal.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
@@ -408,17 +409,8 @@ class SharedAppCoordinator: ObservableObject {
         stateService.automaticPauseHandler = { [weak self] reason in
             Task { await self?.pauseOperation(reason: reason) }
         }
-        // Default first launch to checksum verification; honor last-picked thereafter.
-        if let saved = UserDefaults.standard.string(forKey: "lastVerificationMode"),
-           let mode = VerificationMode.allCases.first(where: { $0.rawValue == saved }) {
-            verificationMode = mode
-        } else {
-            verificationMode = .standard
-        }
     }
     
-    private static let testPreferencesSuite = "BitMatchTests.SharedAppCoordinator"
-
     #if os(iOS)
     convenience init() {
         self.init(platformManager: IOSPlatformManager.shared)
@@ -505,7 +497,7 @@ class SharedAppCoordinator: ObservableObject {
         $verificationMode
             .sink { [weak self] mode in
                 guard self?.isReplayingQueuedTransfer != true else { return }
-                UserDefaults.standard.set(mode.rawValue, forKey: "lastVerificationMode")
+                self?.defaults.set(mode.rawValue, forKey: "lastVerificationMode")
             }
             .store(in: &cancellables)
     }
@@ -2254,7 +2246,7 @@ class SharedAppCoordinator: ObservableObject {
 
     func saveVerificationMode() {
         guard !isReplayingQueuedTransfer else { return }
-        UserDefaults.standard.set(verificationMode.rawValue, forKey: "lastVerificationMode")
+        defaults.set(verificationMode.rawValue, forKey: "lastVerificationMode")
     }
 
     // MARK: - Completion State (derived from OperationState)

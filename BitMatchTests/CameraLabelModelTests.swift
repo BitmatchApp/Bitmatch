@@ -121,7 +121,7 @@ struct CameraLabelModelTests {
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
             projectStore: InMemoryPhotographerJobStore(),
-            preferences: suite.defaults
+            defaults: suite.defaults
         )
         coordinator.sourceURL = folders.source
         coordinator.cameraLabelSettings.label = "A Cam"

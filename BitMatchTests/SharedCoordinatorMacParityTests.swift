@@ -35,7 +35,8 @@ struct SharedCoordinatorMacParityTests {
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-            photographerJobViewModel: jobs
+            photographerJobViewModel: jobs,
+            defaults: folders.defaults
         )
         // Let every launch-time source event arrive.
         for _ in 0..<5 { await Task.yield() }

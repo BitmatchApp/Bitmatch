@@ -233,7 +233,8 @@ struct MainScreenQueueTests {
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: operations),
             transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: folders.defaults
         )
         coordinator.sourceURL = folders.source
         coordinator.destinationURLs = [folders.primary]

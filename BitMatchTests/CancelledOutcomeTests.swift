@@ -10,7 +10,7 @@ import BitMatchEngine
 @MainActor
 struct CancelledOutcomeTests {
     private func makeCoordinator() -> SharedAppCoordinator {
-        SharedAppCoordinator(platformManager: MacOSPlatformManager.shared)
+        SharedAppCoordinator(platformManager: MacOSPlatformManager.shared, defaults: .isolatedWorkflowDefaults())
     }
 
     private func makeRow(path: String) -> ResultRow {

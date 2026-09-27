@@ -11,7 +11,8 @@ struct DestinationDismissalTests {
     private func makeModel() -> (MacVolumeAccessModel, SharedAppCoordinator) {
         let shared = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
-            projectStore: InMemoryPhotographerJobStore()
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: .isolatedWorkflowDefaults()
         )
         let model = MacVolumeAccessModel(shared: shared, enableVolumeMonitoring: false)
         // The drives are not mounted: describe each as a whole external
