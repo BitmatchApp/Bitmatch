@@ -12,14 +12,17 @@ import BitMatchEngine
 final class MacCameraAutoSourceController: ObservableObject {
     let detectionService: CameraCardDetectionService
     private weak var shared: SharedAppCoordinator?
+    private weak var volumeAccess: MacVolumeAccessModel?
     private var cancellables = Set<AnyCancellable>()
 
     init(
         shared: SharedAppCoordinator,
+        volumeAccess: MacVolumeAccessModel? = nil,
         detectionService: CameraCardDetectionService? = nil,
         startMonitoring: Bool = true
     ) {
         self.shared = shared
+        self.volumeAccess = volumeAccess
         // Built here, not as a default argument (evaluated off the main actor).
         self.detectionService = detectionService ?? CameraCardDetectionService()
 
@@ -40,6 +43,7 @@ final class MacCameraAutoSourceController: ObservableObject {
     /// nothing is chosen yet, and the card can actually be read.
     func cardDetected(at sourceURL: URL) {
         guard let shared, shared.reportSettings.enableAutoCameraDetection,
+              volumeAccess?.needsDriveAccess != true,
               !shared.isOperationInProgress, !shared.showsOutcomeSummary else { return }
         let shouldSelect = AutomaticSourceSelectionPolicy.shouldSelect(
             automaticSelectionEnabled: shared.reportSettings.autoPopulateSource,

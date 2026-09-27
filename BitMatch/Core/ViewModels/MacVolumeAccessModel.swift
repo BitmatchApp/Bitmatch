@@ -14,6 +14,23 @@ import BitMatchEngine
 import AppKit
 #endif
 
+enum DriveAccessPolicy {
+    static func needsDriveAccess(isSandboxed: Bool, hasActiveVolumesScope: Bool) -> Bool {
+        isSandboxed && !hasActiveVolumesScope
+    }
+
+    static func grantsAccess(chosenPath: String?, hasActiveVolumesScope: Bool) -> Bool {
+        guard let chosenPath else { return false }
+        return isVolumesPath(chosenPath) && hasActiveVolumesScope
+    }
+
+    static func isVolumesPath(_ path: String) -> Bool {
+        let chosen = URL(fileURLWithPath: path).standardizedFileURL.resolvingSymlinksInPath().path
+        let volumes = URL(fileURLWithPath: "/Volumes").standardizedFileURL.resolvingSymlinksInPath().path
+        return chosen == volumes
+    }
+}
+
 @MainActor
 final class MacVolumeAccessModel: ObservableObject {
     // MARK: - Published Properties
@@ -22,6 +39,7 @@ final class MacVolumeAccessModel: ObservableObject {
     // Auto-detected volumes
     @Published var detectedCameraCards: [VolumeMonitorService.DetectedVolume] = []
     @Published var detectedBackupDrives: [VolumeMonitorService.DetectedVolume] = []
+    @Published private(set) var needsDriveAccess: Bool
 
     // MARK: - Private Properties
     private weak var shared: SharedAppCoordinator?
@@ -32,6 +50,7 @@ final class MacVolumeAccessModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     /// Track active security-scoped resource URLs to prevent leaks (Bug 2 fix)
     private var activeSecurityScopes = Set<URL>()
+    private let isSandboxed: Bool
     /// Destination paths the user explicitly removed. Discovery auto-add
     /// skips these until the drive disappears (unplug) or the user re-adds
     /// it, so rediscovery never undoes a deliberate removal.
@@ -49,6 +68,12 @@ final class MacVolumeAccessModel: ObservableObject {
 
     // MARK: - Initialization
     init(shared: SharedAppCoordinator, enableVolumeMonitoring: Bool = true) {
+        let isSandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
+        self.isSandboxed = isSandboxed
+        self.needsDriveAccess = DriveAccessPolicy.needsDriveAccess(
+            isSandboxed: isSandboxed,
+            hasActiveVolumesScope: false
+        )
         self.shared = shared
         loadRecentFolders()
         // Decision S-3: before anything can overwrite the saved list, put
@@ -93,6 +118,18 @@ final class MacVolumeAccessModel: ObservableObject {
 
     private func trackSecurityScope(_ url: URL) {
         activeSecurityScopes.insert(url)
+        updateDriveAccessRequirement()
+    }
+
+    private var hasActiveVolumesScope: Bool {
+        activeSecurityScopes.contains { DriveAccessPolicy.isVolumesPath($0.path) }
+    }
+
+    private func updateDriveAccessRequirement() {
+        needsDriveAccess = DriveAccessPolicy.needsDriveAccess(
+            isSandboxed: isSandboxed,
+            hasActiveVolumesScope: hasActiveVolumesScope
+        )
     }
     
     // MARK: - Volume Monitoring Setup
@@ -139,7 +176,7 @@ final class MacVolumeAccessModel: ObservableObject {
     private func autoQueueNewCards(from volumes: [ConnectedDrivesPresentation.Volume]) {
         let mountedIDs = Set(volumes.compactMap(\.volumeID))
         autoQueuedVolumeIDs.formIntersection(mountedIDs)
-        guard let shared, shared.generalSettings.queueNewCardsAutomatically,
+        guard !needsDriveAccess, let shared, shared.generalSettings.queueNewCardsAutomatically,
               shared.runningOneTimeTransfer != nil || shared.queueIsRunning else { return }
         let candidates = AutoQueuePolicy.candidates(
             eligibleRows: shared.autoQueueCandidates(volumes: volumes),
@@ -193,22 +230,25 @@ final class MacVolumeAccessModel: ObservableObject {
     }
 
     @MainActor
-    func requestVolumeAccess() {
+    func requestVolumeAccess(completion: ((Bool) -> Void)? = nil) {
         #if os(macOS)
         let openPanel = NSOpenPanel()
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = true
         openPanel.canChooseFiles = false
-        openPanel.directoryURL = URL(fileURLWithPath: "/")
         openPanel.title = "Grant Access to All Volumes"
-        openPanel.message = "Select the 'Volumes' folder to enable automatic detection of all camera cards and external drives. This is a one-time permission that will work for all future cards and drives."
+        openPanel.message = "BitMatch needs your permission once to read cards and write backups on your drives. Select the Volumes folder and click Allow."
+        openPanel.prompt = "Allow"
         
         // Pre-select the /Volumes directory
         let volumesURL = URL(fileURLWithPath: "/Volumes")
         openPanel.directoryURL = volumesURL
         
         openPanel.begin { [weak self] response in
-            guard response == .OK, let selectedURL = openPanel.urls.first else { return }
+            guard response == .OK, let selectedURL = openPanel.urls.first else {
+                completion?(false)
+                return
+            }
 
             SharedLogger.info("Granted access to: \(selectedURL.path)", category: .transfer)
             
@@ -243,13 +283,21 @@ final class MacVolumeAccessModel: ObservableObject {
                     self?.volumeMonitor.refreshVolumes()
                 }
 
+                let granted = DriveAccessPolicy.grantsAccess(
+                    chosenPath: selectedURL.path,
+                    hasActiveVolumesScope: self?.hasActiveVolumesScope == true
+                )
+                completion?(granted)
+
             } catch {
                 SharedLogger.error("Failed to create bookmark for \(selectedURL.path): \(error)", category: .transfer)
+                completion?(false)
             }
         }
         #else
         // iOS doesn't have NSOpenPanel - volume access is handled differently
         SharedLogger.warning("Volume access request not available on iOS", category: .transfer)
+        completion?(false)
         #endif
     }
     

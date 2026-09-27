@@ -18,7 +18,12 @@ struct MacSetupLocations: View {
         let volumeAccess = self.volumeAccess
         VStack(spacing: 24) {
             CoordinatorSetupLocations(coordinator: coordinator, context: context, platform: platform)
-            MacConnectedDrives(monitor: volumeAccess.volumeMonitor, coordinator: coordinator, platform: platform)
+            MacConnectedDrives(
+                monitor: volumeAccess.volumeMonitor,
+                volumeAccess: volumeAccess,
+                coordinator: coordinator,
+                platform: platform
+            )
         }
     }
 

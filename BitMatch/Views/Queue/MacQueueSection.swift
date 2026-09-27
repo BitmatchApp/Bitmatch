@@ -11,6 +11,7 @@ struct MacQueueSection: View {
     @State private var errorMessage: String?
     @State private var isAdding = false
     @State private var draftSource: URL?
+    @State private var draftSourceUsesDriveAccess = false
     @State private var draftDestinations: [URL] = []
     @State private var draftMode = VerificationMode.standard
     @State private var draftASCMHL = true
@@ -20,6 +21,7 @@ struct MacQueueSection: View {
     @State private var reauthorizeRecord: LocalTransferRecord?
     @FocusState private var editorFocus: EditorFocus?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @EnvironmentObject private var volumeAccess: MacVolumeAccessModel
 
     init(coordinator: SharedAppCoordinator) {
         self.coordinator = coordinator
@@ -114,7 +116,7 @@ struct MacQueueSection: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 8) {
                 Image(systemName: "sdcard").foregroundStyle(.secondary).accessibilityHidden(true)
-                Picker("Card", selection: $draftSource) {
+                Picker("Card", selection: connectedCardSelection) {
                     Text("Choose a connected card").tag(nil as URL?)
                     ForEach(connectedCardRows) { row in
                         Text(row.displayName).tag(Optional(row.url))
@@ -175,6 +177,7 @@ struct MacQueueSection: View {
         .dropDestination(for: URL.self) { urls, _ in
             guard let first = urls.first else { return false }
             draftSource = first
+            draftSourceUsesDriveAccess = false
             return true
         } isTargeted: { isDropTargeted = $0 }
         .onExitCommand(perform: closeEditor)
@@ -189,8 +192,19 @@ struct MacQueueSection: View {
         ).filter { cardURLs.contains($0.url) && $0.state == .none }
     }
 
+    private var connectedCardSelection: Binding<URL?> {
+        Binding(
+            get: { draftSource },
+            set: { source in
+                draftSource = source
+                draftSourceUsesDriveAccess = source != nil
+            }
+        )
+    }
+
     private func openEditor() {
         draftSource = nil
+        draftSourceUsesDriveAccess = false
         draftDestinations = coordinator.destinationURLs
         draftMode = coordinator.verificationMode
         draftASCMHL = coordinator.generateASCMHL
@@ -213,7 +227,10 @@ struct MacQueueSection: View {
     private func choose(_ result: Result<[URL], Error>, asSource: Bool) {
         do {
             for url in try result.get() {
-                if asSource { draftSource = url }
+                if asSource {
+                    draftSource = url
+                    draftSourceUsesDriveAccess = false
+                }
                 else if !draftDestinations.contains(url) { draftDestinations.append(url) }
             }
         } catch { errorMessage = error.localizedDescription }
@@ -221,15 +238,24 @@ struct MacQueueSection: View {
 
     private func enqueueDraft() {
         guard let source = draftSource else { return }
-        do {
-            try coordinator.enqueueInlineCard(
-                source: source,
-                destinations: draftDestinations,
-                verificationMode: draftMode,
-                generateASCMHL: draftASCMHL && draftMode != .quick
-            )
-            closeEditor()
-        } catch { errorMessage = error.localizedDescription }
+        let enqueue = {
+            do {
+                try coordinator.enqueueInlineCard(
+                    source: source,
+                    destinations: draftDestinations,
+                    verificationMode: draftMode,
+                    generateASCMHL: draftASCMHL && draftMode != .quick
+                )
+                closeEditor()
+            } catch { errorMessage = error.localizedDescription }
+        }
+        guard draftSourceUsesDriveAccess && volumeAccess.needsDriveAccess else {
+            enqueue()
+            return
+        }
+        volumeAccess.requestVolumeAccess { granted in
+            if granted { enqueue() }
+        }
     }
 
     @ViewBuilder
