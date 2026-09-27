@@ -59,9 +59,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     /// The card's display name ("The card" when unknown), for the eject
     /// button's label.
     let cardName: String
-    /// "N files failed", errors, warnings. Empty when the
-    /// transfer was interrupted or verified.
+    /// "N files failed", errors, warnings. Empty when interrupted or verified.
     let issueLines: [String]
+    /// Failed media files with their sibling sidecars. Presentation only.
+    let clipFailureLines: [String]
+    /// Amber advisory wording that never participates in the safety verdict.
+    let advisoryLines: [String]
     /// "Completed in …", or "Stopped after …" for an interrupted transfer.
     let durationLabel: String?
     let phaseDurationLabel: String?
@@ -240,7 +243,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             safetyState: safetyState,
             guidance: verdict.sourceGuidance,
             cardName: card,
-            issueLines: makeIssueLines(safetyState: safetyState, counts: counts, errorCount: errorCount, warningCount: warningCount),
+            issueLines: makeIssueLines(
+                safetyState: safetyState, counts: counts, errorCount: errorCount,
+                warningCount: warningCount
+            ),
+            clipFailureLines: ResultPresentation.clipFailureDescriptions(rows),
+            advisoryLines: [ResultPresentation.incompleteClipAdvisory(rows)].compactMap { $0 },
             durationLabel: duration.map { makeDurationLabel(safetyState: safetyState, state: state, seconds: $0) },
             phaseDurationLabel: phaseDurationText(
                 copySeconds: copyDurationSeconds,

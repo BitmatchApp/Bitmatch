@@ -415,13 +415,15 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             do {
                 try Task.checkCancellation()
                 try await self.waitIfPaused()
-                let verificationResult = try await DestinationWriter.verifyPinnedDestinationFile(
+                let checked = try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
                     source: job.source,
                     pinnedRoot: job.pinnedRoot,
                     relativePath: job.relativePath,
                     verificationMode: operation.verificationMode,
-                    checksumService: self.checksumService
+                    checksumService: self.checksumService,
+                    clipURL: job.destination
                 )
+                let verificationResult = checked.verification
                 let verified = FileOperationResult(
                     sourceURL: job.source,
                     destinationURL: job.destination,
@@ -429,7 +431,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     error: nil,
                     fileSize: job.fileSize,
                     verificationResult: verificationResult,
-                    processingTime: 0
+                    processingTime: 0,
+                    clipIntegrity: checked.clipIntegrity
                 )
                 let event = await ledger.recordVerify(verified, now: Date())
                 if event.emit {
@@ -638,13 +641,15 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                         Double(event.snapshot.filesVerified) / Double(max(1, totalFiles))
                                     ))
                                 }
-                                let verificationResult = try await DestinationWriter.verifyPinnedDestinationFile(
+                                let checked = try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
                                     source: fileURL,
                                     pinnedRoot: pinnedDestination,
                                     relativePath: relativePath,
                                     verificationMode: operation.verificationMode,
-                                    checksumService: self.checksumService
+                                    checksumService: self.checksumService,
+                                    clipURL: destinationFileURL
                                 )
+                                let verificationResult = checked.verification
                             
                                 let fileSize = sizeForVerify
                                 let result = FileOperationResult(
@@ -654,7 +659,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     error: nil,
                                     fileSize: fileSize,
                                     verificationResult: verificationResult,
-                                    processingTime: Date().timeIntervalSince(fileStartTime)
+                                    processingTime: Date().timeIntervalSince(fileStartTime),
+                                    clipIntegrity: checked.clipIntegrity
                                 )
                                 await ledger.record(result)
                                 await onFileResult?(result)

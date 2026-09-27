@@ -26,7 +26,7 @@ struct PhotographerReportTests {
         let csvURL = try #require(files.first { $0.pathExtension == "csv" })
         let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
         let verification = try #require(object["verification"] as? [String: Any])
-        #expect(object["notes"] as? String == prefs.notes)
+        #expect(object["notes"] as? String == prefs.notes + "\nClip DSC0001 failed (1 file): DSC0001.XMP")
         #expect(verification["method"] as? String == "size-only")
         #expect(verification["algorithm"] == nil)
         let csv = try String(contentsOf: csvURL, encoding: .utf8)

@@ -86,6 +86,7 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             verdictHeader
+            advisoryList
             actionButtons
             destinationList
             details
@@ -114,6 +115,22 @@ struct OutcomeScreen<ProjectEvidence: View>: View {
             defaultFilename: "BitMatch-transfer"
         ) { result in
             if case .failure(let error) = result { exportError = error.localizedDescription }
+        }
+    }
+
+    @ViewBuilder
+    private var advisoryList: some View {
+        ForEach(presentation.advisoryLines, id: \.self) { advisory in
+            Label(advisory, systemImage: "exclamationmark.triangle")
+                .font(.callout)
+                .foregroundStyle(CardSafetyTint.amber.color)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        ForEach(presentation.clipFailureLines, id: \.self) { issue in
+            Label(issue, systemImage: "film")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
