@@ -183,7 +183,7 @@ struct MacMainView: View {
                 if showCancelNotice {
                     ToastView(
                         icon: "xmark.circle",
-                        message: coordinator.currentMode == .compareFolders ? "Compare cancelled" : "Transfer cancelled",
+                        message: coordinator.currentMode == .compareFolders ? "Check cancelled" : "Transfer cancelled",
                         tint: .red
                     )
                         .transition(.move(edge: .top).combined(with: .opacity))

@@ -325,7 +325,7 @@ struct ReportView: View {
             Grid(horizontalSpacing: 24, verticalSpacing: 8) {
                 GridRow {
                     Text("Mode:").foregroundColor(.secondary).font(.system(size: 11))
-                    Text(s.mode == .copyAndVerify ? "Copy & Verify" : "Compare Folders")
+                    Text(s.mode == .copyAndVerify ? "Copy & Verify" : "Check")
                         .font(.system(size: 11, weight: .medium))
                     
                     Text("Method:").foregroundColor(.secondary).font(.system(size: 11))

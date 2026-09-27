@@ -35,6 +35,8 @@ struct CompareFoldersView: View {
                 totalSize: shared.rightFolderInfo?.totalSize,
                 isFetching: shared.isAnalysingRight
             ),
+            choice: shared.checkAgainst,
+            savedAvailability: shared.savedChecksumAvailability,
             mode: shared.verificationMode,
             isRunning: shared.isOperationInProgress,
             progress: shared.progress.map {
@@ -46,6 +48,7 @@ struct CompareFoldersView: View {
                 )
             },
             stats: shared.lastCompareStats,
+            savedResult: shared.lastSavedChecksumResult,
             end: shared.lastCompareEnd
         )
     }
@@ -60,6 +63,7 @@ struct CompareFoldersView: View {
     var body: some View {
         CompareScreen(
             presentation: Self.presentation(for: coordinator),
+            checkAgainst: $coordinator.checkAgainst,
             verificationMode: $coordinator.verificationMode,
             advancedExpanded: $advancedExpanded,
             actions: CompareActions(

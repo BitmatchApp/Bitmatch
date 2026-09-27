@@ -9,7 +9,7 @@ import SwiftUI
 // MARK: - App Mode
 enum AppMode: String, CaseIterable, Identifiable {
     case copyAndVerify = "Copy & Verify"
-    case compareFolders = "Compare Folders" 
+    case compareFolders = "Check"
     case masterReport = "Master Report"
     
     var id: String { self.rawValue }
@@ -25,7 +25,7 @@ enum AppMode: String, CaseIterable, Identifiable {
     var description: String {
         switch self {
         case .copyAndVerify: return "Copy files and verify integrity"
-        case .compareFolders: return "Compare two folders for differences"
+        case .compareFolders: return "Check a folder against saved checksums or another folder"
         case .masterReport: return "Generate comprehensive transfer reports"
         }
     }

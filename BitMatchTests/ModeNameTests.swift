@@ -11,5 +11,7 @@ struct ModeNameTests {
             #expect(mode.shortTitle == mode.rawValue)
         }
         #expect(AppMode.copyAndVerify.shortTitle == "Copy & Verify")
+        #expect(AppMode.compareFolders.shortTitle == "Check")
+        #expect(AppMode.masterReport.shortTitle == "Master Report")
     }
 }

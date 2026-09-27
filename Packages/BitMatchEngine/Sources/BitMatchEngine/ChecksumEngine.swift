@@ -1,6 +1,9 @@
 // ChecksumEngine.swift - Checksums and byte comparison of whole files.
 import Foundation
 import CryptoKit
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// Shared checksum service that works on both macOS and iOS
 public final class ChecksumEngine: ChecksumService, Sendable {
@@ -126,18 +129,13 @@ public final class ChecksumEngine: ChecksumService, Sendable {
             return false
         }
         
-        let sourceHandle: FileHandle
-        do {
-            sourceHandle = try FileHandle(forReadingFrom: sourceURL)
-        } catch {
-            throw mapFileOpenError(error, for: sourceURL)
-        }
+        let sourceHandle = try uncachedReadHandle(for: sourceURL)
         let destinationHandle: FileHandle
         do {
-            destinationHandle = try FileHandle(forReadingFrom: destinationURL)
+            destinationHandle = try uncachedReadHandle(for: destinationURL)
         } catch {
             closeFileHandle(sourceHandle, context: sourceURL.path)
-            throw mapFileOpenError(error, for: destinationURL)
+            throw error
         }
 
         defer {
@@ -242,12 +240,7 @@ public final class ChecksumEngine: ChecksumService, Sendable {
         progressCallback: ProgressCallback?
     ) async throws -> String {
         // Use CryptoKit's Insecure.MD5 to avoid CommonCrypto deprecation warnings.
-        let fileHandle: FileHandle
-        do {
-            fileHandle = try FileHandle(forReadingFrom: fileURL)
-        } catch {
-            throw mapFileOpenError(error, for: fileURL)
-        }
+        let fileHandle = try uncachedReadHandle(for: fileURL)
         defer { closeFileHandle(fileHandle, context: fileURL.path) }
         
         var hasher = Insecure.MD5()
@@ -285,12 +278,7 @@ public final class ChecksumEngine: ChecksumService, Sendable {
         progressCallback: ProgressCallback?
     ) async throws -> String {
 
-        let fileHandle: FileHandle
-        do {
-            fileHandle = try FileHandle(forReadingFrom: fileURL)
-        } catch {
-            throw mapFileOpenError(error, for: fileURL)
-        }
+        let fileHandle = try uncachedReadHandle(for: fileURL)
         defer { closeFileHandle(fileHandle, context: fileURL.path) }
         
         var hasher = SHA256()
@@ -331,12 +319,7 @@ public final class ChecksumEngine: ChecksumService, Sendable {
         progressCallback: ProgressCallback?
     ) async throws -> String {
 
-        let fileHandle: FileHandle
-        do {
-            fileHandle = try FileHandle(forReadingFrom: fileURL)
-        } catch {
-            throw mapFileOpenError(error, for: fileURL)
-        }
+        let fileHandle = try uncachedReadHandle(for: fileURL)
         defer { closeFileHandle(fileHandle, context: fileURL.path) }
 
         var hasher = Insecure.SHA1()
@@ -402,5 +385,24 @@ public final class ChecksumEngine: ChecksumService, Sendable {
         } catch {
             SharedLogger.warning("Failed to close file handle for \(context): \(error)", category: .transfer)
         }
+    }
+
+    private func uncachedReadHandle(for url: URL) throws -> FileHandle {
+        let handle: FileHandle
+        do {
+            handle = try FileHandle(forReadingFrom: url)
+        } catch {
+            throw mapFileOpenError(error, for: url)
+        }
+        #if canImport(Darwin)
+        // Best effort: read the drive, not a cached copy, where the file
+        // system allows it. The copy's own read-back already insists on
+        // this (DestinationWriter.readingHandle); a checksum of a file on a
+        // file system that refuses the flag is still a correct checksum.
+        if fcntl(handle.fileDescriptor, F_NOCACHE, 1) == -1 {
+            SharedLogger.debug("Uncached reads unavailable for \(url.lastPathComponent): errno \(errno)", category: .transfer)
+        }
+        #endif
+        return handle
     }
 }
