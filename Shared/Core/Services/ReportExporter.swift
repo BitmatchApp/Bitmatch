@@ -23,6 +23,7 @@ enum ReportExporter {
                        totalBytesProcessed: Int64,
                        copyDurationSeconds: TimeInterval? = nil,
                        verifyDurationSeconds: TimeInterval? = nil,
+                       performanceTelemetry: TransferPerformanceTelemetry? = nil,
                        safetyState: CardSafetyState,
                        generateFullReport: Bool = true,
                        photographerContext: PhotographerReportContext? = nil) async throws {
@@ -105,6 +106,7 @@ enum ReportExporter {
                                        duration: duration,
                                        copyDurationSeconds: copyDurationSeconds,
                                        verifyDurationSeconds: verifyDurationSeconds,
+                                       performanceTelemetry: performanceTelemetry,
                                        sourceURL: sourceURL,
                                        fileCount: fileCount,
                                        matchCount: matchCount,
@@ -148,6 +150,7 @@ enum ReportExporter {
         filesPerSecond: Double,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         photographerContext: PhotographerReportContext?,
         prefs: ReportPrefs? = nil
     ) throws -> String {
@@ -158,6 +161,7 @@ enum ReportExporter {
             filesPerSecond: filesPerSecond,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             project: try photographerContext.map { try projectCSVEvidence(context: $0, results: results) },
             prefs: prefs
         )
@@ -178,6 +182,7 @@ enum ReportExporter {
         duration: TimeInterval,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         workers: Int,
         prefs: ReportPrefs,
         photographerContext: PhotographerReportContext?
@@ -196,6 +201,7 @@ enum ReportExporter {
             duration: duration,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             workers: workers,
             prefs: prefs,
             project: try photographerContext.map {

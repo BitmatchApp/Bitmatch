@@ -390,14 +390,23 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         verificationMode: VerificationMode?
     ) -> String? {
         guard copySeconds != nil || verifySeconds != nil else { return nil }
-        let copy = copySeconds.map(durationText) ?? "unavailable"
+        let copy = copySeconds.map(phaseDurationText) ?? "unavailable"
         let verify: String
         if verificationMode == .quick {
             verify = "not performed"
         } else {
-            verify = verifySeconds.map(durationText) ?? "unavailable"
+            verify = verifySeconds.map(phaseDurationText) ?? "unavailable"
         }
-        return "Copy \(copy), verify \(verify)"
+        return "Copy \(copy) · Verify \(verify)"
+    }
+
+    private static func phaseDurationText(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, secs) }
+        return String(format: "%d:%02d", minutes, secs)
     }
 
     private static func makeDestinationLines(rows: [ResultRow], destinations: [URL], interrupted: Bool) -> [OutcomeDestinationLine] {

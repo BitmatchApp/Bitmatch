@@ -178,13 +178,24 @@ struct LocalTransferJournalTests {
                 summary: "Done",
                 hadIssues: false,
                 copyDurationSeconds: 252,
-                verifyDurationSeconds: 238
+                verifyDurationSeconds: 238,
+                performanceTelemetry: TransferPerformanceTelemetry(
+                    copyDurationSeconds: 252,
+                    verifyDurationSeconds: 238,
+                    overlapDurationSeconds: 90,
+                    copyBytes: 1_000,
+                    verifyBytes: 2_000,
+                    mhlDurationSeconds: 12,
+                    mhlBytes: 1_000
+                )
             )
         }
 
         let restored = LocalTransferJournal(fileURL: f.journal)
         #expect(restored.records.first?.copyDurationSeconds == 252)
         #expect(restored.records.first?.verifyDurationSeconds == 238)
+        #expect(restored.records.first?.performanceTelemetry?.overlapDurationSeconds == 90)
+        #expect(restored.records.first?.performanceTelemetry?.mhlDurationSeconds == 12)
     }
 
     @Test func oldHistoryJSONDecodesWithoutPhaseDurations() throws {
@@ -200,11 +211,67 @@ struct LocalTransferJournalTests {
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
         object.removeValue(forKey: "copyDurationSeconds")
         object.removeValue(forKey: "verifyDurationSeconds")
+        object.removeValue(forKey: "performanceTelemetry")
 
         let oldData = try JSONSerialization.data(withJSONObject: object)
         let decoded = try JSONDecoder().decode(LocalTransferRecord.self, from: oldData)
         #expect(decoded.copyDurationSeconds == nil)
         #expect(decoded.verifyDurationSeconds == nil)
+        #expect(decoded.performanceTelemetry == nil)
+    }
+
+    @Test func legacyPhaseDurationsDecodeIntoTelemetry() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        var record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: f.source),
+            destinations: [try LocalTransferResource(url: f.destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        record.copyDurationSeconds = 18
+        record.verifyDurationSeconds = 27
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "performanceTelemetry")
+
+        let decoded = try JSONDecoder().decode(
+            LocalTransferRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(decoded.performanceTelemetry?.copyDurationSeconds == 18)
+        #expect(decoded.performanceTelemetry?.verifyDurationSeconds == 27)
+    }
+
+    @Test func finishWithoutNewTelemetryPreservesLegacySynthesizedTelemetry() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        var record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: f.source),
+            destinations: [try LocalTransferResource(url: f.destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        record.copyDurationSeconds = 18
+        record.verifyDurationSeconds = 27
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "performanceTelemetry")
+        try JSONSerialization.data(withJSONObject: [object]).write(to: f.journal)
+
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        try journal.markRunning(id: record.id)
+        try journal.finish(
+            id: record.id,
+            results: [ResultRow(
+                path: "clip.mov", status: "✅ Verified", size: 1,
+                checksum: "abc", destination: "Backup"
+            )],
+            summary: "Done",
+            hadIssues: false
+        )
+
+        let finished = try #require(journal.records.first)
+        #expect(finished.copyDurationSeconds == 18)
+        #expect(finished.verifyDurationSeconds == 27)
+        #expect(finished.performanceTelemetry?.copyDurationSeconds == 18)
+        #expect(finished.performanceTelemetry?.verifyDurationSeconds == 27)
     }
 
     @Test func retryKeepsPreviousAttemptAndChecksResources() throws {

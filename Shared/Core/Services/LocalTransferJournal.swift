@@ -156,6 +156,7 @@ final class LocalTransferJournal: ObservableObject {
         hadIssues: Bool,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         sourceFingerprint: String? = nil
     ) throws {
         defer { refresh() }
@@ -166,6 +167,7 @@ final class LocalTransferJournal: ObservableObject {
             hadIssues: hadIssues,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             sourceFingerprint: sourceFingerprint
         )
     }

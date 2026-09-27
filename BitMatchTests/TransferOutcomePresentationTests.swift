@@ -194,10 +194,10 @@ struct TransferOutcomePresentationTests {
     @Test func phaseDurationLineUsesCompactUnitsAndQuickNamesMissingVerify() {
         #expect(TransferOutcomePresentation.phaseDurationText(
             copySeconds: 252, verifySeconds: 238, verificationMode: .standard
-        ) == "Copy 4m 12s, verify 3m 58s")
+        ) == "Copy 4:12 · Verify 3:58")
         #expect(TransferOutcomePresentation.phaseDurationText(
             copySeconds: 12, verifySeconds: nil, verificationMode: .quick
-        ) == "Copy 12s, verify not performed")
+        ) == "Copy 0:12 · Verify not performed")
     }
 
     // MARK: Interrupted says interrupted

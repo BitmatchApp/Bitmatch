@@ -1896,6 +1896,7 @@ class SharedAppCoordinator: ObservableObject {
                     hadIssues: !info.success,
                     copyDurationSeconds: durations.copySeconds,
                     verifyDurationSeconds: durations.verifySeconds,
+                    performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,
                     sourceFingerprint: currentOperation?.sourceFingerprint
                 )
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)

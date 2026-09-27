@@ -82,7 +82,7 @@ final class ReportEvidenceBytesTests: XCTestCase {
                 operationId: UUID(), sourceURL: fixture.source, destinationURLs: fixture.destinations,
                 verificationMode: .standard, cameraLabelSettings: CameraLabelSettings(),
                 reportSettings: ReportPrefs(makeReport: true), estimatedFiles: fixture.manifest.count,
-                estimatedBytes: 0, currentMode: .copyAndVerify
+                estimatedBytes: 0, currentMode: .copyAndVerify, generateASCMHL: true
             )
             _ = try await executor.execute(config: config, callbacks: CopyVerifyCallbacks(
                 onProgress: { _ in }, onResult: { _ in }, onStateChange: { _ in }, onAuthoritativeResults: { _ in }
@@ -96,6 +96,20 @@ final class ReportEvidenceBytesTests: XCTestCase {
             let performance = try XCTUnwrap(object["performance"] as? [String: Any])
             XCTAssertNotNil(performance["copyDurationSeconds"] as? NSNumber)
             XCTAssertNotNil(performance["verifyDurationSeconds"] as? NSNumber)
+            XCTAssertNotNil(performance["overlapDurationSeconds"] as? NSNumber)
+            XCTAssertNotNil(performance["copyBytes"] as? NSNumber)
+            XCTAssertNotNil(performance["verifyBytes"] as? NSNumber)
+            XCTAssertNotNil(performance["mhlDurationSeconds"] as? NSNumber)
+            XCTAssertNotNil(performance["mhlBytes"] as? NSNumber)
+            XCTAssertEqual((performance["destinationRereadsAvoided"] as? NSNumber)?.intValue, 0)
+            XCTAssertEqual((performance["sourceRereadsAvoided"] as? NSNumber)?.intValue, 0)
+            let copySeconds = try XCTUnwrap((performance["copyDurationSeconds"] as? NSNumber)?.doubleValue)
+            let verifySeconds = try XCTUnwrap((performance["verifyDurationSeconds"] as? NSNumber)?.doubleValue)
+            let overlapSeconds = try XCTUnwrap((performance["overlapDurationSeconds"] as? NSNumber)?.doubleValue)
+            XCTAssertGreaterThanOrEqual(copySeconds, 0)
+            XCTAssertGreaterThanOrEqual(verifySeconds, 0)
+            XCTAssertGreaterThanOrEqual(overlapSeconds, 0)
+            XCTAssertLessThanOrEqual(overlapSeconds, min(copySeconds, verifySeconds))
             XCTAssertTrue(performance["peakSpeedMBps"] == nil || performance["peakSpeedMBps"] is NSNull)
             XCTAssertNotNil(performance["totalDuration"] as? NSNumber, "the measured total stays")
             let destinations = try XCTUnwrap(object["destinations"] as? [[String: Any]])
@@ -120,6 +134,15 @@ final class ReportEvidenceBytesTests: XCTestCase {
         let csv = try ReportExporter.makeEnhancedCSV(
             results: rows, started: started, duration: 60, filesPerSecond: 2,
             copyDurationSeconds: 32, verifyDurationSeconds: 28,
+            performanceTelemetry: TransferPerformanceTelemetry(
+                copyDurationSeconds: 32,
+                verifyDurationSeconds: 28,
+                overlapDurationSeconds: 9,
+                copyBytes: 40,
+                verifyBytes: 80,
+                mhlDurationSeconds: 3,
+                mhlBytes: 40
+            ),
             photographerContext: nil, prefs: nil
         )
         let lines = csv.components(separatedBy: "\n")
@@ -137,6 +160,13 @@ final class ReportEvidenceBytesTests: XCTestCase {
         XCTAssertTrue(csv.contains("Finished,"), "the measured finish belongs in the summary")
         XCTAssertTrue(csv.contains("Copy Duration,32.00 seconds"), csv)
         XCTAssertTrue(csv.contains("Verify Duration,28.00 seconds"), csv)
+        XCTAssertTrue(csv.contains("Copy/Verify Overlap,9.00 seconds"), csv)
+        XCTAssertTrue(csv.contains("Copy Bytes,40"), csv)
+        XCTAssertTrue(csv.contains("Verify Bytes Read,80"), csv)
+        XCTAssertTrue(csv.contains("ASC MHL Duration,3.00 seconds"), csv)
+        XCTAssertTrue(csv.contains("ASC MHL Bytes Read,40"), csv)
+        XCTAssertTrue(csv.contains("Destination Rereads Avoided,0"), csv)
+        XCTAssertTrue(csv.contains("Source Rereads Avoided,0"), csv)
     }
 
     func testJSONUsesPhaseDurationSecondKeysAndQuickOmitsVerify() throws {
@@ -147,7 +177,15 @@ final class ReportEvidenceBytesTests: XCTestCase {
             finished: Date(timeIntervalSince1970: 12), mode: .copyAndVerify,
             sourceURL: nil, destinationURLs: [], fileCount: 0, matchCount: 0,
             totalBytesProcessed: 0, duration: 12, copyDurationSeconds: 12,
-            verifyDurationSeconds: nil, workers: 1, prefs: prefs,
+            verifyDurationSeconds: nil,
+            performanceTelemetry: TransferPerformanceTelemetry(
+                copyDurationSeconds: 12,
+                overlapDurationSeconds: 0,
+                copyBytes: 1_024,
+                destinationRereadsAvoided: 0,
+                sourceRereadsAvoided: 0
+            ),
+            workers: 1, prefs: prefs,
             photographerContext: nil
         )
         let data = try EvidenceWriter.encodeEnhancedJSONReport(report)
@@ -158,6 +196,9 @@ final class ReportEvidenceBytesTests: XCTestCase {
         XCTAssertNil(performance["verifyDurationSeconds"])
         XCTAssertNil(performance["copyDuration"])
         XCTAssertNil(performance["verifyDuration"])
+        XCTAssertEqual((performance["overlapDurationSeconds"] as? NSNumber)?.doubleValue, 0)
+        XCTAssertEqual((performance["copyBytes"] as? NSNumber)?.int64Value, 1_024)
+        XCTAssertEqual((performance["destinationRereadsAvoided"] as? NSNumber)?.intValue, 0)
     }
 
     /// A Quick run verified nothing, so the report's matches are zero, not

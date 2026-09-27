@@ -7,10 +7,57 @@ import BitMatchEngine
 struct OperationPhaseDurations: Equatable, Sendable {
     let copySeconds: TimeInterval?
     let verifySeconds: TimeInterval?
+    let overlapSeconds: TimeInterval?
+    let copyBytes: Int64?
+    let verifyBytes: Int64?
+    let mhlSeconds: TimeInterval?
+    let mhlBytes: Int64?
+    let destinationRereadsAvoided: Int
+    let sourceRereadsAvoided: Int
+
+    init(
+        copySeconds: TimeInterval?,
+        verifySeconds: TimeInterval?,
+        overlapSeconds: TimeInterval? = nil,
+        copyBytes: Int64? = nil,
+        verifyBytes: Int64? = nil,
+        mhlSeconds: TimeInterval? = nil,
+        mhlBytes: Int64? = nil,
+        destinationRereadsAvoided: Int = 0,
+        sourceRereadsAvoided: Int = 0
+    ) {
+        self.copySeconds = copySeconds
+        self.verifySeconds = verifySeconds
+        self.overlapSeconds = overlapSeconds
+        self.copyBytes = copyBytes
+        self.verifyBytes = verifyBytes
+        self.mhlSeconds = mhlSeconds
+        self.mhlBytes = mhlBytes
+        self.destinationRereadsAvoided = destinationRereadsAvoided
+        self.sourceRereadsAvoided = sourceRereadsAvoided
+    }
+
+    var telemetry: TransferPerformanceTelemetry {
+        TransferPerformanceTelemetry(
+            copyDurationSeconds: copySeconds,
+            verifyDurationSeconds: verifySeconds,
+            overlapDurationSeconds: overlapSeconds,
+            copyBytes: copyBytes,
+            verifyBytes: verifyBytes,
+            mhlDurationSeconds: mhlSeconds,
+            mhlBytes: mhlBytes,
+            destinationRereadsAvoided: destinationRereadsAvoided,
+            sourceRereadsAvoided: sourceRereadsAvoided
+        )
+    }
 }
 
 @MainActor
 class OperationTimingService: ObservableObject {
+    private struct Interval: Equatable {
+        let start: Date
+        let end: Date
+    }
     
     // MARK: - Published State
     @Published var currentTiming: OperationTiming?
@@ -25,6 +72,20 @@ class OperationTimingService: ObservableObject {
     private var speedSamples: [Double] = []
     private let maxSpeedSamples = 10
     private let now: () -> Date
+    private var copyActivityStart: Date?
+    private var copyActivityEnd: Date?
+    private var explicitCopyIntervals: [Interval] = []
+    private var verifyIntervals: [Interval] = []
+    private var resultOccurrences: [String: Int] = [:]
+    private var measuredCopyBytes: Int64 = 0
+    private var measuredVerifyBytes: Int64 = 0
+    private var copyDurationMeasurementComplete = true
+    private var verifyDurationMeasurementComplete = true
+    private var copyByteMeasurementComplete = true
+    private var verifyByteMeasurementComplete = true
+    private var mhlStartTime: Date?
+    private var measuredMHLSeconds: TimeInterval = 0
+    private var measuredMHLBytes: Int64?
 
     init(now: @escaping () -> Date = Date.init) {
         self.now = now
@@ -40,6 +101,20 @@ class OperationTimingService: ObservableObject {
         lastBytesProcessed = 0
         speedSamples.removeAll()
         stageStartTime = nil
+        copyActivityStart = nil
+        copyActivityEnd = nil
+        explicitCopyIntervals.removeAll()
+        verifyIntervals.removeAll()
+        resultOccurrences.removeAll()
+        measuredCopyBytes = 0
+        measuredVerifyBytes = 0
+        copyDurationMeasurementComplete = true
+        verifyDurationMeasurementComplete = true
+        copyByteMeasurementComplete = true
+        verifyByteMeasurementComplete = true
+        mhlStartTime = nil
+        measuredMHLSeconds = 0
+        measuredMHLBytes = nil
         
         currentTiming = OperationTiming(
             operationId: UUID(),
@@ -77,6 +152,7 @@ class OperationTimingService: ObservableObject {
         // Start timing for new stage
         stageStartTime = timestamp
         self.currentTiming?.currentStage = stage
+        if stage == .copying, copyActivityStart == nil { copyActivityStart = timestamp }
         
         SharedLogger.debug("Stage started: \(stage.displayName)", category: .transfer)
     }
@@ -185,12 +261,177 @@ class OperationTimingService: ObservableObject {
         speedSamples.removeAll()
     }
 
-    /// Measured wall-clock intervals attributed to the pipeline's copy and
-    /// verify progress stages. Quick performs no content verification.
+    /// Records one engine result event. The engine emits the copy event before
+    /// the verify event for a source/destination pair, including failure rows.
+    /// Verification's own measured processing time lets concurrent intervals
+    /// be merged instead of counted twice.
+    func recordFileResult(_ result: FileOperationResult, verificationMode: VerificationMode) {
+        let key = result.sourceURL.standardizedFileURL.path + "\u{0}" + result.destinationURL.standardizedFileURL.path
+        let occurrence = resultOccurrences[key, default: 0]
+        resultOccurrences[key] = occurrence + 1
+        let timestamp = now()
+
+        if occurrence == 0 {
+            // Current engine transfers emit copy before verify. A first event
+            // that already contains verification cannot be split reliably.
+            // Omit both phases instead of presenting it as a zero-second verify.
+            if result.verificationResult != nil {
+                copyDurationMeasurementComplete = false
+                verifyDurationMeasurementComplete = false
+                copyByteMeasurementComplete = false
+                verifyByteMeasurementComplete = false
+                return
+            }
+            copyActivityEnd = timestamp
+            if result.success {
+                measuredCopyBytes = addingWithoutOverflow(measuredCopyBytes, max(0, result.fileSize))
+            } else {
+                copyByteMeasurementComplete = false
+            }
+            return
+        }
+
+        let duration = max(0, result.verificationResult?.processingTime ?? result.processingTime)
+        verifyIntervals.append(Interval(start: timestamp.addingTimeInterval(-duration), end: timestamp))
+        if let verification = result.verificationResult,
+           verificationMode != .paranoid || verification.matches {
+            let size = max(0, verification.fileSize)
+            measuredVerifyBytes = addingWithoutOverflow(
+                measuredVerifyBytes,
+                multipliedWithoutOverflow(size, by: verificationReadPasses(for: verificationMode))
+            )
+        } else {
+            // A failed read or an early paranoid byte mismatch can stop in the
+            // middle of a pass. Omit the aggregate instead of inventing bytes.
+            verifyByteMeasurementComplete = false
+        }
+    }
+
+    /// Adds an exact interval supplied by a timing seam. Tests use this to
+    /// prove that pipelined overlap is reported once.
+    func recordPhaseInterval(stage: ProgressStage, start: Date, end: Date, bytes: Int64 = 0) {
+        guard end >= start else { return }
+        let interval = Interval(start: start, end: end)
+        switch stage {
+        case .copying:
+            explicitCopyIntervals.append(interval)
+            measuredCopyBytes = addingWithoutOverflow(measuredCopyBytes, max(0, bytes))
+        case .verifying:
+            verifyIntervals.append(interval)
+            measuredVerifyBytes = addingWithoutOverflow(measuredVerifyBytes, max(0, bytes))
+        default:
+            break
+        }
+    }
+
+    func beginMHL(bytes: Int64) {
+        mhlStartTime = now()
+        measuredMHLBytes = max(0, bytes)
+    }
+
+    func endMHL() {
+        guard let start = mhlStartTime else { return }
+        measuredMHLSeconds += max(0, now().timeIntervalSince(start))
+        mhlStartTime = nil
+    }
+
+    /// Measured wall-clock intervals for copy, verification, their overlap,
+    /// and ASC MHL. Quick performs no content verification.
     func phaseDurations(for verificationMode: VerificationMode) -> OperationPhaseDurations {
-        let copy = currentTiming?.stageTimings[.copying]
-        let verify = verificationMode == .quick ? nil : currentTiming?.stageTimings[.verifying]
-        return OperationPhaseDurations(copySeconds: copy, verifySeconds: verify)
+        var copyIntervals = explicitCopyIntervals
+        if copyIntervals.isEmpty, let start = copyActivityStart, let end = copyActivityEnd, end >= start {
+            copyIntervals = [Interval(start: start, end: end)]
+        }
+
+        let copy = copyDurationMeasurementComplete
+            ? (copyIntervals.isEmpty
+                ? currentTiming?.stageTimings[.copying]
+                : Self.unionDuration(copyIntervals))
+            : nil
+        let verify: TimeInterval?
+        if verificationMode == .quick || !verifyDurationMeasurementComplete {
+            verify = nil
+        } else if !verifyIntervals.isEmpty {
+            verify = Self.unionDuration(verifyIntervals)
+        } else if !resultOccurrences.isEmpty {
+            verify = 0
+        } else {
+            verify = currentTiming?.stageTimings[.verifying]
+        }
+        let overlap = verificationMode == .quick || copyIntervals.isEmpty || verifyIntervals.isEmpty
+            ? nil
+            : Self.intersectionDuration(copyIntervals, verifyIntervals)
+        return OperationPhaseDurations(
+            copySeconds: copy,
+            verifySeconds: verify,
+            overlapSeconds: overlap,
+            copyBytes: (resultOccurrences.isEmpty && explicitCopyIntervals.isEmpty) || !copyByteMeasurementComplete
+                ? nil : measuredCopyBytes,
+            verifyBytes: verificationMode == .quick
+                || (verifyIntervals.isEmpty && resultOccurrences.isEmpty)
+                || !verifyByteMeasurementComplete
+                ? nil : measuredVerifyBytes,
+            mhlSeconds: measuredMHLBytes == nil ? nil : measuredMHLSeconds,
+            mhlBytes: measuredMHLBytes
+        )
+    }
+
+    private static func unionDuration(_ intervals: [Interval]) -> TimeInterval {
+        merged(intervals).reduce(0) { $0 + $1.end.timeIntervalSince($1.start) }
+    }
+
+    private static func merged(_ intervals: [Interval]) -> [Interval] {
+        let sorted = intervals.sorted { $0.start < $1.start }
+        guard var current = sorted.first else { return [] }
+        var result: [Interval] = []
+        for interval in sorted.dropFirst() {
+            if interval.start <= current.end {
+                current = Interval(start: current.start, end: max(current.end, interval.end))
+            } else {
+                result.append(current)
+                current = interval
+            }
+        }
+        result.append(current)
+        return result
+    }
+
+    private static func intersectionDuration(_ lhs: [Interval], _ rhs: [Interval]) -> TimeInterval {
+        let left = merged(lhs)
+        let right = merged(rhs)
+        var leftIndex = 0
+        var rightIndex = 0
+        var total: TimeInterval = 0
+        while leftIndex < left.count, rightIndex < right.count {
+            let start = max(left[leftIndex].start, right[rightIndex].start)
+            let end = min(left[leftIndex].end, right[rightIndex].end)
+            if end > start { total += end.timeIntervalSince(start) }
+            if left[leftIndex].end < right[rightIndex].end {
+                leftIndex += 1
+            } else {
+                rightIndex += 1
+            }
+        }
+        return total
+    }
+
+    /// Mirrors DestinationWriter's completed verification reads: each
+    /// configured checksum reads source and destination once, and Paranoid
+    /// adds one source/destination byte-comparison pass.
+    private func verificationReadPasses(for mode: VerificationMode) -> Int64 {
+        let checksumPasses = Int64(mode.checksumTypes.count) * 2
+        let byteComparisonPasses: Int64 = mode == .paranoid ? 2 : 0
+        return checksumPasses + byteComparisonPasses
+    }
+
+    private func multipliedWithoutOverflow(_ value: Int64, by multiplier: Int64) -> Int64 {
+        let (product, overflow) = value.multipliedReportingOverflow(by: multiplier)
+        return overflow ? Int64.max : product
+    }
+
+    private func addingWithoutOverflow(_ lhs: Int64, _ rhs: Int64) -> Int64 {
+        let (sum, overflow) = lhs.addingReportingOverflow(rhs)
+        return overflow ? Int64.max : sum
     }
     
     func cancelOperation() {

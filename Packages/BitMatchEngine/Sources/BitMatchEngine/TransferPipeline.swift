@@ -413,6 +413,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
 
         // One verify, recorded whatever happens except cancellation.
         let verify: @Sendable (VerifyJob) async -> Void = { job in
+            let verificationStarted = Date()
             do {
                 try Task.checkCancellation()
                 try await self.waitIfPaused()
@@ -432,7 +433,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     error: nil,
                     fileSize: job.fileSize,
                     verificationResult: verificationResult,
-                    processingTime: 0,
+                    processingTime: Date().timeIntervalSince(verificationStarted),
                     clipIntegrity: checked.clipIntegrity
                 )
                 let event = await ledger.recordVerify(verified, now: Date())
@@ -453,7 +454,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     error: error,
                     fileSize: 0,
                     verificationResult: nil,
-                    processingTime: 0
+                    processingTime: Date().timeIntervalSince(verificationStarted)
                 )
                 await ledger.recordVerifyFailure(failure)
                 await onFileResult?(failure)

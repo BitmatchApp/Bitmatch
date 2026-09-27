@@ -89,6 +89,7 @@ final class CopyVerifyExecutor {
     private var cancellationRequested = false
     private var destinationRoots: [URL] = []
     private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
+    private(set) var completedPerformanceTelemetry = TransferPerformanceTelemetry()
 
     // MARK: - Initialization
 
@@ -118,6 +119,7 @@ final class CopyVerifyExecutor {
     ) async throws -> FileOperation? {
         cancellationRequested = false
         completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
+        completedPerformanceTelemetry = TransferPerformanceTelemetry()
         destinationRoots = config.destinationURLs
         SharedLogger.info("CopyVerifyExecutor: starting operation \(config.operationId)", category: .transfer)
 
@@ -169,6 +171,7 @@ final class CopyVerifyExecutor {
                 guard let self else { return }
                 await self.handleFileResult(
                     fileResult,
+                    verificationMode: config.verificationMode,
                     callbacks: callbacks
                 )
             }
@@ -216,8 +219,10 @@ final class CopyVerifyExecutor {
 
     private func handleFileResult(
         _ fileResult: FileOperationResult,
+        verificationMode: VerificationMode,
         callbacks: CopyVerifyCallbacks
     ) async {
+        timingService.recordFileResult(fileResult, verificationMode: verificationMode)
         let resultRow = TransferCompletion.row(from: fileResult, destinationRoots: destinationRoots)
 
         callbacks.onResult(resultRow)
@@ -233,8 +238,6 @@ final class CopyVerifyExecutor {
         // Close the final pipeline stage before report work begins. The
         // report itself is not copy or verify time.
         timingService.updateStage(.completed)
-        let phaseDurations = timingService.phaseDurations(for: config.verificationMode)
-        completedPhaseDurations = phaseDurations
         let allResults = TransferCompletion.rows(from: operation)
         SharedLogger.info("Mapped \(allResults.count) authoritative operation results for report", category: .transfer)
 
@@ -247,6 +250,10 @@ final class CopyVerifyExecutor {
         )
         try checkCancellation()
         let handoffIssues = try await createASCMHLHistories(operation: operation, config: config, callbacks: callbacks)
+        timingService.updateStage(.completed)
+        let phaseDurations = timingService.phaseDurations(for: config.verificationMode)
+        completedPhaseDurations = phaseDurations
+        completedPerformanceTelemetry = phaseDurations.telemetry
         let preReportVerdict = TransferCompletion.verdict(
             rows: allResults,
             sourceFiles: operation.sourceManifest,
@@ -331,6 +338,12 @@ final class CopyVerifyExecutor {
         )
         callbacks.onStateChange(.verifying)
         timingService.updateStage(.verifying)
+        let mhlBytes = plan.jobs.flatMap(\.files).reduce(Int64(0)) { total, file in
+            let (sum, overflow) = total.addingReportingOverflow(max(0, file.size))
+            return overflow ? Int64.max : sum
+        }
+        timingService.beginMHL(bytes: mhlBytes)
+        defer { timingService.endMHL() }
         stateService.updateCapabilities(canPause: false, canResume: false)
         callbacks.onProgress(OperationProgress(
             overallProgress: 1, currentFile: "Creating ASC MHL handoff records…",
@@ -423,6 +436,7 @@ final class CopyVerifyExecutor {
                 totalBytesProcessed: totalBytesProcessed,
                 copyDurationSeconds: phaseDurations.copySeconds,
                 verifyDurationSeconds: phaseDurations.verifySeconds,
+                performanceTelemetry: phaseDurations.telemetry,
                 safetyState: safetyState,
                 generateFullReport: reportSettings.makeReport,
                 photographerContext: reportContext

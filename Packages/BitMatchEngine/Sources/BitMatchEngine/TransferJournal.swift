@@ -86,6 +86,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public var endedAt: Date?
     public var copyDurationSeconds: TimeInterval? = nil
     public var verifyDurationSeconds: TimeInterval? = nil
+    public var performanceTelemetry: TransferPerformanceTelemetry? = nil
     public var summary: String = "Ready to copy"
     public var results: [ResultRow] = []
     /// Added after launch; nil decodes records written by older versions.
@@ -117,7 +118,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
-        case copyDurationSeconds, verifyDurationSeconds, summary, results, sourceFingerprint
+        case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount
     }
 
@@ -138,6 +139,13 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         endedAt = try c.decodeIfPresent(Date.self, forKey: .endedAt)
         copyDurationSeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .copyDurationSeconds)
         verifyDurationSeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .verifyDurationSeconds)
+        performanceTelemetry = try c.decodeIfPresent(TransferPerformanceTelemetry.self, forKey: .performanceTelemetry)
+            ?? ((copyDurationSeconds != nil || verifyDurationSeconds != nil)
+                ? TransferPerformanceTelemetry(
+                    copyDurationSeconds: copyDurationSeconds,
+                    verifyDurationSeconds: verifyDurationSeconds
+                )
+                : nil)
         summary = try c.decode(String.self, forKey: .summary)
         results = try c.decode([ResultRow].self, forKey: .results)
         sourceFingerprint = try c.decodeIfPresent(String.self, forKey: .sourceFingerprint)
@@ -497,13 +505,26 @@ public final class TransferJournal: Sendable {
         hadIssues: Bool,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         sourceFingerprint: String? = nil
     ) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.results = results
-            record.copyDurationSeconds = copyDurationSeconds
-            record.verifyDurationSeconds = verifyDurationSeconds
+            record.copyDurationSeconds = performanceTelemetry?.copyDurationSeconds
+                ?? copyDurationSeconds
+                ?? record.copyDurationSeconds
+            record.verifyDurationSeconds = performanceTelemetry?.verifyDurationSeconds
+                ?? verifyDurationSeconds
+                ?? record.verifyDurationSeconds
+            if let performanceTelemetry {
+                record.performanceTelemetry = performanceTelemetry
+            } else if copyDurationSeconds != nil || verifyDurationSeconds != nil {
+                record.performanceTelemetry = TransferPerformanceTelemetry(
+                    copyDurationSeconds: record.copyDurationSeconds,
+                    verifyDurationSeconds: record.verifyDurationSeconds
+                )
+            }
             record.sourceFingerprint = sourceFingerprint
             record.state = hadIssues || results.isEmpty || results.contains(where: { !$0.isSuccessStatus }) ? .issues : .completed
             // A Quick-mode record must always say its contents were not

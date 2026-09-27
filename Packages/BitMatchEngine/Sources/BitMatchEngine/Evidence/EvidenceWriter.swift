@@ -112,6 +112,13 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let totalDuration: TimeInterval
         public let copyDurationSeconds: TimeInterval?
         public let verifyDurationSeconds: TimeInterval?
+        public let overlapDurationSeconds: TimeInterval?
+        public let copyBytes: Int64?
+        public let verifyBytes: Int64?
+        public let mhlDurationSeconds: TimeInterval?
+        public let mhlBytes: Int64?
+        public let destinationRereadsAvoided: Int?
+        public let sourceRereadsAvoided: Int?
         public let throughputMBps: Double
         public let peakSpeedMBps: Double?
         public let averageSpeedMBps: Double
@@ -119,10 +126,34 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let workers: Int
         public let bottleneck: String?  // "Source Read", "Destination Write", "CPU", "Network"
 
-        public init(totalDuration: TimeInterval, copyDurationSeconds: TimeInterval?, verifyDurationSeconds: TimeInterval?, throughputMBps: Double, peakSpeedMBps: Double?, averageSpeedMBps: Double, filesPerSecond: Double, workers: Int, bottleneck: String?) {
+        public init(
+            totalDuration: TimeInterval,
+            copyDurationSeconds: TimeInterval?,
+            verifyDurationSeconds: TimeInterval?,
+            overlapDurationSeconds: TimeInterval? = nil,
+            copyBytes: Int64? = nil,
+            verifyBytes: Int64? = nil,
+            mhlDurationSeconds: TimeInterval? = nil,
+            mhlBytes: Int64? = nil,
+            destinationRereadsAvoided: Int? = nil,
+            sourceRereadsAvoided: Int? = nil,
+            throughputMBps: Double,
+            peakSpeedMBps: Double?,
+            averageSpeedMBps: Double,
+            filesPerSecond: Double,
+            workers: Int,
+            bottleneck: String?
+        ) {
             self.totalDuration = totalDuration
             self.copyDurationSeconds = copyDurationSeconds
             self.verifyDurationSeconds = verifyDurationSeconds
+            self.overlapDurationSeconds = overlapDurationSeconds
+            self.copyBytes = copyBytes
+            self.verifyBytes = verifyBytes
+            self.mhlDurationSeconds = mhlDurationSeconds
+            self.mhlBytes = mhlBytes
+            self.destinationRereadsAvoided = destinationRereadsAvoided
+            self.sourceRereadsAvoided = sourceRereadsAvoided
             self.throughputMBps = throughputMBps
             self.peakSpeedMBps = peakSpeedMBps
             self.averageSpeedMBps = averageSpeedMBps
@@ -280,6 +311,7 @@ public enum EvidenceWriter: Sendable {
                                         duration: TimeInterval,
                                         copyDurationSeconds: TimeInterval? = nil,
                                         verifyDurationSeconds: TimeInterval? = nil,
+                                        performanceTelemetry: TransferPerformanceTelemetry? = nil,
                                         sourceURL: URL?,
                                         fileCount: Int,
                                         matchCount: Int,
@@ -328,6 +360,7 @@ public enum EvidenceWriter: Sendable {
                                  filesPerSecond: filesPerSecond,
                                  copyDurationSeconds: copyDurationSeconds,
                                  verifyDurationSeconds: verifyDurationSeconds,
+                                 performanceTelemetry: performanceTelemetry,
                                  project: projectCSV,
                                  prefs: prefs)
             
@@ -349,6 +382,7 @@ public enum EvidenceWriter: Sendable {
                 duration: duration,
                 copyDurationSeconds: copyDurationSeconds,
                 verifyDurationSeconds: verifyDurationSeconds,
+                performanceTelemetry: performanceTelemetry,
                 workers: workers,
                 prefs: prefs,
                 project: projectJSON
@@ -389,6 +423,7 @@ public enum EvidenceWriter: Sendable {
                                           filesPerSecond: Double,
                                           copyDurationSeconds: TimeInterval?,
                                           verifyDurationSeconds: TimeInterval?,
+                                          performanceTelemetry: TransferPerformanceTelemetry?,
                                           project: ProjectCSVEvidence? = nil,
                                           prefs: ReportPrefs? = nil) throws {
         let csvContent = try makeEnhancedCSV(
@@ -398,6 +433,7 @@ public enum EvidenceWriter: Sendable {
             filesPerSecond: filesPerSecond,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             project: project,
             prefs: prefs
         )
@@ -411,6 +447,7 @@ public enum EvidenceWriter: Sendable {
         filesPerSecond: Double,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         project: ProjectCSVEvidence?,
         prefs: ReportPrefs? = nil
     ) throws -> String {
@@ -459,6 +496,15 @@ public enum EvidenceWriter: Sendable {
             csvContent += csvRow(["Copy Duration", copyDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
             csvContent += csvRow(["Verify Duration", verifyDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
         }
+        if let telemetry = performanceTelemetry {
+            csvContent += csvRow(["Copy/Verify Overlap", telemetry.overlapDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
+            csvContent += csvRow(["Copy Bytes", telemetry.copyBytes.map { String($0) } ?? ""])
+            csvContent += csvRow(["Verify Bytes Read", telemetry.verifyBytes.map { String($0) } ?? ""])
+            csvContent += csvRow(["ASC MHL Duration", telemetry.mhlDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
+            csvContent += csvRow(["ASC MHL Bytes Read", telemetry.mhlBytes.map { String($0) } ?? ""])
+            csvContent += csvRow(["Destination Rereads Avoided", String(telemetry.destinationRereadsAvoided)])
+            csvContent += csvRow(["Source Rereads Avoided", String(telemetry.sourceRereadsAvoided)])
+        }
         csvContent += csvRow(["Files/Second", String(format: "%.2f", filesPerSecond)])
         for row in project?.summaryRows ?? [] {
             csvContent += csvRow(row)
@@ -488,6 +534,7 @@ public enum EvidenceWriter: Sendable {
                                                  duration: TimeInterval,
                                                  copyDurationSeconds: TimeInterval?,
                                                  verifyDurationSeconds: TimeInterval?,
+                                                 performanceTelemetry: TransferPerformanceTelemetry?,
                                                  workers: Int,
                                                  prefs: ReportPrefs,
                                                  project: Project?) throws {
@@ -505,6 +552,7 @@ public enum EvidenceWriter: Sendable {
             duration: duration,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             workers: workers,
             prefs: prefs,
             project: project
@@ -534,6 +582,7 @@ public enum EvidenceWriter: Sendable {
         duration: TimeInterval,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         workers: Int,
         prefs: ReportPrefs,
         project: Project?
@@ -670,6 +719,13 @@ public enum EvidenceWriter: Sendable {
                 totalDuration: duration,
                 copyDurationSeconds: copyDurationSeconds,
                 verifyDurationSeconds: verifyDurationSeconds,
+                overlapDurationSeconds: performanceTelemetry?.overlapDurationSeconds,
+                copyBytes: performanceTelemetry?.copyBytes,
+                verifyBytes: performanceTelemetry?.verifyBytes,
+                mhlDurationSeconds: performanceTelemetry?.mhlDurationSeconds,
+                mhlBytes: performanceTelemetry?.mhlBytes,
+                destinationRereadsAvoided: performanceTelemetry?.destinationRereadsAvoided,
+                sourceRereadsAvoided: performanceTelemetry?.sourceRereadsAvoided,
                 throughputMBps: throughputMBps,
                 peakSpeedMBps: nil,
                 averageSpeedMBps: throughputMBps,

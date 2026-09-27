@@ -22,10 +22,19 @@ struct TransferHistoryDocument: FileDocument {
                  record.reportSettings.projectName, record.generateASCMHL ? "requested" : "not requested",
                  record.reportSettings.clientName].map(quote).joined(separator: ",")
             }
+            func pair(_ key: String, _ value: String) -> String { quote(key) + "," + quote(value) }
+            let telemetry = record.performanceTelemetry
             let timingSummary = [
                 "\n# Summary",
-                ["copyDurationSeconds", record.copyDurationSeconds.map { String($0) } ?? ""].map(quote).joined(separator: ","),
-                ["verifyDurationSeconds", record.verifyDurationSeconds.map { String($0) } ?? ""].map(quote).joined(separator: ",")
+                pair("copyDurationSeconds", record.copyDurationSeconds.map { String($0) } ?? ""),
+                pair("verifyDurationSeconds", record.verifyDurationSeconds.map { String($0) } ?? ""),
+                pair("overlapDurationSeconds", telemetry?.overlapDurationSeconds.map { String($0) } ?? ""),
+                pair("copyBytes", telemetry?.copyBytes.map { String($0) } ?? ""),
+                pair("verifyBytes", telemetry?.verifyBytes.map { String($0) } ?? ""),
+                pair("mhlDurationSeconds", telemetry?.mhlDurationSeconds.map { String($0) } ?? ""),
+                pair("mhlBytes", telemetry?.mhlBytes.map { String($0) } ?? ""),
+                pair("destinationRereadsAvoided", telemetry.map { String($0.destinationRereadsAvoided) } ?? ""),
+                pair("sourceRereadsAvoided", telemetry.map { String($0.sourceRereadsAvoided) } ?? "")
             ].joined(separator: "\n")
             data = Data((header + rows.joined(separator: "\n") + timingSummary + "\n").utf8)
         } else {
@@ -43,6 +52,7 @@ struct TransferHistoryDocument: FileDocument {
                 let ascMHLRequested: Bool
                 let copyDurationSeconds: TimeInterval?
                 let verifyDurationSeconds: TimeInterval?
+                let performanceTelemetry: TransferPerformanceTelemetry?
                 let results: [ResultRow]
             }
             let encoder = JSONEncoder()
@@ -55,6 +65,7 @@ struct TransferHistoryDocument: FileDocument {
                 ascMHLRequested: record.generateASCMHL,
                 copyDurationSeconds: record.copyDurationSeconds,
                 verifyDurationSeconds: record.verifyDurationSeconds,
+                performanceTelemetry: record.performanceTelemetry,
                 results: record.results))
         }
     }

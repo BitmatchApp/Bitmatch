@@ -125,7 +125,7 @@ struct ReportPDFLayoutTests {
         let firstPage = try #require(document.page(at: 0))
         let title = try #require(document.findString("BitMatch Verification Report", withOptions: []).first)
         #expect(title.pages.first == firstPage)
-        #expect(document.findString("Copy 32s, verify 28s", withOptions: []).isEmpty == false)
+        #expect(document.findString("Copy 0:32 · Verify 0:28", withOptions: []).isEmpty == false)
         // PDF y grows upward: the title's top edge must be within 60pt of the page top.
         #expect(title.bounds(for: firstPage).maxY > ReportPDFRenderer.pageHeight - 60)
     }
