@@ -57,15 +57,25 @@ public struct TransferReadiness: Equatable, Sendable {
         destinations: [URL],
         settings: CameraLabelSettings,
         verificationMode: VerificationMode,
+        sourceIssue: String? = nil,
+        destinationWarnings: [String] = [],
         availableBytes: (URL) -> Int64?,
         isWritable: (URL) -> Bool
     ) -> TransferReadiness {
         guard let source else {
-            return TransferReadiness(status: .needsSource, blockers: [], warnings: [])
+            // Destination warnings (same physical disk) describe the backup
+            // selection, not the source, so they stay visible while the
+            // source is still unchosen instead of hiding a single-backup
+            // selection behind a clean warnings list.
+            return TransferReadiness(status: .needsSource, blockers: [], warnings: destinationWarnings)
         }
 
         var blockers: [String] = []
-        var warnings: [String] = []
+        var warnings = destinationWarnings
+
+        if let sourceIssue {
+            blockers.append(sourceIssue)
+        }
 
         if !isAnalysingSource, sourceFileCount == 0 {
             blockers.append(emptySourceIssue)

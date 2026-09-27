@@ -63,7 +63,9 @@ final class TransferFaultIntegrationTests: XCTestCase {
                 progressCallback: nil
             )
             XCTAssertEqual(publishedHash, fixture.manifest[targetRelativePath])
-            try await assertSuccessfulOutputHashes(in: operation, match: fixture.manifest)
+            // A mid-run source change fails the whole run closed, so no row
+            // stays successful; the published bytes must still be intact.
+            try await assertAllPublishedOutputHashes(in: operation, match: fixture.manifest)
         }
     }
 
@@ -215,13 +217,11 @@ final class TransferFaultIntegrationTests: XCTestCase {
 }
 
 private func canonicalFileURL(_ url: URL) -> URL {
-    #if canImport(Darwin)
-    guard let resolved = realpath(url.path, nil) else { return url.standardizedFileURL }
-    defer { free(resolved) }
-    return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
-    #else
-    return url.resolvingSymlinksInPath().standardizedFileURL
-    #endif
+    // Match the engine's existence-independent root canonicalization
+    // (standardized + resolvingSymlinksKeepingCase). C realpath() fully
+    // resolves /var to /private/var while Foundation does not, so a
+    // realpath-based prefix never matches engine-issued result URLs.
+    url.standardizedFileURL.resolvingSymlinksKeepingCase()
 }
 
 private func manifestRelativePath(
@@ -286,6 +286,33 @@ private func assertSuccessfulOutputHashes(
             progressCallback: nil
         )
         XCTAssertEqual(actual, expected, "Unexpected hash for \(relativePath)", file: file, line: line)
+    }
+}
+
+private func assertAllPublishedOutputHashes(
+    in operation: FileOperation,
+    match manifest: [String: String],
+    file: StaticString = #filePath,
+    line: UInt = #line
+) async throws {
+    guard !operation.results.isEmpty else {
+        XCTFail("Expected published outputs", file: file, line: line)
+        return
+    }
+    for result in operation.results {
+        let sourcePrefix = operation.sourceURL.path + "/"
+        guard result.sourceURL.path.hasPrefix(sourcePrefix) else {
+            XCTFail("Result source escaped fixture", file: file, line: line)
+            continue
+        }
+        let relativePath = String(result.sourceURL.path.dropFirst(sourcePrefix.count))
+        let expected = try XCTUnwrap(manifest[relativePath], file: file, line: line)
+        let actual = try await ChecksumEngine.shared.generateChecksum(
+            for: result.destinationURL,
+            type: .sha256,
+            progressCallback: nil
+        )
+        XCTAssertEqual(actual, expected, "Published output corrupted for \(relativePath)", file: file, line: line)
     }
 }
 

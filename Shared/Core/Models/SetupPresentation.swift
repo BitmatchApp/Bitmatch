@@ -307,6 +307,8 @@ struct SetupPresentation: Equatable {
     /// Setup always reserves its Start row. A paused queue keeps a disabled
     /// Start while its inline card owns all recovery actions.
     let showsStartArea: Bool
+    /// Quiet context below preflight; never a blocker or success verdict.
+    let informationalLines: [String]
 
     static func make(
         plan: TransferPlanPresentation,
@@ -327,7 +329,8 @@ struct SetupPresentation: Equatable {
         sourceFileCount: Int?,
         sourceBytes: Int64?,
         destinationCount: Int,
-        hasProjectEvidence: Bool
+        hasProjectEvidence: Bool,
+        informationalLines: [String] = []
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard || isProjectRunInProgress
         return Self(
@@ -356,7 +359,8 @@ struct SetupPresentation: Equatable {
             workflowLockHint: isProjectRunInProgress ? "Available when this card finishes" : nil,
             showsProjectSetup: isProject,
             showsProjectEvidence: hasProjectEvidence,
-            showsStartArea: true
+            showsStartArea: true,
+            informationalLines: informationalLines
         )
     }
 }

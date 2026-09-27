@@ -58,6 +58,8 @@ public struct FileOperation: Sendable {
     /// The fail-closed source manifest used by this run. Completion is never
     /// successful when this authoritative coverage is unavailable.
     public let sourceManifest: [URL]?
+    /// Canonical path/size/modification-date fingerprint of the manifest.
+    public let sourceFingerprint: String?
     public let verificationMode: VerificationMode
     public let settings: CameraLabelSettings
     public let estimatedTotalBytes: Int64? // For improved ETA calculation
@@ -67,13 +69,14 @@ public struct FileOperation: Sendable {
         return endTime.timeIntervalSince(startTime)
     }
 
-    public init(sourceURL: URL, destinationURLs: [URL], startTime: Date, endTime: Date?, results: [FileOperationResult], sourceManifest: [URL]? = nil, verificationMode: VerificationMode, settings: CameraLabelSettings, estimatedTotalBytes: Int64?) {
+    public init(sourceURL: URL, destinationURLs: [URL], startTime: Date, endTime: Date?, results: [FileOperationResult], sourceManifest: [URL]? = nil, sourceFingerprint: String? = nil, verificationMode: VerificationMode, settings: CameraLabelSettings, estimatedTotalBytes: Int64?) {
         self.sourceURL = sourceURL
         self.destinationURLs = destinationURLs
         self.startTime = startTime
         self.endTime = endTime
         self.results = results
         self.sourceManifest = sourceManifest
+        self.sourceFingerprint = sourceFingerprint
         self.verificationMode = verificationMode
         self.settings = settings
         self.estimatedTotalBytes = estimatedTotalBytes
@@ -88,6 +91,9 @@ public struct FileOperationResult: Sendable {
     public let fileSize: Int64
     public let verificationResult: VerificationResult?
     public let processingTime: TimeInterval
+    /// Advisory only. A verified copy remains verified when its source clip
+    /// appears incomplete, because the destination still matches the card.
+    public let clipIntegrity: ClipIntegrityFinding?
     
     public var outcome: ResultOutcome {
         if let verification = verificationResult {
@@ -98,7 +104,7 @@ public struct FileOperationResult: Sendable {
 
     public var statusDescription: String { outcome.statusText }
 
-    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval) {
+    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil) {
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
         self.success = success
@@ -106,5 +112,6 @@ public struct FileOperationResult: Sendable {
         self.fileSize = fileSize
         self.verificationResult = verificationResult
         self.processingTime = processingTime
+        self.clipIntegrity = clipIntegrity
     }
 }

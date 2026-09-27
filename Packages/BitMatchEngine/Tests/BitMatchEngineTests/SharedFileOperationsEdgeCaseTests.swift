@@ -441,7 +441,7 @@ struct SharedFileOperationsEdgeCaseTests {
                 verificationResult: nil,
                 processingTime: 0
             )
-            await store.record(result)
+            await store.record(result, relativePath: "file-\(index).mov", destination: 0)
         }
 
         let updated = FileOperationResult(
@@ -453,7 +453,7 @@ struct SharedFileOperationsEdgeCaseTests {
             verificationResult: nil,
             processingTime: 0
         )
-        await store.record(updated)
+        await store.record(updated, relativePath: "file-42.mov", destination: 0)
 
         let snapshot = await store.results()
         #expect(snapshot.count == 12_000)

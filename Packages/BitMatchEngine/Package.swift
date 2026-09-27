@@ -11,7 +11,13 @@ let package = Package(
         .library(name: "BitMatchEngine", targets: ["BitMatchEngine"]),
     ],
     targets: [
-        .target(name: "BitMatchEngine"),
+        .target(
+            name: "BitMatchEngine",
+            linkerSettings: [
+                .linkedFramework("DiskArbitration", .when(platforms: [.macOS])),
+                .linkedFramework("IOKit", .when(platforms: [.macOS])),
+            ]
+        ),
         .testTarget(
             name: "BitMatchEngineTests",
             dependencies: ["BitMatchEngine"]

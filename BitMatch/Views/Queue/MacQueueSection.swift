@@ -320,6 +320,16 @@ struct MacQueueSection: View {
                 Label(cause, systemImage: "exclamationmark.triangle.fill")
                     .foregroundStyle(outcome.safetyState.tint.color)
             }
+            ForEach(outcome.advisoryLines, id: \.self) { advisory in
+                Label(advisory, systemImage: "exclamationmark.triangle")
+                    .font(.callout)
+                    .foregroundStyle(CardSafetyTint.amber.color)
+            }
+            ForEach(outcome.clipFailureLines, id: \.self) { issue in
+                Label(issue, systemImage: "film")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
             ForEach(outcome.destinations) { destination in
                 HStack(alignment: .top, spacing: 8) {
                     Image(systemName: destination.needsAttention ? "exclamationmark.triangle" : "externaldrive")
@@ -510,6 +520,11 @@ private struct SafeTransferHero: View {
                 Text(outcome.finishTitle)
                     .font(.title2.weight(.semibold)).foregroundStyle(CardSafetyTint.green.color)
                 Text(heroEvidence).font(.subheadline).foregroundStyle(.secondary)
+                ForEach(outcome.advisoryLines, id: \.self) { advisory in
+                    Label(advisory, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(CardSafetyTint.amber.color)
+                }
             }
             Spacer(minLength: 8)
             if let eject {

@@ -30,7 +30,8 @@ extension TransferOutcomePresentation {
             canRetry: isFinished && record?.canRetry == true,
             canExport: isFinished,
             sourceName: record?.title ?? coordinator.sourceURL?.lastPathComponent ?? "",
-            completionReason: record?.summary ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil)
+            completionReason: record?.summary ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
+            independentDestinationCount: record?.independentDestinationCount
         )
     }
 }

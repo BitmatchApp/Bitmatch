@@ -183,6 +183,7 @@ public struct JSONReportItem: Codable, Sendable {
     public let fileExtension: String
     public let checksum: String?
     public let byteCount: Int64?
+    public let clipIntegrity: ClipIntegrityFinding?
 
     public init(from row: ResultRow) {
         self.path = row.path
@@ -191,6 +192,7 @@ public struct JSONReportItem: Codable, Sendable {
         self.fileExtension = URL(fileURLWithPath: row.path).pathExtension.uppercased()
         self.checksum = row.checksum
         self.byteCount = row.size
+        self.clipIntegrity = row.clipIntegrity
     }
 }
 

@@ -243,6 +243,49 @@ enum CompletionVerdict: Equatable {
 }
 
 enum ResultPresentation {
+    static let incompleteClipExplanation = "the camera may have stopped recording early. The copies match the card."
+
+    static func incompleteClipAdvisory(_ rows: [ResultRow]) -> String? {
+        let clipPaths = Set(rows.compactMap { row in
+            row.clipIntegrity == .incomplete ? row.path : nil
+        })
+        guard !clipPaths.isEmpty else { return nil }
+        let subject = clipPaths.count == 1 ? "1 clip looks incomplete" : "\(clipPaths.count) clips look incomplete"
+        return "\(subject) — \(incompleteClipExplanation)"
+    }
+
+    /// Human wording only. These groups never change verification or retry
+    /// behavior; they give a failed media file the sidecar context a person
+    /// needs when reviewing the finish screen or report.
+    static func clipFailureDescriptions(_ rows: [ResultRow]) -> [String] {
+        var seenPaths = Set<String>()
+        var candidates: [URL] = []
+        candidates.reserveCapacity(rows.count)
+        for row in rows where seenPaths.insert(row.path).inserted {
+            candidates.append(URL(fileURLWithPath: row.path))
+        }
+        var failedPaths = Set<String>()
+        for row in rows where !row.isSuccessStatus {
+            failedPaths.insert(row.path)
+        }
+
+        var descriptions: [String] = []
+        descriptions.reserveCapacity(failedPaths.count)
+        for path in failedPaths.sorted() {
+            guard let group = ClipGrouping.group(
+                containing: URL(fileURLWithPath: path), among: candidates
+            ) else { continue }
+            let count = group.files.count
+            let names = group.files.map { $0.lastPathComponent }.joined(separator: ", ")
+            descriptions.append("Clip \(group.name) failed (\(count) \(count == 1 ? "file" : "files")): \(names)")
+        }
+        return Array(Set(descriptions)).sorted()
+    }
+
+    static func automaticReportNotes(_ rows: [ResultRow]) -> [String] {
+        [incompleteClipAdvisory(rows)].compactMap { $0 } + clipFailureDescriptions(rows)
+    }
+
     /// The backup drive shown in a file row. A path under `/Volumes` names
     /// the volume; other locations use the label recorded by the engine.
     static func destinationDriveName(

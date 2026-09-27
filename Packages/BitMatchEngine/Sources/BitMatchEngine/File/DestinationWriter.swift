@@ -60,6 +60,33 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         logicalRootURL.appendingPathComponent(relativePath)
     }
 
+    /// Confirms that the folder path shown to the user still names this pinned
+    /// directory. Verification may still succeed through the descriptor after
+    /// a rename, but that orphaned location is not a safe completed backup.
+    public func logicalRootStillMatchesPinnedDirectory() -> Bool {
+        var pinned = stat()
+        var current = stat()
+        guard fstat(directoryFD, &pinned) == 0,
+              lstat(logicalRootURL.path, &current) == 0 else { return false }
+        return (current.st_mode & S_IFMT) == S_IFDIR
+            && current.st_dev == pinned.st_dev
+            && current.st_ino == pinned.st_ino
+    }
+
+    /// Lists the pinned directory itself, independent of whether its pathname
+    /// was renamed. This is the final destination-coverage check.
+    public func regularFileMetadata() throws -> [FileEntry] {
+        try CardSource.enumerateTree(directoryFD: directoryFD, root: logicalRootURL).compactMap { entry in
+            guard entry.kind == .regularFile else { return nil }
+            return FileEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                size: entry.size,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
+
     /// Opens a destination file below the pinned directory. The returned
     /// descriptor, not `logicalRootURL`, is the authority for subsequent
     /// reads. This is deliberately separate from the display URL above.
@@ -317,6 +344,11 @@ public final class PinnedDestinationFile: @unchecked Sendable {
             throw DestinationWriter.existingDestinationConflictError("Existing destination item is not a regular file")
         }
         return info
+    }
+
+    public func inspectClipIntegrity() throws -> ClipIntegrityFinding {
+        let info = try snapshot()
+        return try ClipIntegrityCheck.inspect(fileDescriptor: fileFD, fileSize: info.st_size)
     }
 
     /// A fresh `openat` is required for every reader. `dup` would retain the
@@ -883,37 +915,9 @@ public final class DestinationWriter {
         in pinnedRoot: PinnedDestinationDirectory,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
-        let fm = FileManager.default
-        let resolver = RelativePathResolver(base: sourceRoot)
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
-        guard let enumerator = fm.enumerator(
-            at: sourceRoot,
-            includingPropertiesForKeys: keys,
-            options: []
-        ) else { return }
-
-        while let item = enumerator.nextObject() as? URL {
+        for entry in try CardSource.enumerateTree(base: sourceRoot) where entry.kind == .directory {
             try Task.checkCancellation()
-
-            // Keep the descriptor-pinned directory tree in lockstep with the
-            // manifest before loading attributes from possibly unreadable
-            // volume metadata.
-            if enumerator.level == 1,
-               CardSource.isRootVolumeMetadataDirectory(item) {
-                enumerator.skipDescendants()
-                continue
-            }
-
-            guard let values = try? item.resourceValues(forKeys: Set(keys)),
-                  values.isSymbolicLink != true,
-                  values.isDirectory == true else { continue }
-            let relative: String
-            do {
-                relative = try resolver.resolve(item)
-            } catch {
-                await onError(item.path, error)
-                continue
-            }
+            let relative = entry.relativePath
             guard let components = safeRelativeComponents(relative) else {
                 await onError(relative, NSError(
                     domain: "DestinationWriter",
@@ -1008,11 +1012,58 @@ public final class DestinationWriter {
         verificationMode: VerificationMode,
         checksumService: any ChecksumService
     ) async throws -> VerificationResult {
+        try await verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinnedRoot,
+            relativePath: relativePath,
+            verificationMode: verificationMode,
+            checksumService: checksumService,
+            clipURL: nil
+        ).verification
+    }
+
+    /// Verifies and then performs the advisory atom scan through the same
+    /// pinned file object. A failed advisory read returns no finding and does
+    /// not alter the checksum result.
+    static func verifyPinnedDestinationFileAndInspectClip(
+        source: URL,
+        pinnedRoot: PinnedDestinationDirectory,
+        relativePath: String,
+        verificationMode: VerificationMode,
+        checksumService: any ChecksumService,
+        clipURL: URL,
+        inspection: @Sendable (PinnedDestinationFile) throws -> ClipIntegrityFinding = {
+            try $0.inspectClipIntegrity()
+        }
+    ) async throws -> (verification: VerificationResult, clipIntegrity: ClipIntegrityFinding?) {
+        try await verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinnedRoot,
+            relativePath: relativePath,
+            verificationMode: verificationMode,
+            checksumService: checksumService,
+            clipURL: clipURL,
+            inspection: inspection
+        )
+    }
+
+    private static func verifyPinnedDestinationFile(
+        source: URL,
+        pinnedRoot: PinnedDestinationDirectory,
+        relativePath: String,
+        verificationMode: VerificationMode,
+        checksumService: any ChecksumService,
+        clipURL: URL?,
+        inspection: @Sendable (PinnedDestinationFile) throws -> ClipIntegrityFinding = {
+            try $0.inspectClipIntegrity()
+        }
+    ) async throws -> (verification: VerificationResult, clipIntegrity: ClipIntegrityFinding?) {
         guard let components = safeRelativeComponents(relativePath) else {
             throw FileOperationError.unsafeOperation("Invalid destination file path")
         }
         let destination = try pinnedRoot.openRegularFile(at: components)
         let startTime = Date()
+        let verification: VerificationResult
 
         if verificationMode == .paranoid {
             let matches = try await byteComparison(source: source, pinnedDestination: destination)
@@ -1027,7 +1078,7 @@ public final class DestinationWriter {
                 type: .sha256,
                 checksumService: checksumService
             )
-            return VerificationResult(
+            verification = VerificationResult(
                 sourceChecksum: digest.sourceChecksum,
                 destinationChecksum: digest.destinationChecksum,
                 matches: matches,
@@ -1035,39 +1086,55 @@ public final class DestinationWriter {
                 processingTime: Date().timeIntervalSince(startTime),
                 fileSize: digest.fileSize
             )
+        } else {
+            let checksumTypes = verificationMode.checksumTypes
+            guard !checksumTypes.isEmpty else {
+                throw FileOperationError.unsafeOperation("Verification mode does not provide a checksum")
+            }
+            var combinedMatches = true
+            var firstResult: VerificationResult?
+            var primaryResult: VerificationResult?
+            var totalProcessing: TimeInterval = 0
+            for type in checksumTypes {
+                let result = try await checksumVerification(
+                    source: source,
+                    pinnedDestination: destination,
+                    type: type,
+                    checksumService: checksumService
+                )
+                combinedMatches = combinedMatches && result.matches
+                totalProcessing += result.processingTime
+                if firstResult == nil { firstResult = result }
+                if type == .sha256 { primaryResult = result }
+            }
+            guard let base = primaryResult ?? firstResult else {
+                throw FileOperationError.unsafeOperation("Verification mode does not provide a checksum")
+            }
+            verification = VerificationResult(
+                sourceChecksum: base.sourceChecksum,
+                destinationChecksum: base.destinationChecksum,
+                matches: combinedMatches,
+                checksumType: base.checksumType,
+                processingTime: totalProcessing,
+                fileSize: base.fileSize
+            )
         }
 
-        let checksumTypes = verificationMode.checksumTypes
-        guard !checksumTypes.isEmpty else {
-            throw FileOperationError.unsafeOperation("Verification mode does not provide a checksum")
+        let clipIntegrity: ClipIntegrityFinding?
+        if verification.matches, let clipURL, ClipIntegrityCheck.supports(clipURL) {
+            do {
+                clipIntegrity = try inspection(destination)
+            } catch {
+                SharedLogger.warning(
+                    "Clip integrity inspection failed for \(relativePath): \(error.localizedDescription)",
+                    category: .transfer
+                )
+                clipIntegrity = nil
+            }
+        } else {
+            clipIntegrity = nil
         }
-        var combinedMatches = true
-        var firstResult: VerificationResult?
-        var primaryResult: VerificationResult?
-        var totalProcessing: TimeInterval = 0
-        for type in checksumTypes {
-            let result = try await checksumVerification(
-                source: source,
-                pinnedDestination: destination,
-                type: type,
-                checksumService: checksumService
-            )
-            combinedMatches = combinedMatches && result.matches
-            totalProcessing += result.processingTime
-            if firstResult == nil { firstResult = result }
-            if type == .sha256 { primaryResult = result }
-        }
-        guard let base = primaryResult ?? firstResult else {
-            throw FileOperationError.unsafeOperation("Verification mode does not provide a checksum")
-        }
-        return VerificationResult(
-            sourceChecksum: base.sourceChecksum,
-            destinationChecksum: base.destinationChecksum,
-            matches: combinedMatches,
-            checksumType: base.checksumType,
-            processingTime: totalProcessing,
-            fileSize: base.fileSize
-        )
+        return (verification, clipIntegrity)
     }
 
     private static func checksumsMatch(

@@ -15,7 +15,8 @@ public enum TransferCompletion: Sendable {
             size: result.fileSize,
             checksum: result.verificationResult?.sourceChecksum,
             destination: destinationLabel(for: result.destinationURL, roots: destinationRoots),
-            destinationPath: result.destinationURL.path
+            destinationPath: result.destinationURL.path,
+            clipIntegrity: result.clipIntegrity
         )
     }
 

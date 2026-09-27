@@ -27,9 +27,15 @@ enum ReportExporter {
                        generateFullReport: Bool = true,
                        photographerContext: PhotographerReportContext? = nil) async throws {
 
+        var reportPrefs = prefs
+        let automaticNotes = ResultPresentation.automaticReportNotes(results)
+        if !automaticNotes.isEmpty {
+            reportPrefs.notes = ([EvidenceWriter.normalizedNotes(prefs.notes)].compactMap { $0 } + automaticNotes)
+                .joined(separator: "\n")
+        }
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
-        let verification = EvidenceWriter.verificationDescription(for: prefs)
+        let verification = EvidenceWriter.verificationDescription(for: reportPrefs)
         let method = verification.label
 
         let destinationPaths = destinationURLs.map { $0.path }
@@ -68,7 +74,7 @@ enum ReportExporter {
             clientLogoData: nil,
             companyLogoData: nil,
             photographyJob: photographerPayload,
-            notes: EvidenceWriter.normalizedNotes(prefs.notes),
+            notes: EvidenceWriter.normalizedNotes(reportPrefs.notes),
             safetyState: safetyState
         )
 
@@ -105,7 +111,7 @@ enum ReportExporter {
                                        totalBytesProcessed: totalBytesProcessed,
                                        workers: workers,
                                        filesPerSecond: filesPerSecond,
-                                       prefs: prefs,
+                                       prefs: reportPrefs,
                                        generateFullReport: shouldGenerateFullReport,
                                        projectCSV: projectCSV,
                                        projectJSON: projectJSON)

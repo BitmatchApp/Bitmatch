@@ -305,7 +305,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
             ),
             canExport: true,
             sourceName: record.title,
-            completionReason: record.summary
+            completionReason: record.summary,
+            independentDestinationCount: record.independentDestinationCount
         )
     }
 

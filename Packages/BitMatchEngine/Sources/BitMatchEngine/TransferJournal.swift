@@ -88,13 +88,19 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public var verifyDurationSeconds: TimeInterval? = nil
     public var summary: String = "Ready to copy"
     public var results: [ResultRow] = []
+    /// Added after launch; nil decodes records written by older versions.
+    public var sourceFingerprint: String?
+    /// Physical drives represented by `destinations`. Nil for older records
+    /// whose disk independence was never assessed.
+    public var independentDestinationCount: Int?
 
     public var title: String { source.url.lastPathComponent }
     public var canRetry: Bool { state.canRetry && projectID == nil }
 
     public init(id: UUID, createdAt: Date, source: LocalTransferResource, destinations: [LocalTransferResource],
          verificationMode: VerificationMode, cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs,
-         generateASCMHL: Bool = true, projectID: UUID? = nil, projectCardID: UUID? = nil) {
+         generateASCMHL: Bool = true, projectID: UUID? = nil, projectCardID: UUID? = nil,
+         independentDestinationCount: Int? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.source = source
@@ -105,12 +111,14 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         self.generateASCMHL = generateASCMHL
         self.projectID = projectID
         self.projectCardID = projectCardID
+        self.independentDestinationCount = independentDestinationCount
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
-        case copyDurationSeconds, verifyDurationSeconds, summary, results
+        case copyDurationSeconds, verifyDurationSeconds, summary, results, sourceFingerprint
+        case independentDestinationCount
     }
 
     public init(from decoder: Decoder) throws {
@@ -132,6 +140,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         verifyDurationSeconds = try c.decodeIfPresent(TimeInterval.self, forKey: .verifyDurationSeconds)
         summary = try c.decode(String.self, forKey: .summary)
         results = try c.decode([ResultRow].self, forKey: .results)
+        sourceFingerprint = try c.decodeIfPresent(String.self, forKey: .sourceFingerprint)
+        independentDestinationCount = try c.decodeIfPresent(Int.self, forKey: .independentDestinationCount)
     }
     public var issueCount: Int { results.filter { !$0.isSuccessStatus }.count }
 }
@@ -380,7 +390,7 @@ public final class TransferJournal: Sendable {
         }
     }
 
-    public func markRunning(id: UUID) throws {
+    public func markRunning(id: UUID, independentDestinationCount: Int? = nil) throws {
         try commit { records in
             guard !records.contains(where: { $0.state == .running }) else { throw LocalTransferJournalError.invalidState }
             return try Self.updated(records, id: id) { record in
@@ -389,6 +399,7 @@ public final class TransferJournal: Sendable {
                 record.startedAt = Date()
                 record.endedAt = nil
                 record.summary = "Copying and verifying"
+                record.independentDestinationCount = independentDestinationCount
             }
         }
     }
@@ -485,13 +496,15 @@ public final class TransferJournal: Sendable {
         summary: String,
         hadIssues: Bool,
         copyDurationSeconds: TimeInterval? = nil,
-        verifyDurationSeconds: TimeInterval? = nil
+        verifyDurationSeconds: TimeInterval? = nil,
+        sourceFingerprint: String? = nil
     ) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.results = results
             record.copyDurationSeconds = copyDurationSeconds
             record.verifyDurationSeconds = verifyDurationSeconds
+            record.sourceFingerprint = sourceFingerprint
             record.state = hadIssues || results.isEmpty || results.contains(where: { !$0.isSuccessStatus }) ? .issues : .completed
             // A Quick-mode record must always say its contents were not
             // verified, whatever `summary` says. In the normal flow `summary`
@@ -506,6 +519,37 @@ public final class TransferJournal: Sendable {
             }
             record.endedAt = Date()
         }
+    }
+
+    /// Most recent proof that this exact manifest completed with verified
+    /// rows. Quick, incomplete, failed, and legacy records never match.
+    public func matchingVerifiedRecord(sourceFingerprint: String) -> LocalTransferRecord? {
+        records
+            .filter {
+                $0.sourceFingerprint == sourceFingerprint
+                    && $0.state == .completed
+                    && $0.verificationMode != .quick
+                    && Self.hasCompleteVerifiedResults($0)
+                    && $0.endedAt != nil
+            }
+            .max { ($0.endedAt ?? .distantPast) < ($1.endedAt ?? .distantPast) }
+    }
+
+    private static func hasCompleteVerifiedResults(_ record: LocalTransferRecord) -> Bool {
+        guard !record.results.isEmpty,
+              record.results.allSatisfy(\.isVerifiedStatus),
+              !record.destinations.isEmpty else { return false }
+        let groups = record.destinations.map { destination in
+            record.results.filter { row in
+                guard let path = row.destinationPath else { return false }
+                return PathContainment.isWithin(path, root: destination.url.path)
+            }
+        }
+        guard groups.allSatisfy({ !$0.isEmpty }),
+              groups.reduce(0, { $0 + $1.count }) == record.results.count,
+              let expectedPaths = groups.first.map({ Set($0.map(\.path)) }),
+              !expectedPaths.isEmpty else { return false }
+        return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
     }
 
     public func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil) throws {

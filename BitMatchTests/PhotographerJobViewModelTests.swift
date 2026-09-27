@@ -275,6 +275,35 @@ struct PhotographerJobViewModelTests {
         #expect(viewModel.activeCard?.localState == .notStarted)
     }
 
+    @Test func startingProjectWithNoDestinationsFailsClosed() {
+        let viewModel = preparedViewModel(store: InMemoryPhotographerJobStore())
+
+        let began = viewModel.beginIngest(destinationCount: 0)
+
+        #expect(!began)
+        #expect(viewModel.lastError == "Add 2 more destinations for this 2-copy job")
+        #expect(viewModel.activeCard?.localState == .notStarted)
+    }
+
+    @Test func rereportReusesStoredIndependenceInsteadOfRecountingGroups() throws {
+        let store = InMemoryPhotographerJobStore()
+        let viewModel = preparedViewModel(store: store)
+        viewModel.beginIngest(destinationCount: 2)
+        let rows = verifiedRows(destinationNames: ["Primary", "Secondary"])
+        try viewModel.completeIngest(results: rows)
+        let card = try #require(viewModel.activeCard)
+        #expect(card.localState == .locallySafe)
+
+        let jobID = try #require(viewModel.activeJob?.id)
+        let analysis = try #require(viewModel.preliminaryAnalysis)
+        let rereport = try viewModel.completeIngest(
+            jobID: jobID, cardID: card.id, analysis: analysis, results: rows
+        )
+
+        #expect(rereport.context?.independentDestinationCount == card.verifiedDestinationCount)
+        #expect(rereport.locallySafe)
+    }
+
     @Test func preparedPhotographerCardBlocksQuickModeWithConcreteStartError() throws {
         let viewModel = preparedViewModel(store: InMemoryPhotographerJobStore())
 

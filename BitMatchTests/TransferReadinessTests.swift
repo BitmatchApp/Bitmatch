@@ -17,6 +17,8 @@ struct TransferReadinessTests {
         sourceBytes: Int64? = 1_000,
         analysing: Bool = false,
         destinations: [URL]? = nil,
+        sourceIssue: String? = nil,
+        destinationWarnings: [String] = [],
         available: @escaping (URL) -> Int64? = { _ in nil },
         writable: @escaping (URL) -> Bool = { _ in true }
     ) -> TransferReadiness {
@@ -28,9 +30,23 @@ struct TransferReadinessTests {
             destinations: destinations ?? [backup],
             settings: CameraLabelSettings(),
             verificationMode: .standard,
+            sourceIssue: sourceIssue,
+            destinationWarnings: destinationWarnings,
             availableBytes: available,
             isWritable: writable
         )
+    }
+
+    @Test func cloudSourceIssueBlocksAndDiskWarningRemainsVisible() {
+        let warning = "SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"
+        let result = assess(
+            sourceIssue: "2 files on this source are stored in the cloud, not on this disk. Download them first.",
+            destinationWarnings: [warning]
+        )
+
+        #expect(result.status == .blocked)
+        #expect(result.blockers == ["2 files on this source are stored in the cloud, not on this disk. Download them first."])
+        #expect(result.warnings == [warning])
     }
 
     @Test func analyzedEmptySourceIsBlockedButAZeroByteFileIsAllowed() {

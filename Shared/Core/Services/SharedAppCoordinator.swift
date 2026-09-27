@@ -22,6 +22,10 @@ fileprivate struct ProjectRunIdentity: Sendable {
     let cardID: UUID
 }
 
+private struct UnresolvedPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding {
+    func physicalDiskIdentity(for url: URL) -> String? { nil }
+}
+
 /// The immutable inputs and identity of one transfer attempt. Setup owns the
 /// live composer; execution, evidence, and presentation own this snapshot.
 struct TransferRunContext {
@@ -38,6 +42,7 @@ struct TransferRunContext {
     let estimatedBytes: Int64
     let plannedTotalBytes: Int64?
     let sourceIsKnownEmpty: Bool
+    let independentDestinationCount: Int
     let photographerReportFinalizer: PhotographerReportFinalizer?
 
     fileprivate var projectIdentity: ProjectRunIdentity? {
@@ -60,6 +65,7 @@ struct TransferRunContext {
             estimatedBytes: estimatedBytes,
             plannedTotalBytes: plannedTotalBytes,
             sourceIsKnownEmpty: sourceIsKnownEmpty,
+            independentDestinationCount: independentDestinationCount,
             photographerReportFinalizer: photographerReportFinalizer
         )
     }
@@ -102,6 +108,7 @@ class SharedAppCoordinator: ObservableObject {
     
     // MARK: - Platform Manager
     private let platformManager: PlatformManager
+    private let physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding
     /// The single preference store used by the coordinator and the settings
     /// models it owns. The app uses `.standard`; tests inject isolated suites.
     let defaults: UserDefaults
@@ -271,10 +278,55 @@ class SharedAppCoordinator: ObservableObject {
     @Published var destinationURLs: [URL] = [] {
         didSet {
             destinationVolumeNames = destinationURLs.map(DestinationVolumeLabel.resolve)
+            scheduleDestinationIndependenceAssessment()
         }
     }
     /// Resolved once per selection change, never once per progress tick.
     private(set) var destinationVolumeNames: [String] = []
+    /// Resolved off the main actor when selection changes and confirmed when
+    /// Start snapshots a run. SwiftUI rendering never performs disk lookup.
+    @Published private(set) var destinationIndependence = BackupIndependencePolicy.assess(destinations: [])
+    private var destinationIndependenceGeneration = 0
+
+    private func scheduleDestinationIndependenceAssessment() {
+        destinationIndependenceGeneration &+= 1
+        let generation = destinationIndependenceGeneration
+        let destinations = destinationURLs
+        let names = destinations.map { DestinationIdentityPresentation.title(for: $0) }
+        let provider = physicalDiskIdentityProvider
+        // Preserve the lead-approved behavior until macOS positively
+        // identifies a shared physical disk.
+        destinationIndependence = BackupIndependencePolicy.assess(
+            destinations: destinations,
+            names: names,
+            provider: UnresolvedPhysicalDiskIdentityProvider()
+        )
+        Task { [weak self] in
+            let assessment = await Self.resolveDestinationIndependence(
+                destinations: destinations,
+                names: names,
+                provider: provider
+            )
+            guard let self,
+                  self.destinationIndependenceGeneration == generation,
+                  self.destinationURLs == destinations else { return }
+            self.destinationIndependence = assessment
+        }
+    }
+
+    private nonisolated static func resolveDestinationIndependence(
+        destinations: [URL],
+        names: [String],
+        provider: any PhysicalDiskIdentityProviding
+    ) async -> BackupIndependenceAssessment {
+        await Task.detached(priority: .userInitiated) {
+            BackupIndependencePolicy.assess(
+                destinations: destinations,
+                names: names,
+                provider: provider
+            )
+        }.value
+    }
     var presentedSourceURL: URL? {
         // With no run at all, both IDs are nil and compare equal; only a
         // real run context may stand in for the composer.
@@ -391,9 +443,11 @@ class SharedAppCoordinator: ObservableObject {
         transferJournal: LocalTransferJournal? = nil,
         projectStore: (any PhotographerJobStore)? = nil,
         photographerJobViewModel: PhotographerJobViewModel? = nil,
-        defaults: UserDefaults = .standard
+        defaults: UserDefaults = .standard,
+        physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider()
     ) {
         self.platformManager = platformManager
+        self.physicalDiskIdentityProvider = physicalDiskIdentityProvider
         self.defaults = defaults
         let environment = ProcessInfo.processInfo.environment
         let isTesting = environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
@@ -1490,6 +1544,12 @@ class SharedAppCoordinator: ObservableObject {
                 throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
             }
             let sourceBytes = sourceManifest.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
+            let destinationNames = access.destinationURLs.map { DestinationIdentityPresentation.title(for: $0) }
+            let independence = await Self.resolveDestinationIndependence(
+                destinations: access.destinationURLs,
+                names: destinationNames,
+                provider: physicalDiskIdentityProvider
+            )
             let context = TransferRunContext(
                 sourceURL: access.sourceURL,
                 destinationURLs: access.destinationURLs,
@@ -1504,6 +1564,7 @@ class SharedAppCoordinator: ObservableObject {
                 estimatedBytes: sourceBytes,
                 plannedTotalBytes: sourceBytes * Int64(access.destinationURLs.count),
                 sourceIsKnownEmpty: sourceManifest.isEmpty,
+                independentDestinationCount: independence.independentCopyCount,
                 photographerReportFinalizer: nil
             )
             await executeOperation(context)
@@ -1528,7 +1589,9 @@ class SharedAppCoordinator: ObservableObject {
         return safety == .needsAttention || safety == .failed || safety == .interrupted
     }
 
-    func startOperation() async {
+    func startOperation(
+        preResolvedIndependence: BackupIndependenceAssessment? = nil
+    ) async {
         // Capture every mutable composer input before execution can suspend.
         let runCameraSettings = projectRunCameraSettings ?? cameraLabelSettings
         let projectID = photographerReportFinalizer == nil ? nil : photographerJobViewModel.activeJob?.id
@@ -1536,6 +1599,10 @@ class SharedAppCoordinator: ObservableObject {
         let projectIdentity = projectID.flatMap { jobID in
             projectCardID.map { ProjectRunIdentity(jobID: jobID, cardID: $0) }
         }
+        let selectedVerificationMode = verificationMode
+        let selectedReportSettings = reportSettings
+        let selectedGenerateASCMHL = generateASCMHL
+        let selectedReportFinalizer = photographerReportFinalizer
         projectRunCameraSettings = nil
         guard let sourceURL, !destinationURLs.isEmpty else {
             operationState = .failed
@@ -1546,16 +1613,31 @@ class SharedAppCoordinator: ObservableObject {
             )
             return
         }
+        let selectedDestinations = destinationURLs
+        let independence: BackupIndependenceAssessment
+        if let preResolvedIndependence {
+            independence = preResolvedIndependence
+        } else {
+            independence = await Self.resolveDestinationIndependence(
+                destinations: selectedDestinations,
+                names: selectedDestinations.map { DestinationIdentityPresentation.title(for: $0) },
+                provider: physicalDiskIdentityProvider
+            )
+        }
+        guard self.sourceURL == sourceURL,
+              destinationURLs == selectedDestinations,
+              verificationMode == selectedVerificationMode else { return }
+        destinationIndependence = independence
         let sourceInfo = self.sourceFolderInfo.flatMap {
             $0.url.standardizedFileURL == sourceURL.standardizedFileURL ? $0 : nil
         }
         let context = TransferRunContext(
             sourceURL: sourceURL,
             destinationURLs: destinationURLs,
-            verificationMode: verificationMode,
+            verificationMode: selectedVerificationMode,
             cameraLabelSettings: runCameraSettings,
-            reportSettings: reportSettings,
-            generateASCMHL: generateASCMHL,
+            reportSettings: selectedReportSettings,
+            generateASCMHL: selectedGenerateASCMHL,
             projectID: projectID,
             projectCardID: projectCardID,
             journalRecordID: nil,
@@ -1563,7 +1645,8 @@ class SharedAppCoordinator: ObservableObject {
             estimatedBytes: sourceInfo?.totalSize ?? 1_000_000_000,
             plannedTotalBytes: sourceInfo.map { $0.totalSize * Int64(destinationURLs.count) },
             sourceIsKnownEmpty: sourceInfo?.fileCount == 0,
-            photographerReportFinalizer: photographerReportFinalizer
+            independentDestinationCount: independence.independentCopyCount,
+            photographerReportFinalizer: selectedReportFinalizer
         )
         await executeOperation(context)
     }
@@ -1639,7 +1722,10 @@ class SharedAppCoordinator: ObservableObject {
                 projectID: initialContext.projectID,
                 projectCardID: initialContext.projectCardID
             )
-            try transferJournal.markRunning(id: recordID)
+            try transferJournal.markRunning(
+                id: recordID,
+                independentDestinationCount: initialContext.independentDestinationCount
+            )
             context = initialContext.recording(in: recordID)
             activeJournalRecordID = recordID
             activeRunContext = context
@@ -1809,7 +1895,8 @@ class SharedAppCoordinator: ObservableObject {
                     summary: info.message,
                     hadIssues: !info.success,
                     copyDurationSeconds: durations.copySeconds,
-                    verifyDurationSeconds: durations.verifySeconds
+                    verifyDurationSeconds: durations.verifySeconds,
+                    sourceFingerprint: currentOperation?.sourceFingerprint
                 )
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else {
@@ -2040,6 +2127,14 @@ class SharedAppCoordinator: ObservableObject {
     /// platform, and the run uses the job's folder recipe.
     @discardableResult
     func startProjectOperation() async -> Bool {
+        let selectedDestinations = destinationURLs
+        let independence = await Self.resolveDestinationIndependence(
+            destinations: selectedDestinations,
+            names: selectedDestinations.map { DestinationIdentityPresentation.title(for: $0) },
+            provider: physicalDiskIdentityProvider
+        )
+        guard destinationURLs == selectedDestinations else { return false }
+        destinationIndependence = independence
         guard activeStartID == nil, !isOperationInProgress,
               operationReadinessAssessment.isReady,
               photographerJobViewModel.hasPreparedIngestAwaitingStart,
@@ -2049,7 +2144,7 @@ class SharedAppCoordinator: ObservableObject {
             return false
         }
         guard photographerJobViewModel.beginIngest(
-            destinationCount: destinationURLs.count,
+            destinationCount: destinationIndependence.independentCopyCount,
             sourceURL: sourceURL,
             verificationMode: verificationMode
         ) else {
@@ -2057,7 +2152,8 @@ class SharedAppCoordinator: ObservableObject {
         }
 
         let analysis = photographerJobViewModel.preliminaryAnalysis
-        photographerReportFinalizer = { [weak photographerJobViewModel, jobID, cardID, analysis] results in
+        let independentDestinationCount = destinationIndependence.independentCopyCount
+        photographerReportFinalizer = { [weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results in
             guard let photographerJobViewModel, let analysis,
                   let state = photographerJobViewModel.projectCardState(jobID: jobID, cardID: cardID),
                   state == .copying || state == .verifying else {
@@ -2067,7 +2163,8 @@ class SharedAppCoordinator: ObservableObject {
                 jobID: jobID,
                 cardID: cardID,
                 analysis: analysis,
-                results: results
+                results: results,
+                independentDestinationCount: independentDestinationCount
             )
         }
         activeProjectCardID = cardID
@@ -2079,7 +2176,7 @@ class SharedAppCoordinator: ObservableObject {
                 renderedRecipe: renderedRecipe
             )
         }
-        await startOperation()
+        await startOperation(preResolvedIndependence: independence)
         // Every terminal state clears `activeProjectCardID`. A start that
         // returned without one must not leave the card copying.
         if activeProjectCardID == cardID, !isOperationInProgress {
@@ -2746,7 +2843,8 @@ class SharedAppCoordinator: ObservableObject {
     /// The one readiness rule (`TransferReadiness`, UI plan step 4.5) for
     /// the current selection, with this disk's free space and writability.
     var transferReadiness: TransferReadiness {
-        TransferReadiness.assess(
+        let independence = destinationIndependence
+        return TransferReadiness.assess(
             source: sourceURL,
             sourceFileCount: sourceFolderInfo?.fileCount,
             sourceBytes: sourceFolderInfo?.totalSize,
@@ -2754,9 +2852,41 @@ class SharedAppCoordinator: ObservableObject {
             destinations: destinationURLs,
             settings: cameraLabelSettings,
             verificationMode: verificationMode,
+            sourceIssue: folderInfoService.sourceScanError,
+            destinationWarnings: independence.warnings,
             availableBytes: { self.getDriveCapacity(for: $0) },
             isWritable: TransferReadiness.isWritableFolder
         )
+    }
+
+    var alreadyBackedUpLine: String? {
+        guard let fingerprint = folderInfoService.sourceFingerprint,
+              let record = transferJournal.matchingVerifiedRecord(sourceFingerprint: fingerprint),
+              let endedAt = record.endedAt else { return nil }
+        let names = record.destinations.map { DestinationIdentityPresentation.title(for: $0.url) }
+        return Self.priorBackupLine(destinationNames: names, endedAt: endedAt)
+    }
+
+    static func priorBackupLine(
+        destinationNames names: [String],
+        endedAt: Date,
+        now: Date = Date()
+    ) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = Calendar.current.isDate(endedAt, equalTo: now, toGranularity: .year)
+            ? "MMM d"
+            : "MMM d, yyyy"
+        return "Backed up before to \(Self.joinedNames(names)) on \(formatter.string(from: endedAt))"
+    }
+
+    private static func joinedNames(_ names: [String]) -> String {
+        switch names.count {
+        case 0: return "a verified destination"
+        case 1: return names[0]
+        case 2: return "\(names[0]) and \(names[1])"
+        default: return names.dropLast().joined(separator: ", ") + ", and \(names.last ?? "")"
+        }
     }
     
     /// Get source folder metadata summary for professional display

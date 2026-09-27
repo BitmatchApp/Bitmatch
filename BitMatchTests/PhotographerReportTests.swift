@@ -26,7 +26,7 @@ struct PhotographerReportTests {
         let csvURL = try #require(files.first { $0.pathExtension == "csv" })
         let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
         let verification = try #require(object["verification"] as? [String: Any])
-        #expect(object["notes"] as? String == prefs.notes)
+        #expect(object["notes"] as? String == prefs.notes + "\nClip DSC0001 failed (1 file): DSC0001.XMP")
         #expect(verification["method"] as? String == "size-only")
         #expect(verification["algorithm"] == nil)
         let csv = try String(contentsOf: csvURL, encoding: .utf8)
@@ -240,6 +240,55 @@ struct PhotographerReportTests {
         #expect(payload.verifiedDestinationCount == 2)
         #expect(payload.card.verifiedDestinationCount == 2)
         #expect(payload.results.count == 4)
+    }
+
+    @Test func sameDriveDestinationsCannotSatisfyTwoCopyEvidence() throws {
+        var context = staleContext()
+        context = PhotographerReportContext(
+            job: context.job,
+            cardIngestID: context.cardIngestID,
+            analysis: context.analysis,
+            verifiedDestinationCount: context.verifiedDestinationCount,
+            warnings: context.warnings,
+            independentDestinationCount: 1
+        )
+
+        let payload = try PhotographerReportPayload.make(
+            context: context,
+            results: exactTwoDestinationResults(),
+            finishedAt: locallySafeAt
+        )
+
+        #expect(payload.verifiedDestinationCount == 0)
+        #expect(payload.card.verifiedDestinationCount == 0)
+        #expect(payload.card.localState == .issues)
+    }
+
+    @Test func sameDrivePairKeepsOneCopySafetyWhenRereportedWithStoredCap() throws {
+        let rows = exactTwoDestinationResults()
+        let fingerprint = try PhotographerCardAnalyzer.confirmedFingerprint(results: Array(rows.prefix(2)).sorted { $0.path < $1.path })
+        var context = staleContext()
+        var job = context.job
+        job.requiredLocalCopyCount = 1
+        var card = job.cardIngests[0]
+        card.localState = .locallySafe
+        card.locallySafeAt = locallySafeAt
+        card.provenance.confirmedFingerprint = fingerprint
+        card.verifiedDestinationCount = 1
+        job.cardIngests[0] = card
+        context = PhotographerReportContext(
+            job: job,
+            cardIngestID: card.id,
+            analysis: context.analysis,
+            verifiedDestinationCount: 1,
+            warnings: [],
+            independentDestinationCount: 1
+        )
+
+        let payload = try PhotographerReportPayload.make(context: context, results: rows)
+
+        #expect(payload.isLocallySafe)
+        #expect(payload.verifiedDestinationCount == 1)
     }
 
     @Test func unverifiedRemoteEvidenceKeepsLocalSafetyWithoutFullyBackedUpTimestamp() throws {
