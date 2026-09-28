@@ -172,7 +172,7 @@ struct BitMatchApp: App {
             if let window = AppDelegate.contentWindowCandidate() {
                 // Configure window appearance
                 window.title = "BitMatch"
-                window.titlebarAppearsTransparent = false
+                window.titlebarAppearsTransparent = true
                 window.titleVisibility = .hidden
                 if WindowPresentationPolicy.allowsManualResizing {
                     window.styleMask.insert(.resizable)
