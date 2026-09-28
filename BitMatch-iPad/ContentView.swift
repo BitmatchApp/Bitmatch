@@ -92,6 +92,7 @@ struct ContentView: View {
                         offersAddCard: true,
                         showsHeaderTitle: false
                     )
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                 }
                 .navigationTitle("Transfers")

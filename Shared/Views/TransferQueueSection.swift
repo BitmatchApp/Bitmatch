@@ -242,6 +242,7 @@ struct TransferQueueSection: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row)))
         .overlay {
             RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row))
