@@ -373,6 +373,39 @@ enum QueueCommandPolicy {
     }
 }
 
+/// Eject is a safety capability, not merely a row action. Keep this check at
+/// every UI and automatic-action boundary so an inconsistent presentation
+/// fails closed instead of making a non-safe card look removable.
+enum QueueEjectPolicy {
+    static func canOfferEject(row: QueueSessionRow, platformSupportsEject: Bool) -> Bool {
+        platformSupportsEject
+            && row.action == .eject
+            && row.safetyState == .safeToErase
+    }
+
+    static func shouldAutoEject(
+        row: QueueSessionRow,
+        platformSupportsEject: Bool,
+        preferenceEnabled: Bool
+    ) -> Bool {
+        preferenceEnabled && canOfferEject(
+            row: row,
+            platformSupportsEject: platformSupportsEject
+        )
+    }
+}
+
+enum QueueRunningNoticePolicy {
+    static func collapsedNotes(
+        isRunning: Bool,
+        isMobile: Bool,
+        progress: TransferProgressPresentation
+    ) -> [ProgressDeviceNote] {
+        guard isRunning, isMobile else { return [] }
+        return progress.deviceNotes
+    }
+}
+
 enum QueueHeroPolicy {
     static func shouldExpand(
         row: QueueSessionRow,

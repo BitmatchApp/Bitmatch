@@ -84,35 +84,10 @@ struct PhoneContentView: View {
             return "compare-setup"
         }
         if coordinator.currentMode == .masterReport { return "master-report" }
-        if coordinator.isOperationInProgress { return "copy-running" }
-        if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-            return "copy-paused"
-        }
-        return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
+        return "copy-setup"
     }
 
-    @ViewBuilder
     private var copyAndVerifyStack: some View {
-        if coordinator.isOperationInProgress {
-            VStack(spacing: 16) {
-                OperationProgressView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-            VStack(spacing: 16) {
-                CopyAndVerifyView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        } else if coordinator.showsOutcomeSummary {
-            VStack(spacing: 16) {
-                CompletionSummaryView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        } else {
-            VStack(spacing: 16) {
-                CopyAndVerifyView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        }
+        CopyAndVerifyView(coordinator: coordinator)
     }
 }

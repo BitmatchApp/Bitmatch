@@ -17,7 +17,10 @@ struct CopyAndVerifyView: View {
             coordinator: coordinator,
             optionsExpanded: $optionsExpanded
         ) { context, advanced in
-            IOSSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
+            VStack(alignment: .leading, spacing: 12) {
+                IOSSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
+                TransferQueueSection(coordinator: coordinator, offersAddCard: true)
+            }
         } problems: {
             EmptyView()
         } projectSetup: {

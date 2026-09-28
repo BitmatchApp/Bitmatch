@@ -41,8 +41,8 @@ struct OutcomeDestinationLine: Equatable, Identifiable, Sendable {
     let needsAttention: Bool
 }
 
-/// Everything the shared `OutcomeScreen` shows for a finished, failed or
-/// interrupted transfer, on Mac, iPad and iPhone (UI plan step 4.7).
+/// Everything a finished transfer row shows for a completed, failed or
+/// interrupted transfer on Mac, iPad and iPhone.
 ///
 /// It only *presents* the verdict: `CompletionVerdict` and the state-aware
 /// `CompletionVerdictPresentation.make(state:…)` decide it. Guidance, state,

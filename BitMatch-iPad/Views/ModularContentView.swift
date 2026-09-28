@@ -88,11 +88,7 @@ extension ModularContentView {
             return "compare-setup"
         }
         if coordinator.currentMode == .masterReport { return "master-report" }
-        if coordinator.isOperationInProgress { return "copy-running" }
-        if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-            return "copy-paused"
-        }
-        return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
+        return "copy-setup"
     }
 
     @ViewBuilder
@@ -114,59 +110,14 @@ extension ModularContentView {
                     .padding(.top, 8)
             }
             
-            // Three-state architecture using components. Compare shows its own
-            // progress and outcome inside CompareScreen, so it stays on the
-            // mode view instead of the transfer progress/completion screens.
-            if coordinator.currentMode == .compareFolders {
-                IdleStateView(coordinator: coordinator, navigationPresentation: navigationPresentation, showingTransfers: $showingTransfers)
-            } else if coordinator.isOperationInProgress {
-                // OPERATION STATE: the shared progress screen, scrolled so
-                // many backups never clip in a short split view.
-                ScrollView {
-                    VStack(spacing: 16) {
-                        OperationProgressView(coordinator: coordinator)
-                        ActiveQueueSection(coordinator: coordinator)
-                    }
-                    .padding(.horizontal)
-                }
-                    .onAppear {
-                        SharedLogger.debug("UI switched to OPERATION view")
-                    }
-            } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-                // A queue problem belongs inside Queue. Setup remains the
-                // stable workbench until the person explicitly reviews it.
-                VStack(spacing: 16) {
-                    IdleStateView(
-                        coordinator: coordinator,
-                        navigationPresentation: navigationPresentation,
-                        showingTransfers: $showingTransfers
-                    )
-                    ActiveQueueSection(coordinator: coordinator)
-                        .padding(.horizontal)
-                }
-            } else if coordinator.showsOutcomeSummary {
-                // COMPLETION STATE: Show transfer summary
-                ScrollView {
-                    VStack(spacing: 16) {
-                        CompletionSummaryView(coordinator: coordinator)
-                        ActiveQueueSection(coordinator: coordinator)
-                    }
-                    .padding(.horizontal)
-                }
-                    .onAppear {
-                        SharedLogger.debug("UI switched to COMPLETION view")
-                    }
-            } else {
-                // IDLE STATE: Show file selection interface
-                VStack(spacing: 16) {
-                    IdleStateView(coordinator: coordinator, navigationPresentation: navigationPresentation, showingTransfers: $showingTransfers)
-                    ActiveQueueSection(coordinator: coordinator)
-                        .padding(.horizontal)
-                }
-                    .onAppear {
-                        SharedLogger.debug("UI switched to IDLE view")
-                    }
-            }
+            // Setup remains the workbench while transfers run and finish.
+            // Copy and Verify embeds its live queue directly below locations;
+            // Compare and Master Report keep their own inline state.
+            IdleStateView(
+                coordinator: coordinator,
+                navigationPresentation: navigationPresentation,
+                showingTransfers: $showingTransfers
+            )
         }
         .frame(maxWidth: .infinity)
     }
@@ -290,7 +241,7 @@ private struct RecentTransfersSection: View {
 
 /// Builds the shared `ComparePresentation` from `SharedAppCoordinator`.
 /// Readiness, progress and the outcome all render inside `CompareScreen`;
-/// Compare never routes to the transfer progress or completion screens.
+/// Compare never uses the transfer rows' progress or finished content.
 struct CompareFoldersView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     /// Compare draws its progress inline; the coordinator does not republish

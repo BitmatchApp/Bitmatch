@@ -701,6 +701,48 @@ struct FinishedRunSnapshotTests {
         #expect(!presentation.verdict.detail.contains(liveName) || recordedName == liveName)
         #expect(presentation.copySummary.contains(recordedName))
     }
+
+    @Test func coordinatorAdapterPreservesRetryExportAndErrorSemantics() throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let journal = LocalTransferJournal(fileURL: folders.journalURL)
+        let id = try journal.enqueue(
+            sourceURL: folders.source,
+            destinationURLs: [folders.primary],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(),
+            generateASCMHL: false
+        )
+        try journal.markRunning(id: id)
+        try journal.finish(
+            id: id,
+            results: [ResultRow(
+                path: "DCIM/A.mov",
+                status: ResultOutcome.failed.statusText,
+                size: 12_345,
+                checksum: nil,
+                destination: "primary",
+                destinationPath: folders.primary.appendingPathComponent("DCIM/A.mov").path
+            )],
+            summary: "1 file failed",
+            hadIssues: true
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: journal,
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        coordinator.reviewQueuedTransfer(id)
+
+        let presentation = TransferOutcomePresentation.make(coordinator: coordinator)
+
+        #expect(presentation.safetyState == .needsAttention)
+        #expect(presentation.canRetry)
+        #expect(presentation.canExport)
+        #expect(!presentation.issueLines.isEmpty)
+    }
 }
 
 /// Audit H12: one composed VoiceOver label per file result row, so a row

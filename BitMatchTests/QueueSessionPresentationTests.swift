@@ -238,6 +238,42 @@ struct QueueSessionPresentationTests {
         #expect(!presentation.rows[2].showsSafeHero)
     }
 
+    @Test func nonSafeRowNeverOffersOrAutomaticallyTriggersEject() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let attention = try fixture.record(
+            name: "A003", state: .issues, outcome: .failed, at: 1
+        )
+        let original = try #require(QueueSessionPresentation.make(
+            records: [attention], sessionIDs: [attention.id], progress: nil,
+            mountedSourceIDs: [attention.id]
+        ).rows.first)
+        let inconsistent = QueueSessionRow(
+            id: original.id,
+            cardName: original.cardName,
+            evidence: original.evidence,
+            destinations: original.destinations,
+            safetyState: original.safetyState,
+            progressFraction: original.progressFraction,
+            action: .eject,
+            cause: original.cause,
+            copySummary: original.copySummary,
+            outcome: original.outcome,
+            destinationNames: original.destinationNames,
+            verificationModeName: original.verificationModeName
+        )
+
+        #expect(inconsistent.safetyState != .safeToErase)
+        #expect(!QueueEjectPolicy.canOfferEject(
+            row: inconsistent, platformSupportsEject: true
+        ))
+        #expect(!QueueEjectPolicy.shouldAutoEject(
+            row: inconsistent,
+            platformSupportsEject: true,
+            preferenceEnabled: true
+        ))
+    }
+
     @Test func heroExpansionRequiresANewSafeVerdictAndStopsForTheNextRunningCard() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }

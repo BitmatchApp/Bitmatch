@@ -222,8 +222,8 @@ class SharedAppCoordinator: ObservableObject {
     /// Background transfer notifications, filtered by `generalSettings`.
     let transferNotifier: TransferNotifier
     let transferSignals = PassthroughSubject<TransferSignal, Never>()
-    /// Kept as the shared outcome screen's binding while the setting itself
-    /// lives with the other General settings.
+    /// Read by the Mac transfer rows while the setting itself lives with the
+    /// other General settings.
     var autoEjectWhenSafe: Bool {
         get { generalSettings.autoEjectWhenSafe }
         set { generalSettings.autoEjectWhenSafe = newValue }
@@ -235,7 +235,7 @@ class SharedAppCoordinator: ObservableObject {
     /// cannot mismatch the per-destination bars.
     private var presentedDestinationCount: Int?
     /// The run's per-file results. Stored in `liveResults`, the one copy the
-    /// outcome screen, verdict, journal and export read. Writing the whole
+    /// finished row verdict, journal and export read. Writing the whole
     /// list here (clear, or the engine's authoritative list) announces the
     /// change on this coordinator as the published property did; a live
     /// per-file row goes through `receiveLiveResult(_:)` and does not, so
@@ -1378,9 +1378,8 @@ class SharedAppCoordinator: ObservableObject {
         operationState = state
     }
 
-    /// Marks an inline Mac row as reviewed without replacing the always-on
-    /// composer with the old outcome selection. iPad and iPhone continue to
-    /// use `reviewQueuedTransfer(_:)` for their navigation flow.
+    /// Marks an inline row as reviewed without replacing the always-on
+    /// composer with an old transfer's selection.
     func markQueueTransferReviewed(_ id: UUID) {
         guard queueSessionRecordIDs.contains(id) else { return }
         reviewedQueueAttentionIDs.insert(id)
@@ -2552,8 +2551,8 @@ class SharedAppCoordinator: ObservableObject {
         currentMode = mode
     }
 
-    /// The journal record of the transfer the outcome screen shows: it gives
-    /// Retry, Export and the run's duration. Nil after `resetForNewOperation()`.
+    /// The active journal record used by transfer menu policy and presentation
+    /// adapters. Nil after `resetForNewOperation()`.
     var outcomeRecord: LocalTransferRecord? {
         guard let id = activeJournalRecordID else { return nil }
         return transferJournal.records.first { $0.id == id }

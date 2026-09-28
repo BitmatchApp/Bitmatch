@@ -38,6 +38,27 @@ struct ProgressPresentationIOSTests {
         #expect(background.deviceNotes.first?.text.hasPrefix("About 3 min") == true)
     }
 
+    @Test
+    func collapsedRunningRowShowsBackgroundLimitWithoutExpansion() {
+        let foreground = make(device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
+        let foregroundNotes = QueueRunningNoticePolicy.collapsedNotes(
+            isRunning: true, isMobile: true, progress: foreground
+        )
+        #expect(foregroundNotes.contains { $0.text.hasPrefix("Keep BitMatch open") })
+
+        let background = make(device: .iOS(keepsScreenAwake: false, backgroundSecondsLeft: 150))
+        let backgroundNotes = QueueRunningNoticePolicy.collapsedNotes(
+            isRunning: true, isMobile: true, progress: background
+        )
+        #expect(backgroundNotes.first?.text.hasPrefix("About 3 min") == true)
+        #expect(QueueRunningNoticePolicy.collapsedNotes(
+            isRunning: false, isMobile: true, progress: background
+        ).isEmpty)
+        #expect(QueueRunningNoticePolicy.collapsedNotes(
+            isRunning: true, isMobile: false, progress: background
+        ).isEmpty)
+    }
+
     // Plant: in `TransferProgressPresentation.phase`, return `.preparing`
     // for every stage while the state is `.inProgress`.
     @Test

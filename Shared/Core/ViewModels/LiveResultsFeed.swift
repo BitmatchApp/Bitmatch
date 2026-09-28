@@ -8,11 +8,10 @@ import BitMatchEngine
 /// so it lives outside `SharedAppCoordinator`'s `objectWillChange`, as
 /// `LiveProgressFeed` does for progress: the Mac, iPad and iPhone shells
 /// observe the coordinator, and a per-file row must not redraw them. Only
-/// the views that list results (the Mac live results table and the shared
-/// outcome screen) observe this object.
+/// consumers that need live rows observe this object directly.
 ///
 /// These rows are the same storage `SharedAppCoordinator.results` reads and
-/// writes, so the outcome screen, the journal and the completion export see
+/// writes, so finished-row presentation, the journal and exports see
 /// exactly what the engine reported. A whole-list write through
 /// `coordinator.results` (clear, or the engine's authoritative list at the
 /// end of a run) still announces itself on the coordinator.
