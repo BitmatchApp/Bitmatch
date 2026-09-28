@@ -29,19 +29,10 @@
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/mac-setup.png" width="760" alt="BitMatch on Mac: a card, two destinations, ready to start">
+  <img src="docs/screenshots/mac.png" width="760" alt="BitMatch on Mac: choose a card and destinations; each card in the queue shows its own progress and says when it is safe to erase">
 </p>
 
 For indie filmmakers, YouTubers, photographers, and small productions that don't want a subscription just to copy files.
-
-<details><summary><b>More screenshots</b></summary>
-<br>
-<p align="center"><img src="docs/screenshots/mac-finish.png" alt="The card is safe to erase once every file on every destination is verified" width="680"></p>
-<p align="center"><img src="docs/screenshots/mac-history.png" alt="History" width="680"></p>
-<p align="center"><b>iPad: see what differs between two folders.</b><br><img src="docs/validation/2026-09-20/screenshots/ipad-comparison-differences.png" alt="iPad folder comparison with verification settings and grouped differences" width="680"></p>
-<p align="center"><b>iPhone: the results for each destination, on a smaller screen.</b><br><img src="docs/validation/2026-09-20/screenshots/iphone-completion.png" alt="iPhone completion screen with results for each destination, report export, and New transfer" width="320"></p>
-<p align="center"><i>Screenshots use sample data.</i></p>
-</details>
 
 ## Download
 
@@ -66,16 +57,18 @@ Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now
   💾 A   💾 B
 ```
 
-Plug in your card and drives, allow BitMatch to use them once, and it picks up the card as the source; you choose the destinations. **Standard SHA-256 verification is the default**, reading each destination drive itself; the card is only **Safe to erase** when every file on every destination is verified. Use **One-time transfer** for one card or **Project transfer** for a shoot with several cards and cameras.
+Plug in your card and drives, allow BitMatch to use them once, and it picks up the card as the source; you choose the destinations. BitMatch reads the card **once** and writes every drive at the same time, then reads each drive back from disk to verify it. The card is only **Safe to erase** when every file on every destination is verified. Queue the next card while one copies; each card is a row that shows its own progress and verdict. Use **One-time transfer** for one card or **Project transfer** for a shoot with several cards and cameras.
 
 ## What It Does
 
-- **Multi destination copy** with SHA-256 verification. Each destination gets its own results.
+- **Multi destination copy**: the card is read once and written to every drive at the same time, then each drive is read back and checked with SHA-256. Each destination gets its own results.
+- **Careful about "safe to erase"**: a card or folder that changes during the copy, online-only iCloud/Dropbox files, or two "backups" on the same physical drive never count as safe. Hidden `._` files are copied and verified too.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
 - **Folder compare** for stuff you already copied.
 - **PDF, CSV, and JSON reports** for producers who want documentation, or you when you want to check what happened.
-- **Transfer queue and history** on Mac, iPad, and iPhone. Interrupted attempts can be reviewed and retried.
+- **Transfer queue and history** on Mac, iPad, and iPhone. Interrupted attempts can be reviewed and retried. Copying a card you already backed up tells you so.
+- **Updates itself** on Mac: new versions arrive inside the app, signed and checked before they install.
 - **Optional SFTP backup on Mac** for an off-site copy once the local one is verified.
 
 ## Verification Modes
@@ -83,9 +76,9 @@ Plug in your card and drives, allow BitMatch to use them once, and it picks up t
 | Mode | What it checks |
 | --- | --- |
 | Quick | Copy only; no checksum verification |
-| Standard — default | SHA-256 |
-| Thorough | SHA-256 and MD5 |
-| Paranoid | Byte-by-byte comparison plus SHA-256 verification |
+| Standard — default | Reads the card once; reads every drive back and checks SHA-256 |
+| Thorough | Also re-reads the card; SHA-256 and MD5 |
+| Paranoid | Also re-reads the card and compares every byte, plus SHA-256 |
 
 Quick means copy only; it does **not** prove the contents match.
 
