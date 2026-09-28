@@ -8,10 +8,17 @@ final class OperationOwnershipTests: XCTestCase {
         try await FileOperationsTestLock.shared.run {
             let fixture = try OwnershipTransferFixture(destinationCount: 2)
             defer { fixture.cleanup() }
-            let checksum = BlockingChecksumService()
+            // Standard takes the source digest from the fan-out copy read, so
+            // no checksum-service call can hold the first operation open. The
+            // verifier is held at the pinned destination readback instead,
+            // which every checksum mode reaches.
+            let gate = ReadbackGate()
             let service = TransferPipeline(
                 fileSystem: MacOSFileSystemService.shared,
-                checksum: checksum
+                checksum: ChecksumEngine.shared,
+                fanOutHooks: .init(beforeDestinationRead: { _, _ in
+                    try await gate.waitInReadback()
+                })
             )
             let firstFinished = AsyncFlag()
 
@@ -34,8 +41,8 @@ final class OperationOwnershipTests: XCTestCase {
                 return result
             }
 
-            let verifierStarted = await waitUntil { await checksum.didStart }
-            XCTAssertTrue(verifierStarted)
+            let verifierStarted = await waitUntil { await gate.didEnter }
+            XCTAssertTrue(verifierStarted, "The first operation never reached its verifier")
 
             let secondError: Error?
             do {
@@ -54,9 +61,12 @@ final class OperationOwnershipTests: XCTestCase {
             }
 
             let firstWasStillActive = !(await firstFinished.value)
-            await checksum.release()
+            await gate.release()
+            let firstReturned = await waitUntil(timeout: .seconds(10)) { await firstFinished.value }
+            XCTAssertTrue(firstReturned, "The first operation did not return after its verifier was released")
+            guard firstReturned else { return }
             let firstResult = await first.value
-            let firstVerifierWasCancelled = await checksum.didObserveCancellation
+            let firstVerifierWasCancelled = await gate.didObserveCancellation
 
             XCTAssertEqual(
                 secondError?.localizedDescription,
@@ -78,10 +88,13 @@ final class OperationOwnershipTests: XCTestCase {
         try await FileOperationsTestLock.shared.run {
             let fixture = try OwnershipTransferFixture(destinationCount: 1)
             defer { fixture.cleanup() }
-            let checksum = BlockingChecksumService()
+            let gate = ReadbackGate()
             let service = TransferPipeline(
                 fileSystem: MacOSFileSystemService.shared,
-                checksum: checksum
+                checksum: ChecksumEngine.shared,
+                fanOutHooks: .init(beforeDestinationRead: { _, _ in
+                    try await gate.waitInReadback()
+                })
             )
             let callbackCount = AsyncCounter()
             let callerFinished = AsyncFlag()
@@ -105,15 +118,18 @@ final class OperationOwnershipTests: XCTestCase {
                 return result
             }
 
-            let verifierStarted = await waitUntil { await checksum.didStart }
-            XCTAssertTrue(verifierStarted)
+            let verifierStarted = await waitUntil { await gate.didEnter }
+            XCTAssertTrue(verifierStarted, "The caller never reached its verifier")
 
             caller.cancel()
-            let verifierSawCancellation = await waitUntil(timeout: .milliseconds(300)) { await checksum.didObserveCancellation }
+            let verifierSawCancellation = await waitUntil(timeout: .milliseconds(300)) { await gate.didObserveCancellation }
             let callerReturnedBeforeRelease = await callerFinished.value
             let callbacksBeforeRelease = await callbackCount.value
 
-            await checksum.release()
+            await gate.release()
+            let callerReturned = await waitUntil(timeout: .seconds(10)) { await callerFinished.value }
+            XCTAssertTrue(callerReturned, "The caller did not return after its verifier was released")
+            guard callerReturned else { return }
             let callerResult = await caller.value
             // Quiet window: no callback may arrive after return, so there is
             // no condition to poll for.
@@ -135,7 +151,7 @@ final class OperationOwnershipTests: XCTestCase {
         try await FileOperationsTestLock.shared.run {
             let fixture = try OwnershipTransferFixture(destinationCount: 2)
             defer { fixture.cleanup() }
-            let checksum = BlockingChecksumService()
+            let gate = ReadbackGate()
             let failingRoot = SafetyValidator.resolvedDestinationRoot(
                 source: fixture.source,
                 destination: fixture.destinations[1],
@@ -145,11 +161,14 @@ final class OperationOwnershipTests: XCTestCase {
             let failingDestination = fixture.destinations[1].standardizedFileURL
             let service = TransferPipeline(
                 fileSystem: fileSystem,
-                checksum: checksum,
+                checksum: ChecksumEngine.shared,
                 destinationSetupHook: { destination in
                     guard destination.standardizedFileURL == failingDestination else { return }
                     try fileSystem.enterFailingDirectory()
-                }
+                },
+                fanOutHooks: .init(beforeDestinationRead: { _, _ in
+                    try await gate.waitInReadback()
+                })
             )
             let callbackCount = AsyncCounter()
             let operationFinished = AsyncFlag()
@@ -176,20 +195,23 @@ final class OperationOwnershipTests: XCTestCase {
             // Fan-out pins every destination before the source-once copy, so no
             // verifier can start while a destination setup is still blocked.
             // Unblock setup first (it then fails fast) and only then wait for
-            // the verifier to block in the checksum gate.
+            // the verifier to block in the destination-readback gate.
             let failingDirectoryEntered = await waitUntil { fileSystem.didEnterFailingDirectory }
             XCTAssertTrue(failingDirectoryEntered)
             fileSystem.releaseFailingDirectory()
 
-            let verifierStarted = await waitUntil { await checksum.didStart }
-            XCTAssertTrue(verifierStarted)
+            let verifierStarted = await waitUntil { await gate.didEnter }
+            XCTAssertTrue(verifierStarted, "The operation never reached its verifier")
 
             service.cancelOperation()
 
             let returnedBeforeVerifierRelease = await waitUntil(timeout: .milliseconds(300)) { await operationFinished.value }
-            let verifierSawCancellation = await checksum.didObserveCancellation
+            let verifierSawCancellation = await gate.didObserveCancellation
             let callbacksBeforeVerifierRelease = await callbackCount.value
-            await checksum.release()
+            await gate.release()
+            let operationReturned = await waitUntil(timeout: .seconds(10)) { await operationFinished.value }
+            XCTAssertTrue(operationReturned, "The operation did not return after its verifier was released")
+            guard operationReturned else { return }
             _ = await operation.value
             // Quiet window: no callback may arrive after return, so there is
             // no condition to poll for.
@@ -300,99 +322,39 @@ private struct OwnershipTransferFixture {
     }
 }
 
-private actor BlockingChecksumGate {
-    private var started = false
+/// Holds a verifier at the pinned destination readback until `release()`.
+/// Standard takes the source digest from the fan-out copy read and Thorough
+/// from its own re-read, so neither routes through the checksum service any
+/// more; `beforeDestinationRead` is the hook every checksum mode reaches.
+private actor ReadbackGate {
+    private var entered = false
     private var released = false
     private var cancellationObserved = false
-    private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
 
-    var didStart: Bool { started }
+    var didEnter: Bool { entered }
     var didObserveCancellation: Bool { cancellationObserved }
 
-    func begin() {
-        started = true
-    }
+    func release() { released = true }
 
-    func waitForRelease() async {
-        guard !released else { return }
-        await withCheckedContinuation { continuation in
-            releaseWaiters.append(continuation)
-        }
-    }
-
-    func observeCancellation() {
-        cancellationObserved = true
-    }
-
-    func release() {
-        released = true
-        let waiters = releaseWaiters
-        releaseWaiters.removeAll()
-        waiters.forEach { $0.resume() }
-    }
-}
-
-private final class BlockingChecksumService: ChecksumService, @unchecked Sendable {
-    private let gate = BlockingChecksumGate()
-
-    var didStart: Bool { get async { await gate.didStart } }
-    var didObserveCancellation: Bool { get async { await gate.didObserveCancellation } }
-    func release() async { await gate.release() }
-
-    /// Verification (in production) is driven through `generateChecksum` for
-    /// the source digest, so that call must gate/observe cancellation exactly
-    /// like `verifyFileIntegrity` used to for these tests to exercise the
-    /// same start/cancel/release timing.
-    private func blockUntilReleasedOrCancelled() async throws {
-        await gate.begin()
-        await withTaskCancellationHandler {
-            await gate.waitForRelease()
-        } onCancel: { [gate] in
-            Task { await gate.observeCancellation() }
+    /// Records entry, then parks until `release()`. Cancellation is recorded
+    /// but never ends the wait, so a run that returns before its verifiers
+    /// finish is caught. Throws `ReadbackGateError.timedOut` after 5 seconds
+    /// so a forgotten release fails the test instead of hanging it.
+    func waitInReadback() async throws {
+        entered = true
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: .seconds(5))
+        while !released {
+            if Task.isCancelled { cancellationObserved = true }
+            if clock.now >= deadline { throw ReadbackGateError.timedOut }
+            try? await Task.sleep(for: .milliseconds(10))
         }
         try Task.checkCancellation()
     }
+}
 
-    func generateChecksum(
-        for fileURL: URL,
-        type: ChecksumAlgorithm,
-        progressCallback: ProgressCallback?
-    ) async throws -> String {
-        try await blockUntilReleasedOrCancelled()
-        // Production now compares this source digest against the real
-        // destination digest read through the pinned handle, so this must
-        // be the file's actual checksum rather than a fixed placeholder.
-        return try await ChecksumEngine.shared.generateChecksum(
-            for: fileURL,
-            type: type,
-            progressCallback: nil
-        )
-    }
-
-    func verifyFileIntegrity(
-        sourceURL: URL,
-        destinationURL: URL,
-        type: ChecksumAlgorithm,
-        progressCallback: ProgressCallback?
-    ) async throws -> VerificationResult {
-        try await blockUntilReleasedOrCancelled()
-        return VerificationResult(
-            sourceChecksum: "hash",
-            destinationChecksum: "hash",
-            matches: true,
-            checksumType: type,
-            processingTime: 0,
-            fileSize: 17
-        )
-    }
-
-    func performByteComparison(
-        sourceURL: URL,
-        destinationURL: URL,
-        progressCallback: ProgressCallback?
-    ) async throws -> Bool {
-        true
-    }
+private enum ReadbackGateError: Error {
+    case timedOut
 }
 
 private final class BlockingFailureFileSystem: FakeFileSystemService {

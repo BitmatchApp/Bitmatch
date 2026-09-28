@@ -161,6 +161,19 @@ private struct VerifyJob: Sendable {
     let fileSize: Int64
     let destinationIndex: Int
     let pinnedRoot: PinnedDestinationDirectory
+    let sourceReadEvidence: DestinationWriter.SourceReadEvidence?
+}
+
+private actor SourceReadEvidenceStore {
+    private var values: [String: DestinationWriter.SourceReadEvidence] = [:]
+
+    func record(_ evidence: DestinationWriter.SourceReadEvidence, for relativePath: String) {
+        values[relativePath] = evidence
+    }
+
+    func evidence(for relativePath: String) -> DestinationWriter.SourceReadEvidence? {
+        values[relativePath]
+    }
 }
 
 /// Safe multiplication that returns Int64.max on overflow (Bug 6 fix)
@@ -281,21 +294,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         fileSystem: any FileAccess,
         checksum: any ChecksumService,
         pipelinedVerification: Bool = true,
-        destinationSetupHook: (@Sendable (URL) throws -> Void)? = nil
-    ) {
-        self.fileSystem = fileSystem
-        self.checksumService = checksum
-        self.pipelinedVerification = pipelinedVerification
-        self.destinationSetupHook = destinationSetupHook
-        self.fanOutHooks = nil
-    }
-
-    init(
-        fileSystem: any FileAccess,
-        checksum: any ChecksumService,
-        pipelinedVerification: Bool = true,
         destinationSetupHook: (@Sendable (URL) throws -> Void)? = nil,
-        fanOutHooks: DestinationWriter.FanOutHooks
+        fanOutHooks: DestinationWriter.FanOutHooks? = nil
     ) {
         self.fileSystem = fileSystem
         self.checksumService = checksum
@@ -493,6 +493,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         }
 
         let sourceFileURLs = sourceManifest.map(\.url)
+        let sourceReadEvidence = SourceReadEvidenceStore()
         var pinnedDestinations = Array<PinnedDestinationDirectory?>(
             repeating: nil,
             count: destinationCount
@@ -512,7 +513,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     relativePath: job.relativePath,
                     verificationMode: operation.verificationMode,
                     checksumService: self.checksumService,
-                    clipURL: job.destination
+                    clipURL: job.destination,
+                    sourceReadEvidence: job.sourceReadEvidence,
+                    destinationIndex: job.destinationIndex,
+                    hooks: self.fanOutHooks
                 )
                 let verificationResult = checked.verification
                 let verified = FileOperationResult(
@@ -676,6 +680,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 preEnumeratedFiles: sourceFileURLs,
                 pauseCheck: { try await pauseGate.wait() },
                 hooks: fanOutHooks,
+                onSourceReadEvidence: { relativePath, evidence in
+                    await sourceReadEvidence.record(evidence, for: relativePath)
+                },
                 onProgress: { destIndex, relativePath, fileSize in
                     guard let pinnedDestination = pinnedByIndex[destIndex] else { return }
                     let srcURL = manifestURLByRelativePath[relativePath]
@@ -706,7 +713,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         submitVerify.yield(VerifyJob(
                             source: srcURL, destination: dstURL, relativePath: relativePath,
                             fileSize: max(0, fileSize), destinationIndex: destIndex,
-                            pinnedRoot: pinnedDestination
+                            pinnedRoot: pinnedDestination,
+                            sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath)
                         ))
                     }
 
@@ -772,7 +780,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     relativePath: relativePath,
                                     verificationMode: operation.verificationMode,
                                     checksumService: self.checksumService,
-                                    clipURL: destinationFileURL
+                                    clipURL: destinationFileURL,
+                                    sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath),
+                                    destinationIndex: destIndex,
+                                    hooks: fanOutHooks
                                 )
                                 let verificationResult = checked.verification
 

@@ -39,7 +39,13 @@ struct EngineGuardTests {
             let fixture = try DisposableTransferFixture(seed: 30, fileCount: 3, bytesPerFile: 4 * 1024)
             defer { fixture.cleanup() }
             let checksum = GatedChecksumService()
-            let service = TransferPipeline(fileSystem: LocalFileAccess(), checksum: checksum)
+            let service = TransferPipeline(
+                fileSystem: LocalFileAccess(),
+                checksum: ChecksumEngine.shared,
+                fanOutHooks: .init(beforeDestinationRead: { _, _ in
+                    try await checksum.beforeDestinationRead()
+                })
+            )
             let done = DoneFlag()
             let run = Task {
                 defer { done.set() }
@@ -169,7 +175,9 @@ struct EngineGuardTests {
             let fixture = try DisposableTransferFixture(seed: 71, fileCount: 50, bytesPerFile: 1024)
             defer { fixture.cleanup() }
             let checksum = PeakCountingChecksumService(delay: .milliseconds(40))
-            let operation = try await makeService(checksum: checksum).performFileOperation(
+            let operation = try await makeService(hooks: .init(beforeDestinationRead: { _, _ in
+                await checksum.beforeDestinationRead()
+            })).performFileOperation(
                 sourceURL: fixture.source,
                 destinationURLs: [fixture.destinations[0]],
                 verificationMode: .standard,
@@ -235,7 +243,9 @@ struct EngineGuardTests {
             let fixture = try DisposableTransferFixture(seed: 82, fileCount: 8, bytesPerFile: 4 * 1024)
             defer { fixture.cleanup() }
             let checksum = GateObservingChecksumService()
-            _ = try await makeService(checksum: checksum).performFileOperation(
+            _ = try await makeService(hooks: .init(beforeDestinationRead: { _, _ in
+                checksum.observeDestinationRead()
+            })).performFileOperation(
                 sourceURL: fixture.source, destinationURLs: fixture.destinations,
                 verificationMode: .thorough, settings: CameraLabelSettings(),
                 estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil
@@ -262,7 +272,9 @@ struct EngineGuardTests {
 
             // B starts first and parks in its source checksum.
             let gatedChecksum = GatedChecksumService()
-            let serviceB = makeService(checksum: gatedChecksum)
+            let serviceB = makeService(hooks: .init(beforeDestinationRead: { _, _ in
+                try await gatedChecksum.beforeDestinationRead()
+            }))
             let bDone = DoneFlag()
             let runB = Task {
                 defer { bDone.set() }
@@ -302,9 +314,8 @@ struct EngineGuardTests {
 
     // MARK: T11
 
-    /// Verification always hashes the source's current bytes, never a cached digest.
-    /// Plant: in `DestinationWriter.checksumVerification`, return a digest
-    /// remembered from an earlier call for the same path.
+    /// A source digest is scoped to one stable fan-out read and never reused
+    /// by a later operation, even when path, inode, size and mtime match.
     @Test func sourceDigestIsNeverCached() async throws {
         try await FileOperationsTestLock.shared.run {
             let fixture = try DisposableTransferFixture(seed: 111, fileCount: 1, bytesPerFile: 16 * 1024)
@@ -345,8 +356,11 @@ struct EngineGuardTests {
 
     // MARK: Helpers
 
-    private func makeService(checksum: any ChecksumService = ChecksumEngine.shared) -> TransferPipeline {
-        TransferPipeline(fileSystem: LocalFileAccess(), checksum: checksum)
+    private func makeService(
+        checksum: any ChecksumService = ChecksumEngine.shared,
+        hooks: DestinationWriter.FanOutHooks? = nil
+    ) -> TransferPipeline {
+        TransferPipeline(fileSystem: LocalFileAccess(), checksum: checksum, fanOutHooks: hooks)
     }
 }
 
@@ -370,7 +384,7 @@ private actor RowLog {
     }
 }
 
-/// Counts source checksums asked for outside any run's pause gate.
+/// Counts destination reads observed outside any run's pause gate.
 private final class GateObservingChecksumService: ChecksumService, @unchecked Sendable {
     private let lock = NSLock()
     private var total = 0
@@ -378,9 +392,12 @@ private final class GateObservingChecksumService: ChecksumService, @unchecked Se
     var calls: Int { lock.withLock { total } }
     var callsWithoutGate: Int { lock.withLock { ungated } }
 
-    func generateChecksum(for fileURL: URL, type: ChecksumAlgorithm, progressCallback: ProgressCallback?) async throws -> String {
+    func observeDestinationRead() {
         let gated = PauseGate.current != nil
         lock.withLock { total += 1; if !gated { ungated += 1 } }
+    }
+
+    func generateChecksum(for fileURL: URL, type: ChecksumAlgorithm, progressCallback: ProgressCallback?) async throws -> String {
         return try await ChecksumEngine.shared.generateChecksum(for: fileURL, type: type, progressCallback: progressCallback)
     }
 
@@ -404,6 +421,12 @@ private final class PeakCountingChecksumService: ChecksumService, @unchecked Sen
 
     var peak: Int { lock.withLock { peakValue } }
 
+    func beforeDestinationRead() async {
+        lock.withLock { inFlight += 1; peakValue = max(peakValue, inFlight) }
+        defer { lock.withLock { inFlight -= 1 } }
+        try? await Task.sleep(for: delay)
+    }
+
     func generateChecksum(for fileURL: URL, type: ChecksumAlgorithm, progressCallback: ProgressCallback?) async throws -> String {
         lock.withLock { inFlight += 1; peakValue = max(peakValue, inFlight) }
         defer { lock.withLock { inFlight -= 1 } }
@@ -420,7 +443,7 @@ private final class PeakCountingChecksumService: ChecksumService, @unchecked Sen
     }
 }
 
-/// Holds every source checksum until `release()`, then delegates to the real service.
+/// Holds destination reads until `release()` and delegates checksum work.
 private final class GatedChecksumService: ChecksumService, @unchecked Sendable {
     private let lock = NSLock()
     private var started = 0
@@ -431,7 +454,7 @@ private final class GatedChecksumService: ChecksumService, @unchecked Sendable {
     var sawCancellation: Bool { lock.withLock { cancelled } }
     func release() { lock.withLock { released = true } }
 
-    func generateChecksum(for fileURL: URL, type: ChecksumAlgorithm, progressCallback: ProgressCallback?) async throws -> String {
+    func beforeDestinationRead() async throws {
         lock.withLock { started += 1 }
         // Parks until released, even when cancelled, so a run that does not
         // wait for its verifies is caught returning early.
@@ -440,6 +463,9 @@ private final class GatedChecksumService: ChecksumService, @unchecked Sendable {
             try? await Task.sleep(for: .milliseconds(10))
         }
         try Task.checkCancellation()
+    }
+
+    func generateChecksum(for fileURL: URL, type: ChecksumAlgorithm, progressCallback: ProgressCallback?) async throws -> String {
         return try await ChecksumEngine.shared.generateChecksum(for: fileURL, type: type, progressCallback: progressCallback)
     }
 

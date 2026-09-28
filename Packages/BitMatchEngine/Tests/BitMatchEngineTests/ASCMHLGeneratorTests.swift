@@ -1,4 +1,5 @@
 import CryptoKit
+import Darwin
 import Foundation
 import XCTest
 @testable import BitMatchEngine
@@ -81,4 +82,306 @@ final class ASCMHLGeneratorTests: XCTestCase {
         try FileManager.default.createSymbolicLink(atPath: root.appendingPathComponent("alias.txt").path, withDestinationPath: "clip.txt")
         XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(destinationURL: root, files: [.init(relativePath: "alias.txt", size: file.size, expectedSHA256: file.expectedSHA256)], startTime: Date(), toolVersion: "test"))
     }
+
+    func testVerifiedReadbackDigestsAvoidMHLDataRead() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-reuse-\(UUID())")
+        let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-source-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sourceRoot)
+        }
+        let data = Data((0..<8193).map { UInt8($0 % 251) })
+        let source = sourceRoot.appendingPathComponent("clip.bin")
+        try data.write(to: source)
+        try data.write(to: root.appendingPathComponent("clip.bin"))
+        let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+        let verification = try await DestinationWriter.verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinned,
+            relativePath: "clip.bin",
+            verificationMode: .standard,
+            checksumService: ChecksumEngine.shared
+        )
+        let roundTripped = try JSONDecoder().decode(
+            VerificationResult.self,
+            from: JSONEncoder().encode(verification)
+        )
+        XCTAssertNil(roundTripped.destinationDigests)
+        XCTAssertNil(roundTripped.destinationReadIdentity)
+        let reads = MHLReadProbe()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root,
+            files: [.init(
+                relativePath: "clip.bin",
+                size: Int64(data.count),
+                expectedSHA256: verification.sourceDigests?.sha256 ?? "",
+                verifiedSHA256: verification.destinationDigests?.sha256,
+                verifiedMD5: verification.destinationDigests?.md5,
+                destinationReadIdentity: verification.destinationReadIdentity
+            )],
+            startTime: Date(),
+            sourceURL: sourceRoot,
+            toolVersion: "test",
+            readHooks: .init(
+                didOpenForRead: { _ in reads.didOpen() },
+                didRead: { _, count in reads.didRead(count) },
+                fileSystemType: { "apfs" }
+            )
+        )
+        XCTAssertEqual(reads.opens, 0)
+        XCTAssertEqual(reads.bytes, 0)
+        let xml = try String(contentsOf: manifest, encoding: .utf8)
+        let expectedMD5 = Insecure.MD5.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        XCTAssertTrue(xml.contains(expectedMD5))
+    }
+
+    func testReadbackDigestsAreNotReusedWithoutRealChangeTime() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-exfat-\(UUID())")
+        let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-exfat-source-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sourceRoot)
+        }
+        let data = Data((0..<8193).map { UInt8($0 % 251) })
+        let source = sourceRoot.appendingPathComponent("clip.bin")
+        try data.write(to: source)
+        try data.write(to: root.appendingPathComponent("clip.bin"))
+        let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+        let verification = try await DestinationWriter.verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinned,
+            relativePath: "clip.bin",
+            verificationMode: .standard,
+            checksumService: ChecksumEngine.shared
+        )
+        let reads = MHLReadProbe()
+
+        _ = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root,
+            files: [.init(
+                relativePath: "clip.bin",
+                size: Int64(data.count),
+                expectedSHA256: verification.sourceDigests?.sha256 ?? "",
+                verifiedSHA256: verification.destinationDigests?.sha256,
+                verifiedMD5: verification.destinationDigests?.md5,
+                destinationReadIdentity: verification.destinationReadIdentity
+            )],
+            startTime: Date(),
+            sourceURL: sourceRoot,
+            toolVersion: "test",
+            readHooks: .init(
+                didOpenForRead: { _ in reads.didOpen() },
+                didRead: { _, count in reads.didRead(count) },
+                fileSystemType: { "exfat" }
+            )
+        )
+
+        XCTAssertEqual(reads.opens, 1)
+        XCTAssertEqual(reads.bytes, data.count)
+    }
+
+    func testMissingReadbackDigestFallsBackToDiskAndTamperStillFails() async throws {
+        let (root, file) = try fixture()
+        let reads = MHLReadProbe()
+        _ = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root,
+            files: [file],
+            startTime: Date(),
+            toolVersion: "test",
+            readHooks: .init(
+                didOpenForRead: { _ in reads.didOpen() },
+                didRead: { _, count in reads.didRead(count) }
+            )
+        )
+        XCTAssertEqual(reads.opens, 1)
+        XCTAssertEqual(reads.bytes, Int(file.size))
+
+        let (tamperedRoot, tamperedFile) = try fixture()
+        try Data("corrupt media!".utf8).write(to: tamperedRoot.appendingPathComponent("clip.txt"))
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: tamperedRoot,
+            files: [tamperedFile],
+            startTime: Date(),
+            toolVersion: "test",
+            readHooks: .init()
+        ))
+    }
+
+    func testTamperAfterVerificationInvalidatesDigestReuse() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-tamper-\(UUID())")
+        let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-tamper-source-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sourceRoot)
+        }
+        let original = Data("verified bytes".utf8)
+        let source = sourceRoot.appendingPathComponent("clip.bin")
+        let destination = root.appendingPathComponent("clip.bin")
+        try original.write(to: source)
+        try original.write(to: destination)
+        let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+        let verification = try await DestinationWriter.verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinned,
+            relativePath: "clip.bin",
+            verificationMode: .standard,
+            checksumService: ChecksumEngine.shared
+        )
+        var corrupted = original
+        corrupted[0] ^= 0xff
+        try corrupted.write(to: destination)
+        let file = ASCMHLGenerator.VerifiedFile(
+            relativePath: "clip.bin",
+            size: Int64(original.count),
+            expectedSHA256: verification.sourceDigests?.sha256 ?? "",
+            verifiedSHA256: verification.destinationDigests?.sha256,
+            verifiedMD5: verification.destinationDigests?.md5,
+            destinationReadIdentity: verification.destinationReadIdentity
+        )
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root,
+            files: [file],
+            startTime: Date(),
+            sourceURL: sourceRoot,
+            toolVersion: "test",
+            readHooks: .init()
+        )) { error in
+            guard case ASCMHLGenerator.GenerationError.changedFile = error else {
+                return XCTFail("Expected changedFile, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ascmhl").path))
+    }
+
+    func testReadbackSHA256MustIndependentlyMatchExpectedSHA256() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-independent-sha-\(UUID())")
+        let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-independent-sha-source-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sourceRoot)
+        }
+        let data = Data("verified bytes".utf8)
+        let source = sourceRoot.appendingPathComponent("clip.bin")
+        try data.write(to: source)
+        try data.write(to: root.appendingPathComponent("clip.bin"))
+        let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+        let verification = try await DestinationWriter.verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinned,
+            relativePath: "clip.bin",
+            verificationMode: .standard,
+            checksumService: ChecksumEngine.shared
+        )
+        let file = ASCMHLGenerator.VerifiedFile(
+            relativePath: "clip.bin",
+            size: Int64(data.count),
+            expectedSHA256: String(repeating: "0", count: 64),
+            verifiedSHA256: verification.destinationDigests?.sha256,
+            verifiedMD5: verification.destinationDigests?.md5,
+            destinationReadIdentity: verification.destinationReadIdentity
+        )
+
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root,
+            files: [file],
+            startTime: Date(),
+            sourceURL: sourceRoot,
+            toolVersion: "test",
+            readHooks: .init()
+        )) { error in
+            guard case ASCMHLGenerator.GenerationError.changedFile = error else {
+                return XCTFail("Expected changedFile, got \(error)")
+            }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ascmhl").path))
+    }
+
+    func testTamperWithRestoredModificationTimeCannotReuseDigests() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-restored-mtime-\(UUID())")
+        let sourceRoot = FileManager.default.temporaryDirectory.appendingPathComponent("ascmhl-restored-mtime-source-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: sourceRoot, withIntermediateDirectories: true)
+        addTeardownBlock {
+            try? FileManager.default.removeItem(at: root)
+            try? FileManager.default.removeItem(at: sourceRoot)
+        }
+        let original = Data("verified bytes".utf8)
+        let source = sourceRoot.appendingPathComponent("clip.bin")
+        let destination = root.appendingPathComponent("clip.bin")
+        try original.write(to: source)
+        try original.write(to: destination)
+        let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+        let verification = try await DestinationWriter.verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinned,
+            relativePath: "clip.bin",
+            verificationMode: .standard,
+            checksumService: ChecksumEngine.shared
+        )
+
+        var before = stat()
+        XCTAssertEqual(lstat(destination.path, &before), 0)
+        var corrupted = original
+        corrupted[0] ^= 0xff
+        try corrupted.write(to: destination)
+        var times = [before.st_atimespec, before.st_mtimespec]
+        XCTAssertEqual(utimensat(AT_FDCWD, destination.path, &times, 0), 0)
+        var after = stat()
+        XCTAssertEqual(lstat(destination.path, &after), 0)
+        XCTAssertEqual(after.st_ino, before.st_ino)
+        XCTAssertEqual(after.st_size, before.st_size)
+        XCTAssertEqual(after.st_mtimespec.tv_sec, before.st_mtimespec.tv_sec)
+        XCTAssertEqual(after.st_mtimespec.tv_nsec, before.st_mtimespec.tv_nsec)
+        XCTAssertTrue(
+            after.st_ctimespec.tv_sec != before.st_ctimespec.tv_sec
+                || after.st_ctimespec.tv_nsec != before.st_ctimespec.tv_nsec
+        )
+
+        let file = ASCMHLGenerator.VerifiedFile(
+            relativePath: "clip.bin",
+            size: Int64(original.count),
+            expectedSHA256: verification.sourceDigests?.sha256 ?? "",
+            verifiedSHA256: verification.destinationDigests?.sha256,
+            verifiedMD5: verification.destinationDigests?.md5,
+            destinationReadIdentity: verification.destinationReadIdentity
+        )
+        let reads = MHLReadProbe()
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root,
+            files: [file],
+            startTime: Date(),
+            sourceURL: sourceRoot,
+            toolVersion: "test",
+            readHooks: .init(
+                didOpenForRead: { _ in reads.didOpen() },
+                didRead: { _, count in reads.didRead(count) }
+            )
+        )) { error in
+            guard case ASCMHLGenerator.GenerationError.changedFile = error else {
+                return XCTFail("Expected changedFile, got \(error)")
+            }
+        }
+        XCTAssertEqual(reads.opens, 1)
+        XCTAssertEqual(reads.bytes, original.count)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ascmhl").path))
+    }
+}
+
+private final class MHLReadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var openCount = 0
+    private var byteCount = 0
+
+    var opens: Int { lock.withLock { openCount } }
+    var bytes: Int { lock.withLock { byteCount } }
+    func didOpen() { lock.withLock { openCount += 1 } }
+    func didRead(_ count: Int) { lock.withLock { byteCount += count } }
 }

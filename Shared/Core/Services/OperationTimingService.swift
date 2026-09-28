@@ -415,13 +415,17 @@ class OperationTimingService: ObservableObject {
         return total
     }
 
-    /// Mirrors DestinationWriter's completed verification reads: each
-    /// configured checksum reads source and destination once, and Paranoid
-    /// adds one source/destination byte-comparison pass.
+    /// Mirrors DestinationWriter's completed fan-out verification reads.
+    /// Standard reads each destination once. Thorough adds one independent
+    /// source digest pass. Paranoid adds one source and one destination
+    /// byte-comparison pass.
     private func verificationReadPasses(for mode: VerificationMode) -> Int64 {
-        let checksumPasses = Int64(mode.checksumTypes.count) * 2
-        let byteComparisonPasses: Int64 = mode == .paranoid ? 2 : 0
-        return checksumPasses + byteComparisonPasses
+        switch mode {
+        case .quick: return 0
+        case .standard: return 1
+        case .thorough: return 2
+        case .paranoid: return 3
+        }
     }
 
     private func multipliedWithoutOverflow(_ value: Int64, by multiplier: Int64) -> Int64 {

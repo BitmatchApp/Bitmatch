@@ -73,6 +73,51 @@ struct ExistingDestinationReuseTests {
             #endif
         }
     }
+
+    @Test
+    func reuseReadsDestinationOnceForChecksumsAndKeepsParanoidComparison() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            for (mode, expectedPasses) in [(VerificationMode.standard, 1), (.thorough, 1), (.paranoid, 2)] {
+                let contents = Data((0..<4099).map { UInt8($0 % 251) })
+                let fixture = try ReuseFixture(source: contents, destination: contents)
+                defer { fixture.remove() }
+                let probe = ReuseReadProbe()
+                let outcome = try await fixture.copy(
+                    verificationMode: mode,
+                    checksumService: RecordingChecksumService(reportDigestsOf: contents),
+                    hooks: .init(destinationDidOpenForRead: { _, _ in probe.didOpen() })
+                )
+                #expect(outcome.reused)
+                #expect(probe.opens == expectedPasses)
+            }
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func thoroughReuseRejectsMismatchInSecondDigestAfterOneDestinationPass() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let contents = Data((0..<4099).map { UInt8($0 % 251) })
+            let fixture = try ReuseFixture(source: contents, destination: contents)
+            defer { fixture.remove() }
+            let probe = ReuseReadProbe()
+            let outcome = try await fixture.copy(
+                verificationMode: .thorough,
+                checksumService: RecordingChecksumService(reportDigestsOf: contents, corruptMD5: true),
+                hooks: .init(destinationDidOpenForRead: { _, _ in probe.didOpen() })
+            )
+            #expect(!outcome.reused)
+            #expect(!outcome.errors.isEmpty)
+            #expect(probe.opens == 1)
+            #else
+            #expect(true)
+            #endif
+        }
+    }
 }
 
 #if os(macOS)
@@ -101,24 +146,33 @@ private struct ReuseFixture {
 
     func copy(
         verificationMode: VerificationMode,
-        checksumService: any ChecksumService
+        checksumService: any ChecksumService,
+        hooks: DestinationWriter.FanOutHooks? = nil
     ) async throws -> (reused: Bool, errors: [String]) {
         let pinnedRoot = try PinnedDestinationDirectory.open(destination: destination, rootComponents: ["Card-001"])
         let events = ReuseEventCollector()
-        try await DestinationWriter.copyAllSafely(
+        try await DestinationWriter.copyAllSafelyFanOut(
             from: source,
-            toPinnedRoot: pinnedRoot,
+            toPinnedRoots: [.init(index: 0, root: pinnedRoot)],
             verificationMode: verificationMode,
             workers: 1,
             checksumService: checksumService,
             preEnumeratedFiles: try CardSource.enumerateRegularFiles(base: source).map(\.url),
-            onProgress: { _, _ in await events.recordProgress() },
-            onError: { _, error in await events.recordError(error.localizedDescription) }
+            hooks: hooks,
+            onProgress: { _, _, _ in await events.recordProgress() },
+            onError: { _, _, error in await events.recordError(error.localizedDescription) }
         )
         let progressCount = await events.progressCount
         let errors = await events.errors
         return (progressCount > 0, errors)
     }
+}
+
+private final class ReuseReadProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+    var opens: Int { lock.withLock { count } }
+    func didOpen() { lock.withLock { count += 1 } }
 }
 #endif
 
@@ -134,11 +188,13 @@ private actor ReuseEventCollector {
 /// with the digest of `reportedContents` instead of reading the file.
 private final class RecordingChecksumService: ChecksumService, @unchecked Sendable {
     private let reportedContents: Data
+    private let corruptMD5: Bool
     private let lock = NSLock()
     private var types: [ChecksumAlgorithm] = []
 
-    init(reportDigestsOf contents: Data) {
+    init(reportDigestsOf contents: Data, corruptMD5: Bool = false) {
         reportedContents = contents
+        self.corruptMD5 = corruptMD5
     }
 
     var requestedTypes: [ChecksumAlgorithm] {
@@ -153,6 +209,7 @@ private final class RecordingChecksumService: ChecksumService, @unchecked Sendab
         progressCallback: ProgressCallback?
     ) async throws -> String {
         lock.withLock { types.append(type) }
+        if type == .md5, corruptMD5 { return String(repeating: "0", count: 32) }
         return Self.hex(of: reportedContents, type: type)
     }
 

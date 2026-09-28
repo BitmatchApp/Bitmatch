@@ -206,6 +206,80 @@ struct TransferCompletionVerdictTests {
         #expect(!missing.copiedNotVerified)
         #expect(missing.message.contains("Shuttle B: 1 file has no result"))
     }
+
+    @Test func legacyDestinationChecksumNeverBecomesMHLReadbackEvidence() throws {
+        let sourceSHA256 = String(repeating: "a", count: 64)
+        let unprovenDestinationSHA256 = String(repeating: "b", count: 64)
+        let verification = VerificationResult(
+            sourceChecksum: sourceSHA256,
+            destinationChecksum: unprovenDestinationSHA256,
+            matches: true,
+            checksumType: .sha256,
+            processingTime: 0,
+            fileSize: 1
+        )
+        let result = FileOperationResult(
+            sourceURL: fileA,
+            destinationURL: shuttleA.appendingPathComponent("source/A.MXF"),
+            success: true,
+            error: nil,
+            fileSize: 1,
+            verificationResult: verification,
+            processingTime: 0
+        )
+
+        let plan = TransferCompletion.ascmhlPlan(
+            results: [result],
+            sourceFiles: [fileA],
+            destinations: [shuttleA],
+            source: source,
+            settings: CameraLabelSettings()
+        )
+        let file = try #require(plan.jobs.first?.files.first)
+        #expect(file.expectedSHA256 == sourceSHA256)
+        #expect(file.verifiedSHA256 == nil)
+    }
+
+    @Test func ascmhlPlanUsesDestinationReadbackMD5() throws {
+        let sourceSHA256 = String(repeating: "a", count: 64)
+        let destinationMD5 = String(repeating: "d", count: 32)
+        let verification = VerificationResult(
+            sourceChecksum: sourceSHA256,
+            destinationChecksum: sourceSHA256,
+            matches: true,
+            checksumType: .sha256,
+            processingTime: 0,
+            fileSize: 1,
+            sourceDigests: VerifiedDigests(sha256: sourceSHA256, md5: String(repeating: "c", count: 32)),
+            destinationDigests: VerifiedDigests(sha256: sourceSHA256, md5: destinationMD5),
+            destinationReadIdentity: VerifiedFileIdentity(
+                device: 1, inode: 2, size: 1,
+                modificationSeconds: 3, modificationNanoseconds: 4,
+                changeSeconds: 5, changeNanoseconds: 6
+            )
+        )
+        let result = FileOperationResult(
+            sourceURL: fileA,
+            destinationURL: shuttleA.appendingPathComponent("source/A.MXF"),
+            success: true,
+            error: nil,
+            fileSize: 1,
+            verificationResult: verification,
+            processingTime: 0
+        )
+
+        let plan = TransferCompletion.ascmhlPlan(
+            results: [result],
+            sourceFiles: [fileA],
+            destinations: [shuttleA],
+            source: source,
+            settings: CameraLabelSettings()
+        )
+
+        let file = try #require(plan.jobs.first?.files.first)
+        #expect(file.verifiedMD5 == destinationMD5)
+        #expect(file.verifiedMD5 != verification.sourceDigests?.md5)
+    }
 }
 
 /// A 100k-file card with two backups must not stall the finish: coverage

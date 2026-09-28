@@ -246,9 +246,16 @@ public enum TransferCompletion: Sendable {
             }
             let canonicalRoot = item.root.standardizedFileURL.resolvingSymlinksKeepingCase()
             jobs.append(ASCMHLJob(root: item.root, files: rows.map {
-                ASCMHLGenerator.VerifiedFile(
+                let verification = $0.verificationResult
+                return ASCMHLGenerator.VerifiedFile(
                     relativePath: $0.destinationURL.standardizedFileURL.resolvingSymlinksKeepingCase().relativePath(to: canonicalRoot),
-                    size: $0.fileSize, expectedSHA256: $0.verificationResult?.sourceChecksum ?? ""
+                    size: $0.fileSize,
+                    expectedSHA256: verification?.sourceDigests?.sha256
+                        ?? verification?.sourceChecksum
+                        ?? "",
+                    verifiedSHA256: verification?.destinationDigests?.sha256,
+                    verifiedMD5: verification?.destinationDigests?.md5,
+                    destinationReadIdentity: verification?.destinationReadIdentity
                 )
             }))
         }

@@ -674,6 +674,7 @@ private extension StressTests {
                 let sha256 = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
                 XCTAssertTrue(xml.contains(md5), "ASC MHL omitted independent MD5 for \(file.relativePath)")
                 XCTAssertEqual(sha256, file.expectedSHA256.lowercased())
+                XCTAssertEqual(sha256, file.verifiedSHA256?.lowercased())
             }
         }
     }

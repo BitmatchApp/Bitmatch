@@ -16,7 +16,8 @@ struct FanOutTests {
                 let currentFault = fault
                 let fixture = try FanOutFixture(name: "fault-\(fault.rawValue)")
                 defer { fixture.cleanup() }
-                try fixture.write(Data(repeating: 0x5a, count: 2 * 1024 * 1024), to: "clip.bin")
+                let sourceBytes = Data(repeating: 0x5a, count: 4 * 1024 * 1024 + 1)
+                try fixture.write(sourceBytes, to: "clip.bin")
                 let settings = CameraLabelSettings()
                 let failedOutput = SafetyValidator.resolvedDestinationRoot(
                     source: fixture.source,
@@ -62,7 +63,7 @@ struct FanOutTests {
                     destination: fixture.destinations[0],
                     settings: settings
                 ).appendingPathComponent("clip.bin")
-                #expect(try Data(contentsOf: goodOutput) == Data(repeating: 0x5a, count: 2 * 1024 * 1024))
+                #expect(try Data(contentsOf: goodOutput) == sourceBytes)
                 #expect(operation.results.contains {
                     $0.destinationURL.path.hasPrefix(failedOutput.path + "/") && !$0.success
                 })
@@ -355,11 +356,14 @@ struct FanOutTests {
             #if os(macOS)
             let fixture = try FanOutFixture(name: "slow")
             defer { fixture.cleanup() }
-            try fixture.write(Data(repeating: 0xa7, count: 3 * 1024 * 1024 + 19), to: "clip.bin")
+            try fixture.write(Data(repeating: 0xa7, count: 8 * 1024 * 1024 + 19), to: "clip.bin")
             let probe = FanOutProbe()
             let hooks = DestinationWriter.FanOutHooks(
                 sourceDidOpen: { probe.didOpen($0) },
-                sourceDidRead: { source, count in probe.didRead(source, count: count) },
+                sourceDidRead: { source, data in
+                    probe.didRead(source, count: data.count)
+                    return data
+                },
                 beforeWrite: { destination, _, _ in
                     guard destination == 1 else { return }
                     try await Task.sleep(for: .milliseconds(20))
@@ -380,7 +384,7 @@ struct FanOutTests {
             #expect(probe.openCount(for: fixture.source.appendingPathComponent("clip.bin")) == 1)
             #expect(
                 probe.bytesRead(for: fixture.source.appendingPathComponent("clip.bin"))
-                    == 3 * 1024 * 1024 + 19
+                    == 8 * 1024 * 1024 + 19
             )
             #expect(probe.maximumReadLead <= 1)
             #else
@@ -398,12 +402,13 @@ struct FanOutTests {
             let sourceFile = fixture.source.appendingPathComponent("clip.bin")
             try fixture.write(Data(repeating: 0x41, count: 2 * 1024 * 1024), to: "clip.bin")
             let probe = FanOutProbe()
-            let hooks = DestinationWriter.FanOutHooks(sourceDidRead: { _, _ in
-                guard probe.takeOnce() else { return }
+            let hooks = DestinationWriter.FanOutHooks(sourceDidRead: { _, data in
+                guard probe.takeOnce() else { return data }
                 let handle = try FileHandle(forWritingTo: sourceFile)
                 defer { try? handle.close() }
                 try handle.seekToEnd()
                 try handle.write(contentsOf: Data([0x42]))
+                return data
             })
             let settings = CameraLabelSettings()
             let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
@@ -521,6 +526,8 @@ struct FanOutTests {
                 let referenceFile = reference.appendingPathComponent(path)
                 let referenceData = try Data(contentsOf: referenceFile)
                 let referenceDigest = SHA256.hash(data: referenceData)
+                let expectedSHA256 = referenceDigest.map { String(format: "%02x", $0) }.joined()
+                let expectedMD5 = Insecure.MD5.hash(data: referenceData).map { String(format: "%02x", $0) }.joined()
                 for destination in fixture.destinations {
                     let output = SafetyValidator.resolvedDestinationRoot(
                         source: fixture.source,
@@ -530,7 +537,299 @@ struct FanOutTests {
                     let outputData = try Data(contentsOf: output)
                     #expect(outputData == referenceData)
                     #expect(SHA256.hash(data: outputData) == referenceDigest)
+                    var row: FileOperationResult?
+                    for result in operation.results where result.destinationURL.path == output.path {
+                        row = result
+                        break
+                    }
+                    #expect(row?.verificationResult?.sourceChecksum == expectedSHA256)
+                    #expect(row?.verificationResult?.destinationChecksum == expectedSHA256)
+                    #expect(row?.verificationResult?.sourceDigests?.md5 == expectedMD5)
+                    #expect(row?.verificationResult?.destinationDigests?.md5 == expectedMD5)
                 }
+            }
+            #expect(fixture.verdict(for: operation, settings: CameraLabelSettings()).success)
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func readPassCountsMatchEachVerificationMode() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let expectations: [(VerificationMode, Int, Int)] = [
+                (.quick, 0, 0),
+                (.standard, 0, 1),
+                (.thorough, 1, 1),
+                (.paranoid, 2, 2)
+            ]
+            for (mode, expectedVerificationSourceOpens, expectedDestinationOpens) in expectations {
+                let fixture = try FanOutFixture(name: "read-count-\(mode.rawValue)")
+                defer { fixture.cleanup() }
+                try fixture.write(Data(repeating: 0x6d, count: 1024 * 1024 + 17), to: "clip.bin")
+                let probe = FanOutProbe()
+                let checksum = CountingChecksumService()
+                let hooks = DestinationWriter.FanOutHooks(
+                    sourceDidOpen: { probe.didOpen($0) },
+                    destinationDidOpenForRead: { destination, path in
+                        probe.destinationDidOpen(destination: destination, path: path)
+                    },
+                    destinationDidRead: { destination, path, count in
+                        probe.destinationDidRead(destination: destination, path: path, count: count)
+                    },
+                    verificationSourceDidOpen: { path in probe.verificationSourceDidOpen(path: path) }
+                )
+                let operation = try await fixture.pipeline(checksum: checksum, hooks: hooks).performFileOperation(
+                    sourceURL: fixture.source,
+                    destinationURLs: fixture.destinations,
+                    verificationMode: mode,
+                    settings: CameraLabelSettings(),
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+
+                let copySourceOpens = probe.openCount(for: fixture.source.appendingPathComponent("clip.bin"))
+                #expect(copySourceOpens == 1)
+                #expect(probe.verificationSourceOpenCount(path: "clip.bin") == expectedVerificationSourceOpens)
+                if mode == .thorough {
+                    #expect(copySourceOpens + expectedVerificationSourceOpens == 2)
+                }
+                #expect(checksum.calls == 0, "fan-out verification reread the source through ChecksumService")
+                for destination in fixture.destinations.indices {
+                    #expect(probe.destinationOpenCount(destination: destination, path: "clip.bin") == expectedDestinationOpens)
+                    if expectedDestinationOpens > 0 {
+                        #expect(probe.destinationBytesRead(destination: destination, path: "clip.bin") > 0)
+                    }
+                }
+                if mode == .quick {
+                    #expect(operation.results.allSatisfy { $0.verificationResult == nil })
+                } else {
+                    #expect(operation.results.allSatisfy { $0.verificationResult?.matches == true })
+                    #expect(operation.results.allSatisfy { $0.verificationResult?.destinationDigests?.md5 != nil })
+                    #expect(operation.results.allSatisfy { $0.verificationResult?.destinationReadIdentity != nil })
+                }
+            }
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func thoroughCopyStreamCorruptionIsCaughtByIndependentCardReread() async throws {
+        try await assertCopyStreamCorruption(mode: .thorough, expectsSafeVerdict: false)
+    }
+
+    @Test
+    func standardCopyStreamCorruptionIsNotCaughtKnownStandardTradeOff() async throws {
+        try await assertCopyStreamCorruption(mode: .standard, expectsSafeVerdict: true)
+    }
+
+    private func assertCopyStreamCorruption(
+        mode: VerificationMode,
+        expectsSafeVerdict: Bool
+    ) async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "copy-stream-corruption-\(mode.rawValue)")
+            defer { fixture.cleanup() }
+            let original = Data(repeating: 0x35, count: 4 * 1024 * 1024 + 17)
+            try fixture.write(original, to: "clip.bin")
+            let operation = try await fixture.pipeline(hooks: .init(sourceDidRead: { _, data in
+                var corrupted = data
+                corrupted[corrupted.startIndex] ^= 0xff
+                return corrupted
+            })).performFileOperation(
+                sourceURL: fixture.source,
+                destinationURLs: fixture.destinations,
+                verificationMode: mode,
+                settings: CameraLabelSettings(),
+                progressCallback: { _ in },
+                onFileResult: nil
+            )
+
+            let verdict = fixture.verdict(for: operation, settings: CameraLabelSettings())
+            #expect(verdict.success == expectsSafeVerdict)
+            #expect(operation.results.allSatisfy {
+                $0.verificationResult?.matches == expectsSafeVerdict
+            })
+            for destination in fixture.destinations {
+                let output = SafetyValidator.resolvedDestinationRoot(
+                    source: fixture.source,
+                    destination: destination,
+                    settings: CameraLabelSettings()
+                ).appendingPathComponent("clip.bin")
+                #expect(try Data(contentsOf: output) != original)
+            }
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func missingSourceEvidenceDigestFallsBackToChecksumService() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "missing-source-digest")
+            defer { fixture.cleanup() }
+            let data = Data(repeating: 0x3c, count: 8193)
+            try fixture.write(data, to: "clip.bin")
+            let source = fixture.source.appendingPathComponent("clip.bin")
+            let destination = fixture.destinations[0].appendingPathComponent("clip.bin")
+            try data.write(to: destination)
+
+            var sourceStat = stat()
+            #expect(lstat(source.path, &sourceStat) == 0)
+            let evidence = DestinationWriter.SourceReadEvidence(
+                digests: VerifiedDigests(md5: Insecure.MD5.hash(data: data).hexString),
+                identity: VerifiedFileIdentity(
+                    device: UInt64(sourceStat.st_dev),
+                    inode: UInt64(sourceStat.st_ino),
+                    size: Int64(sourceStat.st_size),
+                    modificationSeconds: Int64(sourceStat.st_mtimespec.tv_sec),
+                    modificationNanoseconds: Int64(sourceStat.st_mtimespec.tv_nsec),
+                    changeSeconds: Int64(sourceStat.st_ctimespec.tv_sec),
+                    changeNanoseconds: Int64(sourceStat.st_ctimespec.tv_nsec)
+                )
+            )
+            let checksum = CountingChecksumService()
+            let pinned = try PinnedDestinationDirectory.open(
+                destination: fixture.destinations[0],
+                rootComponents: []
+            )
+            let result = try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
+                source: source,
+                pinnedRoot: pinned,
+                relativePath: "clip.bin",
+                verificationMode: .standard,
+                checksumService: checksum,
+                clipURL: source,
+                sourceReadEvidence: evidence
+            ).verification
+
+            #expect(result.matches)
+            #expect(checksum.calls == 1)
+            #expect(checksum.calls(for: .sha256) == 1)
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func corruptedPublishedByteNeverProducesASafeVerdictInAnyMode() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            for mode in VerificationMode.allCases {
+                let fixture = try FanOutFixture(name: "corrupt-\(mode.rawValue)")
+                defer { fixture.cleanup() }
+                try fixture.write(Data(repeating: 0x4a, count: 8193), to: "clip.bin")
+                let operation = try await fixture.pipeline(hooks: .init(afterPublish: { _, root in
+                    let file = root.appendingPathComponent("clip.bin")
+                    let handle = try FileHandle(forWritingTo: file)
+                    defer { try? handle.close() }
+                    try handle.write(contentsOf: Data([0xb5]))
+                })).performFileOperation(
+                    sourceURL: fixture.source,
+                    destinationURLs: fixture.destinations,
+                    verificationMode: mode,
+                    settings: CameraLabelSettings(),
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+                let verdict = fixture.verdict(for: operation, settings: CameraLabelSettings())
+                #expect(!verdict.success)
+                if mode == .quick {
+                    #expect(verdict.copiedNotVerified)
+                } else {
+                    #expect(operation.results.allSatisfy { $0.verificationResult?.matches == false })
+                }
+            }
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func sourceMutationDuringFanOutFailsEveryMode() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            for mode in VerificationMode.allCases {
+                let fixture = try FanOutFixture(name: "source-change-\(mode.rawValue)")
+                defer { fixture.cleanup() }
+                let sourceFile = fixture.source.appendingPathComponent("clip.bin")
+                try fixture.write(Data(repeating: 0x21, count: 2 * 1024 * 1024), to: "clip.bin")
+                let once = FanOutProbe()
+                let operation = try await fixture.pipeline(hooks: .init(sourceDidRead: { _, data in
+                    guard once.takeOnce() else { return data }
+                    let handle = try FileHandle(forWritingTo: sourceFile)
+                    defer { try? handle.close() }
+                    try handle.seekToEnd()
+                    try handle.write(contentsOf: Data([0xff]))
+                    return data
+                })).performFileOperation(
+                    sourceURL: fixture.source,
+                    destinationURLs: fixture.destinations,
+                    verificationMode: mode,
+                    settings: CameraLabelSettings(),
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+                #expect(operation.results.allSatisfy { !$0.success })
+                #expect(!fixture.verdict(for: operation, settings: CameraLabelSettings()).success)
+            }
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func sourceMutationAfterPublishWithRestoredMtimeFailsVerifiedModes() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            for mode in [VerificationMode.standard, .thorough, .paranoid] {
+                let fixture = try FanOutFixture(name: "source-change-after-publish-\(mode.rawValue)")
+                defer { fixture.cleanup() }
+                let sourceFile = fixture.source.appendingPathComponent("clip.bin")
+                try fixture.write(Data(repeating: 0x21, count: 8193), to: "clip.bin")
+                var sourceInfo = stat()
+                guard lstat(sourceFile.path, &sourceInfo) == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                let originalAccessSeconds = sourceInfo.st_atimespec.tv_sec
+                let originalAccessNanoseconds = sourceInfo.st_atimespec.tv_nsec
+                let originalModificationSeconds = sourceInfo.st_mtimespec.tv_sec
+                let originalModificationNanoseconds = sourceInfo.st_mtimespec.tv_nsec
+                let once = FanOutProbe()
+                let operation = try await fixture.pipeline(hooks: .init(afterPublish: { _, _ in
+                    guard once.takeOnce() else { return }
+                    let handle = try FileHandle(forWritingTo: sourceFile)
+                    defer { try? handle.close() }
+                    try handle.seek(toOffset: 0)
+                    try handle.write(contentsOf: Data([0xff]))
+                    var times = [
+                        timespec(tv_sec: originalAccessSeconds, tv_nsec: originalAccessNanoseconds),
+                        timespec(tv_sec: originalModificationSeconds, tv_nsec: originalModificationNanoseconds)
+                    ]
+                    guard utimensat(AT_FDCWD, sourceFile.path, &times, 0) == 0 else {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                    }
+                })).performFileOperation(
+                    sourceURL: fixture.source,
+                    destinationURLs: fixture.destinations,
+                    verificationMode: mode,
+                    settings: CameraLabelSettings(),
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+
+                #expect(!fixture.verdict(for: operation, settings: CameraLabelSettings()).success)
+                #expect(operation.results.allSatisfy { !$0.success })
             }
             #else
             #expect(true)
@@ -571,6 +870,9 @@ private final class FanOutProbe: Sendable {
         var noCacheDestinations: Set<Int> = []
         var allNoCacheDescriptorsWereOpen = true
         var publishDecisions: Set<Int> = []
+        var destinationOpens: [String: Int] = [:]
+        var destinationBytes: [String: Int] = [:]
+        var verificationSourceOpens: [String: Int] = [:]
     }
 
     private let state = Mutex(State())
@@ -644,6 +946,86 @@ private final class FanOutProbe: Sendable {
     }
 
     var publishDecisions: Set<Int> { state.withLock { $0.publishDecisions } }
+
+    private func destinationKey(destination: Int, path: String) -> String { "\(destination):\(path)" }
+
+    func destinationDidOpen(destination: Int, path: String) {
+        state.withLock { $0.destinationOpens[destinationKey(destination: destination, path: path), default: 0] += 1 }
+    }
+
+    func destinationDidRead(destination: Int, path: String, count: Int) {
+        state.withLock { $0.destinationBytes[destinationKey(destination: destination, path: path), default: 0] += count }
+    }
+
+    func destinationOpenCount(destination: Int, path: String) -> Int {
+        state.withLock { $0.destinationOpens[destinationKey(destination: destination, path: path), default: 0] }
+    }
+
+    func destinationBytesRead(destination: Int, path: String) -> Int {
+        state.withLock { $0.destinationBytes[destinationKey(destination: destination, path: path), default: 0] }
+    }
+
+    func verificationSourceDidOpen(path: String) {
+        state.withLock { $0.verificationSourceOpens[path, default: 0] += 1 }
+    }
+
+    func verificationSourceOpenCount(path: String) -> Int {
+        state.withLock { $0.verificationSourceOpens[path, default: 0] }
+    }
+}
+
+private final class CountingChecksumService: ChecksumService, @unchecked Sendable {
+    private let lock = NSLock()
+    private var callCounts: [ChecksumAlgorithm: Int] = [:]
+
+    var calls: Int { lock.withLock { callCounts.values.reduce(0, +) } }
+
+    func calls(for algorithm: ChecksumAlgorithm) -> Int {
+        lock.withLock { callCounts[algorithm, default: 0] }
+    }
+
+    func generateChecksum(
+        for fileURL: URL,
+        type: ChecksumAlgorithm,
+        progressCallback: ProgressCallback?
+    ) async throws -> String {
+        lock.withLock { callCounts[type, default: 0] += 1 }
+        return try await ChecksumEngine.shared.generateChecksum(
+            for: fileURL,
+            type: type,
+            progressCallback: progressCallback
+        )
+    }
+
+    func verifyFileIntegrity(
+        sourceURL: URL,
+        destinationURL: URL,
+        type: ChecksumAlgorithm,
+        progressCallback: ProgressCallback?
+    ) async throws -> VerificationResult {
+        try await ChecksumEngine.shared.verifyFileIntegrity(
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            type: type,
+            progressCallback: progressCallback
+        )
+    }
+
+    func performByteComparison(
+        sourceURL: URL,
+        destinationURL: URL,
+        progressCallback: ProgressCallback?
+    ) async throws -> Bool {
+        try await ChecksumEngine.shared.performByteComparison(
+            sourceURL: sourceURL,
+            destinationURL: destinationURL,
+            progressCallback: progressCallback
+        )
+    }
+}
+
+private extension Sequence where Element == UInt8 {
+    var hexString: String { map { String(format: "%02x", $0) }.joined() }
 }
 
 private final class FanOutFixture: Sendable {

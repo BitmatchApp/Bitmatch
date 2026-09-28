@@ -120,9 +120,9 @@ struct OperationTimingServiceTests {
         let timestamp = Date(timeIntervalSince1970: 6_000)
 
         for (mode, expectedBytes) in [
-            (VerificationMode.standard, Int64(200)),
-            (.thorough, 400),
-            (.paranoid, 400),
+            (VerificationMode.standard, Int64(100)),
+            (.thorough, 200),
+            (.paranoid, 300),
         ] {
             let timing = OperationTimingService(now: { timestamp })
             timing.startOperation(totalFiles: 1, totalBytes: 100)
@@ -150,7 +150,7 @@ struct OperationTimingServiceTests {
             verificationMode: .thorough
         )
 
-        #expect(timing.phaseDurations(for: .thorough).verifyBytes == 400)
+        #expect(timing.phaseDurations(for: .thorough).verifyBytes == 200)
     }
 
     private func result(

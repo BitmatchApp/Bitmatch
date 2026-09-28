@@ -288,9 +288,9 @@ struct SetupLocationsView: View {
     private var shortVerificationDetail: String {
         switch verificationMode {
         case .quick: "File sizes only; contents are not checksum-verified"
-        case .standard: "SHA-256, read back from each drive"
-        case .thorough: "SHA-256 and MD5, read back from each drive"
-        case .paranoid: "SHA-256 plus byte-by-byte comparison"
+        case .standard: "Reads the card once and checks every drive"
+        case .thorough: "Also re-reads the card for verification"
+        case .paranoid: "Also compares every byte"
         }
     }
 
