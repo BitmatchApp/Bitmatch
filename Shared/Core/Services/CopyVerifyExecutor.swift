@@ -26,6 +26,12 @@ struct CopyVerifyConfig {
     let currentMode: AppMode
     let photographerReportFinalizer: PhotographerReportFinalizer?
     let generateASCMHL: Bool
+    /// Screenshot seam (`-BitMatchDemoSlow`). Always nil except for the demo
+    /// seeder's own records; passing none everywhere else keeps every other
+    /// run on the hook-free path. Like `TransferPipeline.fanOutHooks`, this
+    /// stays ungated with a nil default so existing call sites compile in
+    /// every configuration — only non-nil values are DEBUG-only.
+    let fanOutHooks: DestinationWriter.FanOutHooks?
 
     init(
         operationId: UUID,
@@ -38,7 +44,8 @@ struct CopyVerifyConfig {
         estimatedBytes: Int64,
         currentMode: AppMode,
         photographerReportFinalizer: PhotographerReportFinalizer? = nil,
-        generateASCMHL: Bool = false
+        generateASCMHL: Bool = false,
+        fanOutHooks: DestinationWriter.FanOutHooks? = nil
     ) {
         self.operationId = operationId
         self.sourceURL = sourceURL
@@ -51,6 +58,7 @@ struct CopyVerifyConfig {
         self.currentMode = currentMode
         self.photographerReportFinalizer = photographerReportFinalizer
         self.generateASCMHL = generateASCMHL
+        self.fanOutHooks = fanOutHooks
     }
 }
 
@@ -156,18 +164,13 @@ final class CopyVerifyExecutor {
         do {
             timingService.updateStage(.copying)
 
-            let operation = try await platformManager.fileOperations.performFileOperation(
-                sourceURL: config.sourceURL,
-                destinationURLs: config.destinationURLs,
-                verificationMode: config.verificationMode,
-                settings: config.cameraLabelSettings,
-                estimatedTotalBytes: config.estimatedBytes
-            ) { [weak self] progressUpdate in
+            let progressCallback: FileOperationsService.ProgressCallback = { [weak self] progressUpdate in
                 Task { @MainActor in
                     guard let self else { return }
                     self.handleProgress(progressUpdate, callbacks: callbacks)
                 }
-            } onFileResult: { [weak self] fileResult in
+            }
+            let fileResultCallback: FileOperationsService.FileResultCallback? = { [weak self] fileResult in
                 guard let self else { return }
                 await self.handleFileResult(
                     fileResult,
@@ -175,6 +178,46 @@ final class CopyVerifyExecutor {
                     callbacks: callbacks
                 )
             }
+#if DEBUG
+            // Screenshot seam (`-BitMatchDemoSlow`): only a config carrying
+            // the demo seeder's hooks takes the scoped-pipeline path, and only
+            // when the platform runs the real pipeline. Every other run —
+            // including every Release run — takes the hook-free path below.
+            let operation: FileOperation
+            if let demoHooks = config.fanOutHooks,
+               let pipeline = platformManager.fileOperations as? TransferPipeline {
+                operation = try await pipeline.performFileOperation(
+                    sourceURL: config.sourceURL,
+                    destinationURLs: config.destinationURLs,
+                    verificationMode: config.verificationMode,
+                    settings: config.cameraLabelSettings,
+                    estimatedTotalBytes: config.estimatedBytes,
+                    progressCallback: progressCallback,
+                    onFileResult: fileResultCallback,
+                    fanOutHooks: demoHooks
+                )
+            } else {
+                operation = try await platformManager.fileOperations.performFileOperation(
+                    sourceURL: config.sourceURL,
+                    destinationURLs: config.destinationURLs,
+                    verificationMode: config.verificationMode,
+                    settings: config.cameraLabelSettings,
+                    estimatedTotalBytes: config.estimatedBytes,
+                    progressCallback: progressCallback,
+                    onFileResult: fileResultCallback
+                )
+            }
+#else
+            let operation = try await platformManager.fileOperations.performFileOperation(
+                sourceURL: config.sourceURL,
+                destinationURLs: config.destinationURLs,
+                verificationMode: config.verificationMode,
+                settings: config.cameraLabelSettings,
+                estimatedTotalBytes: config.estimatedBytes,
+                progressCallback: progressCallback,
+                onFileResult: fileResultCallback
+            )
+#endif
 
             return try await handleSuccess(
                 operation: operation,

@@ -17,10 +17,7 @@ struct CopyAndVerifyView: View {
             coordinator: coordinator,
             optionsExpanded: $optionsExpanded
         ) { context, advanced in
-            VStack(alignment: .leading, spacing: 12) {
-                IOSSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
-                TransferQueueSection(coordinator: coordinator, offersAddCard: true)
-            }
+            IOSSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
         } problems: {
             EmptyView()
         } projectSetup: {
@@ -144,6 +141,9 @@ private struct IOSRemoteBackupSummary: View {
 /// lasting access on iOS, so this surface accepts picker selections only.
 private struct IOSSetupLocations: View {
     @ObservedObject var coordinator: SharedAppCoordinator
+    // Side by side like the Mac when the width is regular (iPad, large iPhones in landscape);
+    // stacked when the width is compact (iPhone portrait, narrow split view).
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
     let context: SetupLocationsContext
     let advanced: AnyView
 
@@ -158,7 +158,7 @@ private struct IOSSetupLocations: View {
                 pickBackups: { await coordinator.pickFoldersForBackups() },
                 addBackup: { coordinator.addDestination($0) },
                 removeBackup: { coordinator.removeDestinationFolder($0) },
-                stacksComposerVertically: true,
+                stacksComposerVertically: horizontalSizeClass != .regular,
                 pickFolderOnDrive: { _ in await coordinator.pickFolderForSource() },
                 capacity: SetupLocationsPresentation.capacity,
                 showRefusals: { reasons in

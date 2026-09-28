@@ -29,7 +29,9 @@ struct ProgressPresentationIOSTests {
     @Test
     func iOSStatesTheBackgroundLimit() {
         let foreground = make(device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
-        #expect(foreground.deviceNotes.contains { $0.text.hasPrefix("Keep BitMatch open") })
+        #expect(foreground.deviceNotes.contains {
+            $0.text == TransferProgressPresentation.iOSBackgroundLimit
+        })
         #expect(foreground.deviceNotes.contains { $0.text.contains("screen stays on") })
         #expect(!foreground.deviceNotes.contains { $0.isWarning })
 
@@ -39,24 +41,24 @@ struct ProgressPresentationIOSTests {
     }
 
     @Test
-    func collapsedRunningRowShowsBackgroundLimitWithoutExpansion() {
+    func queueSectionShowsBackgroundLimitOnce() {
         let foreground = make(device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
-        let foregroundNotes = QueueRunningNoticePolicy.collapsedNotes(
+        let foregroundNote = QueueRunningNoticePolicy.sectionNote(
             isRunning: true, isMobile: true, progress: foreground
         )
-        #expect(foregroundNotes.contains { $0.text.hasPrefix("Keep BitMatch open") })
+        #expect(foregroundNote?.text == TransferProgressPresentation.iOSBackgroundLimit)
 
         let background = make(device: .iOS(keepsScreenAwake: false, backgroundSecondsLeft: 150))
-        let backgroundNotes = QueueRunningNoticePolicy.collapsedNotes(
+        let backgroundNote = QueueRunningNoticePolicy.sectionNote(
             isRunning: true, isMobile: true, progress: background
         )
-        #expect(backgroundNotes.first?.text.hasPrefix("About 3 min") == true)
-        #expect(QueueRunningNoticePolicy.collapsedNotes(
+        #expect(backgroundNote?.text == TransferProgressPresentation.iOSBackgroundLimit)
+        #expect(QueueRunningNoticePolicy.sectionNote(
             isRunning: false, isMobile: true, progress: background
-        ).isEmpty)
-        #expect(QueueRunningNoticePolicy.collapsedNotes(
+        ) == nil)
+        #expect(QueueRunningNoticePolicy.sectionNote(
             isRunning: true, isMobile: false, progress: background
-        ).isEmpty)
+        ) == nil)
     }
 
     // Plant: in `TransferProgressPresentation.phase`, return `.preparing`

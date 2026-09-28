@@ -79,7 +79,10 @@ struct SetupLocationsView: View {
             }
             composerAction
             advanced
-            if !presentation.stagedSources.isEmpty { setupQueue }
+            if SetupQueuePlacementPolicy.showsComposerAdjacentQueue,
+               !presentation.stagedSources.isEmpty {
+                setupQueue
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .onDisappear { transitionClearTask?.cancel() }

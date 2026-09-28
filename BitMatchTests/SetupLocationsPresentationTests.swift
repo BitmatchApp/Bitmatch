@@ -5,6 +5,10 @@ import Testing
 /// The shared source and backup boxes (Mac, iPad and iPhone). Each test
 /// names the one-line bug that should make it fail.
 struct SetupLocationsPresentationTests {
+    @Test func macKeepsTheComposerAdjacentQueue() {
+        #expect(SetupQueuePlacementPolicy.showsComposerAdjacentQueue)
+    }
+
     private let card = URL(fileURLWithPath: "/Volumes/CARD/DCIM", isDirectory: true)
     private let raid = URL(fileURLWithPath: "/Volumes/RAID_A/Shoot", isDirectory: true)
 

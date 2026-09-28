@@ -6,6 +6,7 @@ import BitMatchEngine
 struct ModularContentView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     let navigationPresentation: AdaptiveNavigationPresentation
+    @Binding var showingQueueInspector: Bool
     @State private var showingSettings = false
     @State private var showingTransfers = false
     @State private var showingVolumeSelector = false
@@ -95,7 +96,12 @@ extension ModularContentView {
     private var mainContentArea: some View {
         VStack(spacing: 0) {
             // Header with gear icon (always visible)  
-            HeaderSectionView(showingSettings: $showingSettings, showingTransfers: $showingTransfers)
+            HeaderSectionView(
+                coordinator: coordinator,
+                showingSettings: $showingSettings,
+                showingTransfers: $showingTransfers,
+                showingQueueInspector: $showingQueueInspector
+            )
             let attentionCount = TransferLibraryPresentation.needsAttentionCount(
                 coordinator.transferJournal.records,
                 excluding: Set([coordinator.queuePausedRecordID].compactMap { $0 })
@@ -111,7 +117,7 @@ extension ModularContentView {
             }
             
             // Setup remains the workbench while transfers run and finish.
-            // Copy and Verify embeds its live queue directly below locations;
+            // The transfer queue is presented by the adaptive bar or inspector;
             // Compare and Master Report keep their own inline state.
             IdleStateView(
                 coordinator: coordinator,
@@ -126,8 +132,10 @@ extension ModularContentView {
 // MARK: - Header Section Component
 
 struct HeaderSectionView: View {
+    @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var showingSettings: Bool
     @Binding var showingTransfers: Bool
+    @Binding var showingQueueInspector: Bool
     
     var body: some View {
         HStack {
@@ -136,6 +144,12 @@ struct HeaderSectionView: View {
             }
                 .frame(minHeight: 44)
             Spacer()
+
+            QueueInspectorToolbarButton(
+                coordinator: coordinator,
+                isInspectorPresented: showingQueueInspector,
+                action: { showingQueueInspector.toggle() }
+            )
             
             Button {
                 showingSettings = true

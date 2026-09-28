@@ -25,9 +25,12 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     var isRunning: Bool { safetyState.isActiveQueueState }
     var isFinished: Bool { !isEditable && !isRunning }
     var showsSafeHero: Bool { outcome?.safetyState == .safeToErase }
+    var waitingDestinationText: String {
+        destinationNames.isEmpty ? destinations : destinationNames.joined(separator: " + ")
+    }
+    var compactWaitingText: String { "\(cardName) → \(waitingDestinationText)" }
     var waitingText: String {
-        let route = destinationNames.isEmpty ? destinations : destinationNames.joined(separator: " + ")
-        return "\(cardName) → \(route) · \(verificationModeName)"
+        "\(compactWaitingText) · \(verificationModeName)"
     }
 
     var statusText: String {
@@ -42,11 +45,13 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     }
 
     func oneLineStatus(timeRemaining: String? = nil) -> String {
-        let route = destinationNames.isEmpty ? destinations : destinationNames.joined(separator: " + ")
-        let prefix = "\(cardName) → \(route)"
+        let prefix = compactWaitingText
         if isRunning {
             let progress = progressFraction.map { " \(Int((min(max($0, 0), 1) * 100).rounded(.down)))%" } ?? ""
-            let remaining = timeRemaining.map { " · \($0) left" } ?? ""
+            let measuredTime = timeRemaining == TransferProgressPresentation.estimatingTimeLeft
+                ? nil
+                : timeRemaining
+            let remaining = measuredTime.map { " · \($0) left" } ?? ""
             let phase: String
             switch safetyState {
             case .copying: phase = "Copying"
@@ -396,13 +401,13 @@ enum QueueEjectPolicy {
 }
 
 enum QueueRunningNoticePolicy {
-    static func collapsedNotes(
+    static func sectionNote(
         isRunning: Bool,
         isMobile: Bool,
         progress: TransferProgressPresentation
-    ) -> [ProgressDeviceNote] {
-        guard isRunning, isMobile else { return [] }
-        return progress.deviceNotes
+    ) -> ProgressDeviceNote? {
+        guard isRunning, isMobile else { return nil }
+        return progress.deviceNotes.first { $0.text == TransferProgressPresentation.iOSBackgroundLimit }
     }
 }
 

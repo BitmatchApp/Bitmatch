@@ -170,6 +170,15 @@ class SharedAppCoordinator: ObservableObject {
     private var queueFinishNotificationWasPosted = false
     private var queueStopWasRequested = false
     private var queueSessionSourceVolumeIDs: Set<String> = []
+    /// Screenshot seam (`-BitMatchDemoSlow`): journal record IDs enqueued by
+    /// the DEBUG demo seeder. Only these runs copy with throttling hooks;
+    /// every user run passes none. Always empty in Release: only the DEBUG
+    /// seeder ever inserts.
+    var demoSlowRecordIDs = Set<UUID>()
+    /// Screenshot seam (`-BitMatchDemoOpenQueue`): the DEBUG seeder sets this
+    /// after seeding so the queue opens itself (sheet on compact, inspector
+    /// on regular). Always false in Release.
+    @Published var demoQueueAutoOpen = false
     private var isClearingSnapshottedComposerSource = false
     private struct SetupComposerSnapshot {
         let source: URL?
@@ -1255,6 +1264,30 @@ class SharedAppCoordinator: ObservableObject {
         removeQueueSessionRows(finishedIDs)
     }
 
+#if DEBUG
+    /// Screenshot scenarios only (DEBUG demo seeder): drops the previous
+    /// session's queue rows — finished, waiting, or paused — so a flagged
+    /// demo launch counts from "1 of 3" instead of accumulating stale rows.
+    /// Journal History records are untouched, matching `removeFinishedQueueRow`.
+    func resetQueueSessionForDemo() {
+        removeQueueSessionRows(queueSessionRecordIDs)
+    }
+#endif
+
+    /// Screenshot seam (`-BitMatchDemoSlow`): throttling hooks for one of the
+    /// demo seeder's own records, nil for every other run. The non-nil value
+    /// is constructed in DEBUG-only code, so Release always returns nil here.
+    func demoFanOutHooks(for recordID: UUID?) -> DestinationWriter.FanOutHooks? {
+#if DEBUG
+        guard let recordID,
+              demoSlowRecordIDs.contains(recordID),
+              DemoQueueSeeder.isSlowRequested else { return nil }
+        return DemoQueueSeeder.slowCopyHooks
+#else
+        return nil
+#endif
+    }
+
     /// Removes one terminal row from this session list while leaving its
     /// journal record, report, copied files, and History entry untouched.
     func removeFinishedQueueRow(_ id: UUID) throws {
@@ -1827,7 +1860,11 @@ class SharedAppCoordinator: ObservableObject {
             estimatedBytes: context.estimatedBytes,
             currentMode: .copyAndVerify,
             photographerReportFinalizer: context.photographerReportFinalizer,
-            generateASCMHL: context.generateASCMHL
+            generateASCMHL: context.generateASCMHL,
+            // Screenshot seam (`-BitMatchDemoSlow`): non-nil only for the
+            // demo seeder's own records on a flagged DEBUG launch; nil
+            // everywhere else, and always nil in Release.
+            fanOutHooks: demoFanOutHooks(for: context.journalRecordID)
         )
 
         let callbacks = CopyVerifyCallbacks(

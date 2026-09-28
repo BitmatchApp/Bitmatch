@@ -150,6 +150,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
     /// Speed and time left before enough copying has been measured.
     static let estimating = "Estimating..."
     static let estimatingTimeLeft = estimating
+    static let iOSBackgroundLimit = "Keep BitMatch open — iOS pauses copies in the background."
 
     static let cancelConfirmationTitle = "Cancel this transfer?"
     static let cancelConfirmationMessage =
@@ -381,7 +382,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
             // An actual limit, stated plainly (AGENTS.md): iOS gives an app
             // only a few minutes in the background.
             notes.append(ProgressDeviceNote(
-                text: "Keep BitMatch open until the transfer ends. In the background, iOS allows only a few minutes.",
+                text: iOSBackgroundLimit,
                 symbol: "iphone",
                 isWarning: false
             ))

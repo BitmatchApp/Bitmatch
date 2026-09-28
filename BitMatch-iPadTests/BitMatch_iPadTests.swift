@@ -32,6 +32,28 @@ struct BitMatch_iPadTests {
         #expect(AdaptiveNavigationPolicy.presentation(for: 1_024) == .sidebar)
     }
 
+    @Test func portraitPadUsesQueueBarToProtectSetupWidth() {
+        let usesInspector = AdaptiveQueueLayoutPolicy.usesInspector(
+            availableWidth: 834,
+            isPad: true,
+            isRegularWidth: true
+        )
+        #expect(!usesInspector)
+    }
+
+    @Test func widePadCanUseQueueInspector() {
+        let usesInspector = AdaptiveQueueLayoutPolicy.usesInspector(
+            availableWidth: 1_024,
+            isPad: true,
+            isRegularWidth: true
+        )
+        #expect(usesInspector)
+    }
+
+    @Test func iOSKeepsWaitingCardsOutOfTheSetupComposer() {
+        #expect(!SetupQueuePlacementPolicy.showsComposerAdjacentQueue)
+    }
+
     @Test @MainActor func portableProjectStoreRoundTripsProjectAndDestination() throws {
         let suiteName = "BitMatch-iPadTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))

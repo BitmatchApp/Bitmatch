@@ -25,17 +25,20 @@ struct TransferQueueSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private let offersAddCard: Bool
+    private let showsHeaderTitle: Bool
     private let ejectSource: ((UUID) async -> String?)?
     private let transferTransitionContext: QueueTransferTransitionContext?
 
     init(
         coordinator: SharedAppCoordinator,
         offersAddCard: Bool = false,
+        showsHeaderTitle: Bool = true,
         ejectSource: ((UUID) async -> String?)? = nil,
         transferTransitionContext: QueueTransferTransitionContext? = nil
     ) {
         self.coordinator = coordinator
         self.offersAddCard = offersAddCard
+        self.showsHeaderTitle = showsHeaderTitle
         self.ejectSource = ejectSource
         self.transferTransitionContext = transferTransitionContext
         _progress = ObservedObject(wrappedValue: coordinator.liveProgress)
@@ -60,6 +63,7 @@ struct TransferQueueSection: View {
                         )
                     }
                     header(presentation)
+                    queueRunningNotice(presentation)
                     rows(presentation.rows)
                     addCardButton(presentation)
                     if let errorMessage {
@@ -99,21 +103,31 @@ struct TransferQueueSection: View {
 
     @ViewBuilder
     private func header(_ presentation: QueueSessionPresentation) -> some View {
-        #if os(macOS)
-        headerRow(presentation)
-        #else
-        ViewThatFits(in: .horizontal) {
+        if showsHeaderTitle {
+            #if os(macOS)
             headerRow(presentation)
-            VStack(alignment: .leading, spacing: 8) {
-                headerTitle(presentation)
-                HStack(spacing: 8) {
-                    Spacer(minLength: 0)
-                    headerActions(presentation)
+            #else
+            ViewThatFits(in: .horizontal) {
+                headerRow(presentation)
+                VStack(alignment: .leading, spacing: 8) {
+                    headerTitle(presentation)
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        headerActions(presentation)
+                    }
                 }
+                .controlSize(.large)
             }
+            #endif
+        } else {
+            HStack(spacing: 8) {
+                Spacer(minLength: 0)
+                headerActions(presentation)
+            }
+            #if os(iOS)
             .controlSize(.large)
+            #endif
         }
-        #endif
     }
 
     private func headerRow(_ presentation: QueueSessionPresentation) -> some View {
@@ -228,18 +242,7 @@ struct TransferQueueSection: View {
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
-        .background {
-            GeometryReader { proxy in
-                ZStack(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row))
-                    if row.isRunning {
-                        RoundedRectangle(cornerRadius: 8)
-                            .fill(Color.accentColor.opacity(0.14))
-                            .frame(width: proxy.size.width * min(max(row.progressFraction ?? 0, 0), 1))
-                    }
-                }
-            }
-        }
+        .background(RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row)))
         .overlay {
             RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row))
         }
@@ -284,41 +287,61 @@ struct TransferQueueSection: View {
         .contextMenu { waitingContextMenu(row) }
     }
 
+    @ViewBuilder
     private func mobileCollapsedRow(_ row: QueueSessionRow) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if coordinator.editingSetupTransferID != row.id {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    statusIcon(row)
-                    collapsedSummary(row)
-                }
-            }
-            HStack(spacing: 8) {
-                if row.isEditable {
-                    Text("Waiting").font(.caption).foregroundStyle(.secondary)
+        if row.isFinished {
+            mobileFinishedRow(row)
+        } else {
+            mobileActiveRow(row)
+        }
+    }
+
+    private func mobileFinishedRow(_ row: QueueSessionRow) -> some View {
+        HStack(spacing: 8) {
+            removeIcon(row)
+            statusIcon(row)
+            mobileFinishedSummary(row)
+            Spacer(minLength: 4)
+            expandButton(row)
+        }
+        .frame(minHeight: 46)
+        .padding(.horizontal, 8)
+        .contentShape(Rectangle())
+        .onTapGesture { selectOrExpand(row) }
+        .accessibilityLabel(row.accessibilityStatus)
+    }
+
+    private func mobileActiveRow(_ row: QueueSessionRow) -> some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .center, spacing: 8) {
+                if row.isEditable { removeIcon(row) }
+                else { statusIcon(row) }
+                if coordinator.editingSetupTransferID != row.id {
+                    if row.isEditable {
+                        mobileWaitingSummary(row)
+                    } else {
+                        collapsedSummary(row)
+                    }
                 } else {
-                    Label(row.statusText, systemImage: row.safetyState.symbol)
-                        .font(.caption)
-                        .foregroundStyle(row.isRunning ? Color.accentColor : row.safetyState.tint.color)
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 4)
                 if row.isEditable {
-                    Button("Edit") { edit(row.id) }
-                        .controlSize(.large)
-                        .buttonStyle(.bordered)
+                    Button("Waiting · Edit") { edit(row.id) }
+                        .font(.caption)
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.accentColor)
+                        .fixedSize()
                 } else {
                     compactAction(row)
                     expandButton(row)
                 }
-                if row.isEditable || row.isFinished {
-                    Button("Remove", role: .destructive) { removeFromList(row) }
-                        .controlSize(.large)
-                        .buttonStyle(.bordered)
-                        .accessibilityLabel(removeHelp(for: row))
-                }
             }
             .frame(minHeight: 44)
-            if row.isRunning {
-                mobileRunningNotes
+            if row.isRunning, let fraction = row.progressFraction {
+                ProgressView(value: min(max(fraction, 0), 1))
+                    .progressViewStyle(.linear)
+                    .tint(.accentColor)
+                    .accessibilityLabel(row.statusText)
             }
         }
         .padding(.horizontal, 10)
@@ -329,10 +352,38 @@ struct TransferQueueSection: View {
         .contextMenu { waitingContextMenu(row) }
     }
 
+    private func mobileWaitingSummary(_ row: QueueSessionRow) -> some View {
+        ViewThatFits(in: .horizontal) {
+            Text(row.waitingText)
+                .font(.subheadline)
+                .lineLimit(1)
+                .fixedSize(horizontal: true, vertical: false)
+
+            HStack(spacing: 4) {
+                Text(row.cardName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .layoutPriority(1)
+                Text("→ \(row.waitingDestinationText)")
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.subheadline)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(row.waitingText)
+    }
+
     private func removeIcon(_ row: QueueSessionRow) -> some View {
         Button { removeFromList(row) } label: {
+            #if os(macOS)
             Image(systemName: "xmark.circle.fill")
                 .foregroundStyle(.secondary).frame(width: 24, height: 24)
+            #else
+            Image(systemName: "xmark.circle.fill")
+                .foregroundStyle(.secondary).frame(width: 44, height: 44)
+            #endif
         }
         .buttonStyle(.borderless)
         .help(removeHelp(for: row))
@@ -393,7 +444,7 @@ struct TransferQueueSection: View {
         #else
         let text = Text(collapsedText(row))
             .font(.subheadline.weight(row.isFinished ? .medium : .regular))
-            .lineLimit(2).truncationMode(.middle)
+            .lineLimit(row.isEditable ? 1 : 2).truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
         #endif
         if let transferTransitionContext {
@@ -439,20 +490,47 @@ struct TransferQueueSection: View {
         }
     }
 
-    private var mobileRunningNotes: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            ForEach(QueueRunningNoticePolicy.collapsedNotes(
-                isRunning: true,
-                isMobile: true,
-                progress: liveProgressPresentation
-            ), id: \.self) { note in
-                Label(note.text, systemImage: note.symbol)
-                    .font(note.isWarning ? .footnote : .caption)
-                    .foregroundStyle(note.isWarning ? CardSafetyTint.amber.color : Color.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+    @ViewBuilder
+    private func queueRunningNotice(_ presentation: QueueSessionPresentation) -> some View {
+        #if os(iOS)
+        if let note = QueueRunningNoticePolicy.sectionNote(
+            isRunning: presentation.rows.contains(where: \.isRunning),
+            isMobile: true,
+            progress: liveProgressPresentation
+        ) {
+            Label(note.text, systemImage: note.symbol)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityElement(children: .combine)
+        }
+        #endif
+    }
+
+    private func mobileFinishedSummary(_ row: QueueSessionRow) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 4) {
+                Text(row.cardName)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("· " + row.statusText.lowercased())
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .font(.subheadline.weight(.medium))
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(row.cardName)
+                    .font(.subheadline.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text(row.statusText.lowercased())
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
             }
         }
-        .accessibilityElement(children: .combine)
     }
 
     @ViewBuilder

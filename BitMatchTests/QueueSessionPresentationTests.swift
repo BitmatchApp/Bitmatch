@@ -30,7 +30,15 @@ struct QueueSessionPresentationTests {
             .contains("A002 →"))
         #expect(presentation.rows[1].oneLineStatus(timeRemaining: "3 min")
             .contains("Copying 42% · 3 min left"))
+        #expect(!presentation.rows[1].oneLineStatus(timeRemaining: "Estimating...")
+            .contains("Estimating"))
         #expect(presentation.rows[2].action == nil)
+        // The fixture backup lives in tmp, so its drive label is the live
+        // boot-volume name (not the "Shuttle A" folder name): pin the
+        // two-tier shape — compact drops the mode word, full keeps it.
+        let drive = DestinationIdentityPresentation.title(for: fixture.backup)
+        #expect(presentation.rows[2].compactWaitingText == "A003 → \(drive)")
+        #expect(presentation.rows[2].waitingText == "A003 → \(drive) · Standard")
         #expect(presentation.rows[2].oneLineStatus().contains("· Waiting"))
 
         let verifyingProgress = OperationProgress(

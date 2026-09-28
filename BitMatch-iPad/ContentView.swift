@@ -1,5 +1,6 @@
 // ContentView.swift - Modular iPad interface using component architecture
 import SwiftUI
+import UIKit
 
 // MARK: - Color Extension for Hex Support
 extension Color {
@@ -32,6 +33,9 @@ extension Color {
 // MARK: - Main ContentView using Modular Architecture
 struct ContentView: View {
     @StateObject private var coordinator: SharedAppCoordinator
+    @StateObject private var compactQueueState = CompactQueuePresentationState()
+    @State private var showingQueueInspector = false
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(coordinator: SharedAppCoordinator? = nil) {
         _coordinator = StateObject(wrappedValue: coordinator ?? SharedAppCoordinator())
@@ -39,15 +43,74 @@ struct ContentView: View {
     
     var body: some View {
         GeometryReader { proxy in
-            switch AdaptiveNavigationPolicy.presentation(for: proxy.size.width) {
-            case .compact:
-                PhoneContentView(coordinator: coordinator)
-            case .toolbar, .sidebar:
-                ModularContentView(
+            let usesInspector = AdaptiveQueueLayoutPolicy.usesInspector(
+                availableWidth: proxy.size.width,
+                isPad: UIDevice.current.userInterfaceIdiom == .pad,
+                isRegularWidth: horizontalSizeClass == .regular
+            )
+            let inspectorWidth = AdaptiveQueueLayoutPolicy.maximumInspectorWidth
+            let setupWidth = proxy.size.width
+                - (usesInspector && showingQueueInspector ? inspectorWidth : 0)
+            let navigation = AdaptiveNavigationPolicy.presentation(for: setupWidth)
+            if !usesInspector {
+                CompactQueuePresentation(coordinator: coordinator, state: compactQueueState) {
+                    PhoneContentView(coordinator: coordinator)
+                }
+                // Screenshot helper: -BitMatchDemoOpenQueue opens the queue
+                // sheet automatically after seeding. The flag is DEBUG-only
+                // in practice (always false in Release), so this stays inert
+                // in plain and Release launches.
+                .onChange(of: coordinator.demoQueueAutoOpen) { _, autoOpen in
+                    guard autoOpen else { return }
+                    compactQueueState.openQueue(rows: coordinator.queuePresentation.rows)
+                }
+            } else {
+                RegularQueuePresentation(
                     coordinator: coordinator,
-                    navigationPresentation: AdaptiveNavigationPolicy.presentation(for: proxy.size.width)
-                )
+                    isInspectorPresented: $showingQueueInspector
+                ) {
+                    ModularContentView(
+                        coordinator: coordinator,
+                        navigationPresentation: navigation,
+                        showingQueueInspector: $showingQueueInspector
+                    )
+                }
+                // Screenshot helper: -BitMatchDemoOpenQueue shows the
+                // inspector automatically after seeding (the empty-to-nonempty
+                // transition below usually beats it there; this is the
+                // explicit trigger).
+                .onChange(of: coordinator.demoQueueAutoOpen) { _, autoOpen in
+                    if autoOpen { showingQueueInspector = true }
+                }
             }
+        }
+        .sheet(isPresented: $compactQueueState.showingQueue) {
+            NavigationStack {
+                ScrollView {
+                    TransferQueueSection(
+                        coordinator: coordinator,
+                        offersAddCard: true,
+                        showsHeaderTitle: false
+                    )
+                        .padding()
+                }
+                .navigationTitle("Transfers")
+                .navigationBarTitleDisplayMode(.inline)
+            }
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+        .onChange(of: coordinator.queuePresentation.rows) { oldRows, newRows in
+            compactQueueState.update(previousRows: oldRows, currentRows: newRows)
+            if oldRows.isEmpty && !newRows.isEmpty { showingQueueInspector = true }
+            if newRows.isEmpty { showingQueueInspector = false }
+        }
+        .onAppear {
+#if DEBUG
+            // Screenshot scenario: -BitMatchDemoQueue seeds the real queue.
+            // Compiled out of Release; plain launches are unaffected.
+            DemoQueueSeeder.seedIfRequested(coordinator: coordinator)
+#endif
         }
     }
 }

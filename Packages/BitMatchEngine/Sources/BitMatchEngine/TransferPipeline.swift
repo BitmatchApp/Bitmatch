@@ -351,6 +351,40 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         }
     }
     
+#if DEBUG
+    /// Screenshot/demo seam (`-BitMatchDemoSlow`): runs one operation with
+    /// per-call fan-out hooks through a scoped pipeline, so the shared
+    /// pipeline's hooks stay untouched and every non-demo operation keeps
+    /// passing none. Compiled out of Release.
+    public func performFileOperation(
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        settings: CameraLabelSettings,
+        estimatedTotalBytes: Int64?,
+        progressCallback: @escaping ProgressCallback,
+        onFileResult: FileResultCallback?,
+        fanOutHooks: DestinationWriter.FanOutHooks?
+    ) async throws -> FileOperation {
+        let scoped = TransferPipeline(
+            fileSystem: fileSystem,
+            checksum: checksumService,
+            pipelinedVerification: pipelinedVerification,
+            destinationSetupHook: destinationSetupHook,
+            fanOutHooks: fanOutHooks ?? self.fanOutHooks
+        )
+        return try await scoped.performFileOperation(
+            sourceURL: sourceURL,
+            destinationURLs: destinationURLs,
+            verificationMode: verificationMode,
+            settings: settings,
+            estimatedTotalBytes: estimatedTotalBytes,
+            progressCallback: progressCallback,
+            onFileResult: onFileResult
+        )
+    }
+#endif
+
     public func cancelOperation() {
         activeOperations.requestCancellation()
     }

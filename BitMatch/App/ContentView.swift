@@ -99,6 +99,9 @@ struct MacMainView: View {
 #if DEBUG
                 // The Developer menu's stress test drives this window.
                 DevModeManager.shared.attach(coordinator)
+                // Screenshot scenario: -BitMatchDemoQueue seeds the real queue.
+                // Compiled out of Release; plain launches are unaffected.
+                DemoQueueSeeder.seedIfRequested(coordinator: coordinator)
 #endif
             }
             .alert("Error", isPresented: $errorHandler.showErrorAlert) {
