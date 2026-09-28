@@ -61,7 +61,7 @@ private struct MobileProjectEvidenceView: View {
                 Spacer()
                 Text(presentation.requiredCopyTitle)
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundColor(.white.opacity(0.54))
+                    .foregroundStyle(.secondary)
             }
             ForEach(presentation.rows) { row in
                 VStack(alignment: .leading, spacing: 5) {
@@ -76,20 +76,20 @@ private struct MobileProjectEvidenceView: View {
                             .foregroundColor(row.status.color)
                     }
                     Text("\(row.cardTitle) · \(row.fileCountTitle) · \(row.verifiedCopyTitle)")
-                        .font(.system(size: 12)).foregroundColor(.white.opacity(0.66))
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
                     Text(row.renderedPath)
                         .font(.system(size: 11, design: .monospaced))
-                        .foregroundColor(.white.opacity(0.5)).lineLimit(1).truncationMode(.middle)
+                        .foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                     ForEach(row.remoteBackupPresentations.keys.sorted { $0.uuidString < $1.uuidString }, id: \.self) { id in
                         if let remote = row.remoteBackupPresentations[id] {
                             Label(remote.title, systemImage: remote.symbol)
                                 .font(.system(size: 11, weight: .medium))
-                                .foregroundColor(remote.isWarning ? .orange : (remote.isFullyBackedUp ? .green : .white.opacity(0.6)))
+                                .foregroundColor(remote.isWarning ? .orange : (remote.isFullyBackedUp ? .green : .secondary))
                         }
                     }
                     if row.statusTitle == "Locally Safe", job.remoteBackupConfiguration?.isEnabled == true {
                         Label("Remote backup continues on Mac", systemImage: "laptopcomputer")
-                            .font(.system(size: 11)).foregroundColor(.white.opacity(0.54))
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
                 }
                 .padding(11)
@@ -97,7 +97,7 @@ private struct MobileProjectEvidenceView: View {
             }
         }
         .padding(14)
-        .background(RoundedRectangle(cornerRadius: 14).fill(Color.white.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.white.opacity(0.08))))
+        .background(RoundedRectangle(cornerRadius: 14).fill(Color.primary.opacity(0.035)).overlay(RoundedRectangle(cornerRadius: 14).stroke(Color.primary.opacity(0.08))))
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Project media. \(presentation.requiredCopyTitle)")
     }

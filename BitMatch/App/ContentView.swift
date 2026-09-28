@@ -257,25 +257,21 @@ struct MacMainView: View {
             .disabled(isModeSwitchLocked)
             .accessibilityLabel("Mode")
         }
+        // Standard toolbar spacing: no custom frames, padding, or button
+        // styles on these items, so the icons sit evenly at system size.
         ToolbarItemGroup(placement: .primaryAction) {
             Button {
                 transferToReviewID = nil
                 showingTransfers = true
             } label: {
                 Image(systemName: "clock.arrow.circlepath")
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
             .accessibilityLabel("History")
             .help("History")
 
             Button { openSettings() } label: {
                 Image(systemName: "gearshape")
-                    .frame(width: 28, height: 28)
-                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
             .accessibilityLabel("Settings")
             .help("Settings")
         }

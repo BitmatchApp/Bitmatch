@@ -435,7 +435,6 @@ struct SetupLocationsView: View {
     private func reorderableQueueRow(_ item: SetupLocationsPresentation.StagedSource, index: Int) -> some View {
         let row = queueRow(item)
             .focusable()
-            .focusEffectDisabled()
             .focused($focusedQueueID, equals: item.id)
             .draggable(item.id.uuidString)
             .dropDestination(for: String.self) { values, _ in
@@ -515,10 +514,6 @@ struct SetupLocationsView: View {
                 : (item.differs ? Color.orange.opacity(0.08) : Color.primary.opacity(0.025)),
             in: RoundedRectangle(cornerRadius: 8)
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.accentColor.opacity(0.5), lineWidth: focusedQueueID == item.id ? 1.5 : 0)
-        }
         .contentShape(Rectangle())
         .onTapGesture {
             selectedQueueID = item.id

@@ -154,10 +154,6 @@ struct ActiveQueueSection: View {
             selectedWaitingID == row.id ? Color.accentColor.opacity(0.12) : Color.clear,
             in: RoundedRectangle(cornerRadius: 8)
         )
-        .overlay {
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.accentColor.opacity(0.5), lineWidth: focusedWaitingID == row.id ? 1.5 : 0)
-        }
         .contentShape(Rectangle())
         .onTapGesture {
             guard row.safetyState == .waiting else { return }
@@ -172,7 +168,6 @@ struct ActiveQueueSection: View {
         if row.safetyState == .waiting {
             queueRow(row)
                 .focusable()
-                .focusEffectDisabled()
                 .focused($focusedWaitingID, equals: row.id)
                 .draggable(row.id.uuidString)
                 .dropDestination(for: String.self) { values, _ in

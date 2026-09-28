@@ -16,18 +16,9 @@ struct ModularContentView: View {
     // one definition of which states keep results visible.
     
     var body: some View {
+        // System background, not a painted gradient: the navigation and tab
+        // chrome stay translucent and both color schemes work.
         ZStack {
-            // Background gradient (matching original)
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.05, green: 0.05, blue: 0.05),
-                    Color(red: 0.1, green: 0.1, blue: 0.1)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            
             Group {
                 if showingTransfers {
                     NavigationStack {
@@ -57,7 +48,6 @@ struct ModularContentView: View {
             }
             .padding(.top, 16)
         }
-        .preferredColorScheme(.dark)
         .onChange(of: coordinator.operationState) { oldValue, newValue in
             // Handle transfer completion logic
             if case .completed = newValue {
@@ -201,7 +191,7 @@ struct HeaderSectionView: View {
             } label: {
                 Image(systemName: "gear")
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
+                    .foregroundStyle(.secondary)
                     // Audit H6: the icon alone was well under 44pt.
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
@@ -227,7 +217,7 @@ struct IdleStateView: View {
             if navigationPresentation == .sidebar {
                 HStack(alignment: .top, spacing: 0) {
                     AdaptiveModeNavigation(coordinator: coordinator, presentation: .sidebar)
-                    Divider().overlay(Color.white.opacity(0.09))
+                    Divider().overlay(Color.primary.opacity(0.09))
                     modeContent
                 }
             } else {
@@ -494,7 +484,6 @@ struct SettingsSheetView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task { await notifier.refreshAuthorizationStatus() }
     }
     
@@ -566,7 +555,6 @@ private struct RemoteDestinationSettingsSection: View {
                     }
                 }
             }
-            .preferredColorScheme(.dark)
         }
     }
 
@@ -624,6 +612,5 @@ struct VolumeSelector: View {
             .padding()
         }
         .background(Color.black)
-        .preferredColorScheme(.dark)
     }
 }

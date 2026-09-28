@@ -128,7 +128,6 @@ struct MacQueueSection: View {
     private func reorderableWaitingRow(_ row: QueueSessionRow, rows: [QueueSessionRow]) -> some View {
         transferRow(row)
             .focusable()
-            .focusEffectDisabled()
             .focused($focusedWaitingID, equals: row.id)
             .draggable(row.id.uuidString)
             .dropDestination(for: String.self) { values, _ in
@@ -168,10 +167,12 @@ struct MacQueueSection: View {
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row))
                     if row.isRunning {
+                        // No .animation on the fraction: copies run for
+                        // minutes, and per-tick animation is layout thrash.
+                        // The expanded ProgressView below shows live progress.
                         RoundedRectangle(cornerRadius: 8)
                             .fill(Color.accentColor.opacity(0.14))
                             .frame(width: proxy.size.width * min(max(row.progressFraction ?? 0, 0), 1))
-                            .animation(reduceMotion ? nil : .linear(duration: 0.25), value: row.progressFraction)
                     }
                 }
             }
@@ -179,8 +180,6 @@ struct MacQueueSection: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8)
                 .strokeBorder(borderColor(for: row))
-            RoundedRectangle(cornerRadius: 8)
-                .stroke(Color.accentColor.opacity(0.5), lineWidth: focusedWaitingID == row.id ? 1.5 : 0)
         }
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
@@ -512,9 +511,10 @@ private struct SafeTransferHero: View {
                     .font(.title2.bold()).foregroundStyle(CardSafetyTint.green.color)
                     .scaleEffect(reduceMotion ? 1 : (closesRing ? 1 : 0.72))
                     .opacity(reduceMotion ? 1 : (closesRing ? 1 : 0))
+                    .symbolEffect(.bounce, value: closesRing)
             }
             .frame(width: 62, height: 62)
-            .shadow(color: CardSafetyTint.green.color.opacity(0.22), radius: closesRing ? 10 : 5)
+            .shadow(color: CardSafetyTint.green.color.opacity(0.22), radius: 10)
             .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 5) {
                 Text(outcome.finishTitle)

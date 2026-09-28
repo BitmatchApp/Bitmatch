@@ -10,15 +10,6 @@ struct PhoneContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color(red: 0.05, green: 0.05, blue: 0.05),
-                        Color(red: 0.1, green: 0.1, blue: 0.1)
-                    ]),
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ).ignoresSafeArea()
-
                 Group {
                     if showingTransfers {
                         TransferLibraryView(
@@ -75,7 +66,6 @@ struct PhoneContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: {
                         Image(systemName: "gear")
-                            .foregroundColor(.white.opacity(0.9))
                     }
                     .accessibilityLabel("Settings")
                 }
@@ -83,7 +73,6 @@ struct PhoneContentView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsSheetView(coordinator: coordinator)
             }
-            .preferredColorScheme(.dark)
         }
     }
 
