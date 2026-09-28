@@ -344,7 +344,6 @@ struct MacMainView: View {
             case .copyAndVerify:
                 CopyAndVerifyView(
                     coordinator: coordinator,
-                    showReportSettings: .constant(false),
                     optionsExpanded: $transferOptionsExpanded
                 )
                 
@@ -545,7 +544,7 @@ struct MacMainView: View {
                     }
                 case .compareFolders:
                     // ⌘R obeys the same readiness rule as the Compare button.
-                    CompareFoldersView.startIfReady(coordinator)
+                    ComparePresentation.startIfReady(coordinator)
                 case .masterReport:
                     break
                 }

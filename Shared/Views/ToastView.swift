@@ -4,7 +4,7 @@ struct ToastView: View {
     let icon: String
     let message: String
     let tint: Color
-    
+
     var body: some View {
         HStack(spacing: 12) {
             Image(systemName: icon)
@@ -22,4 +22,3 @@ struct ToastView: View {
         .shadow(color: .black.opacity(0.2), radius: 10, x: 0, y: 4)
     }
 }
-

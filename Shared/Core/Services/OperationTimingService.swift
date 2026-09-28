@@ -61,7 +61,6 @@ class OperationTimingService: ObservableObject {
     
     // MARK: - Published State
     @Published var currentTiming: OperationTiming?
-    @Published var timingHistory: [OperationTiming] = []
     
     // MARK: - Private State
     private var operationStartTime: Date?
@@ -126,8 +125,7 @@ class OperationTimingService: ObservableObject {
             totalBytes: totalBytes,
             finalSpeed: nil,
             averageSpeed: nil,
-            peakSpeed: nil,
-            operationType: .transfer
+            peakSpeed: nil
         )
         
         SharedLogger.info("Timing started: files=\(totalFiles), size=\(ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))", category: .transfer)
@@ -196,8 +194,7 @@ class OperationTimingService: ObservableObject {
                     currentStage: currentTiming.currentStage,
                     finalSpeed: speed,
                     averageSpeed: averageSpeed,
-                    peakSpeed: peakSpeed,
-                    operationType: currentTiming.operationType
+                    peakSpeed: peakSpeed
                 )
                 
                 lastProgressUpdate = now
@@ -237,16 +234,9 @@ class OperationTimingService: ObservableObject {
             finalSpeed: currentTiming.finalSpeed,
             averageSpeed: currentTiming.averageSpeed,
             peakSpeed: currentTiming.peakSpeed,
-            operationType: currentTiming.operationType,
             success: success,
             resultMessage: message
         )
-        
-        // Add to history
-        timingHistory.insert(finalTiming, at: 0)
-        if timingHistory.count > 50 { // Keep last 50 operations
-            timingHistory.removeLast()
-        }
         
         // Log completion
         SharedLogger.info("Timing complete: duration=\(formatDuration(totalDuration))", category: .transfer)
@@ -477,53 +467,6 @@ class OperationTimingService: ObservableObject {
         }
     }
     
-    // MARK: - Time Remaining Calculation
-    
-    func calculateTimeRemaining() -> TimeInterval? {
-        guard let timing = currentTiming,
-              timing.filesProcessed > 0,
-              let averageSpeed = timing.averageSpeed,
-              averageSpeed > 0 else { return nil }
-        
-        let remainingBytes = timing.totalBytes - timing.bytesProcessed
-        return Double(remainingBytes) / averageSpeed
-    }
-    
-    func getFormattedTimeRemaining() -> String? {
-        guard let timeRemaining = calculateTimeRemaining() else { return nil }
-        return formatDuration(timeRemaining)
-    }
-    
-    // MARK: - Statistics
-    
-    func getHistoryStats() -> OperationHistoryStats? {
-        guard !timingHistory.isEmpty else { return nil }
-        
-        let completedOperations = timingHistory.filter { $0.success == true }
-        guard !completedOperations.isEmpty else { return nil }
-        
-        let totalDurations = completedOperations.map { $0.totalDuration }
-        let averageDuration = totalDurations.reduce(0, +) / Double(totalDurations.count)
-        let fastestDuration = totalDurations.min() ?? 0
-        let slowestDuration = totalDurations.max() ?? 0
-        
-        let totalBytes = completedOperations.map { $0.totalBytes }.reduce(0, +)
-        let totalFiles = completedOperations.map { $0.totalFiles }.reduce(0, +)
-        
-        let averageSpeeds = completedOperations.compactMap { $0.averageSpeed }
-        let overallAverageSpeed = averageSpeeds.isEmpty ? 0 : averageSpeeds.reduce(0, +) / Double(averageSpeeds.count)
-        
-        return OperationHistoryStats(
-            totalOperations: timingHistory.count,
-            successfulOperations: completedOperations.count,
-            totalFiles: totalFiles,
-            totalBytes: totalBytes,
-            averageDuration: averageDuration,
-            fastestDuration: fastestDuration,
-            slowestDuration: slowestDuration,
-            averageSpeed: overallAverageSpeed
-        )
-    }
 }
 
 // MARK: - Supporting Types
@@ -543,7 +486,6 @@ struct OperationTiming {
     var finalSpeed: Double?
     var averageSpeed: Double?
     var peakSpeed: Double?
-    let operationType: OperationType
     var success: Bool?
     var resultMessage: String?
     
@@ -564,49 +506,6 @@ struct OperationTiming {
         } else {
             return "\(seconds)s"
         }
-    }
-}
-
-enum OperationType {
-    case transfer
-    case verification
-    case comparison
-    case report
-    
-    var displayName: String {
-        switch self {
-        case .transfer: return "Transfer"
-        case .verification: return "Verification"
-        case .comparison: return "Comparison"
-        case .report: return "Report Generation"
-        }
-    }
-}
-
-struct OperationHistoryStats {
-    let totalOperations: Int
-    let successfulOperations: Int
-    let totalFiles: Int
-    let totalBytes: Int64
-    let averageDuration: TimeInterval
-    let fastestDuration: TimeInterval
-    let slowestDuration: TimeInterval
-    let averageSpeed: Double
-    
-    var successRate: Double {
-        guard totalOperations > 0 else { return 0 }
-        return Double(successfulOperations) / Double(totalOperations) * 100
-    }
-    
-    var formattedTotalSize: String {
-        ByteCountPresentation.fileSize(totalBytes)
-    }
-    
-    var formattedAverageSpeed: String {
-        guard averageSpeed > 0 else { return "—" }
-        let formatter = ByteCountFormatter()
-        formatter.countStyle = .file
-        return formatter.string(fromByteCount: Int64(averageSpeed)) + "/s"
     }
 }
 

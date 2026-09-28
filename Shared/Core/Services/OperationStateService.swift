@@ -1,4 +1,4 @@
-// OperationStateService.swift - Manages pause/resume state and persistence
+// OperationStateService.swift - Manages in-process pause/resume state
 import Foundation
 import Combine
 import BitMatchEngine
@@ -16,18 +16,9 @@ class OperationStateService: ObservableObject {
     /// reads and writes this; there is no second copy.
     @Published private(set) var currentState: OperationState = .notStarted
     @Published var pauseResumeCapabilities = PauseResumeCapabilities()
-    @Published var savedOperations: [SavedOperationState] = []
     
     // MARK: - Private State
     private var currentOperationId: UUID?
-    private var currentSourceURL: URL?
-    private var currentDestinationURLs: [URL] = []
-    private var currentVerificationMode: String?
-    private var currentMode: String?
-    private var startTime: Date?
-    private var pausedOperationData: SavedOperationState?
-    private let userDefaults = UserDefaults.standard
-    private let savedOperationsKey = "BitMatch_SavedOperations"
 
     /// Single source of truth for state-transition legality. `currentState`
     /// stays the published facade; every mutation goes through `applyTransition`.
@@ -36,7 +27,6 @@ class OperationStateService: ObservableObject {
     // MARK: - Initialization
     
     init() {
-        loadSavedOperations()
         setupSystemNotifications()
     }
 
@@ -80,24 +70,12 @@ class OperationStateService: ObservableObject {
         currentOperationId = id
         stateMachine.reset()
         applyTransition(.inProgress)
-        currentSourceURL = sourceURL
-        currentDestinationURLs = destinationURLs
-        currentVerificationMode = verificationMode
-        currentMode = mode
-        startTime = Date()
-        
-        // Clear any existing paused state for fresh operations
-        if let existingIndex = savedOperations.firstIndex(where: { $0.operationId == id }) {
-            savedOperations.remove(at: existingIndex)
-            saveToDisk()
-        }
 
         SharedLogger.info("StateService: started operation id=\(id)", category: .transfer)
     }
     
     func pauseOperation(reason: PauseInfo.PauseReason, currentProgress: OperationProgress?) {
-        guard let operationId = currentOperationId,
-              currentState.canPause else { return }
+        guard currentOperationId != nil, currentState.canPause else { return }
         
         let pauseInfo = PauseInfo(
             pausedAt: Date(),
@@ -110,44 +88,13 @@ class OperationStateService: ObservableObject {
         
         applyTransition(.paused(pauseInfo))
         
-        // Save operation state for persistence
-        if let progress = currentProgress {
-            let savedState = SavedOperationState(
-                operationId: operationId,
-                pausedAt: Date(),
-                pauseInfo: pauseInfo,
-                progress: progress,
-                reason: reason,
-                sourceURL: currentSourceURL,
-                destinationURLs: currentDestinationURLs,
-                verificationMode: currentVerificationMode,
-                startTime: startTime
-            )
-            
-            // Update or add saved state
-            if let existingIndex = savedOperations.firstIndex(where: { $0.operationId == operationId }) {
-                savedOperations[existingIndex] = savedState
-            } else {
-                savedOperations.append(savedState)
-            }
-            
-            saveToDisk()
-        }
-
         SharedLogger.info("StateService: paused (reason=\(reason))", category: .transfer)
     }
     
     func resumeOperation() -> Bool {
-        guard currentState.canResume,
-              let operationId = currentOperationId else { return false }
+        guard currentState.canResume, currentOperationId != nil else { return false }
         
         applyTransition(.resuming)
-        
-        // Remove from saved operations since we're resuming
-        if let savedIndex = savedOperations.firstIndex(where: { $0.operationId == operationId }) {
-            savedOperations.remove(at: savedIndex)
-            saveToDisk()
-        }
         
         // Transition to active state after brief resuming state
         let expectedOpId = currentOperationId
@@ -175,13 +122,7 @@ class OperationStateService: ObservableObject {
     }
 
     func completeOperation(operationId requested: UUID? = nil, info: OperationCompletionInfo) {
-        guard let operationId = currentOperation(matching: requested) else { return }
-
-        // Clean up any saved state
-        if let savedIndex = savedOperations.firstIndex(where: { $0.operationId == operationId }) {
-            savedOperations.remove(at: savedIndex)
-            saveToDisk()
-        }
+        guard currentOperation(matching: requested) != nil else { return }
 
         // Terminal transitions are authoritative: the coordinator's completed
         // callback must agree with the state service, not just clear the ID.
@@ -193,55 +134,21 @@ class OperationStateService: ObservableObject {
     /// Error-path terminal state. Distinct from cancellation so a failed
     /// operation is never reported as cancelled (or vice versa).
     func failOperation(operationId requested: UUID? = nil) {
-        guard let operationId = currentOperation(matching: requested) else { return }
+        guard currentOperation(matching: requested) != nil else { return }
 
         applyTransition(.failed)
-
-        // Clean up saved state
-        if let savedIndex = savedOperations.firstIndex(where: { $0.operationId == operationId }) {
-            savedOperations.remove(at: savedIndex)
-            saveToDisk()
-        }
 
         currentOperationId = nil
         SharedLogger.warning("StateService: failed and cleaned up", category: .transfer)
     }
 
     func cancelOperation(operationId requested: UUID? = nil) {
-        guard let operationId = currentOperation(matching: requested) else { return }
+        guard currentOperation(matching: requested) != nil else { return }
         
         applyTransition(.cancelled)
         
-        // Clean up saved state
-        if let savedIndex = savedOperations.firstIndex(where: { $0.operationId == operationId }) {
-            savedOperations.remove(at: savedIndex)
-            saveToDisk()
-        }
-        
         currentOperationId = nil
         SharedLogger.warning("StateService: cancelled and cleaned up", category: .transfer)
-    }
-    
-    // MARK: - Saved Operations Management
-    
-    func getSavedOperation(id: UUID) -> SavedOperationState? {
-        return savedOperations.first { $0.operationId == id }
-    }
-    
-    func deleteSavedOperation(id: UUID) {
-        if let index = savedOperations.firstIndex(where: { $0.operationId == id }) {
-            savedOperations.remove(at: index)
-            saveToDisk()
-        }
-    }
-    
-    func restoreFromSavedOperation(_ savedState: SavedOperationState) {
-        currentOperationId = savedState.operationId
-        stateMachine.restorePaused(savedState.pauseInfo)
-        currentState = .paused(savedState.pauseInfo)
-        pausedOperationData = savedState
-        
-        SharedLogger.info("StateService: restored from saved state", category: .transfer)
     }
     
     // MARK: - System Integration
@@ -304,41 +211,13 @@ class OperationStateService: ObservableObject {
     #endif
 
     
-    // MARK: - Persistence
-    
-    private func saveToDisk() {
-        do {
-            let encoder = JSONEncoder()
-            encoder.dateEncodingStrategy = .iso8601
-            let data = try encoder.encode(savedOperations)
-            userDefaults.set(data, forKey: savedOperationsKey)
-            SharedLogger.debug("StateService: saved \(savedOperations.count) operations", category: .transfer)
-        } catch {
-            SharedLogger.error("StateService: failed to save operations: \(error)", category: .transfer)
-        }
-    }
-    
-    private func loadSavedOperations() {
-        guard let data = userDefaults.data(forKey: savedOperationsKey) else { return }
-        
-        do {
-            let decoder = JSONDecoder()
-            decoder.dateDecodingStrategy = .iso8601
-            savedOperations = try decoder.decode([SavedOperationState].self, from: data)
-            SharedLogger.debug("StateService: loaded \(savedOperations.count) saved operations", category: .transfer)
-        } catch {
-            SharedLogger.error("StateService: failed to load saved operations: \(error)", category: .transfer)
-        }
-    }
-    
     // MARK: - Utilities
     
     func updateCapabilities(canPause: Bool, canResume: Bool, estimatedPauseTime: TimeInterval? = nil) {
         pauseResumeCapabilities = PauseResumeCapabilities(
             canPause: canPause,
             canResume: canResume,
-            estimatedPauseTime: estimatedPauseTime,
-            supportsPersistence: true
+            estimatedPauseTime: estimatedPauseTime
         )
     }
     
@@ -365,87 +244,19 @@ class OperationStateService: ObservableObject {
         )
     }
 
-    // MARK: - Checkpoint Updates (for crash/interruption resume)
-    func updateCheckpoint(operationId: UUID, filesProcessed: Int, totalFiles: Int, lastFile: String?) {
-        let progress = OperationProgress(
-            overallProgress: totalFiles > 0 ? Double(filesProcessed) / Double(totalFiles) : 0,
-            currentFile: lastFile,
-            filesProcessed: filesProcessed,
-            totalFiles: totalFiles,
-            currentStage: .copying,
-            speed: nil,
-            elapsedTime: nil,
-            averageSpeed: nil,
-            peakSpeed: nil,
-            bytesProcessed: nil,
-            totalBytes: nil,
-            stageProgress: nil,
-            reusedCopies: nil
-        )
-        let savedState = SavedOperationState(
-            operationId: operationId,
-            pausedAt: Date(),
-            pauseInfo: PauseInfo(
-                pausedAt: Date(),
-                currentFile: lastFile,
-                filesProcessed: filesProcessed,
-                totalFiles: totalFiles,
-                bytesProcessed: 0,
-                reason: .error
-            ),
-            progress: progress,
-            reason: .error,
-            sourceURL: currentSourceURL,
-            destinationURLs: currentDestinationURLs,
-            verificationMode: currentVerificationMode,
-            startTime: startTime
-        )
-        if let existingIndex = savedOperations.firstIndex(where: { $0.operationId == operationId }) {
-            savedOperations[existingIndex] = savedState
-        } else {
-            savedOperations.append(savedState)
-        }
-        saveToDisk()
-    }
 }
 
 // MARK: - Supporting Types
-
-struct SavedOperationState: Codable, Identifiable {
-    var id: UUID = UUID()
-    let operationId: UUID
-    let pausedAt: Date
-    let pauseInfo: PauseInfo
-    let progress: OperationProgress
-    let reason: PauseInfo.PauseReason
-    let sourceURL: URL?
-    let destinationURLs: [URL]?
-    let verificationMode: String?
-    let startTime: Date?
-    
-    var formattedPauseTime: String {
-        let formatter = DateFormatter()
-        formatter.dateStyle = .short
-        formatter.timeStyle = .short
-        return formatter.string(from: pausedAt)
-    }
-    
-    var timeSincePaused: TimeInterval {
-        Date().timeIntervalSince(pausedAt)
-    }
-}
 
 struct PauseResumeCapabilities {
     let canPause: Bool
     let canResume: Bool
     let estimatedPauseTime: TimeInterval?
-    let supportsPersistence: Bool
     
-    init(canPause: Bool = false, canResume: Bool = false, estimatedPauseTime: TimeInterval? = nil, supportsPersistence: Bool = false) {
+    init(canPause: Bool = false, canResume: Bool = false, estimatedPauseTime: TimeInterval? = nil) {
         self.canPause = canPause
         self.canResume = canResume
         self.estimatedPauseTime = estimatedPauseTime
-        self.supportsPersistence = supportsPersistence
     }
 }
 

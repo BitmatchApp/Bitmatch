@@ -7,6 +7,7 @@ import Testing
 @testable import BitMatch
 import BitMatchEngine
 
+@MainActor
 struct ComparePresentationTests {
 
     private static let base = URL(fileURLWithPath: NSTemporaryDirectory())
@@ -143,6 +144,26 @@ struct ComparePresentationTests {
         let readiness = CompareReadiness.resolve(left: Self.loaded(Self.card), right: loading, isRunning: false)
         #expect(readiness == .loading)
         #expect(!readiness.canStart)
+    }
+
+    @Test
+    func pickedButUnscannedFolderKeepsCompareDisabledOnMac() {
+        let coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            defaults: .isolatedWorkflowDefaults()
+        )
+        coordinator.leftURL = Self.card
+        coordinator.rightURL = Self.backup
+
+        let presentation = ComparePresentation.make(coordinator: coordinator)
+
+        #expect(presentation.left.isLoading)
+        #expect(presentation.right.isLoading)
+        #expect(!presentation.readiness.canStart)
+
+        ComparePresentation.startIfReady(coordinator)
+        #expect(coordinator.currentMode == .copyAndVerify)
+        #expect(!coordinator.isOperationInProgress)
     }
 
     /// Details from the previously chosen folder must not count as loaded.

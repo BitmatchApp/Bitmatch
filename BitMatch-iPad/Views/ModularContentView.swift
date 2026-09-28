@@ -303,47 +303,9 @@ struct CompareFoldersView: View {
         _liveProgress = ObservedObject(wrappedValue: coordinator.liveProgress)
     }
 
-    static func presentation(for coordinator: SharedAppCoordinator) -> ComparePresentation {
-        ComparePresentation.make(
-            left: slot(url: coordinator.leftURL, info: coordinator.leftFolderInfo, coordinator: coordinator),
-            right: slot(url: coordinator.rightURL, info: coordinator.rightFolderInfo, coordinator: coordinator),
-            choice: coordinator.checkAgainst,
-            savedAvailability: coordinator.savedChecksumAvailability,
-            mode: coordinator.verificationMode,
-            isRunning: coordinator.isOperationInProgress,
-            progress: coordinator.progress.map {
-                CompareProgressPresentation(
-                    fraction: $0.overallProgress,
-                    filesProcessed: $0.filesProcessed,
-                    totalFiles: $0.totalFiles,
-                    currentFile: $0.currentFile
-                )
-            },
-            stats: coordinator.lastCompareStats,
-            savedResult: coordinator.lastSavedChecksumResult,
-            end: coordinator.lastCompareEnd
-        )
-    }
-
-    private static func slot(
-        url: URL?,
-        info: EnhancedFolderInfo?,
-        coordinator: SharedAppCoordinator
-    ) -> CompareFolderSlot {
-        CompareFolderSlot.make(
-            url: url,
-            infoURL: info?.url,
-            fileCount: info?.fileCount,
-            totalSize: info?.totalSize,
-            // A scan that has not started yet (no entry) counts as loading, so
-            // Compare cannot enable in the moment between picking and scanning.
-            isFetching: url.map { coordinator.folderInfoLoadingState[$0] != false } ?? false
-        )
-    }
-
     var body: some View {
         CompareScreen(
-            presentation: Self.presentation(for: coordinator),
+            presentation: ComparePresentation.make(coordinator: coordinator),
             checkAgainst: $coordinator.checkAgainst,
             verificationMode: $coordinator.verificationMode,
             advancedExpanded: $advancedExpanded,
@@ -354,7 +316,7 @@ struct CompareFoldersView: View {
                 clearRight: { coordinator.rightURL = nil },
                 dropLeft: nil,
                 dropRight: nil,
-                compare: { Task { await coordinator.compareFolders() } },
+                compare: { ComparePresentation.startIfReady(coordinator) },
                 cancel: { coordinator.cancelOperation() }
             )
         )

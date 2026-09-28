@@ -446,16 +446,8 @@ class ErrorReportingService: ObservableObject {
     
     // MARK: - Error Utilities
     
-    func getErrorsByCategory() -> [ErrorCategory: [ErrorReport]] {
-        return Dictionary(grouping: currentErrors) { $0.category }
-    }
-    
     func getCriticalErrors() -> [ErrorReport] {
         return currentErrors.filter { $0.severity == .critical }
-    }
-    
-    func getRecoverableErrors() -> [ErrorReport] {
-        return currentErrors.filter { $0.isRecoverable }
     }
     
     func clearCurrentErrors() {
@@ -463,56 +455,6 @@ class ErrorReportingService: ObservableObject {
         errorSummary = nil
     }
     
-    func exportErrorReport() -> String {
-        guard let summary = errorSummary else { return "No error data available" }
-        
-        var report = """
-        ERROR REPORT
-        ============
-        Operation ID: \(summary.operationId)
-        Generated: \(Date().formatted(date: .complete, time: .standard))
-        Duration: \(String(format: "%.1f", summary.operationDuration))s
-        
-        SUMMARY
-        -------
-        Total Errors: \(summary.totalErrors)
-        Warnings: \(summary.totalWarnings)
-        Critical: \(summary.criticalErrors)
-        Recoverable: \(summary.recoverableErrors)
-        
-        """
-        
-        if !currentErrors.isEmpty {
-            report += "\nDETAILED ERRORS\n===============\n\n"
-            
-            for error in currentErrors {
-                report += """
-                [\(error.timestamp.formatted(date: .omitted, time: .standard))] \(error.severity.displayName.uppercased()): \(error.title)
-                \(error.message)
-                
-                """
-                
-                if let file = error.affectedFile {
-                    report += "File: \(file)\n"
-                }
-                
-                if let technical = error.technicalDetails {
-                    report += "Technical Details: \(technical)\n"
-                }
-                
-                if !error.recoveryActions.isEmpty {
-                    report += "Recovery Actions:\n"
-                    for action in error.recoveryActions {
-                        report += "  • \(action)\n"
-                    }
-                }
-                
-                report += "\n"
-            }
-        }
-        
-        return report
-    }
 }
 
 // MARK: - Supporting Types

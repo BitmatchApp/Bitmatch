@@ -60,26 +60,6 @@ enum AppLogger {
         log(level: .error, message: fullMessage, category: category)
     }
     
-    // MARK: - Transfer-specific logging
-    
-    static func transferStarted(source: String, destinations: [String]) {
-        info("Transfer started: \(source) → \(destinations.joined(separator: ", "))", category: .transfer)
-    }
-    
-    static func transferProgress(_ progress: Double, speed: String?, file: String?) {
-        let details = [
-            "progress: \(Int(progress * 100))%",
-            speed.map { "speed: \($0)" },
-            file.map { "file: \($0)" }
-        ].compactMap { $0 }.joined(separator: ", ")
-        
-        debug("Transfer progress: \(details)", category: .transfer)
-    }
-    
-    static func transferCompleted(duration: TimeInterval, filesTransferred: Int) {
-        info("Transfer completed in \(String(format: "%.1f", duration))s, \(filesTransferred) files", category: .transfer)
-    }
-    
     // MARK: - Dev mode logging
     
     static func devMode(_ message: String) {
@@ -106,24 +86,5 @@ enum AppLogger {
         case .error:
             SharedLogger.error(logMessage, category: .error)
         }
-    }
-}
-
-// MARK: - Convenience Extensions
-
-extension AppLogger {
-    /// Log file operation results
-    static func fileOperation(_ operation: String, path: String, success: Bool) {
-        if success {
-            info("File operation succeeded: \(operation) at \(path)", category: .transfer)
-        } else {
-            error("File operation failed: \(operation) at \(path)", category: .transfer)
-        }
-    }
-    
-    /// Log UI state changes
-    static func uiStateChange(_ state: String, details: String = "") {
-        let message = details.isEmpty ? state : "\(state) - \(details)"
-        debug("UI State: \(message)", category: .ui)
     }
 }

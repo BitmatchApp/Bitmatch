@@ -5,7 +5,6 @@ import SwiftUI
 /// list beneath its composer carries live progress and final verdicts.
 struct CopyAndVerifyView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
-    @Binding var showReportSettings: Bool
     @Binding var optionsExpanded: Bool
 
     var body: some View {

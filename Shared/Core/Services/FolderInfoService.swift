@@ -237,30 +237,6 @@ final class FolderInfoService: ObservableObject {
         rightURL != url || isFolderInfoLoading(for: url)
     }
 
-    /// Clear all cached folder info
-    func clearAll() {
-        sourceWork?.cancel()
-        leftWork?.cancel()
-        rightWork?.cancel()
-        sourceWork = nil
-        leftWork = nil
-        rightWork = nil
-        sourceGeneration &+= 1
-        leftGeneration &+= 1
-        rightGeneration &+= 1
-        sourceFolderInfo = nil
-        sourceFingerprint = nil
-        sourceScanError = nil
-        leftFolderInfo = nil
-        rightFolderInfo = nil
-        destinationFolderInfos.removeAll()
-        folderInfoLoadingState.removeAll()
-        sourceURL = nil
-        leftURL = nil
-        rightURL = nil
-        destinationURLs.removeAll()
-    }
-
     // MARK: - Private Scanning Methods
 
     /// Perf 8: Fast pass - count + size only, returns quickly.

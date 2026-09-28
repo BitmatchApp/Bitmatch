@@ -16,7 +16,7 @@ struct HeaderTabsView: View {
     
     @ViewBuilder
     private var topTabsSection: some View {
-        // EXACT copy of Mac ModeSelectorView
+        // Compact mode picker for touch layouts.
         HStack(spacing: 0) {
             ForEach([AppMode.copyAndVerify, AppMode.compareFolders, AppMode.masterReport], id: \.self) { appMode in
                 Button {

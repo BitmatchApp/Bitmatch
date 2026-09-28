@@ -471,6 +471,63 @@ struct ComparePresentation: Equatable, Sendable {
     }
 }
 
+@MainActor
+extension ComparePresentation {
+    /// Builds the one Compare presentation used by every platform.
+    static func make(coordinator: SharedAppCoordinator) -> Self {
+        make(
+            left: folderSlot(
+                url: coordinator.leftURL,
+                info: coordinator.leftFolderInfo,
+                loadingState: coordinator.folderInfoLoadingState
+            ),
+            right: folderSlot(
+                url: coordinator.rightURL,
+                info: coordinator.rightFolderInfo,
+                loadingState: coordinator.folderInfoLoadingState
+            ),
+            choice: coordinator.checkAgainst,
+            savedAvailability: coordinator.savedChecksumAvailability,
+            mode: coordinator.verificationMode,
+            isRunning: coordinator.isOperationInProgress,
+            progress: coordinator.progress.map {
+                CompareProgressPresentation(
+                    fraction: $0.overallProgress,
+                    filesProcessed: $0.filesProcessed,
+                    totalFiles: $0.totalFiles,
+                    currentFile: $0.currentFile
+                )
+            },
+            stats: coordinator.lastCompareStats,
+            savedResult: coordinator.lastSavedChecksumResult,
+            end: coordinator.lastCompareEnd
+        )
+    }
+
+    /// Starts only when the shared readiness rule says so.
+    static func startIfReady(_ coordinator: SharedAppCoordinator) {
+        guard make(coordinator: coordinator).readiness.canStart else { return }
+        coordinator.switchMode(to: .compareFolders)
+        Task { await coordinator.startCurrentMode() }
+    }
+
+    private static func folderSlot(
+        url: URL?,
+        info: EnhancedFolderInfo?,
+        loadingState: [URL: Bool]
+    ) -> CompareFolderSlot {
+        CompareFolderSlot.make(
+            url: url,
+            infoURL: info?.url,
+            fileCount: info?.fileCount,
+            totalSize: info?.totalSize,
+            // A newly picked folder has no entry until its scan starts. Treat
+            // that gap as loading so Compare cannot start with stale details.
+            isFetching: url.map { loadingState[$0] != false } ?? false
+        )
+    }
+}
+
 // MARK: - Mode switching
 
 /// Decision C-2: the app-mode switcher is locked while anything runs, on

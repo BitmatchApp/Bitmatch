@@ -2095,11 +2095,6 @@ class SharedAppCoordinator: ObservableObject {
     }
     #endif
 
-    func finishQueueSessionAndStartNewTransfer() {
-        clearQueueSessionState()
-        startNewTransfer()
-    }
-
     /// The one Start, for every platform's Start button and keyboard
     /// shortcut. A prepared project card starts through
     /// `startProjectOperation()`; with Project chosen and no card prepared
@@ -2602,42 +2597,9 @@ class SharedAppCoordinator: ObservableObject {
         activeRunContext = nil
     }
 
-    func togglePause() async {
-        if canPause {
-            await pauseOperation()
-        } else if canResume {
-            await resumeOperation()
-        }
-    }
-
     func saveVerificationMode() {
         guard !isReplayingQueuedTransfer else { return }
         defaults.set(verificationMode.rawValue, forKey: "lastVerificationMode")
-    }
-
-    // MARK: - Completion State (derived from OperationState)
-
-    var completionState: CompletionState {
-        // Master Report is its own workflow. A prior Copy outcome remains in
-        // the journal and reappears when Copy is selected, but must not route
-        // over the report screen while Master Report is active.
-        if currentMode == .masterReport { return .idle }
-        switch operationState {
-        case .completed(let info):
-            if info.success {
-                return .success(message: info.message)
-            } else {
-                return .issues(message: info.message)
-            }
-        case .failed:
-            return .failed(message: "Operation failed")
-        case .inProgress, .copying, .verifying, .resuming:
-            return .inProgress
-        case .cancelled:
-            return .cancelled(message: "Operation cancelled by user")
-        case .idle, .notStarted, .paused:
-            return .idle
-        }
     }
 
     // MARK: - Computed Properties
@@ -2709,10 +2671,6 @@ class SharedAppCoordinator: ObservableObject {
         return stateService.pauseResumeCapabilities
     }
     
-    var savedOperations: [SavedOperationState] {
-        return stateService.savedOperations
-    }
-    
     // MARK: - Folder Info Computed Properties
 
     func getFolderInfo(for url: URL) -> EnhancedFolderInfo? {
@@ -2721,25 +2679,6 @@ class SharedAppCoordinator: ObservableObject {
 
     func isFolderInfoLoading(for url: URL) -> Bool {
         return folderInfoService.isFolderInfoLoading(for: url)
-    }
-    
-    var sourceFolderSummary: String {
-        guard let info = sourceFolderInfo else { return "No folder selected" }
-        return "\(info.formattedFileCount) files • \(info.formattedSize)"
-    }
-    
-    var destinationsSummary: String {
-        guard !destinationURLs.isEmpty else { return "No destinations selected" }
-        let totalCapacity = destinationFolderInfos.values.compactMap { 
-            getDriveCapacity(for: $0.url) 
-        }.reduce(0, +)
-        
-        if totalCapacity > 0 {
-            let formattedCapacity = ByteCountPresentation.capacity(totalCapacity)
-            return "\(destinationURLs.count) destination\(destinationURLs.count == 1 ? "" : "s") • ~\(formattedCapacity) available"
-        } else {
-            return "\(destinationURLs.count) destination\(destinationURLs.count == 1 ? "" : "s")"
-        }
     }
     
     private func getDriveCapacity(for url: URL) -> Int64? {
@@ -2757,78 +2696,6 @@ class SharedAppCoordinator: ObservableObject {
         } catch {
             return nil
         }
-    }
-    
-    // Get folder info with type hints for professional display
-    func getFolderDisplayInfo(for url: URL) -> FolderDisplayInfo? {
-        guard let enhancedInfo = getFolderInfo(for: url) else { return nil }
-        
-        // Convert to base FolderInfo for compatibility
-        let baseInfo = FolderInfo(
-            url: enhancedInfo.url,
-            fileCount: enhancedInfo.fileCount,
-            totalSize: enhancedInfo.totalSize,
-            lastModified: enhancedInfo.lastModified,
-            isInternalDrive: enhancedInfo.isInternalDrive
-        )
-        
-        let driveType = getDriveType(for: url)
-        let availableSpace = getDriveCapacity(for: url)
-        let isLoading = isFolderInfoLoading(for: url)
-        
-        return FolderDisplayInfo(
-            baseInfo: baseInfo,
-            driveType: driveType,
-            availableSpace: availableSpace,
-            isLoading: isLoading
-        )
-    }
-    
-    private func getDriveType(for url: URL) -> DriveType {
-        do {
-            let values = try url.resourceValues(forKeys: [
-                .volumeIsRemovableKey,
-                .volumeIsEjectableKey,
-                .volumeIsInternalKey,
-                .volumeNameKey
-            ])
-            
-            if values.volumeIsRemovable == true || values.volumeIsEjectable == true {
-                // Check if it's likely a camera card based on volume name
-                if let name = values.volumeName?.lowercased() {
-                    if name.contains("untitled") || name.hasPrefix("no name") || 
-                       name.contains("cf") || name.contains("sd") {
-                        return .cameraCard
-                    }
-                }
-                return .externalDrive
-            } else if values.volumeIsInternal == false {
-                return .networkDrive
-            } else {
-                return .internalDrive
-            }
-        } catch {
-            return .unknown
-        }
-    }
-    
-    // MARK: - Enhanced Folder Info Helpers
-    
-    /// Get a detailed summary for source folder including file types
-    var sourceDetailedSummary: String? {
-        guard let info = sourceFolderInfo else { return nil }
-        var parts = [info.formattedFileCount + " files", info.formattedSize]
-        
-        if let topType = info.topFileTypes.first {
-            parts.append("\(topType.count) \(topType.type) files")
-        }
-        
-        return parts.joined(separator: " • ")
-    }
-    
-    /// Get file type breakdown for source folder
-    var sourceFileTypesBreakdown: [(type: String, count: Int)] {
-        return sourceFolderInfo?.topFileTypes ?? []
     }
     
     /// Whether a transfer may start, and why not. One rule on every platform
@@ -2890,21 +2757,6 @@ class SharedAppCoordinator: ObservableObject {
         }
     }
     
-    /// Get source folder metadata summary for professional display
-    var sourceFolderMetadata: FolderMetadataSummary? {
-        guard let info = sourceFolderInfo else { return nil }
-        
-        return FolderMetadataSummary(
-            fileCount: info.fileCount,
-            totalSize: info.totalSize,
-            averageFileSize: info.averageFileSize,
-            largestFile: info.largestFile,
-            fileTypeBreakdown: info.topFileTypes,
-            dateRange: info.dateRangeDescription,
-            driveType: getDriveType(for: info.url),
-            lastModified: info.lastModified
-        )
-    }
 }
 
 // MARK: - Supporting Types for Enhanced Folder Display
@@ -3004,41 +2856,5 @@ extension OperationReadinessAssessment {
             blockingIssues: readiness.blockers,
             isAnalysing: readiness.status == .analysing
         )
-    }
-}
-
-struct FolderMetadataSummary {
-    let fileCount: Int
-    let totalSize: Int64
-    let averageFileSize: Int64
-    let largestFile: (name: String, size: Int64)?
-    let fileTypeBreakdown: [(type: String, count: Int)]
-    let dateRange: String
-    let driveType: DriveType
-    let lastModified: Date
-    
-    var formattedTotalSize: String {
-        ByteCountPresentation.fileSize(totalSize)
-    }
-    
-    var formattedAverageSize: String {
-        ByteCountPresentation.fileSize(averageFileSize)
-    }
-    
-    var formattedLargestFile: String? {
-        guard let largest = largestFile else { return nil }
-        let size = ByteCountPresentation.fileSize(largest.size)
-        return "\(largest.name) (\(size))"
-    }
-    
-    var primaryFileType: String? {
-        return fileTypeBreakdown.first?.type
-    }
-    
-    var diversityScore: String {
-        let typeCount = fileTypeBreakdown.count
-        if typeCount <= 1 { return "Uniform" }
-        if typeCount <= 3 { return "Mixed" }
-        return "Diverse"
     }
 }
