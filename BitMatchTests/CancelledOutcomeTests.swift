@@ -46,7 +46,6 @@ struct CancelledOutcomeTests {
         coordinator.cancelOperation()
 
         #expect(coordinator.showsOutcomeSummary)
-        #expect(coordinator.completionState != .idle)
         #else
         #expect(true)
         #endif
@@ -71,17 +70,27 @@ struct CancelledOutcomeTests {
     @Test func masterReportIsNotCoveredByPreviousTransferOutcome() {
         #if os(macOS)
         let coordinator = makeCoordinator()
-        coordinator.operationState = .completed(OperationCompletionInfo(success: false, message: "Not verified"))
+        coordinator.operationState = .completed(
+            OperationCompletionInfo(success: false, message: "Not verified")
+        )
 
-        #expect(coordinator.completionState != .idle)
+        #expect(coordinator.showsOutcomeSummary)
+        #expect(coordinator.currentMode == .copyAndVerify)
+
         coordinator.switchMode(to: .masterReport)
-        #expect(coordinator.completionState == .idle)
-        #expect(coordinator.operationState == .completed(OperationCompletionInfo(success: false, message: "Not verified")))
+
+        #expect(coordinator.showsOutcomeSummary)
+        #expect(coordinator.currentMode == .masterReport)
+        #expect(!(coordinator.currentMode == .copyAndVerify && coordinator.showsOutcomeSummary))
+        #expect(coordinator.operationState == .completed(
+            OperationCompletionInfo(success: false, message: "Not verified")
+        ))
 
         coordinator.switchMode(to: .copyAndVerify)
-        #expect(coordinator.completionState != .idle)
+        #expect(coordinator.currentMode == .copyAndVerify && coordinator.showsOutcomeSummary)
         #else
         #expect(true)
         #endif
     }
+
 }

@@ -167,14 +167,6 @@ final class CameraMemoryService: @unchecked Sendable {
         }
     }
 
-    /// Clear old memories (optional cleanup after X days)
-    func cleanupOldMemories(olderThan days: Int = 90) {
-        let cutoffDate = Date().addingTimeInterval(-Double(days * 24 * 3600))
-        memoryLock.withLock {
-            memory = memory.filter { $0.value.lastSeen > cutoffDate }
-        }
-    }
-
     // MARK: - Synchronized Access
 
     private func cachedFingerprint(for id: String) -> CameraFingerprint? {

@@ -92,7 +92,7 @@ final class DockTileController {
         let count = QueueDockBadgePolicy.totalUnresolvedCount(
             rows: presentation.rows,
             reviewedIDs: coordinator.reviewedQueueAttentionIDs,
-            standaloneAttentionCount: coordinator.standaloneAttentionRecordIDsSinceLaunch.count
+            standaloneAttentionIDs: coordinator.standaloneAttentionRecordIDsSinceLaunch
         )
         let label = count == 0 ? nil : String(count)
         guard NSApp.dockTile.badgeLabel != label else { return }
@@ -172,28 +172,6 @@ struct IconTile: View {
                     .overlay(shape.strokeBorder(Color.white.opacity(fullBleed ? 0 : 0.10), lineWidth: side * 0.006))
                     .frame(width: tile, height: tile)
                     .shadow(color: .black.opacity(fullBleed ? 0 : 0.45), radius: side * 0.024, y: side * 0.014)
-            }
-            .frame(width: geometry.size.width, height: geometry.size.height)
-        }
-    }
-}
-
-/// The app icon's artwork.
-struct AppIconArt: View {
-    var fullBleed = false
-
-    var body: some View {
-        GeometryReader { geometry in
-            let side = min(geometry.size.width, geometry.size.height)
-            let content = fullBleed ? side * 0.84 : side * 0.805
-            ZStack {
-                IconTile(fullBleed: fullBleed)
-                SegmentRing(lit: 12, style: .progress)
-                    .frame(width: content * 0.68, height: content * 0.68)
-                Image(systemName: "checkmark")
-                    .font(.system(size: content * 0.27, weight: .heavy))
-                    .foregroundStyle(.white)
-                    .shadow(color: .black.opacity(0.35), radius: side * 0.01, y: side * 0.006)
             }
             .frame(width: geometry.size.width, height: geometry.size.height)
         }

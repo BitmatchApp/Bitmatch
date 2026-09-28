@@ -16,7 +16,7 @@ struct HeaderTabsView: View {
     
     @ViewBuilder
     private var topTabsSection: some View {
-        // EXACT copy of Mac ModeSelectorView
+        // Compact mode picker for touch layouts.
         HStack(spacing: 0) {
             ForEach([AppMode.copyAndVerify, AppMode.compareFolders, AppMode.masterReport], id: \.self) { appMode in
                 Button {
@@ -28,13 +28,13 @@ struct HeaderTabsView: View {
                         Text(appMode.shortTitle)
                             .font(.system(size: usesWideTabs ? 15 : 12, weight: .medium))
                     }
-                    .foregroundColor(coordinator.currentMode == appMode ? .white : .white.opacity(0.5))
+                    .foregroundStyle(coordinator.currentMode == appMode ? .primary : .secondary)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 8)
                     .frame(maxWidth: usesWideTabs ? .infinity : nil, minHeight: usesWideTabs ? 48 : 44)
                     .background(
                         RoundedRectangle(cornerRadius: 8)
-                            .fill(coordinator.currentMode == appMode ? Color.white.opacity(0.15) : Color.clear)
+                            .fill(coordinator.currentMode == appMode ? Color.primary.opacity(0.15) : Color.clear)
                     )
                     .contentShape(Rectangle()) // Make entire button area clickable
                 }
@@ -48,7 +48,7 @@ struct HeaderTabsView: View {
         .disabled(coordinator.isModeSwitchLocked)
         .background(
             RoundedRectangle(cornerRadius: 10)
-                .fill(Color.white.opacity(0.05))
+                .fill(Color.primary.opacity(0.05))
         )
         .padding(.horizontal, 20)
         .padding(.bottom, 20)
@@ -66,7 +66,7 @@ struct AdaptiveModeNavigation: View {
                 Text("MODE")
                     .font(.system(size: 10, weight: .bold))
                     .tracking(0.8)
-                    .foregroundColor(.white.opacity(0.46))
+                    .foregroundStyle(.secondary)
                 Spacer()
                 Menu {
                     ForEach(AppMode.allCases, id: \.self) { mode in
@@ -79,11 +79,11 @@ struct AdaptiveModeNavigation: View {
                 } label: {
                     Label(coordinator.currentMode.shortTitle, systemImage: coordinator.currentMode.systemImage)
                         .font(.system(size: 13, weight: .semibold))
-                        .foregroundColor(.white.opacity(0.9))
+                        .foregroundStyle(.primary)
                         .padding(.horizontal, 10)
                         .padding(.vertical, 8)
                         .frame(minHeight: 44)
-                        .background(RoundedRectangle(cornerRadius: 9).fill(Color.white.opacity(0.09)))
+                        .background(RoundedRectangle(cornerRadius: 9).fill(Color.primary.opacity(0.09)))
                 }
                 // Decision C-2: no mode switch while anything runs.
                 .disabled(coordinator.isModeSwitchLocked)
@@ -101,7 +101,7 @@ struct AdaptiveModeNavigation: View {
                 Text("BITMATCH")
                     .font(.system(size: 11, weight: .bold))
                     .tracking(1)
-                    .foregroundColor(.white.opacity(0.45))
+                    .foregroundStyle(.secondary)
                     .padding(.bottom, 8)
                 ForEach(AppMode.allCases, id: \.self) { mode in
                     Button {
@@ -109,11 +109,11 @@ struct AdaptiveModeNavigation: View {
                     } label: {
                         Label(mode.shortTitle, systemImage: mode.systemImage)
                             .font(.system(size: 13, weight: .semibold))
-                            .foregroundColor(coordinator.currentMode == mode ? .white : .white.opacity(0.58))
+                            .foregroundStyle(coordinator.currentMode == mode ? .primary : .secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 10)
-                            .background(RoundedRectangle(cornerRadius: 9).fill(coordinator.currentMode == mode ? Color.white.opacity(0.12) : .clear))
+                            .background(RoundedRectangle(cornerRadius: 9).fill(coordinator.currentMode == mode ? Color.primary.opacity(0.12) : .clear))
                     }
                     .buttonStyle(.plain)
                     .accessibilityAddTraits(coordinator.currentMode == mode ? .isSelected : [])

@@ -66,11 +66,12 @@ final class LocalTransferJournal: ObservableObject {
 
     @discardableResult
     func enqueue(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
-                 cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true, projectID: UUID? = nil) throws -> UUID {
+                 cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true,
+                 projectID: UUID? = nil, projectCardID: UUID? = nil) throws -> UUID {
         defer { refresh() }
         return try store.enqueue(sourceURL: sourceURL, destinationURLs: destinationURLs, verificationMode: verificationMode,
                                  cameraSettings: cameraSettings, reportSettings: reportSettings,
-                                 generateASCMHL: generateASCMHL, projectID: projectID)
+                                 generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID)
     }
 
     /// A retry is a new attempt, preserving the previous attempt and its evidence.
@@ -101,10 +102,10 @@ final class LocalTransferJournal: ObservableObject {
         try store.reauthorize(id: id, resourceIndex: resourceIndex, newURL: newURL)
     }
 
-    func markRunning(id: UUID) throws {
+    func markRunning(id: UUID, independentDestinationCount: Int? = nil) throws {
         defer { refresh() }
         try beforeMarkRunning?(id)
-        try store.markRunning(id: id)
+        try store.markRunning(id: id, independentDestinationCount: independentDestinationCount)
     }
 
     func fail(id: UUID, summary: String) throws {
@@ -154,7 +155,9 @@ final class LocalTransferJournal: ObservableObject {
         summary: String,
         hadIssues: Bool,
         copyDurationSeconds: TimeInterval? = nil,
-        verifyDurationSeconds: TimeInterval? = nil
+        verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
+        sourceFingerprint: String? = nil
     ) throws {
         defer { refresh() }
         try store.finish(
@@ -163,8 +166,14 @@ final class LocalTransferJournal: ObservableObject {
             summary: summary,
             hadIssues: hadIssues,
             copyDurationSeconds: copyDurationSeconds,
-            verifyDurationSeconds: verifyDurationSeconds
+            verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
+            sourceFingerprint: sourceFingerprint
         )
+    }
+
+    func matchingVerifiedRecord(sourceFingerprint: String) -> LocalTransferRecord? {
+        store.matchingVerifiedRecord(sourceFingerprint: sourceFingerprint)
     }
 
     func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil) throws {

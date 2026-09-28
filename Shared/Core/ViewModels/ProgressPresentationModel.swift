@@ -138,10 +138,6 @@ final class ProgressPresentationModel: ObservableObject {
     func setReusedFileCopies(_ count: Int) {
         reusedFileCopies = max(0, count)
     }
-    func incrementReusedFileCopies(by delta: Int) {
-        guard delta != 0 else { return }
-        reusedFileCopies = max(0, reusedFileCopies + delta)
-    }
     
     func setFileCountTotal(_ count: Int) {
         fileCountTotal = count
@@ -153,16 +149,6 @@ final class ProgressPresentationModel: ObservableObject {
         guard totals.count == completed.count else { return }
         perDestinationTotals = totals
         perDestinationCompleted = completed
-    }
-
-    func incrementFileCompleted(_ count: Int = 1) {
-        fileCountCompleted += count
-        lastProgressUpdate = clock()
-        updatePerformanceMetrics()
-        // Force immediate progress update for the first few files
-        if fileCountCompleted <= 3 {
-            updateInterpolatedProgress()
-        }
     }
 
     func updateBytesProcessed(_ bytes: Int64) {

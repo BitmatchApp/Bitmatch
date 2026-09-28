@@ -26,6 +26,12 @@ struct CopyVerifyConfig {
     let currentMode: AppMode
     let photographerReportFinalizer: PhotographerReportFinalizer?
     let generateASCMHL: Bool
+    /// Screenshot seam (`-BitMatchDemoSlow`). Always nil except for the demo
+    /// seeder's own records; passing none everywhere else keeps every other
+    /// run on the hook-free path. Like `TransferPipeline.fanOutHooks`, this
+    /// stays ungated with a nil default so existing call sites compile in
+    /// every configuration — only non-nil values are DEBUG-only.
+    let fanOutHooks: DestinationWriter.FanOutHooks?
 
     init(
         operationId: UUID,
@@ -38,7 +44,8 @@ struct CopyVerifyConfig {
         estimatedBytes: Int64,
         currentMode: AppMode,
         photographerReportFinalizer: PhotographerReportFinalizer? = nil,
-        generateASCMHL: Bool = false
+        generateASCMHL: Bool = false,
+        fanOutHooks: DestinationWriter.FanOutHooks? = nil
     ) {
         self.operationId = operationId
         self.sourceURL = sourceURL
@@ -51,6 +58,7 @@ struct CopyVerifyConfig {
         self.currentMode = currentMode
         self.photographerReportFinalizer = photographerReportFinalizer
         self.generateASCMHL = generateASCMHL
+        self.fanOutHooks = fanOutHooks
     }
 }
 
@@ -89,6 +97,7 @@ final class CopyVerifyExecutor {
     private var cancellationRequested = false
     private var destinationRoots: [URL] = []
     private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
+    private(set) var completedPerformanceTelemetry = TransferPerformanceTelemetry()
 
     // MARK: - Initialization
 
@@ -118,6 +127,7 @@ final class CopyVerifyExecutor {
     ) async throws -> FileOperation? {
         cancellationRequested = false
         completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
+        completedPerformanceTelemetry = TransferPerformanceTelemetry()
         destinationRoots = config.destinationURLs
         SharedLogger.info("CopyVerifyExecutor: starting operation \(config.operationId)", category: .transfer)
 
@@ -154,24 +164,60 @@ final class CopyVerifyExecutor {
         do {
             timingService.updateStage(.copying)
 
+            let progressCallback: FileOperationsService.ProgressCallback = { [weak self] progressUpdate in
+                Task { @MainActor in
+                    guard let self else { return }
+                    self.handleProgress(progressUpdate, callbacks: callbacks)
+                }
+            }
+            let fileResultCallback: FileOperationsService.FileResultCallback? = { [weak self] fileResult in
+                guard let self else { return }
+                await self.handleFileResult(
+                    fileResult,
+                    verificationMode: config.verificationMode,
+                    callbacks: callbacks
+                )
+            }
+#if DEBUG
+            // Screenshot seam (`-BitMatchDemoSlow`): only a config carrying
+            // the demo seeder's hooks takes the scoped-pipeline path, and only
+            // when the platform runs the real pipeline. Every other run —
+            // including every Release run — takes the hook-free path below.
+            let operation: FileOperation
+            if let demoHooks = config.fanOutHooks,
+               let pipeline = platformManager.fileOperations as? TransferPipeline {
+                operation = try await pipeline.performFileOperation(
+                    sourceURL: config.sourceURL,
+                    destinationURLs: config.destinationURLs,
+                    verificationMode: config.verificationMode,
+                    settings: config.cameraLabelSettings,
+                    estimatedTotalBytes: config.estimatedBytes,
+                    progressCallback: progressCallback,
+                    onFileResult: fileResultCallback,
+                    fanOutHooks: demoHooks
+                )
+            } else {
+                operation = try await platformManager.fileOperations.performFileOperation(
+                    sourceURL: config.sourceURL,
+                    destinationURLs: config.destinationURLs,
+                    verificationMode: config.verificationMode,
+                    settings: config.cameraLabelSettings,
+                    estimatedTotalBytes: config.estimatedBytes,
+                    progressCallback: progressCallback,
+                    onFileResult: fileResultCallback
+                )
+            }
+#else
             let operation = try await platformManager.fileOperations.performFileOperation(
                 sourceURL: config.sourceURL,
                 destinationURLs: config.destinationURLs,
                 verificationMode: config.verificationMode,
                 settings: config.cameraLabelSettings,
-                estimatedTotalBytes: config.estimatedBytes
-            ) { [weak self] progressUpdate in
-                Task { @MainActor in
-                    guard let self else { return }
-                    self.handleProgress(progressUpdate, callbacks: callbacks)
-                }
-            } onFileResult: { [weak self] fileResult in
-                guard let self else { return }
-                await self.handleFileResult(
-                    fileResult,
-                    callbacks: callbacks
-                )
-            }
+                estimatedTotalBytes: config.estimatedBytes,
+                progressCallback: progressCallback,
+                onFileResult: fileResultCallback
+            )
+#endif
 
             return try await handleSuccess(
                 operation: operation,
@@ -216,8 +262,10 @@ final class CopyVerifyExecutor {
 
     private func handleFileResult(
         _ fileResult: FileOperationResult,
+        verificationMode: VerificationMode,
         callbacks: CopyVerifyCallbacks
     ) async {
+        timingService.recordFileResult(fileResult, verificationMode: verificationMode)
         let resultRow = TransferCompletion.row(from: fileResult, destinationRoots: destinationRoots)
 
         callbacks.onResult(resultRow)
@@ -233,8 +281,6 @@ final class CopyVerifyExecutor {
         // Close the final pipeline stage before report work begins. The
         // report itself is not copy or verify time.
         timingService.updateStage(.completed)
-        let phaseDurations = timingService.phaseDurations(for: config.verificationMode)
-        completedPhaseDurations = phaseDurations
         let allResults = TransferCompletion.rows(from: operation)
         SharedLogger.info("Mapped \(allResults.count) authoritative operation results for report", category: .transfer)
 
@@ -247,6 +293,10 @@ final class CopyVerifyExecutor {
         )
         try checkCancellation()
         let handoffIssues = try await createASCMHLHistories(operation: operation, config: config, callbacks: callbacks)
+        timingService.updateStage(.completed)
+        let phaseDurations = timingService.phaseDurations(for: config.verificationMode)
+        completedPhaseDurations = phaseDurations
+        completedPerformanceTelemetry = phaseDurations.telemetry
         let preReportVerdict = TransferCompletion.verdict(
             rows: allResults,
             sourceFiles: operation.sourceManifest,
@@ -331,6 +381,12 @@ final class CopyVerifyExecutor {
         )
         callbacks.onStateChange(.verifying)
         timingService.updateStage(.verifying)
+        let mhlBytes = plan.jobs.flatMap(\.files).reduce(Int64(0)) { total, file in
+            let (sum, overflow) = total.addingReportingOverflow(max(0, file.size))
+            return overflow ? Int64.max : sum
+        }
+        timingService.beginMHL(bytes: mhlBytes)
+        defer { timingService.endMHL() }
         stateService.updateCapabilities(canPause: false, canResume: false)
         callbacks.onProgress(OperationProgress(
             overallProgress: 1, currentFile: "Creating ASC MHL handoff records…",
@@ -423,6 +479,7 @@ final class CopyVerifyExecutor {
                 totalBytesProcessed: totalBytesProcessed,
                 copyDurationSeconds: phaseDurations.copySeconds,
                 verifyDurationSeconds: phaseDurations.verifySeconds,
+                performanceTelemetry: phaseDurations.telemetry,
                 safetyState: safetyState,
                 generateFullReport: reportSettings.makeReport,
                 photographerContext: reportContext

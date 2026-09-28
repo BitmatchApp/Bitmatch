@@ -10,13 +10,46 @@ public enum ASCMHLGenerator: Sendable {
     public struct VerifiedFile: Sendable {
         public let relativePath: String
         public let size: Int64
+        /// Source-side SHA-256 that the destination must match.
         public let expectedSHA256: String
+        /// SHA-256 produced by this run's pinned destination readback.
+        public let verifiedSHA256: String?
+        /// MD5 produced by the same pinned destination readback.
+        public let verifiedMD5: String?
+        public let destinationReadIdentity: VerifiedFileIdentity?
 
         public init(relativePath: String, size: Int64, expectedSHA256: String) {
+            self.init(
+                relativePath: relativePath,
+                size: size,
+                expectedSHA256: expectedSHA256,
+                verifiedSHA256: nil,
+                verifiedMD5: nil,
+                destinationReadIdentity: nil
+            )
+        }
+
+        init(
+            relativePath: String,
+            size: Int64,
+            expectedSHA256: String,
+            verifiedSHA256: String?,
+            verifiedMD5: String?,
+            destinationReadIdentity: VerifiedFileIdentity?
+        ) {
             self.relativePath = relativePath
             self.size = size
             self.expectedSHA256 = expectedSHA256
+            self.verifiedSHA256 = verifiedSHA256
+            self.verifiedMD5 = verifiedMD5
+            self.destinationReadIdentity = destinationReadIdentity
         }
+    }
+
+    struct ReadHooks: Sendable {
+        var didOpenForRead: (@Sendable (String) -> Void)?
+        var didRead: (@Sendable (String, Int) -> Void)?
+        var fileSystemType: (@Sendable () -> String?)?
     }
 
     public enum GenerationError: LocalizedError, Sendable {
@@ -38,11 +71,26 @@ public enum ASCMHLGenerator: Sendable {
     }
 
     /// Call only after every expected file in this destination completed verification.
-    /// Re-reads each destination file before publishing anything, supports cancellation,
-    /// and atomically publishes the new history directory without overwriting one.
+    /// Reuses digests from a matching pinned readback identity, otherwise re-reads
+    /// the destination with F_NOCACHE. Publication remains atomic and no-replace.
     public static func generateInitialHistory(
         destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
         toolVersion: String
+    ) throws -> URL {
+        try generateInitialHistory(
+            destinationURL: destinationURL,
+            files: files,
+            startTime: startTime,
+            sourceURL: sourceURL,
+            toolVersion: toolVersion,
+            readHooks: nil
+        )
+    }
+
+    static func generateInitialHistory(
+        destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
+        toolVersion: String,
+        readHooks: ReadHooks?
     ) throws -> URL {
         guard !files.isEmpty else { throw GenerationError.emptyInventory }
         let sourceFD: Int32
@@ -60,6 +108,15 @@ public enum ASCMHLGenerator: Sendable {
         defer { close(rootFD) }
         var rootIdentity = stat()
         guard fstat(rootFD, &rootIdentity) == 0 else { throw posixError() }
+        let destinationFileSystemType: String?
+        if let injectedFileSystemType = readHooks?.fileSystemType {
+            destinationFileSystemType = injectedFileSystemType()
+        } else {
+            destinationFileSystemType = fileSystemType(for: rootFD)
+        }
+        let destinationHasRealChangeTime = hasRealChangeTime(
+            fileSystemType: destinationFileSystemType
+        )
         try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
         try rejectExistingHistory(root)
         let date = ISO8601DateFormatter()
@@ -98,30 +155,58 @@ public enum ASCMHLGenerator: Sendable {
             }
             let handle = FileHandle(fileDescriptor: fileFD, closeOnDealloc: true)
             defer { try? handle.close() }
-            var sha = SHA256()
-            var md5 = Insecure.MD5()
-            var count: Int64 = 0
-            while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
-                try Task.checkCancellation()
-                sha.update(data: data)
-                md5.update(data: data)
-                count += Int64(data.count)
+            let canReuseReadback = destinationHasRealChangeTime
+                && file.destinationReadIdentity == verifiedIdentity(from: readIdentity)
+                && Int64(readIdentity.st_size) == file.size
+                && file.verifiedSHA256?.count == 64
+                && file.verifiedSHA256?.allSatisfy({ $0.isASCII && $0.isHexDigit }) == true
+                && file.verifiedMD5?.count == 32
+                && file.verifiedMD5?.allSatisfy({ $0.isASCII && $0.isHexDigit }) == true
+            let digestsAndCount: (sha256: String, md5: String, count: Int64)
+            if canReuseReadback,
+               let verifiedSHA256 = file.verifiedSHA256,
+               let verifiedMD5 = file.verifiedMD5 {
+                digestsAndCount = (
+                    sha256: verifiedSHA256.lowercased(),
+                    md5: verifiedMD5.lowercased(),
+                    count: file.size
+                )
+            } else {
+                guard fcntl(fileFD, F_NOCACHE, 1) != -1 else { throw posixError() }
+                readHooks?.didOpenForRead?(path)
+                var sha = SHA256()
+                var md5 = Insecure.MD5()
+                var count: Int64 = 0
+                while let data = try handle.read(upToCount: 4 * 1_024 * 1_024), !data.isEmpty {
+                    try Task.checkCancellation()
+                    sha.update(data: data)
+                    md5.update(data: data)
+                    count += Int64(data.count)
+                    readHooks?.didRead?(path, data.count)
+                }
+                digestsAndCount = (
+                    sha256: hex(sha.finalize()),
+                    md5: hex(md5.finalize()),
+                    count: count
+                )
             }
             var finishedIdentity = stat()
             guard fstat(fileFD, &finishedIdentity) == 0,
                   readIdentity.st_size == finishedIdentity.st_size,
                   readIdentity.st_mtimespec.tv_sec == finishedIdentity.st_mtimespec.tv_sec,
-                  readIdentity.st_mtimespec.tv_nsec == finishedIdentity.st_mtimespec.tv_nsec else {
+                  readIdentity.st_mtimespec.tv_nsec == finishedIdentity.st_mtimespec.tv_nsec,
+                  readIdentity.st_ctimespec.tv_sec == finishedIdentity.st_ctimespec.tv_sec,
+                  readIdentity.st_ctimespec.tv_nsec == finishedIdentity.st_ctimespec.tv_nsec else {
                 throw GenerationError.changedFile(path)
             }
             let after = try url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
-            guard count == file.size, before.fileSize == after.fileSize,
+            guard digestsAndCount.count == file.size, before.fileSize == after.fileSize,
                   before.contentModificationDate == after.contentModificationDate,
-                  hex(sha.finalize()) == file.expectedSHA256.lowercased() else {
+                  digestsAndCount.sha256 == file.expectedSHA256.lowercased() else {
                 throw GenerationError.changedFile(path)
             }
             let modified = after.contentModificationDate.map { " lastmodificationdate=\"\(date.string(from: $0))\"" } ?? ""
-            entries.append("    <hash><path size=\"\(file.size)\"\(modified)>\(escape(actualParts.joined(separator: "/")))</path><md5 action=\"original\" hashdate=\"\(date.string(from: Date()))\">\(hex(md5.finalize()))</md5></hash>")
+            entries.append("    <hash><path size=\"\(file.size)\"\(modified)>\(escape(actualParts.joined(separator: "/")))</path><md5 action=\"original\" hashdate=\"\(date.string(from: Date()))\">\(digestsAndCount.md5)</md5></hash>")
         }
         let xml = """
         <?xml version="1.0" encoding="UTF-8"?>
@@ -224,6 +309,25 @@ public enum ASCMHLGenerator: Sendable {
         NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
     }
 
+    private static func fileSystemType(for fd: Int32) -> String? {
+        var info = statfs()
+        guard fstatfs(fd, &info) == 0 else { return nil }
+        let capacity = MemoryLayout.size(ofValue: info.f_fstypename)
+        return withUnsafePointer(to: &info.f_fstypename) { pointer in
+            pointer.withMemoryRebound(to: CChar.self, capacity: capacity) {
+                String(cString: $0)
+            }
+        }
+    }
+
+    private static func hasRealChangeTime(fileSystemType: String?) -> Bool {
+        guard let fileSystemType else { return false }
+        switch fileSystemType.lowercased() {
+        case "apfs", "hfs": return true
+        default: return false
+        }
+    }
+
     private static func openFile(parts: [String], rootFD: Int32) throws -> Int32 {
         var directoryFD = dup(rootFD)
         guard directoryFD >= 0 else { throw posixError() }
@@ -262,19 +366,27 @@ public enum ASCMHLGenerator: Sendable {
             }
             ancestor.deleteLastPathComponent()
         }
-        var enumerationError: Error?
-        guard let enumerator = fm.enumerator(at: root, includingPropertiesForKeys: [.isSymbolicLinkKey], errorHandler: { _, error in
-            enumerationError = error
-            return false
-        }) else { throw GenerationError.invalidPath(root.path) }
-        for case let url as URL in enumerator {
-            if url.lastPathComponent.lowercased() == "ascmhl" { throw GenerationError.existingHistory }
+        for entry in try CardSource.enumerateTree(base: root) {
+            if entry.url.lastPathComponent.lowercased() == "ascmhl" {
+                throw GenerationError.existingHistory
+            }
         }
-        if let enumerationError { throw enumerationError }
     }
 
     private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
         digest.map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func verifiedIdentity(from info: stat) -> VerifiedFileIdentity {
+        VerifiedFileIdentity(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modificationSeconds: Int64(info.st_mtimespec.tv_sec),
+            modificationNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+            changeSeconds: Int64(info.st_ctimespec.tv_sec),
+            changeNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+        )
     }
 
     /// C4 is the SHA-512 integer encoded in base 58, padded to 88 characters, prefixed c4.

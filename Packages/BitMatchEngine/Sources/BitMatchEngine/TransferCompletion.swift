@@ -15,7 +15,8 @@ public enum TransferCompletion: Sendable {
             size: result.fileSize,
             checksum: result.verificationResult?.sourceChecksum,
             destination: destinationLabel(for: result.destinationURL, roots: destinationRoots),
-            destinationPath: result.destinationURL.path
+            destinationPath: result.destinationURL.path,
+            clipIntegrity: result.clipIntegrity
         )
     }
 
@@ -245,9 +246,16 @@ public enum TransferCompletion: Sendable {
             }
             let canonicalRoot = item.root.standardizedFileURL.resolvingSymlinksKeepingCase()
             jobs.append(ASCMHLJob(root: item.root, files: rows.map {
-                ASCMHLGenerator.VerifiedFile(
+                let verification = $0.verificationResult
+                return ASCMHLGenerator.VerifiedFile(
                     relativePath: $0.destinationURL.standardizedFileURL.resolvingSymlinksKeepingCase().relativePath(to: canonicalRoot),
-                    size: $0.fileSize, expectedSHA256: $0.verificationResult?.sourceChecksum ?? ""
+                    size: $0.fileSize,
+                    expectedSHA256: verification?.sourceDigests?.sha256
+                        ?? verification?.sourceChecksum
+                        ?? "",
+                    verifiedSHA256: verification?.destinationDigests?.sha256,
+                    verifiedMD5: verification?.destinationDigests?.md5,
+                    destinationReadIdentity: verification?.destinationReadIdentity
                 )
             }))
         }
@@ -333,8 +341,14 @@ public enum TransferCompletion: Sendable {
         reportIssue: String?,
         project: ProjectGate
     ) -> Verdict {
+        // Safe-to-erase modes count only independently verified readback rows.
+        // Quick has no safe verdict; its copied rows remain eligible only for
+        // the separate amber "copied, not verified" outcome.
+        let coverageRows = mode == .quick
+            ? rows.filter(\.isSuccessStatus)
+            : rows.filter(\.isVerifiedStatus)
         let coverage = coverageAnalysis(
-            entries: rows.map {
+            entries: coverageRows.map {
                 CoverageEntry(
                     source: URL(fileURLWithPath: $0.path),
                     destination: $0.destinationPath.map { URL(fileURLWithPath: $0) }

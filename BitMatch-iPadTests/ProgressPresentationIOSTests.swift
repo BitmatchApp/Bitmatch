@@ -29,13 +29,36 @@ struct ProgressPresentationIOSTests {
     @Test
     func iOSStatesTheBackgroundLimit() {
         let foreground = make(device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
-        #expect(foreground.deviceNotes.contains { $0.text.hasPrefix("Keep BitMatch open") })
+        #expect(foreground.deviceNotes.contains {
+            $0.text == TransferProgressPresentation.iOSBackgroundLimit
+        })
         #expect(foreground.deviceNotes.contains { $0.text.contains("screen stays on") })
         #expect(!foreground.deviceNotes.contains { $0.isWarning })
 
         let background = make(device: .iOS(keepsScreenAwake: false, backgroundSecondsLeft: 150))
         #expect(background.deviceNotes.first?.isWarning == true)
         #expect(background.deviceNotes.first?.text.hasPrefix("About 3 min") == true)
+    }
+
+    @Test
+    func queueSectionShowsBackgroundLimitOnce() {
+        let foreground = make(device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
+        let foregroundNote = QueueRunningNoticePolicy.sectionNote(
+            isRunning: true, isMobile: true, progress: foreground
+        )
+        #expect(foregroundNote?.text == TransferProgressPresentation.iOSBackgroundLimit)
+
+        let background = make(device: .iOS(keepsScreenAwake: false, backgroundSecondsLeft: 150))
+        let backgroundNote = QueueRunningNoticePolicy.sectionNote(
+            isRunning: true, isMobile: true, progress: background
+        )
+        #expect(backgroundNote?.text == TransferProgressPresentation.iOSBackgroundLimit)
+        #expect(QueueRunningNoticePolicy.sectionNote(
+            isRunning: false, isMobile: true, progress: background
+        ) == nil)
+        #expect(QueueRunningNoticePolicy.sectionNote(
+            isRunning: true, isMobile: false, progress: background
+        ) == nil)
     }
 
     // Plant: in `TransferProgressPresentation.phase`, return `.preparing`

@@ -60,6 +60,33 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         logicalRootURL.appendingPathComponent(relativePath)
     }
 
+    /// Confirms that the folder path shown to the user still names this pinned
+    /// directory. Verification may still succeed through the descriptor after
+    /// a rename, but that orphaned location is not a safe completed backup.
+    public func logicalRootStillMatchesPinnedDirectory() -> Bool {
+        var pinned = stat()
+        var current = stat()
+        guard fstat(directoryFD, &pinned) == 0,
+              lstat(logicalRootURL.path, &current) == 0 else { return false }
+        return (current.st_mode & S_IFMT) == S_IFDIR
+            && current.st_dev == pinned.st_dev
+            && current.st_ino == pinned.st_ino
+    }
+
+    /// Lists the pinned directory itself, independent of whether its pathname
+    /// was renamed. This is the final destination-coverage check.
+    public func regularFileMetadata() throws -> [FileEntry] {
+        try CardSource.enumerateTree(directoryFD: directoryFD, root: logicalRootURL).compactMap { entry in
+            guard entry.kind == .regularFile else { return nil }
+            return FileEntry(
+                url: entry.url,
+                relativePath: entry.relativePath,
+                size: entry.size,
+                modificationDate: entry.modificationDate
+            )
+        }
+    }
+
     /// Opens a destination file below the pinned directory. The returned
     /// descriptor, not `logicalRootURL`, is the authority for subsequent
     /// reads. This is deliberately separate from the display URL above.
@@ -319,6 +346,11 @@ public final class PinnedDestinationFile: @unchecked Sendable {
         return info
     }
 
+    public func inspectClipIntegrity() throws -> ClipIntegrityFinding {
+        let info = try snapshot()
+        return try ClipIntegrityCheck.inspect(fileDescriptor: fileFD, fileSize: info.st_size)
+    }
+
     /// A fresh `openat` is required for every reader. `dup` would retain the
     /// same open-file description and its current offset, so a second Thorough
     /// checksum could otherwise start at EOF.
@@ -366,6 +398,76 @@ public final class PinnedDestinationFile: @unchecked Sendable {
 #endif
 
 public final class DestinationWriter {
+    struct SourceReadEvidence: Sendable {
+        let digests: VerifiedDigests
+        let identity: VerifiedFileIdentity
+    }
+
+    struct FanOutDestination: Sendable {
+        let index: Int
+        let root: PinnedDestinationDirectory
+    }
+
+    /// Test seam for copy and verification timing. Like
+    /// `TransferPipeline.destinationSetupHook`, every member defaults to nil
+    /// and production passes none; tests use these to hold a verifier in
+    /// flight deterministically.
+    public struct FanOutHooks: Sendable {
+        // Tests must use ordinary errors for destination faults. A
+        // CancellationError always means the whole operation was cancelled.
+        public var beforeSourceOpen: (@Sendable (URL) throws -> Void)?
+        public var sourceDidOpen: (@Sendable (URL) -> Void)?
+        /// Test hook. Returning different bytes simulates corruption between
+        /// the card read and every destination write.
+        public var sourceDidRead: (@Sendable (URL, Data) async throws -> Data)?
+        public var temporaryFileDidDisableCache: (@Sendable (Int, Int32) -> Void)?
+        public var beforeWrite: (@Sendable (Int, URL, Int) async throws -> Void)?
+        public var beforeFlush: (@Sendable (Int, URL) throws -> Void)?
+        public var beforeClose: (@Sendable (Int, URL) throws -> Void)?
+        public var beforePublish: (@Sendable (Int, URL) throws -> Void)?
+        public var useClaimedNamePublish: (@Sendable (Int) -> Bool)?
+        public var afterPublish: (@Sendable (Int, URL) throws -> Void)?
+        public var beforeDestinationRead: (@Sendable (Int, String) async throws -> Void)?
+        public var destinationDidOpenForRead: (@Sendable (Int, String) -> Void)?
+        public var destinationDidRead: (@Sendable (Int, String, Int) -> Void)?
+        public var verificationSourceDidOpen: (@Sendable (String) -> Void)?
+        public var verificationSourceDidRead: (@Sendable (String, Int) -> Void)?
+
+        public init(
+            beforeSourceOpen: (@Sendable (URL) throws -> Void)? = nil,
+            sourceDidOpen: (@Sendable (URL) -> Void)? = nil,
+            sourceDidRead: (@Sendable (URL, Data) async throws -> Data)? = nil,
+            temporaryFileDidDisableCache: (@Sendable (Int, Int32) -> Void)? = nil,
+            beforeWrite: (@Sendable (Int, URL, Int) async throws -> Void)? = nil,
+            beforeFlush: (@Sendable (Int, URL) throws -> Void)? = nil,
+            beforeClose: (@Sendable (Int, URL) throws -> Void)? = nil,
+            beforePublish: (@Sendable (Int, URL) throws -> Void)? = nil,
+            useClaimedNamePublish: (@Sendable (Int) -> Bool)? = nil,
+            afterPublish: (@Sendable (Int, URL) throws -> Void)? = nil,
+            beforeDestinationRead: (@Sendable (Int, String) async throws -> Void)? = nil,
+            destinationDidOpenForRead: (@Sendable (Int, String) -> Void)? = nil,
+            destinationDidRead: (@Sendable (Int, String, Int) -> Void)? = nil,
+            verificationSourceDidOpen: (@Sendable (String) -> Void)? = nil,
+            verificationSourceDidRead: (@Sendable (String, Int) -> Void)? = nil
+        ) {
+            self.beforeSourceOpen = beforeSourceOpen
+            self.sourceDidOpen = sourceDidOpen
+            self.sourceDidRead = sourceDidRead
+            self.temporaryFileDidDisableCache = temporaryFileDidDisableCache
+            self.beforeWrite = beforeWrite
+            self.beforeFlush = beforeFlush
+            self.beforeClose = beforeClose
+            self.beforePublish = beforePublish
+            self.useClaimedNamePublish = useClaimedNamePublish
+            self.afterPublish = afterPublish
+            self.beforeDestinationRead = beforeDestinationRead
+            self.destinationDidOpenForRead = destinationDidOpenForRead
+            self.destinationDidRead = destinationDidRead
+            self.verificationSourceDidOpen = verificationSourceDidOpen
+            self.verificationSourceDidRead = verificationSourceDidRead
+        }
+    }
+
     // Perf 1: actor wrapping pre-enumerated file list for concurrent worker access
     /// Hands each copy worker the next manifest entry: one atomic index,
     /// so every file is taken exactly once.
@@ -396,7 +498,37 @@ public final class DestinationWriter {
         onProgress: @escaping @Sendable (String, Int64) async -> Void,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
-        try await createDirectoryTreeSafely(from: src, in: pinnedRoot, onError: onError)
+        try await copyAllSafelyFanOut(
+            from: src,
+            toPinnedRoots: [FanOutDestination(index: 0, root: pinnedRoot)],
+            verificationMode: verificationMode,
+            workers: workers,
+            checksumService: checksumService,
+            preEnumeratedFiles: preEnumeratedFiles,
+            pauseCheck: pauseCheck,
+            onProgress: { _, path, size in await onProgress(path, size) },
+            onError: { _, path, error in await onError(path, error) }
+        )
+    }
+
+    static func copyAllSafelyFanOut(
+        from src: URL,
+        toPinnedRoots destinations: [FanOutDestination],
+        verificationMode: VerificationMode,
+        workers: Int,
+        checksumService: any ChecksumService,
+        preEnumeratedFiles: [URL],
+        pauseCheck: (@Sendable () async throws -> Void)? = nil,
+        hooks: FanOutHooks? = nil,
+        onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void = { _, _ in },
+        onProgress: @escaping @Sendable (Int, String, Int64) async -> Void,
+        onError: @escaping @Sendable (Int, String, Error) async -> Void
+    ) async throws {
+        for destination in destinations {
+            try await createDirectoryTreeSafely(from: src, in: destination.root) { path, error in
+                await onError(destination.index, path, error)
+            }
+        }
         let sourceResolver = RelativePathResolver(base: src)
 
         try await withThrowingTaskGroup(of: Void.self) { group in
@@ -414,58 +546,56 @@ public final class DestinationWriter {
                         do {
                             relativePath = try sourceResolver.resolve(fileURL)
                         } catch {
-                            await onError(fileURL.path, error)
+                            for destination in destinations {
+                                await onError(destination.index, fileURL.path, error)
+                            }
                             continue
                         }
                         guard let components = safeRelativeComponents(relativePath) else {
-                            await onError(relativePath, NSError(
+                            let error = NSError(
                                 domain: "DestinationWriter",
                                 code: NSFileWriteNoPermissionError,
                                 userInfo: [NSLocalizedDescriptionKey: "Path contains traversal component"]
-                            ))
+                            )
+                            for destination in destinations {
+                                await onError(destination.index, relativePath, error)
+                            }
                             continue
                         }
 
                         let resolvedSource = fileURL.resolvingSymlinksKeepingCase()
                         guard PathContainment.isWithin(resolvedSource.path, root: src.resolvingSymlinksKeepingCase().path) else {
-                            await onError(relativePath, NSError(
+                            let error = NSError(
                                 domain: "DestinationWriter",
                                 code: NSFileWriteNoPermissionError,
                                 userInfo: [NSLocalizedDescriptionKey: "Source file resolves outside source directory"]
-                            ))
+                            )
+                            for destination in destinations {
+                                await onError(destination.index, relativePath, error)
+                            }
                             continue
                         }
 
                         do {
-                            let values = try fileURL.resourceValues(forKeys: [.fileSizeKey])
-                            let parentFD = try pinnedRoot.openOrCreateDirectory(at: Array(components.dropLast()))
-                            defer { _ = Darwin.close(parentFD) }
-                            let filename = components[components.count - 1]
-                            let sourceSize = Int64(values.fileSize ?? 0)
-                            if try PinnedDestinationDirectory.isExistingRegularFile(named: filename, relativeTo: parentFD) {
-                                let destinationFile = try PinnedDestinationFile.open(named: filename, relativeTo: parentFD)
-                                if try await canReuseExistingDestinationFile(
-                                    source: fileURL,
-                                    destination: destinationFile,
-                                    sourceSize: sourceSize,
-                                    verificationMode: verificationMode,
-                                    checksumService: checksumService
-                                ) {
-                                    await onProgress(relativePath, sourceSize)
-                                    continue
-                                }
-                            }
-                            try await copyFileSecurely(
+                            try await copyFileFanOut(
                                 from: fileURL,
-                                toPinnedParent: parentFD,
-                                filename: filename,
-                                pauseCheck: pauseCheck
+                                relativePath: relativePath,
+                                components: components,
+                                destinations: destinations,
+                                verificationMode: verificationMode,
+                                checksumService: checksumService,
+                                pauseCheck: pauseCheck,
+                                hooks: hooks,
+                                onSourceReadEvidence: onSourceReadEvidence,
+                                onProgress: onProgress,
+                                onError: onError
                             )
-                            await onProgress(relativePath, sourceSize)
                         } catch is CancellationError {
                             throw CancellationError()
                         } catch {
-                            await onError(relativePath, error)
+                            for destination in destinations {
+                                await onError(destination.index, relativePath, error)
+                            }
                         }
                     }
                 }
@@ -476,74 +606,380 @@ public final class DestinationWriter {
     #endif
 
     #if canImport(Darwin)
-    private static func copyFileSecurely(
-        from source: URL,
-        toPinnedParent parentFD: Int32,
-        filename: String,
-        pauseCheck: (@Sendable () async throws -> Void)?
-    ) async throws {
-        let fm = FileManager.default
-        let sourceHandle = try FileHandle(forReadingFrom: source)
-        defer { closeFileHandle(sourceHandle, context: source.path) }
+    private final class FanOutTemporaryFile: @unchecked Sendable {
+        let destination: FanOutDestination
+        private(set) var parentFD: Int32
+        let filename: String
+        let temporaryName: String
+        private(set) var temporaryFD: Int32
+        private(set) var published = false
 
-        let temporaryName = ".bitmatch.tmp." + UUID().uuidString
-        let temporaryFD = try PinnedDestinationDirectory.createTemporaryFile(named: temporaryName, relativeTo: parentFD)
-        let destinationHandle = FileHandle(fileDescriptor: temporaryFD, closeOnDealloc: false)
-        var published = false
-        var destinationClosed = false
-        defer {
-            if !destinationClosed {
-                closeFileHandle(destinationHandle, context: temporaryName)
-            }
-            if !published {
-                PinnedDestinationDirectory.removeItem(named: temporaryName, relativeTo: parentFD)
+        init(
+            destination: FanOutDestination,
+            parentFD: Int32,
+            filename: String,
+            hooks: FanOutHooks?
+        ) throws {
+            self.destination = destination
+            self.parentFD = parentFD
+            self.filename = filename
+            temporaryName = ".bitmatch.tmp." + UUID().uuidString
+            temporaryFD = try PinnedDestinationDirectory.createTemporaryFile(
+                named: temporaryName,
+                relativeTo: parentFD
+            )
+            // Reaching this point means createTemporaryFile's mandatory
+            // F_NOCACHE call succeeded for this still-open descriptor.
+            hooks?.temporaryFileDidDisableCache?(destination.index, temporaryFD)
+        }
+
+        deinit { cleanup() }
+
+        func closeTemporaryFile() throws {
+            guard temporaryFD >= 0 else { return }
+            let fd = temporaryFD
+            // POSIX leaves the descriptor state unspecified when close fails,
+            // including after EINTR. Retire it before close and fail the file;
+            // the caller must never publish after this method throws.
+            temporaryFD = -1
+            guard Darwin.close(fd) == 0 else {
+                throw NSError(
+                    domain: NSPOSIXErrorDomain,
+                    code: Int(errno),
+                    userInfo: [NSLocalizedDescriptionKey: "Unable to close temporary destination file"]
+                )
             }
         }
 
+        func markPublished() { published = true }
+
+        func cleanup() {
+            if temporaryFD >= 0 {
+                _ = Darwin.close(temporaryFD)
+                temporaryFD = -1
+            }
+            if !published, parentFD >= 0 {
+                PinnedDestinationDirectory.removeItem(named: temporaryName, relativeTo: parentFD)
+            }
+            if parentFD >= 0 {
+                _ = Darwin.close(parentFD)
+                parentFD = -1
+            }
+        }
+    }
+
+    private struct FanOutWriteResult: Sendable {
+        let file: FanOutTemporaryFile
+        let error: (any Error)?
+    }
+
+    private static func copyFileFanOut(
+        from source: URL,
+        relativePath: String,
+        components: [String],
+        destinations: [FanOutDestination],
+        verificationMode: VerificationMode,
+        checksumService: any ChecksumService,
+        pauseCheck: (@Sendable () async throws -> Void)?,
+        hooks: FanOutHooks?,
+        onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void,
+        onProgress: @escaping @Sendable (Int, String, Int64) async -> Void,
+        onError: @escaping @Sendable (Int, String, Error) async -> Void
+    ) async throws {
+        let fm = FileManager.default
         let sourceAttributes = try fm.attributesOfItem(atPath: source.path)
         let sourceSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? 0
         let sourceModificationDate = sourceAttributes[.modificationDate] as? Date
         let sourceIdentity = fileIdentity(from: sourceAttributes)
-        var reachedEOF = false
-        while !reachedEOF {
-            try Task.checkCancellation()
-            if let pauseCheck { try await pauseCheck() }
-            let data = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-            if data.isEmpty {
-                reachedEOF = true
-            } else {
-                try destinationHandle.write(contentsOf: data)
+
+        let filename = components[components.count - 1]
+        var pendingReuse: [FanOutDestination] = []
+        var active: [FanOutTemporaryFile] = []
+        for destination in destinations {
+            do {
+                let parentFD = try destination.root.openOrCreateDirectory(at: Array(components.dropLast()))
+                var parentOwnedByTemporaryFile = false
+                defer {
+                    if !parentOwnedByTemporaryFile { _ = Darwin.close(parentFD) }
+                }
+                if try PinnedDestinationDirectory.isExistingRegularFile(named: filename, relativeTo: parentFD) {
+                    let destinationFile = try PinnedDestinationFile.open(named: filename, relativeTo: parentFD)
+                    // Reuse either proves the existing file or throws. It never
+                    // returns false: a conflicting file must not be overwritten.
+                    try await validateReusableExistingDestinationFile(
+                        source: source,
+                        destination: destinationFile,
+                        sourceSize: sourceSize,
+                        verificationMode: verificationMode,
+                        checksumService: checksumService,
+                        destinationIndex: destination.index,
+                        relativePath: relativePath,
+                        hooks: hooks
+                    )
+                    pendingReuse.append(destination)
+                } else {
+                    active.append(try FanOutTemporaryFile(
+                        destination: destination,
+                        parentFD: parentFD,
+                        filename: filename,
+                        hooks: hooks
+                    ))
+                    parentOwnedByTemporaryFile = true
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                await onError(destination.index, relativePath, error)
             }
-        }
-        var temporaryInfo = stat()
-        guard fstat(temporaryFD, &temporaryInfo) == 0,
-              Int64(temporaryInfo.st_size) == sourceSize else {
-            throw NSError(domain: "DestinationWriter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Size mismatch after copy"])
-        }
-        let finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
-        guard sourceRemainedStable(
-            initialSize: sourceSize,
-            initialModificationDate: sourceModificationDate,
-            initialIdentity: sourceIdentity,
-            finalAttributes: finalSourceAttributes
-        ) else {
-            throw NSError(domain: "DestinationWriter", code: -4, userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; destination was not modified"])
         }
 
-        if let sourceModificationDate {
-            var times = [timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0),
-                         timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0)]
-            if futimens(temporaryFD, &times) != 0 {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to preserve destination modification date"])
+        guard !active.isEmpty else {
+            for destination in pendingReuse {
+                await onProgress(destination.index, relativePath, sourceSize)
+            }
+            return
+        }
+
+        let sourceHandle: FileHandle
+        do {
+            try hooks?.beforeSourceOpen?(source)
+            sourceHandle = try uncachedSourceHandle(for: source)
+            hooks?.sourceDidOpen?(source)
+        } catch {
+            for file in active { file.cleanup() }
+            for destination in pendingReuse {
+                await onError(destination.index, relativePath, error)
+            }
+            for file in active {
+                await onError(file.destination.index, relativePath, error)
+            }
+            return
+        }
+        defer { closeFileHandle(sourceHandle, context: source.path) }
+
+        var initialSourceStat = stat()
+        guard fstat(sourceHandle.fileDescriptor, &initialSourceStat) == 0 else {
+            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to inspect source file"])
+            for file in active { file.cleanup() }
+            for destination in pendingReuse { await onError(destination.index, relativePath, error) }
+            for file in active { await onError(file.destination.index, relativePath, error) }
+            return
+        }
+
+        do {
+            let chunkSize = 4 * 1024 * 1024
+            var bytesRead: Int64 = 0
+            var chunkIndex = 0
+            var sourceHasher = MultiDigestHasher(
+                algorithms: verificationMode == .quick || verificationMode == .thorough
+                    ? []
+                    : verificationMode.checksumTypes + [.md5]
+            )
+            while bytesRead < sourceSize {
+                try Task.checkCancellation()
+                if let pauseCheck { try await pauseCheck() }
+                let requested = min(chunkSize, Int(sourceSize - bytesRead))
+                var data = try sourceHandle.read(upToCount: requested) ?? Data()
+                guard !data.isEmpty else {
+                    throw sourceChangedError()
+                }
+                bytesRead += Int64(data.count)
+                if let sourceDidRead = hooks?.sourceDidRead {
+                    let readCount = data.count
+                    data = try await sourceDidRead(source, data)
+                    guard data.count == readCount else { throw sourceChangedError() }
+                }
+                sourceHasher.update(data)
+                let chunkData = data
+                let filesForChunk = active
+                let currentChunkIndex = chunkIndex
+
+                let results = await withTaskGroup(
+                    of: FanOutWriteResult.self,
+                    returning: [FanOutWriteResult].self
+                ) { writes in
+                    for file in filesForChunk {
+                        writes.addTask {
+                            do {
+                                try Task.checkCancellation()
+                                if let pauseCheck { try await pauseCheck() }
+                                try await hooks?.beforeWrite?(
+                                    file.destination.index,
+                                    file.destination.root.logicalRootURL,
+                                    currentChunkIndex
+                                )
+                                try writeAll(chunkData, to: file.temporaryFD)
+                                return FanOutWriteResult(file: file, error: nil)
+                            } catch {
+                                return FanOutWriteResult(file: file, error: error)
+                            }
+                        }
+                    }
+                    var completed: [FanOutWriteResult] = []
+                    for await result in writes { completed.append(result) }
+                    return completed
+                }
+
+                var survivors: [FanOutTemporaryFile] = []
+                for result in results {
+                    if let error = result.error {
+                        if error is CancellationError { throw CancellationError() }
+                        result.file.cleanup()
+                        await onError(result.file.destination.index, relativePath, error)
+                    } else {
+                        survivors.append(result.file)
+                    }
+                }
+                active = survivors
+                chunkIndex += 1
+                if active.isEmpty { break }
+            }
+
+            if !active.isEmpty {
+                let trailingData = try sourceHandle.read(upToCount: 1) ?? Data()
+                let finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
+                var finalSourceStat = stat()
+                guard bytesRead == sourceSize,
+                      trailingData.isEmpty,
+                      fstat(sourceHandle.fileDescriptor, &finalSourceStat) == 0,
+                      pinnedFileRemainedStable(initialSourceStat, finalSourceStat),
+                      sourceRemainedStable(
+                        initialSize: sourceSize,
+                        initialModificationDate: sourceModificationDate,
+                        initialIdentity: sourceIdentity,
+                        finalAttributes: finalSourceAttributes
+                      ) else {
+                    throw sourceChangedError()
+                }
+                if verificationMode == .thorough {
+                    await onSourceReadEvidence(
+                        relativePath,
+                        try await uncachedSourceDigests(
+                            source,
+                            algorithms: verificationMode.checksumTypes + [.md5],
+                            relativePath: relativePath,
+                            hooks: hooks
+                        )
+                    )
+                } else if verificationMode != .quick {
+                    await onSourceReadEvidence(
+                        relativePath,
+                        SourceReadEvidence(
+                            digests: sourceHasher.finalize(),
+                            identity: verifiedIdentity(from: finalSourceStat)
+                        )
+                    )
+                }
+            }
+        } catch is CancellationError {
+            for file in active { file.cleanup() }
+            throw CancellationError()
+        } catch {
+            for file in active { file.cleanup() }
+            for destination in pendingReuse {
+                await onError(destination.index, relativePath, error)
+            }
+            for file in active {
+                await onError(file.destination.index, relativePath, error)
+            }
+            return
+        }
+
+        for destination in pendingReuse {
+            await onProgress(destination.index, relativePath, sourceSize)
+        }
+        for file in active {
+            do {
+                try Task.checkCancellation()
+                if let pauseCheck { try await pauseCheck() }
+                var temporaryInfo = stat()
+                guard fstat(file.temporaryFD, &temporaryInfo) == 0,
+                      Int64(temporaryInfo.st_size) == sourceSize else {
+                    throw NSError(domain: "DestinationWriter", code: -2, userInfo: [NSLocalizedDescriptionKey: "Size mismatch after copy"])
+                }
+                if let sourceModificationDate {
+                    var times = [
+                        timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0),
+                        timespec(tv_sec: Int(sourceModificationDate.timeIntervalSince1970), tv_nsec: 0)
+                    ]
+                    guard futimens(file.temporaryFD, &times) == 0 else {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to preserve destination modification date"])
+                    }
+                }
+                try hooks?.beforeFlush?(file.destination.index, file.destination.root.logicalRootURL)
+                try PinnedDestinationDirectory.flushToMedium(file.temporaryFD)
+                try hooks?.beforeClose?(file.destination.index, file.destination.root.logicalRootURL)
+                try file.closeTemporaryFile()
+                try hooks?.beforePublish?(file.destination.index, file.destination.root.logicalRootURL)
+                if hooks?.useClaimedNamePublish?(file.destination.index) == true {
+                    try PinnedDestinationDirectory.publishByClaimingName(
+                        temporaryName: file.temporaryName,
+                        name: file.filename,
+                        relativeTo: file.parentFD
+                    )
+                } else {
+                    try PinnedDestinationDirectory.publishTemporaryFile(
+                        named: file.temporaryName,
+                        as: file.filename,
+                        relativeTo: file.parentFD
+                    )
+                }
+                file.markPublished()
+                try PinnedDestinationDirectory.synchronizeDirectory(file.parentFD)
+                try hooks?.afterPublish?(file.destination.index, file.destination.root.logicalRootURL)
+                await onProgress(file.destination.index, relativePath, sourceSize)
+            } catch is CancellationError {
+                file.cleanup()
+                throw CancellationError()
+            } catch {
+                file.cleanup()
+                await onError(file.destination.index, relativePath, error)
             }
         }
-        // Flushed after the timestamps so they are durable too.
-        try PinnedDestinationDirectory.flushToMedium(temporaryFD)
-        try destinationHandle.close()
-        destinationClosed = true
-        try PinnedDestinationDirectory.publishTemporaryFile(named: temporaryName, as: filename, relativeTo: parentFD)
-        published = true
-        try PinnedDestinationDirectory.synchronizeDirectory(parentFD)
+    }
+
+    private static func uncachedSourceHandle(for source: URL) throws -> FileHandle {
+        let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC
+        let fd = source.path.withCString { Darwin.open($0, flags) }
+        guard fd >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to open source file"])
+        }
+        var info = stat()
+        guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            _ = Darwin.close(fd)
+            throw FileOperationError.unsafeOperation("Source item is not a regular file")
+        }
+        guard fcntl(fd, F_NOCACHE, 1) != -1 else {
+            let failure = errno
+            _ = Darwin.close(fd)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure), userInfo: [NSLocalizedDescriptionKey: "Unable to bypass the source read cache"])
+        }
+        return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private static func writeAll(_ data: Data, to fd: Int32) throws {
+        try data.withUnsafeBytes { rawBuffer in
+            guard let base = rawBuffer.baseAddress else { return }
+            var written = 0
+            while written < rawBuffer.count {
+                let count = Darwin.write(fd, base.advanced(by: written), rawBuffer.count - written)
+                if count > 0 {
+                    written += count
+                } else if count < 0, errno == EINTR {
+                    continue
+                } else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to write destination file"])
+                }
+            }
+        }
+    }
+
+    private static func sourceChangedError() -> NSError {
+        NSError(
+            domain: "DestinationWriter",
+            code: -4,
+            userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; destination was not modified"]
+        )
     }
     #endif
 
@@ -553,37 +989,9 @@ public final class DestinationWriter {
         in pinnedRoot: PinnedDestinationDirectory,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
-        let fm = FileManager.default
-        let resolver = RelativePathResolver(base: sourceRoot)
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey]
-        guard let enumerator = fm.enumerator(
-            at: sourceRoot,
-            includingPropertiesForKeys: keys,
-            options: []
-        ) else { return }
-
-        while let item = enumerator.nextObject() as? URL {
+        for entry in try CardSource.enumerateTree(base: sourceRoot) where entry.kind == .directory {
             try Task.checkCancellation()
-
-            // Keep the descriptor-pinned directory tree in lockstep with the
-            // manifest before loading attributes from possibly unreadable
-            // volume metadata.
-            if enumerator.level == 1,
-               CardSource.isRootVolumeMetadataDirectory(item) {
-                enumerator.skipDescendants()
-                continue
-            }
-
-            guard let values = try? item.resourceValues(forKeys: Set(keys)),
-                  values.isSymbolicLink != true,
-                  values.isDirectory == true else { continue }
-            let relative: String
-            do {
-                relative = try resolver.resolve(item)
-            } catch {
-                await onError(item.path, error)
-                continue
-            }
+            let relative = entry.relativePath
             guard let components = safeRelativeComponents(relative) else {
                 await onError(relative, NSError(
                     domain: "DestinationWriter",
@@ -621,13 +1029,16 @@ public final class DestinationWriter {
 
 
     #if canImport(Darwin)
-    private static func canReuseExistingDestinationFile(
+    private static func validateReusableExistingDestinationFile(
         source: URL,
         destination: PinnedDestinationFile,
         sourceSize: Int64,
         verificationMode: VerificationMode,
-        checksumService: any ChecksumService
-    ) async throws -> Bool {
+        checksumService: any ChecksumService,
+        destinationIndex: Int,
+        relativePath: String,
+        hooks: FanOutHooks?
+    ) async throws {
         let destinationInfo = try destination.snapshot()
         guard Int64(destinationInfo.st_size) == sourceSize else {
             throw existingDestinationConflictError("Existing destination file differs in size")
@@ -642,7 +1053,13 @@ public final class DestinationWriter {
         // Paranoid reuse matches the copy verify path
         // (`verifyPinnedDestinationFile`): byte-by-byte comparison plus SHA-256.
         if verificationMode == .paranoid {
-            guard try await byteComparison(source: source, pinnedDestination: destination) else {
+            guard try await byteComparison(
+                source: source,
+                pinnedDestination: destination,
+                destinationIndex: destinationIndex,
+                relativePath: relativePath,
+                hooks: hooks
+            ) else {
                 throw existingDestinationConflictError("Existing destination file bytes differ; refusing to overwrite it")
             }
         }
@@ -651,12 +1068,14 @@ public final class DestinationWriter {
             source: source,
             pinnedDestination: destination,
             verificationMode: verificationMode,
-            checksumService: checksumService
+            checksumService: checksumService,
+            destinationIndex: destinationIndex,
+            relativePath: relativePath,
+            hooks: hooks
         ) else {
             throw existingDestinationConflictError("Existing destination file checksum differs; refusing to overwrite it")
         }
 
-        return true
     }
 
     /// Verifies a destination file by opening it below `pinnedRoot`. The URL
@@ -664,14 +1083,11 @@ public final class DestinationWriter {
     /// follows that URL after the directory has been pinned.
     ///
     /// The destination side of every checksum comparison always reads
-    /// through the pinned, descriptor-relative handle (`pinnedDestinationChecksum`),
+    /// through one pinned, descriptor-relative handle (`pinnedDestinationDigests`),
     /// in every verification mode including `.standard`/`.quick`, so the
     /// TOCTOU protection the pinned-reads hardening added is never bypassed.
-    /// Only the SOURCE digest is computed through the caller-supplied
-    /// `checksumService`, so the operation's injected checksum dependency is
-    /// actually exercised (this is also what lets tests observe and control
-    /// verification timing/cancellation) without ever reading the
-    /// destination by path.
+    /// The source digest comes from the stable fan-out read in a transfer; a
+    /// direct verification call falls back to the caller's checksum service.
     public static func verifyPinnedDestinationFile(
         source: URL,
         pinnedRoot: PinnedDestinationDirectory,
@@ -679,148 +1095,349 @@ public final class DestinationWriter {
         verificationMode: VerificationMode,
         checksumService: any ChecksumService
     ) async throws -> VerificationResult {
+        try await verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinnedRoot,
+            relativePath: relativePath,
+            verificationMode: verificationMode,
+            checksumService: checksumService,
+            clipURL: nil
+        ).verification
+    }
+
+    /// Verifies and then performs the advisory atom scan through the same
+    /// pinned file object. A failed advisory read returns no finding and does
+    /// not alter the checksum result.
+    static func verifyPinnedDestinationFileAndInspectClip(
+        source: URL,
+        pinnedRoot: PinnedDestinationDirectory,
+        relativePath: String,
+        verificationMode: VerificationMode,
+        checksumService: any ChecksumService,
+        clipURL: URL,
+        sourceReadEvidence: SourceReadEvidence? = nil,
+        destinationIndex: Int = -1,
+        hooks: FanOutHooks? = nil,
+        inspection: @Sendable (PinnedDestinationFile) throws -> ClipIntegrityFinding = {
+            try $0.inspectClipIntegrity()
+        }
+    ) async throws -> (verification: VerificationResult, clipIntegrity: ClipIntegrityFinding?) {
+        try await verifyPinnedDestinationFile(
+            source: source,
+            pinnedRoot: pinnedRoot,
+            relativePath: relativePath,
+            verificationMode: verificationMode,
+            checksumService: checksumService,
+            clipURL: clipURL,
+            sourceReadEvidence: sourceReadEvidence,
+            destinationIndex: destinationIndex,
+            hooks: hooks,
+            inspection: inspection
+        )
+    }
+
+    private static func verifyPinnedDestinationFile(
+        source: URL,
+        pinnedRoot: PinnedDestinationDirectory,
+        relativePath: String,
+        verificationMode: VerificationMode,
+        checksumService: any ChecksumService,
+        clipURL: URL?,
+        sourceReadEvidence: SourceReadEvidence? = nil,
+        destinationIndex: Int = -1,
+        hooks: FanOutHooks? = nil,
+        inspection: @Sendable (PinnedDestinationFile) throws -> ClipIntegrityFinding = {
+            try $0.inspectClipIntegrity()
+        }
+    ) async throws -> (verification: VerificationResult, clipIntegrity: ClipIntegrityFinding?) {
         guard let components = safeRelativeComponents(relativePath) else {
             throw FileOperationError.unsafeOperation("Invalid destination file path")
         }
         let destination = try pinnedRoot.openRegularFile(at: components)
         let startTime = Date()
-
-        if verificationMode == .paranoid {
-            let matches = try await byteComparison(source: source, pinnedDestination: destination)
-            // Paranoid mode still byte-compares through the pinned handle,
-            // and also computes a real SHA-256 digest (source via the
-            // injected checksum service, destination via the pinned handle)
-            // so MHL files carry a usable checksum instead of a
-            // "byte-comparison" placeholder.
-            let digest = try await checksumVerification(
-                source: source,
-                pinnedDestination: destination,
-                type: .sha256,
-                checksumService: checksumService
-            )
-            return VerificationResult(
-                sourceChecksum: digest.sourceChecksum,
-                destinationChecksum: digest.destinationChecksum,
-                matches: matches,
-                checksumType: .sha256,
-                processingTime: Date().timeIntervalSince(startTime),
-                fileSize: digest.fileSize
-            )
-        }
+        let verification: VerificationResult
 
         let checksumTypes = verificationMode.checksumTypes
         guard !checksumTypes.isEmpty else {
             throw FileOperationError.unsafeOperation("Verification mode does not provide a checksum")
         }
-        var combinedMatches = true
-        var firstResult: VerificationResult?
-        var primaryResult: VerificationResult?
-        var totalProcessing: TimeInterval = 0
-        for type in checksumTypes {
-            let result = try await checksumVerification(
+        if verificationMode == .paranoid {
+            let matches = try await byteComparison(
                 source: source,
                 pinnedDestination: destination,
-                type: type,
-                checksumService: checksumService
+                destinationIndex: destinationIndex,
+                relativePath: relativePath,
+                hooks: hooks
             )
-            combinedMatches = combinedMatches && result.matches
-            totalProcessing += result.processingTime
-            if firstResult == nil { firstResult = result }
-            if type == .sha256 { primaryResult = result }
+            // Paranoid mode still byte-compares through the pinned handle,
+            // and also computes a real SHA-256 digest (source via the stable
+            // fan-out read, destination via the pinned readback handle)
+            // so MHL files carry a usable checksum instead of a
+            // "byte-comparison" placeholder.
+            let digest = try await multiDigestVerification(
+                source: source,
+                pinnedDestination: destination,
+                requiredTypes: checksumTypes,
+                checksumService: checksumService,
+                sourceReadEvidence: sourceReadEvidence,
+                destinationIndex: destinationIndex,
+                relativePath: relativePath,
+                hooks: hooks
+            )
+            verification = VerificationResult(
+                sourceChecksum: digest.sourceChecksum,
+                destinationChecksum: digest.destinationChecksum,
+                matches: matches && digest.matches,
+                checksumType: .sha256,
+                processingTime: Date().timeIntervalSince(startTime),
+                fileSize: digest.fileSize,
+                sourceDigests: digest.sourceDigests,
+                destinationDigests: digest.destinationDigests,
+                destinationReadIdentity: digest.destinationReadIdentity
+            )
+        } else {
+            verification = try await multiDigestVerification(
+                source: source,
+                pinnedDestination: destination,
+                requiredTypes: checksumTypes,
+                checksumService: checksumService,
+                sourceReadEvidence: sourceReadEvidence,
+                destinationIndex: destinationIndex,
+                relativePath: relativePath,
+                hooks: hooks
+            )
         }
-        guard let base = primaryResult ?? firstResult else {
-            throw FileOperationError.unsafeOperation("Verification mode does not provide a checksum")
+
+        let clipIntegrity: ClipIntegrityFinding?
+        if verification.matches, let clipURL, ClipIntegrityCheck.supports(clipURL) {
+            do {
+                clipIntegrity = try inspection(destination)
+            } catch {
+                SharedLogger.warning(
+                    "Clip integrity inspection failed for \(relativePath): \(error.localizedDescription)",
+                    category: .transfer
+                )
+                clipIntegrity = nil
+            }
+        } else {
+            clipIntegrity = nil
         }
-        return VerificationResult(
-            sourceChecksum: base.sourceChecksum,
-            destinationChecksum: base.destinationChecksum,
-            matches: combinedMatches,
-            checksumType: base.checksumType,
-            processingTime: totalProcessing,
-            fileSize: base.fileSize
-        )
+        return (verification, clipIntegrity)
     }
 
     private static func checksumsMatch(
         source: URL,
         pinnedDestination: PinnedDestinationFile,
         verificationMode: VerificationMode,
-        checksumService: any ChecksumService
+        checksumService: any ChecksumService,
+        destinationIndex: Int,
+        relativePath: String,
+        hooks: FanOutHooks?
     ) async throws -> Bool {
         let types = verificationMode.checksumTypes
         guard !types.isEmpty else { return false }
-        for type in types {
-            let result = try await checksumVerification(
-                source: source,
-                pinnedDestination: pinnedDestination,
-                type: type,
-                checksumService: checksumService
-            )
-            if !result.matches { return false }
-        }
-        return true
+        return try await multiDigestVerification(
+            source: source,
+            pinnedDestination: pinnedDestination,
+            requiredTypes: types,
+            checksumService: checksumService,
+            sourceReadEvidence: nil,
+            destinationIndex: destinationIndex,
+            relativePath: relativePath,
+            hooks: hooks
+        ).matches
     }
 
-    /// Destination digest always comes from the pinned, descriptor-relative
-    /// handle. Only the source digest is routed through the injected
-    /// `ChecksumService`.
-    private static func checksumVerification(
+    /// Every destination digest is produced by one pinned, cache-bypassing
+    /// read. A transfer supplies either Standard's stable fan-out evidence or
+    /// Thorough's separately read evidence; direct verification and reuse
+    /// retain the service fallback.
+    private static func multiDigestVerification(
         source: URL,
         pinnedDestination: PinnedDestinationFile,
-        type: ChecksumAlgorithm,
-        checksumService: any ChecksumService
+        requiredTypes: [ChecksumAlgorithm],
+        checksumService: any ChecksumService,
+        sourceReadEvidence: SourceReadEvidence?,
+        destinationIndex: Int,
+        relativePath: String,
+        hooks: FanOutHooks?
     ) async throws -> VerificationResult {
         let startTime = Date()
-        let sourceChecksum = try await checksumService.generateChecksum(
-            for: source,
-            type: type,
-            progressCallback: nil
+        var sourceValues: [ChecksumAlgorithm: String] = [:]
+        if let sourceReadEvidence {
+            guard try sourceIdentity(at: source) == sourceReadEvidence.identity else {
+                throw sourceChangedError()
+            }
+            for type in requiredTypes {
+                if let value = sourceReadEvidence.digests[type] {
+                    sourceValues[type] = value
+                } else {
+                    sourceValues[type] = try await checksumService.generateChecksum(
+                        for: source,
+                        type: type,
+                        progressCallback: nil
+                    )
+                }
+            }
+            guard try sourceIdentity(at: source) == sourceReadEvidence.identity else {
+                throw sourceChangedError()
+            }
+        } else {
+            for type in requiredTypes {
+                sourceValues[type] = try await checksumService.generateChecksum(
+                    for: source,
+                    type: type,
+                    progressCallback: nil
+                )
+            }
+        }
+        // MD5 is collected in the same pass even when SHA-256 is the only
+        // verdict algorithm, so a later ASC MHL never needs another disk read.
+        let destinationRead = try await pinnedDestinationDigests(
+            pinnedDestination,
+            algorithms: Array(Set(requiredTypes + [.md5])),
+            destinationIndex: destinationIndex,
+            relativePath: relativePath,
+            hooks: hooks
         )
-        let destinationChecksum = try await pinnedDestinationChecksum(pinnedDestination, type: type)
+        let primary = requiredTypes.contains(.sha256) ? ChecksumAlgorithm.sha256 : requiredTypes[0]
+        let matches = requiredTypes.allSatisfy { type in
+            guard let sourceDigest = sourceValues[type],
+                  let destinationDigest = destinationRead.digests[type] else { return false }
+            return sourceDigest.caseInsensitiveCompare(destinationDigest) == .orderedSame
+        }
+        let sourceDigests = VerifiedDigests(
+            sha256: sourceValues[.sha256] ?? sourceReadEvidence?.digests.sha256,
+            sha1: sourceValues[.sha1] ?? sourceReadEvidence?.digests.sha1,
+            md5: sourceValues[.md5] ?? sourceReadEvidence?.digests.md5
+        )
         return VerificationResult(
-            sourceChecksum: sourceChecksum,
-            destinationChecksum: destinationChecksum,
-            matches: sourceChecksum.caseInsensitiveCompare(destinationChecksum) == .orderedSame,
-            checksumType: type,
+            sourceChecksum: sourceValues[primary] ?? "",
+            destinationChecksum: destinationRead.digests[primary] ?? "",
+            matches: matches,
+            checksumType: primary,
             processingTime: Date().timeIntervalSince(startTime),
-            fileSize: try sourceFileSize(source)
+            fileSize: try sourceFileSize(source),
+            sourceDigests: sourceDigests,
+            destinationDigests: destinationRead.digests,
+            destinationReadIdentity: destinationRead.identity
         )
     }
 
-    private static func pinnedDestinationChecksum(
-        _ destination: PinnedDestinationFile,
-        type: ChecksumAlgorithm
-    ) async throws -> String {
-        switch type {
-        case .md5:
-            var hasher = Insecure.MD5()
-            try await readPinnedDestination(destination) { hasher.update(data: $0) }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        case .sha1:
-            var hasher = Insecure.SHA1()
-            try await readPinnedDestination(destination) { hasher.update(data: $0) }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-        case .sha256:
-            var hasher = SHA256()
-            try await readPinnedDestination(destination) { hasher.update(data: $0) }
-            return hasher.finalize().map { String(format: "%02x", $0) }.joined()
+    private struct PinnedDigestRead: Sendable {
+        let digests: VerifiedDigests
+        let identity: VerifiedFileIdentity
+    }
+
+    private struct MultiDigestHasher {
+        private let algorithms: Set<ChecksumAlgorithm>
+        private var sha256 = SHA256()
+        private var sha1 = Insecure.SHA1()
+        private var md5 = Insecure.MD5()
+
+        init(algorithms: [ChecksumAlgorithm]) {
+            self.algorithms = Set(algorithms)
         }
+
+        mutating func update(_ data: Data) {
+            if algorithms.contains(.sha256) { sha256.update(data: data) }
+            if algorithms.contains(.sha1) { sha1.update(data: data) }
+            if algorithms.contains(.md5) { md5.update(data: data) }
+        }
+
+        func finalize() -> VerifiedDigests {
+            VerifiedDigests(
+                sha256: algorithms.contains(.sha256) ? Self.hex(sha256.finalize()) : nil,
+                sha1: algorithms.contains(.sha1) ? Self.hex(sha1.finalize()) : nil,
+                md5: algorithms.contains(.md5) ? Self.hex(md5.finalize()) : nil
+            )
+        }
+
+        private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
+            digest.map { String(format: "%02x", $0) }.joined()
+        }
+    }
+
+    private static func pinnedDestinationDigests(
+        _ destination: PinnedDestinationFile,
+        algorithms: [ChecksumAlgorithm],
+        destinationIndex: Int,
+        relativePath: String,
+        hooks: FanOutHooks?
+    ) async throws -> PinnedDigestRead {
+        var hasher = MultiDigestHasher(algorithms: algorithms)
+        let identity = try await readPinnedDestination(
+            destination,
+            destinationIndex: destinationIndex,
+            relativePath: relativePath,
+            hooks: hooks
+        ) { hasher.update($0) }
+        return PinnedDigestRead(digests: hasher.finalize(), identity: identity)
+    }
+
+    /// Thorough's independent card pass. SHA-256 and MD5 are accumulated
+    /// together from one fresh F_NOCACHE handle, then shared by every
+    /// destination verification for this file.
+    private static func uncachedSourceDigests(
+        _ source: URL,
+        algorithms: [ChecksumAlgorithm],
+        relativePath: String,
+        hooks: FanOutHooks?
+    ) async throws -> SourceReadEvidence {
+        let handle = try uncachedSourceHandle(for: source)
+        hooks?.verificationSourceDidOpen?(relativePath)
+        defer { closeFileHandle(handle, context: source.path) }
+
+        var initial = stat()
+        guard fstat(handle.fileDescriptor, &initial) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to inspect source file"])
+        }
+        var hasher = MultiDigestHasher(algorithms: algorithms)
+        var bytesRead: Int64 = 0
+        while bytesRead < Int64(initial.st_size) {
+            try Task.checkCancellation()
+            try await PauseGate.waitIfCurrentIsPaused()
+            let requested = min(4 * 1024 * 1024, Int(Int64(initial.st_size) - bytesRead))
+            let data = try handle.read(upToCount: requested) ?? Data()
+            guard !data.isEmpty else { throw sourceChangedError() }
+            hasher.update(data)
+            hooks?.verificationSourceDidRead?(relativePath, data.count)
+            bytesRead += Int64(data.count)
+        }
+        let trailingData = try handle.read(upToCount: 1) ?? Data()
+        var final = stat()
+        guard trailingData.isEmpty,
+              bytesRead == Int64(initial.st_size),
+              fstat(handle.fileDescriptor, &final) == 0,
+              pinnedFileRemainedStable(initial, final) else {
+            throw sourceChangedError()
+        }
+        return SourceReadEvidence(
+            digests: hasher.finalize(),
+            identity: verifiedIdentity(from: final)
+        )
     }
 
     private static func readPinnedDestination(
         _ destination: PinnedDestinationFile,
+        destinationIndex: Int,
+        relativePath: String,
+        hooks: FanOutHooks?,
         consume: (Data) -> Void
-    ) async throws {
+    ) async throws -> VerifiedFileIdentity {
         let initial = try destination.snapshot()
+        try await hooks?.beforeDestinationRead?(destinationIndex, relativePath)
         let handle = try destination.readingHandle()
+        hooks?.destinationDidOpenForRead?(destinationIndex, relativePath)
         defer { closeFileHandle(handle, context: "pinned destination") }
         var bytesRead: Int64 = 0
         while true {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let data = try handle.read(upToCount: 1024 * 1024) ?? Data()
+            let data = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
             if data.isEmpty { break }
             consume(data)
+            hooks?.destinationDidRead?(destinationIndex, relativePath, data.count)
             bytesRead += Int64(data.count)
         }
         let final = try destination.snapshot()
@@ -831,9 +1448,16 @@ public final class DestinationWriter {
                 userInfo: [NSLocalizedDescriptionKey: "Pinned destination file changed while reading"]
             )
         }
+        return verifiedIdentity(from: final)
     }
 
-    private static func byteComparison(source: URL, pinnedDestination: PinnedDestinationFile) async throws -> Bool {
+    private static func byteComparison(
+        source: URL,
+        pinnedDestination: PinnedDestinationFile,
+        destinationIndex: Int = -1,
+        relativePath: String = "",
+        hooks: FanOutHooks? = nil
+    ) async throws -> Bool {
         let sourceAttributes = try FileManager.default.attributesOfItem(atPath: source.path)
         let sourceSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
         let sourceIdentity = fileIdentity(from: sourceAttributes)
@@ -841,8 +1465,11 @@ public final class DestinationWriter {
         let destinationInitial = try pinnedDestination.snapshot()
         guard sourceSize == Int64(destinationInitial.st_size) else { return false }
 
-        let sourceHandle = try FileHandle(forReadingFrom: source)
+        let sourceHandle = try uncachedSourceHandle(for: source)
+        try await hooks?.beforeDestinationRead?(destinationIndex, relativePath)
         let destinationHandle = try pinnedDestination.readingHandle()
+        hooks?.verificationSourceDidOpen?(relativePath)
+        hooks?.destinationDidOpenForRead?(destinationIndex, relativePath)
         defer {
             closeFileHandle(sourceHandle, context: source.path)
             closeFileHandle(destinationHandle, context: "pinned destination")
@@ -852,11 +1479,13 @@ public final class DestinationWriter {
         while bytesRead < sourceSize {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let sourceData = try sourceHandle.read(upToCount: 64 * 1024) ?? Data()
-            let destinationData = try destinationHandle.read(upToCount: 64 * 1024) ?? Data()
+            let sourceData = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+            let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
             guard !sourceData.isEmpty, !destinationData.isEmpty else {
                 throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
             }
+            hooks?.verificationSourceDidRead?(relativePath, sourceData.count)
+            hooks?.destinationDidRead?(destinationIndex, relativePath, destinationData.count)
             if sourceData != destinationData { return false }
             bytesRead += Int64(sourceData.count)
         }
@@ -883,12 +1512,34 @@ public final class DestinationWriter {
         return (attributes[.size] as? NSNumber)?.int64Value ?? 0
     }
 
+    private static func sourceIdentity(at source: URL) throws -> VerifiedFileIdentity {
+        var info = stat()
+        guard lstat(source.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+            throw sourceChangedError()
+        }
+        return verifiedIdentity(from: info)
+    }
+
+    private static func verifiedIdentity(from info: stat) -> VerifiedFileIdentity {
+        VerifiedFileIdentity(
+            device: UInt64(info.st_dev),
+            inode: UInt64(info.st_ino),
+            size: Int64(info.st_size),
+            modificationSeconds: Int64(info.st_mtimespec.tv_sec),
+            modificationNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+            changeSeconds: Int64(info.st_ctimespec.tv_sec),
+            changeNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+        )
+    }
+
     private static func pinnedFileRemainedStable(_ initial: stat, _ final: stat) -> Bool {
         initial.st_dev == final.st_dev
             && initial.st_ino == final.st_ino
             && initial.st_size == final.st_size
             && initial.st_mtimespec.tv_sec == final.st_mtimespec.tv_sec
             && initial.st_mtimespec.tv_nsec == final.st_mtimespec.tv_nsec
+            && initial.st_ctimespec.tv_sec == final.st_ctimespec.tv_sec
+            && initial.st_ctimespec.tv_nsec == final.st_ctimespec.tv_nsec
     }
     #endif
 

@@ -1,8 +1,8 @@
 // Core/ViewModels/MacVolumeAccessModel.swift
 //
 // The Mac-only half of the old file-selection view model: the volume
-// monitor and backup-drive discovery, /Volumes bookmarks, recent folders
-// and last-used backups. The selection itself (source, backups,
+// monitor and backup-drive discovery, /Volumes bookmarks, and last-used
+// backups. The selection itself (source, backups,
 // compare folders and their folder info) lives in SharedAppCoordinator;
 // this model reads it and writes changes through it.
 import Foundation
@@ -44,8 +44,6 @@ enum DriveAccessPolicy {
 @MainActor
 final class MacVolumeAccessModel: ObservableObject {
     // MARK: - Published Properties
-    @Published var recentFolders: [URL] = []
-
     // Auto-detected volumes
     @Published var detectedCameraCards: [VolumeMonitorService.DetectedVolume] = []
     @Published var detectedBackupDrives: [VolumeMonitorService.DetectedVolume] = []
@@ -55,7 +53,6 @@ final class MacVolumeAccessModel: ObservableObject {
     private weak var shared: SharedAppCoordinator?
     private let lastDestinationsKey = "lastUsedDestinations"
     private let maxRememberedDestinations = 5
-    private let recentFoldersListKey = "recentFoldersList"
     var volumeMonitor = VolumeMonitorService.shared
     private var cancellables = Set<AnyCancellable>()
     /// Track active security-scoped resource URLs to prevent leaks (Bug 2 fix)
@@ -74,10 +71,7 @@ final class MacVolumeAccessModel: ObservableObject {
     private var defaults: UserDefaults
     var lastUsedDefaults: UserDefaults {
         get { defaults }
-        set {
-            defaults = newValue
-            loadRecentFolders()
-        }
+        set { defaults = newValue }
     }
 
     private var sourceURL: URL? { shared?.sourceURL }
@@ -97,7 +91,6 @@ final class MacVolumeAccessModel: ObservableObject {
             hasActiveVolumesScope: false
         )
         self.shared = shared
-        loadRecentFolders()
         // Decision S-3: before anything can overwrite the saved list, put
         // back last time's backups, but only if every one is still mounted.
         // The real app only (tests build the model without monitoring).
@@ -111,18 +104,9 @@ final class MacVolumeAccessModel: ObservableObject {
         }
     }
 
-    /// Recents and last-used backups follow the shared selection. `$x`
-    /// publishes the new value before it is stored, so the sinks use it.
+    /// Last-used backups follow the shared selection. `$destinationURLs`
+    /// publishes the new value before it is stored, so the sink uses it.
     private func observeSelection(of shared: SharedAppCoordinator) {
-        shared.$sourceURL.dropFirst()
-            .sink { [weak self] url in self?.saveRecentFolder(url, key: "recentSource") }
-            .store(in: &cancellables)
-        shared.$leftURL.dropFirst()
-            .sink { [weak self] url in self?.saveRecentFolder(url, key: "recentLeft") }
-            .store(in: &cancellables)
-        shared.$rightURL.dropFirst()
-            .sink { [weak self] url in self?.saveRecentFolder(url, key: "recentRight") }
-            .store(in: &cancellables)
         shared.$destinationURLs.dropFirst()
             .sink { [weak self] urls in
                 guard self?.shared?.isReplayingQueuedTransfer != true else { return }
@@ -247,7 +231,6 @@ final class MacVolumeAccessModel: ObservableObject {
         }
         // An explicit add overrides any earlier dismissal.
         dismissedDestinationPaths.remove(url.path)
-        saveRecentFolder(url, key: "recentDestination")
         return nil
     }
 
@@ -304,8 +287,6 @@ final class MacVolumeAccessModel: ObservableObject {
                 // secret: only this app's signature can resolve it.
                 _ = KeychainHelper.save(bookmarkData, forKey: key)
                 self?.defaults.set(bookmarkData, forKey: key)
-                self?.defaults.set(selectedURL.path, forKey: "volumesDirectoryPath")
-
                 SharedLogger.info("Saved volumes directory bookmark for: \(selectedURL.path)", category: .transfer)
 
                 // Start accessing the security-scoped resource immediately
@@ -370,13 +351,11 @@ final class MacVolumeAccessModel: ObservableObject {
                     SharedLogger.debug("Removing stale volumes directory bookmark", category: .transfer)
                     KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
                     defaults.removeObject(forKey: "volumesDirectoryBookmark")
-                    defaults.removeObject(forKey: "volumesDirectoryPath")
                 }
             } catch {
                 SharedLogger.error("Failed to resolve volumes directory bookmark: \(error)", category: .transfer)
                 KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
                 defaults.removeObject(forKey: "volumesDirectoryBookmark")
-                defaults.removeObject(forKey: "volumesDirectoryPath")
             }
         }
         
@@ -459,41 +438,4 @@ final class MacVolumeAccessModel: ObservableObject {
         }
     }
     
-    // MARK: - Recent Folders Management
-    private func saveRecentFolder(_ url: URL?, key: String) {
-        guard let url = url, !StressTestScratch.isScratch(url) else { return }
-        defaults.set(url.path, forKey: key)
-        updateRecentFolders()
-    }
-    
-    private func loadRecentFolders() {
-        var folders: [URL] = []
-        
-        // Load from individual keys
-        let keys = ["recentLeft", "recentRight", "recentSource", "recentDestination"]
-        for key in keys {
-            if let path = defaults.string(forKey: key) {
-                folders.append(URL(fileURLWithPath: path))
-            }
-        }
-        
-        // Load from list
-        if let recentPaths = defaults.stringArray(forKey: recentFoldersListKey) {
-            for path in recentPaths {
-                folders.append(URL(fileURLWithPath: path))
-            }
-        }
-        
-        // Filter existing folders and remove duplicates
-        let uniqueFolders = Array(Set(folders.filter {
-            FileManager.default.fileExists(atPath: $0.path)
-        }))
-        recentFolders = Array(uniqueFolders.prefix(10))
-    }
-    
-    private func updateRecentFolders() {
-        loadRecentFolders()
-        let paths = recentFolders.map { $0.path }
-        defaults.set(paths, forKey: recentFoldersListKey)
-    }
 }

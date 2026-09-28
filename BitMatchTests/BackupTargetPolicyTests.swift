@@ -85,6 +85,27 @@ struct BackupTargetPolicyTests {
         #expect(refusal("/System/Volumes/Recovery", .userChoice) != nil)
     }
 
+    @Test func cloudStorageAndICloudContainersAreRefusedWhenPicked() {
+        #expect(refusal("/Users/me/Library/CloudStorage/Drive/Backup", .userChoice) != nil)
+        #expect(refusal("/Users/me/Library/Mobile Documents/com~apple~CloudDocs/Backup", .userChoice) != nil)
+    }
+
+    @Test func ubiquitousDestinationIsRefusedWhenPicked() {
+        let cloud = Facts(
+            volumeRootPath: "/Volumes/Remote", volumeID: "REMOTE", volumeName: "Remote",
+            isRootFileSystem: false, isInternal: false, isRemovable: false, isEjectable: false,
+            isUbiquitousItem: true
+        )
+        #expect(refusal("/Volumes/Remote/Backup", .userChoice, volumes: [cloud]) != nil)
+    }
+
+    @Test func volumeFactsDefaultRemainsNonUbiquitous() {
+        let local = Self.external("/Volumes/LOCAL")
+
+        #expect(!local.isUbiquitousItem)
+        #expect(refusal("/Volumes/LOCAL/Backup", .userChoice, volumes: [local]) == nil)
+    }
+
     /// "Recovery 2" is the name macOS gives a second Recovery mount.
     /// Plant: in `BackupTargetPolicy.isSystemVolumeName`, delete the
     /// `if let space = ...` block that strips the " N" suffix.
@@ -451,7 +472,7 @@ struct BackupAddPathTests {
         #expect(coordinator.destinationURLs == [original[1], extra])
     }
 
-    @Test func finalRunningCardLocksDirectMutationsAndDiscoveryUntilItEnds() async throws {
+    @Test func runningCardLeavesComposerDestinationsEditable() async throws {
         let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
@@ -464,17 +485,9 @@ struct BackupAddPathTests {
         try coordinator.startSetupTransfers()
         #expect(await waitUntil { await fixture.operations.starts.count == 1 })
         #expect(coordinator.stagedSetupTransfers.isEmpty)
-        #expect(coordinator.isDestinationSelectionLocked)
-        // The running queue reissues the route through security-scoped URLs,
-        // which resolve the /var symlink to /private/var. Later assertions use
-        // this canonical form; the lock behavior is what this test guards.
-        let lockedRoute = coordinator.destinationURLs
-        #expect(lockedRoute.map { $0.resolvingSymlinksInPath().path }
-            == original.map { $0.resolvingSymlinksInPath().path })
-
-        #expect(coordinator.addDestination(extra) != nil)
+        #expect(!coordinator.isDestinationSelectionLocked)
+        #expect(coordinator.addDestination(extra) == nil)
         coordinator.removeDestinationFolder(original[0])
-        coordinator.replaceDestinations(with: [extra])
 
         let model = MacVolumeAccessModel(shared: coordinator, enableVolumeMonitoring: false)
         model.volumeFacts = { url in
@@ -485,17 +498,15 @@ struct BackupAddPathTests {
             )
         }
         model.handleBackupDrivesUpdate([drive(extra.path)])
-        #expect(coordinator.destinationURLs == lockedRoute)
+        #expect(coordinator.destinationURLs == [original[1], extra])
 
         await fixture.operations.release()
         #expect(await waitUntil { !coordinator.isOperationInProgress })
-        // Finish keeps the completed run immutable until the user leaves it.
-        #expect(coordinator.isDestinationSelectionLocked)
+        #expect(!coordinator.isDestinationSelectionLocked)
+        #expect(coordinator.destinationURLs == [original[1], extra])
         coordinator.startNewTransfer()
         #expect(!coordinator.isDestinationSelectionLocked)
-        #expect(coordinator.addDestination(extra) == nil)
-        coordinator.removeDestinationFolder(lockedRoute[0])
-        #expect(coordinator.destinationURLs == [lockedRoute[1], extra])
+        #expect(coordinator.destinationURLs == [original[1], extra])
     }
 
     /// The stress test's temp backup is saved as last-used; at the next

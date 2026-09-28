@@ -89,15 +89,30 @@ struct TransferCompletionVerdictTests {
         )
         #expect(!result.success)
         #expect(!result.copiedNotVerified)
-        #expect(result.message == "All files copied")
+        #expect(result.message.contains("All files copied"))
+        #expect(result.message.contains("Shuttle A: 1 file has no result"))
     }
 
     @Test func anyIssueOrNoFilesIsNotSuccess() {
-        #expect(verdict(
+        let failed = verdict(
             [row(fileA, at: shuttleA), row(fileB, at: shuttleA, outcome: .failed)],
             sourceFiles: [fileA, fileB]
-        ) == .init(success: false, message: "1 file failed"))
+        )
+        #expect(!failed.success)
+        #expect(failed.message.contains("1 file failed"))
+        #expect(failed.message.contains("Shuttle A: 1 file has no result"))
         #expect(verdict([], sourceFiles: []) == .init(success: false, message: "No files were copied"))
+    }
+
+    /// The ledger replaces a successful copy row with the failed readback
+    /// row. Coverage must then report the file as missing, never as safe.
+    @Test func copySuccessFollowedByVerifyFailureIsIncomplete() {
+        let verifyFailure = row(fileA, at: shuttleA, outcome: .failed)
+        let result = verdict([verifyFailure])
+
+        #expect(!result.success)
+        #expect(result.message.contains("1 file failed"))
+        #expect(result.message.contains("Shuttle A: 1 file has no result"))
     }
 
     @Test func handoffReportAndProjectFailuresAreNotSuccess() {
@@ -190,6 +205,80 @@ struct TransferCompletionVerdictTests {
         )
         #expect(!missing.copiedNotVerified)
         #expect(missing.message.contains("Shuttle B: 1 file has no result"))
+    }
+
+    @Test func legacyDestinationChecksumNeverBecomesMHLReadbackEvidence() throws {
+        let sourceSHA256 = String(repeating: "a", count: 64)
+        let unprovenDestinationSHA256 = String(repeating: "b", count: 64)
+        let verification = VerificationResult(
+            sourceChecksum: sourceSHA256,
+            destinationChecksum: unprovenDestinationSHA256,
+            matches: true,
+            checksumType: .sha256,
+            processingTime: 0,
+            fileSize: 1
+        )
+        let result = FileOperationResult(
+            sourceURL: fileA,
+            destinationURL: shuttleA.appendingPathComponent("source/A.MXF"),
+            success: true,
+            error: nil,
+            fileSize: 1,
+            verificationResult: verification,
+            processingTime: 0
+        )
+
+        let plan = TransferCompletion.ascmhlPlan(
+            results: [result],
+            sourceFiles: [fileA],
+            destinations: [shuttleA],
+            source: source,
+            settings: CameraLabelSettings()
+        )
+        let file = try #require(plan.jobs.first?.files.first)
+        #expect(file.expectedSHA256 == sourceSHA256)
+        #expect(file.verifiedSHA256 == nil)
+    }
+
+    @Test func ascmhlPlanUsesDestinationReadbackMD5() throws {
+        let sourceSHA256 = String(repeating: "a", count: 64)
+        let destinationMD5 = String(repeating: "d", count: 32)
+        let verification = VerificationResult(
+            sourceChecksum: sourceSHA256,
+            destinationChecksum: sourceSHA256,
+            matches: true,
+            checksumType: .sha256,
+            processingTime: 0,
+            fileSize: 1,
+            sourceDigests: VerifiedDigests(sha256: sourceSHA256, md5: String(repeating: "c", count: 32)),
+            destinationDigests: VerifiedDigests(sha256: sourceSHA256, md5: destinationMD5),
+            destinationReadIdentity: VerifiedFileIdentity(
+                device: 1, inode: 2, size: 1,
+                modificationSeconds: 3, modificationNanoseconds: 4,
+                changeSeconds: 5, changeNanoseconds: 6
+            )
+        )
+        let result = FileOperationResult(
+            sourceURL: fileA,
+            destinationURL: shuttleA.appendingPathComponent("source/A.MXF"),
+            success: true,
+            error: nil,
+            fileSize: 1,
+            verificationResult: verification,
+            processingTime: 0
+        )
+
+        let plan = TransferCompletion.ascmhlPlan(
+            results: [result],
+            sourceFiles: [fileA],
+            destinations: [shuttleA],
+            source: source,
+            settings: CameraLabelSettings()
+        )
+
+        let file = try #require(plan.jobs.first?.files.first)
+        #expect(file.verifiedMD5 == destinationMD5)
+        #expect(file.verifiedMD5 != verification.sourceDigests?.md5)
     }
 }
 

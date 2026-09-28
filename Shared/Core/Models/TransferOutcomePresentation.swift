@@ -41,8 +41,8 @@ struct OutcomeDestinationLine: Equatable, Identifiable, Sendable {
     let needsAttention: Bool
 }
 
-/// Everything the shared `OutcomeScreen` shows for a finished, failed or
-/// interrupted transfer, on Mac, iPad and iPhone (UI plan step 4.7).
+/// Everything a finished transfer row shows for a completed, failed or
+/// interrupted transfer on Mac, iPad and iPhone.
 ///
 /// It only *presents* the verdict: `CompletionVerdict` and the state-aware
 /// `CompletionVerdictPresentation.make(state:…)` decide it. Guidance, state,
@@ -59,9 +59,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     /// The card's display name ("The card" when unknown), for the eject
     /// button's label.
     let cardName: String
-    /// "N files failed", errors, warnings. Empty when the
-    /// transfer was interrupted or verified.
+    /// "N files failed", errors, warnings. Empty when interrupted or verified.
     let issueLines: [String]
+    /// Failed media files with their sibling sidecars. Presentation only.
+    let clipFailureLines: [String]
+    /// Amber advisory wording that never participates in the safety verdict.
+    let advisoryLines: [String]
     /// "Completed in …", or "Stopped after …" for an interrupted transfer.
     let durationLabel: String?
     let phaseDurationLabel: String?
@@ -159,7 +162,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         canRetry: Bool,
         canExport: Bool,
         sourceName: String = "",
-        completionReason: String? = nil
+        completionReason: String? = nil,
+        independentDestinationCount: Int? = nil
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
         // owns the empty-name fallback and its "The card" / "the card"
@@ -171,13 +175,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors
         )
+        let claimedDestinationCount = min(
+            destinations.count,
+            max(0, independentDestinationCount ?? destinations.count)
+        )
         let baseVerdict = CompletionVerdictPresentation.make(
             state: state,
             rows: rows,
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors,
             cardName: sourceName,
-            backupCount: destinations.count
+            backupCount: claimedDestinationCount
         )
         let safetyState = CardSafetyState.make(state: state, verdict: resolved)
         let counts = OutcomeFileCounts.make(rows: rows)
@@ -231,7 +239,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 rows: rows,
                 hasErrors: hasErrors,
                 hasCriticalErrors: hasCriticalErrors,
-                backupCount: destinations.count
+                backupCount: claimedDestinationCount
             ).sourceGuidance
         )
 
@@ -240,7 +248,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             safetyState: safetyState,
             guidance: verdict.sourceGuidance,
             cardName: card,
-            issueLines: makeIssueLines(safetyState: safetyState, counts: counts, errorCount: errorCount, warningCount: warningCount),
+            issueLines: makeIssueLines(
+                safetyState: safetyState, counts: counts, errorCount: errorCount,
+                warningCount: warningCount
+            ),
+            clipFailureLines: ResultPresentation.clipFailureDescriptions(rows),
+            advisoryLines: [ResultPresentation.incompleteClipAdvisory(rows)].compactMap { $0 },
             durationLabel: duration.map { makeDurationLabel(safetyState: safetyState, state: state, seconds: $0) },
             phaseDurationLabel: phaseDurationText(
                 copySeconds: copyDurationSeconds,
@@ -377,14 +390,23 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         verificationMode: VerificationMode?
     ) -> String? {
         guard copySeconds != nil || verifySeconds != nil else { return nil }
-        let copy = copySeconds.map(durationText) ?? "unavailable"
+        let copy = copySeconds.map(phaseDurationText) ?? "unavailable"
         let verify: String
         if verificationMode == .quick {
             verify = "not performed"
         } else {
-            verify = verifySeconds.map(durationText) ?? "unavailable"
+            verify = verifySeconds.map(phaseDurationText) ?? "unavailable"
         }
-        return "Copy \(copy), verify \(verify)"
+        return "Copy \(copy) · Verify \(verify)"
+    }
+
+    private static func phaseDurationText(_ seconds: TimeInterval) -> String {
+        let total = max(0, Int(seconds.rounded()))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+        if hours > 0 { return String(format: "%d:%02d:%02d", hours, minutes, secs) }
+        return String(format: "%d:%02d", minutes, secs)
     }
 
     private static func makeDestinationLines(rows: [ResultRow], destinations: [URL], interrupted: Bool) -> [OutcomeDestinationLine] {

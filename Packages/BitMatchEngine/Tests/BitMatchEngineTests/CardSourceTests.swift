@@ -17,6 +17,47 @@ final class CardSourceTests: XCTestCase {
         XCTAssertTrue(try CardSource.enumerateRegularFiles(base: root).isEmpty)
     }
 
+    func testDatalessFilesFailTheManifestBeforeAnySourceRead() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("dataless-manifest-\(UUID().uuidString)", isDirectory: true)
+        let local = root.appendingPathComponent("DCIM/local.mov")
+        let firstCloud = root.appendingPathComponent("DCIM/cloud-a.mov")
+        let secondCloud = root.appendingPathComponent("DCIM/cloud-b.mov")
+        try FileManager.default.createDirectory(at: local.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("local".utf8).write(to: local)
+        try Data("stub".utf8).write(to: firstCloud)
+        try Data("stub".utf8).write(to: secondCloud)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        XCTAssertThrowsError(try CardSource.enumerateRegularFiles(base: root, isDataless: { url in
+            url.lastPathComponent == firstCloud.lastPathComponent
+                || url.lastPathComponent == secondCloud.lastPathComponent
+        })) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "2 files on this source are stored in the cloud, not on this disk. Download them first. First file: DCIM/cloud-a.mov."
+            )
+        }
+    }
+
+    func testCloudManagedSourceIsRefusedBeforeEnumeration() throws {
+        let container = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cloud-source-\(UUID().uuidString)", isDirectory: true)
+        let root = container.appendingPathComponent(
+            "Library/CloudStorage/Provider/Card-001",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: container) }
+
+        XCTAssertThrowsError(try CardSource.enumerateRegularFiles(base: root)) { error in
+            XCTAssertEqual(
+                error.localizedDescription,
+                "This source is in a cloud-managed location. Choose a source on a local disk."
+            )
+        }
+    }
+
     func testPreCancelledTaskThrowsForValidEmptyRoot() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("cancelled-empty-manifest-\(UUID().uuidString)", isDirectory: true)

@@ -32,7 +32,7 @@ final class WorkflowSnapshotTests: XCTestCase {
             name: "ipad-comparison-differences"
         )
 
-        fixture.seedCompletion()
+        try fixture.seedCompletion()
         await settle()
         try capture(
             ContentView(coordinator: fixture.coordinator),
@@ -46,7 +46,7 @@ final class WorkflowSnapshotTests: XCTestCase {
             name: "narrowpad-completion"
         )
 
-        fixture.seedRunning()
+        try fixture.seedRunning()
         await settle()
         try capture(
             ContentView(coordinator: fixture.coordinator),
@@ -180,12 +180,18 @@ private final class SnapshotFixture {
 
     /// A copy in progress, for the shared progress screen (UI plan 4.9).
     /// It sets the running flags without starting the engine.
-    func seedRunning() {
+    func seedRunning() throws {
         coordinator.currentMode = .copyAndVerify
         coordinator.verificationMode = .standard
         coordinator.sourceURL = source
         coordinator.destinationURLs = [backup, secondBackup]
         coordinator.results = []
+        let id = try coordinator.enqueue(
+            source: source,
+            destinations: [backup, secondBackup],
+            verificationMode: .standard
+        )
+        try journal.markRunning(id: id)
         coordinator.isOperationInProgress = true
         coordinator.operationState = .inProgress
         coordinator.progress = OperationProgress(
@@ -230,7 +236,7 @@ private final class SnapshotFixture {
         coordinator.operationState = .notStarted
     }
 
-    func seedCompletion() {
+    func seedCompletion() throws {
         coordinator.currentMode = .copyAndVerify
         coordinator.verificationMode = .standard
         coordinator.sourceURL = source
@@ -248,10 +254,23 @@ private final class SnapshotFixture {
             bytesProcessed: 12_000_000,
             totalBytes: 12_000_000
         )
-        coordinator.results = [
+        let rows = [
             ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path),
             ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: secondBackup.lastPathComponent, destinationPath: secondBackup.appendingPathComponent("DCIM/clip.txt").path)
         ]
+        coordinator.results = rows
+        let id = try coordinator.enqueue(
+            source: source,
+            destinations: [backup, secondBackup],
+            verificationMode: .standard
+        )
+        try journal.markRunning(id: id)
+        try journal.finish(
+            id: id,
+            results: rows,
+            summary: "Copied and verified 4 files to 2 destinations",
+            hadIssues: false
+        )
         coordinator.operationState = .completed(OperationCompletionInfo(success: true, message: "Copied and verified 4 files to 2 destinations"))
     }
 

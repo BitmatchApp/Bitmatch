@@ -17,7 +17,8 @@ enum SetupStartPolicy {
 /// title, whether it can be pressed, and the one line under it.
 ///
 /// Rules, in order:
-/// - A running transfer disables Start.
+/// - A running transfer changes the primary action to Add to queue once the
+///   next card is ready.
 /// - A source or backup not chosen yet is the next step: the button names it
 ///   and the empty box glows (`nextStepHighlight`). No banner, no reason line.
 /// - Project chosen but no card prepared: Start stays disabled and names the
@@ -26,6 +27,11 @@ enum SetupStartPolicy {
 /// - Otherwise the readiness rule decides (`OperationReadinessAssessment`,
 ///   through `TransferPlanPresentation`), plus the project card's own gate.
 struct StartButtonPresentation: Equatable, Sendable {
+    enum Action: Equatable, Sendable {
+        case start
+        case addToQueue
+    }
+
     enum NextStep: Equatable, Sendable {
         case chooseSource
         case addBackup
@@ -35,6 +41,7 @@ struct StartButtonPresentation: Equatable, Sendable {
     let title: String
     let symbol: String
     let canStart: Bool
+    let action: Action
     /// Starts through `startProjectOperation()` rather than a plain transfer.
     let startsProject: Bool
     /// The step not taken yet, highlighted instead of explained.
@@ -74,15 +81,19 @@ struct StartButtonPresentation: Equatable, Sendable {
             + (hasComposerCard ? [composerDestinationIdentities] : [])
 
         if isOperationInProgress {
+            let canAdd = !isProject && hasComposerCard && plan.canStart
             return Self(
-                title: "Transfer in progress",
-                symbol: "hourglass",
-                canStart: false,
+                title: "Add to queue",
+                symbol: "plus",
+                canStart: canAdd,
+                action: .addToQueue,
                 startsProject: isProject,
                 nextStep: nil,
-                blocker: nil,
-                readyLine: nil,
-                accessibilityHint: "A transfer is already running"
+                blocker: canAdd ? nil : "Choose a ready source and at least one destination for the next transfer.",
+                readyLine: canAdd ? "Runs after the current card finishes." : nil,
+                accessibilityHint: canAdd
+                    ? "Adds this card after the transfer already running"
+                    : "Choose a ready card and destinations first"
             )
         }
 
@@ -91,6 +102,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 title: "Start",
                 symbol: "play.fill",
                 canStart: false,
+                action: .start,
                 startsProject: isProject,
                 nextStep: nil,
                 blocker: nil,
@@ -104,6 +116,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 title: "Source is empty",
                 symbol: "tray",
                 canStart: false,
+                action: .start,
                 startsProject: isProject,
                 nextStep: nil,
                 blocker: "Choose a source that contains files.",
@@ -123,6 +136,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                     ),
                     symbol: "play.fill",
                     canStart: true,
+                    action: .start,
                     startsProject: false,
                     nextStep: nil,
                     blocker: nil,
@@ -138,6 +152,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 title: plan.actionTitle,
                 symbol: "arrow.up",
                 canStart: false,
+                action: .start,
                 startsProject: isProject,
                 nextStep: step == .chooseSource ? NextStep.chooseSource : NextStep.addBackup,
                 blocker: nil,
@@ -160,6 +175,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 title: "Set up the \(unit) to start",
                 symbol: "arrow.up",
                 canStart: false,
+                action: .start,
                 startsProject: true,
                 nextStep: .prepareCard,
                 // A real problem still gets its line; the missing card
@@ -187,6 +203,7 @@ struct StartButtonPresentation: Equatable, Sendable {
             title: title,
             symbol: canStart ? "play.fill" : "exclamationmark.triangle.fill",
             canStart: canStart,
+            action: .start,
             startsProject: isProject,
             nextStep: nil,
             blocker: blocker,
@@ -284,11 +301,14 @@ struct SetupPresentation: Equatable {
     let workflow: TransferWorkflowPresentation
     /// A prepared card keeps the workflow on Project until it runs.
     let isWorkflowLocked: Bool
+    let workflowLockHint: String?
     let showsProjectSetup: Bool
     let showsProjectEvidence: Bool
     /// Setup always reserves its Start row. A paused queue keeps a disabled
     /// Start while its inline card owns all recovery actions.
     let showsStartArea: Bool
+    /// Quiet context below preflight; never a blocker or success verdict.
+    let informationalLines: [String]
 
     static func make(
         plan: TransferPlanPresentation,
@@ -297,6 +317,7 @@ struct SetupPresentation: Equatable {
         projectBlocker: String?,
         projectUnit: String,
         isOperationInProgress: Bool,
+        isProjectRunInProgress: Bool = false,
         isQueuePaused: Bool = false,
         hasComposerCard: Bool,
         composerDestinationNames: [String] = [],
@@ -308,14 +329,15 @@ struct SetupPresentation: Equatable {
         sourceFileCount: Int?,
         sourceBytes: Int64?,
         destinationCount: Int,
-        hasProjectEvidence: Bool
+        hasProjectEvidence: Bool,
+        informationalLines: [String] = []
     ) -> Self {
-        let isProject = usesProjectWorkflow || hasPreparedCard
+        let isProject = usesProjectWorkflow || hasPreparedCard || isProjectRunInProgress
         return Self(
             plan: plan,
             start: StartButtonPresentation.make(
                 plan: plan,
-                usesProjectWorkflow: usesProjectWorkflow,
+                usesProjectWorkflow: usesProjectWorkflow || isProjectRunInProgress,
                 hasPreparedCard: hasPreparedCard,
                 projectBlocker: projectBlocker,
                 projectUnit: projectUnit,
@@ -333,10 +355,12 @@ struct SetupPresentation: Equatable {
                 destinationCount: destinationCount
             ),
             workflow: isProject ? .project : .quick,
-            isWorkflowLocked: hasPreparedCard,
+            isWorkflowLocked: hasPreparedCard || isProjectRunInProgress,
+            workflowLockHint: isProjectRunInProgress ? "Available when this card finishes" : nil,
             showsProjectSetup: isProject,
             showsProjectEvidence: hasProjectEvidence,
-            showsStartArea: true
+            showsStartArea: true,
+            informationalLines: informationalLines
         )
     }
 }

@@ -2,7 +2,7 @@
 import Foundation
 
 // MARK: - Checksum Algorithm
-public enum ChecksumAlgorithm: String, CaseIterable, Identifiable, Codable, Sendable {
+public enum ChecksumAlgorithm: String, CaseIterable, Identifiable, Codable, Hashable, Sendable {
     case sha256 = "SHA-256"
     case sha1 = "SHA-1"
     case md5 = "MD5"
@@ -23,6 +23,61 @@ public enum ChecksumAlgorithm: String, CaseIterable, Identifiable, Codable, Send
         case .sha256: return false
         case .sha1, .md5: return true
         }
+    }
+}
+
+/// Digests produced together from one stable read of a file.  Destination
+/// values are evidence only when `destinationReadIdentity` is also present:
+/// that identity proves which pinned on-disk file supplied these bytes.
+public struct VerifiedDigests: Codable, Equatable, Sendable {
+    public let sha256: String?
+    public let sha1: String?
+    public let md5: String?
+
+    public init(sha256: String? = nil, sha1: String? = nil, md5: String? = nil) {
+        self.sha256 = sha256
+        self.sha1 = sha1
+        self.md5 = md5
+    }
+
+    public subscript(_ algorithm: ChecksumAlgorithm) -> String? {
+        switch algorithm {
+        case .sha256: return sha256
+        case .sha1: return sha1
+        case .md5: return md5
+        }
+    }
+}
+
+/// Descriptor identity captured before and after destination readback.
+/// On filesystems with a real change time, ASC MHL may reuse readback digests
+/// while identity, size, modification time, and change time still match. exFAT
+/// does not provide that guarantee, so ASC MHL re-reads the destination there.
+public struct VerifiedFileIdentity: Codable, Equatable, Sendable {
+    public let device: UInt64
+    public let inode: UInt64
+    public let size: Int64
+    public let modificationSeconds: Int64
+    public let modificationNanoseconds: Int64
+    public let changeSeconds: Int64
+    public let changeNanoseconds: Int64
+
+    public init(
+        device: UInt64,
+        inode: UInt64,
+        size: Int64,
+        modificationSeconds: Int64,
+        modificationNanoseconds: Int64,
+        changeSeconds: Int64,
+        changeNanoseconds: Int64
+    ) {
+        self.device = device
+        self.inode = inode
+        self.size = size
+        self.modificationSeconds = modificationSeconds
+        self.modificationNanoseconds = modificationNanoseconds
+        self.changeSeconds = changeSeconds
+        self.changeNanoseconds = changeNanoseconds
     }
 }
 
@@ -66,6 +121,12 @@ public struct VerificationResult: Codable, Sendable {
     public let checksumType: ChecksumAlgorithm
     public let processingTime: TimeInterval
     public let fileSize: Int64
+    /// All source digests available from the stable copy read (or fallback).
+    public let sourceDigests: VerifiedDigests?
+    /// All digests computed together from the pinned destination readback.
+    public let destinationDigests: VerifiedDigests?
+    /// Identity of the pinned destination supplying `destinationDigests`.
+    public let destinationReadIdentity: VerifiedFileIdentity?
     
     public var isValid: Bool { matches }
     
@@ -77,13 +138,75 @@ public struct VerificationResult: Codable, Sendable {
         }
     }
 
-    public init(sourceChecksum: String, destinationChecksum: String, matches: Bool, checksumType: ChecksumAlgorithm, processingTime: TimeInterval, fileSize: Int64) {
+    public init(
+        sourceChecksum: String,
+        destinationChecksum: String,
+        matches: Bool,
+        checksumType: ChecksumAlgorithm,
+        processingTime: TimeInterval,
+        fileSize: Int64
+    ) {
+        self.init(
+            sourceChecksum: sourceChecksum,
+            destinationChecksum: destinationChecksum,
+            matches: matches,
+            checksumType: checksumType,
+            processingTime: processingTime,
+            fileSize: fileSize,
+            sourceDigests: nil,
+            destinationDigests: nil,
+            destinationReadIdentity: nil
+        )
+    }
+
+    init(
+        sourceChecksum: String,
+        destinationChecksum: String,
+        matches: Bool,
+        checksumType: ChecksumAlgorithm,
+        processingTime: TimeInterval,
+        fileSize: Int64,
+        sourceDigests: VerifiedDigests?,
+        destinationDigests: VerifiedDigests?,
+        destinationReadIdentity: VerifiedFileIdentity?
+    ) {
         self.sourceChecksum = sourceChecksum
         self.destinationChecksum = destinationChecksum
         self.matches = matches
         self.checksumType = checksumType
         self.processingTime = processingTime
         self.fileSize = fileSize
+        self.sourceDigests = sourceDigests
+        self.destinationDigests = destinationDigests
+        self.destinationReadIdentity = destinationReadIdentity
+    }
+
+    // Readback evidence is intentionally run-local. Persisted or caller-made
+    // results must fall back to reading the destination again before MHL.
+    private enum CodingKeys: String, CodingKey {
+        case sourceChecksum, destinationChecksum, matches, checksumType, processingTime, fileSize
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            sourceChecksum: try container.decode(String.self, forKey: .sourceChecksum),
+            destinationChecksum: try container.decode(String.self, forKey: .destinationChecksum),
+            matches: try container.decode(Bool.self, forKey: .matches),
+            checksumType: try container.decode(ChecksumAlgorithm.self, forKey: .checksumType),
+            processingTime: try container.decode(TimeInterval.self, forKey: .processingTime),
+            fileSize: try container.decode(Int64.self, forKey: .fileSize)
+        )
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(sourceChecksum, forKey: .sourceChecksum)
+        try container.encode(destinationChecksum, forKey: .destinationChecksum)
+        try container.encode(matches, forKey: .matches)
+        try container.encode(checksumType, forKey: .checksumType)
+        try container.encode(processingTime, forKey: .processingTime)
+        try container.encode(fileSize, forKey: .fileSize)
     }
 }
 
@@ -99,9 +222,9 @@ public enum VerificationMode: String, CaseIterable, Identifiable, Codable, Senda
     public var description: String {
         switch self {
         case .quick: return "Quick checks file sizes only; file contents are not checksum-verified."
-        case .standard: return "Standard compares SHA-256 checksums to verify each copy matches its source."
-        case .thorough: return "Thorough verifies each copy with SHA-256 and MD5 checksums."
-        case .paranoid: return "Paranoid adds a byte-by-byte comparison to checksum verification."
+        case .standard: return "Standard reads the card once and checks every drive."
+        case .thorough: return "Thorough also re-reads the card for verification."
+        case .paranoid: return "Paranoid also compares every byte."
         }
     }
     

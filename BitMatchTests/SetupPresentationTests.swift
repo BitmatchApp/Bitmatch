@@ -9,6 +9,10 @@ struct SetupPresentationTests {
     private let source = URL(fileURLWithPath: "/Volumes/CARD/DCIM")
     private let backup = URL(fileURLWithPath: "/Volumes/RAID_A/Shoot")
 
+    private struct SamePhysicalDisk: PhysicalDiskIdentityProviding {
+        func physicalDiskIdentity(for url: URL) -> String? { "disk5" }
+    }
+
     private func plan(
         source: URL?,
         backups: [URL],
@@ -99,6 +103,78 @@ struct SetupPresentationTests {
         #expect(!presentation.start.canStart)
     }
 
+    @Test func priorBackupLineIsInformationalAndDoesNotBlockStart() {
+        let line = "Backed up before to SHUTTLE A on Sep 24, 2025"
+        let presentation = SetupPresentation.make(
+            plan: plan(source: source, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            sourceFileCount: 1,
+            sourceBytes: 4,
+            destinationCount: 1,
+            hasProjectEvidence: false,
+            informationalLines: [line]
+        )
+
+        #expect(presentation.informationalLines == [line])
+        #expect(presentation.start.canStart)
+        #expect(presentation.start.blocker == nil)
+    }
+
+    @MainActor
+    @Test func priorBackupWordingIncludesYearForAnOlderTransfer() {
+        let calendar = Calendar(identifier: .gregorian)
+        let endedAt = calendar.date(from: DateComponents(year: 2025, month: 9, day: 24))!
+        let now = calendar.date(from: DateComponents(year: 2026, month: 9, day: 27))!
+
+        #expect(SharedAppCoordinator.priorBackupLine(
+            destinationNames: ["SHUTTLE A"],
+            endedAt: endedAt,
+            now: now
+        ) == "Backed up before to SHUTTLE A on Sep 24, 2025")
+    }
+
+    @MainActor
+    @Test func coordinatorFeedsSameDiskCountAndWarningIntoSetupReadiness() async {
+        let coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            defaults: .isolatedWorkflowDefaults(),
+            physicalDiskIdentityProvider: SamePhysicalDisk()
+        )
+        coordinator.destinationURLs = [
+            URL(fileURLWithPath: "/Volumes/SHUTTLE A"),
+            URL(fileURLWithPath: "/Volumes/SHUTTLE B"),
+        ]
+        for _ in 0..<100 {
+            if coordinator.destinationIndependence.independentCopyCount == 1 { break }
+            await Task.yield()
+        }
+
+        #expect(coordinator.destinationIndependence.independentCopyCount == 1)
+        #expect(coordinator.transferReadiness.warnings == [
+            "SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"
+        ])
+    }
+
+    @MainActor
+    @Test func sameDiskPairCannotStartATwoCopyProject() async throws {
+        let fixture = try await SharedProjectFixture.make(
+            physicalDiskIdentityProvider: SamePhysicalDisk()
+        )
+        defer { fixture.folders.cleanup() }
+
+        let began = await fixture.coordinator.startProjectOperation()
+
+        #expect(!began)
+        #expect(await fixture.operations.starts.isEmpty)
+        #expect(fixture.cardState == .notStarted)
+        #expect(fixture.jobs.lastError == "Add 1 more destination for this 2-copy job")
+    }
+
     /// A real problem (from the one readiness rule) gets a line under Start.
     /// Plant: in `StartButtonPresentation.make`, change the `planBlocker`
     /// line to `let planBlocker: String? = nil`.
@@ -129,11 +205,13 @@ struct SetupPresentationTests {
         #expect(presentation.blocker == blocker)
     }
 
-    /// Plant: delete the `if isOperationInProgress` branch of `StartButtonPresentation.make`.
-    @Test func runningTransferDisablesStart() {
+    @Test func runningTransferChangesPrimaryActionToAddToQueue() {
         let presentation = start(plan(source: source, backups: [backup]), running: true)
 
-        #expect(!presentation.canStart)
+        #expect(presentation.canStart)
+        #expect(presentation.action == .addToQueue)
+        #expect(presentation.title == "Add to queue")
+        #expect(presentation.readyLine == "Runs after the current card finishes.")
     }
 
     @Test func pausedQueueDisablesSetupStart() {
@@ -392,5 +470,39 @@ struct SetupProjectGateCoordinatorTests {
         #expect(presentation.workflow == .project)
         #expect(presentation.start.nextStep == .prepareCard)
         #expect(!presentation.start.canStart)
+    }
+}
+
+@Suite struct ProjectRunSetupLockTests {
+    /// Plant: in `SetupPresentation.make`, lock only on `hasPreparedCard`.
+    @Test func runningProjectLocksWorkflowWithPlainHint() {
+        let plan = TransferPlanPresentation.make(
+            sourceURL: URL(fileURLWithPath: "/Volumes/CARD"),
+            sourceInfo: nil,
+            destinationURLs: [URL(fileURLWithPath: "/Volumes/BACKUP")],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(),
+            isAnalyzing: false,
+            blockingIssues: [],
+            warnings: []
+        )
+        let presentation = SetupPresentation.make(
+            plan: plan,
+            usesProjectWorkflow: true,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: true,
+            isProjectRunInProgress: true,
+            hasComposerCard: false,
+            sourceFileCount: 1,
+            sourceBytes: 4,
+            destinationCount: 2,
+            hasProjectEvidence: true
+        )
+
+        #expect(presentation.isWorkflowLocked)
+        #expect(presentation.workflowLockHint == "Available when this card finishes")
     }
 }

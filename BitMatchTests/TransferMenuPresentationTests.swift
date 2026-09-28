@@ -21,21 +21,6 @@ struct TransferMenuPresentationTests {
         )
     }
 
-    @Test func newTransferIsDisabledOnlyWhileATransferRuns() {
-        #expect(TransferMenuPresentation.make(
-            isTransferRunning: false,
-            outcome: nil,
-            sourceName: "",
-            sourceIsEjectable: false
-        ).newTransferEnabled)
-        #expect(!TransferMenuPresentation.make(
-            isTransferRunning: true,
-            outcome: nil,
-            sourceName: "",
-            sourceIsEjectable: false
-        ).newTransferEnabled)
-    }
-
     /// The File menu calls the outcome presentation's existing eject gate.
     /// No non-verified state may expose a primary Eject command.
     @Test func ejectRequiresSafeToEraseAndAnEjectableSource() {

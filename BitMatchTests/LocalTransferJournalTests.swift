@@ -5,6 +5,107 @@ import BitMatchEngine
 
 @MainActor
 struct LocalTransferJournalTests {
+    @Test func fingerprintMatchRequiresVerifiedCompletedHistory() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        let fingerprint = "abc123"
+
+        let verifiedID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: verifiedID)
+        try journal.finish(
+            id: verifiedID,
+            results: [ResultRow(
+                path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc",
+                destination: "Backup", destinationPath: f.destination.appendingPathComponent("clip.mov").path
+            )],
+            summary: "Done", hadIssues: false, sourceFingerprint: fingerprint
+        )
+        let match = try #require(journal.matchingVerifiedRecord(sourceFingerprint: fingerprint))
+        #expect(match.id == verifiedID)
+
+        let issueID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: issueID)
+        try journal.finish(
+            id: issueID,
+            results: [ResultRow(path: "clip.mov", status: "❌ Failed", size: 1, checksum: nil, destination: "Backup")],
+            summary: "Failed", hadIssues: true, sourceFingerprint: "issues"
+        )
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "issues") == nil)
+
+        let quickID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .quick,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: quickID)
+        try journal.finish(
+            id: quickID,
+            results: [ResultRow(path: "clip.mov", status: "✅ Copied", size: 1, checksum: nil, destination: "Backup")],
+            summary: "Done", hadIssues: false, sourceFingerprint: "quick"
+        )
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "quick") == nil)
+
+        let incompleteID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: incompleteID)
+        try journal.finish(
+            id: incompleteID,
+            results: [ResultRow(
+                path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc",
+                destination: "Somewhere else", destinationPath: "/missing/clip.mov"
+            )],
+            summary: "Done", hadIssues: false, sourceFingerprint: "incomplete"
+        )
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "incomplete") == nil)
+    }
+
+    @Test func oldHistoryJSONDecodesWithoutNewSourceAndDiskFields() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let source = try LocalTransferResource(url: f.source)
+        let destination = try LocalTransferResource(url: f.destination)
+        let record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: source, destinations: [destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "sourceFingerprint")
+        object.removeValue(forKey: "independentDestinationCount")
+
+        let decoded = try JSONDecoder().decode(
+            LocalTransferRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(decoded.sourceFingerprint == nil)
+        #expect(decoded.independentDestinationCount == nil)
+    }
+
+    @Test func runningAttemptPersistsIndependentDestinationCount() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journal)
+            let id = try journal.enqueue(
+                sourceURL: f.source,
+                destinationURLs: [f.destination],
+                verificationMode: .standard,
+                cameraSettings: CameraLabelSettings(),
+                reportSettings: ReportPrefs()
+            )
+            try journal.markRunning(id: id, independentDestinationCount: 1)
+        }
+
+        let restored = LocalTransferJournal(fileURL: f.journal)
+        #expect(restored.records.first?.independentDestinationCount == 1)
+    }
     private func fixture() throws -> (root: URL, source: URL, destination: URL, journal: URL) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("Card")
@@ -77,13 +178,24 @@ struct LocalTransferJournalTests {
                 summary: "Done",
                 hadIssues: false,
                 copyDurationSeconds: 252,
-                verifyDurationSeconds: 238
+                verifyDurationSeconds: 238,
+                performanceTelemetry: TransferPerformanceTelemetry(
+                    copyDurationSeconds: 252,
+                    verifyDurationSeconds: 238,
+                    overlapDurationSeconds: 90,
+                    copyBytes: 1_000,
+                    verifyBytes: 2_000,
+                    mhlDurationSeconds: 12,
+                    mhlBytes: 1_000
+                )
             )
         }
 
         let restored = LocalTransferJournal(fileURL: f.journal)
         #expect(restored.records.first?.copyDurationSeconds == 252)
         #expect(restored.records.first?.verifyDurationSeconds == 238)
+        #expect(restored.records.first?.performanceTelemetry?.overlapDurationSeconds == 90)
+        #expect(restored.records.first?.performanceTelemetry?.mhlDurationSeconds == 12)
     }
 
     @Test func oldHistoryJSONDecodesWithoutPhaseDurations() throws {
@@ -99,11 +211,67 @@ struct LocalTransferJournalTests {
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
         object.removeValue(forKey: "copyDurationSeconds")
         object.removeValue(forKey: "verifyDurationSeconds")
+        object.removeValue(forKey: "performanceTelemetry")
 
         let oldData = try JSONSerialization.data(withJSONObject: object)
         let decoded = try JSONDecoder().decode(LocalTransferRecord.self, from: oldData)
         #expect(decoded.copyDurationSeconds == nil)
         #expect(decoded.verifyDurationSeconds == nil)
+        #expect(decoded.performanceTelemetry == nil)
+    }
+
+    @Test func legacyPhaseDurationsDecodeIntoTelemetry() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        var record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: f.source),
+            destinations: [try LocalTransferResource(url: f.destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        record.copyDurationSeconds = 18
+        record.verifyDurationSeconds = 27
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "performanceTelemetry")
+
+        let decoded = try JSONDecoder().decode(
+            LocalTransferRecord.self,
+            from: JSONSerialization.data(withJSONObject: object)
+        )
+        #expect(decoded.performanceTelemetry?.copyDurationSeconds == 18)
+        #expect(decoded.performanceTelemetry?.verifyDurationSeconds == 27)
+    }
+
+    @Test func finishWithoutNewTelemetryPreservesLegacySynthesizedTelemetry() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        var record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: f.source),
+            destinations: [try LocalTransferResource(url: f.destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        record.copyDurationSeconds = 18
+        record.verifyDurationSeconds = 27
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        object.removeValue(forKey: "performanceTelemetry")
+        try JSONSerialization.data(withJSONObject: [object]).write(to: f.journal)
+
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        try journal.markRunning(id: record.id)
+        try journal.finish(
+            id: record.id,
+            results: [ResultRow(
+                path: "clip.mov", status: "✅ Verified", size: 1,
+                checksum: "abc", destination: "Backup"
+            )],
+            summary: "Done",
+            hadIssues: false
+        )
+
+        let finished = try #require(journal.records.first)
+        #expect(finished.copyDurationSeconds == 18)
+        #expect(finished.verifyDurationSeconds == 27)
+        #expect(finished.performanceTelemetry?.copyDurationSeconds == 18)
+        #expect(finished.performanceTelemetry?.verifyDurationSeconds == 27)
     }
 
     @Test func retryKeepsPreviousAttemptAndChecksResources() throws {
@@ -253,12 +421,20 @@ struct LocalTransferJournalTests {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
         let journal = LocalTransferJournal(fileURL: f.journal)
+        let projectID = UUID()
+        let projectCardID = UUID()
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
-                                     cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), projectID: UUID())
+                                     cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+                                     projectID: projectID, projectCardID: projectCardID)
         try journal.markRunning(id: id)
         try journal.interrupt(id: id, summary: "Interrupted")
         #expect(journal.records.first?.canRetry == false)
         #expect(throws: LocalTransferJournalError.self) { try journal.requeue(id: id) }
+        // A second journal instance cannot open live history (it is locked
+        // while this one is alive), so read what was written to disk.
+        let saved = try String(contentsOf: f.journal, encoding: .utf8)
+        #expect(saved.contains(projectID.uuidString))
+        #expect(saved.contains(projectCardID.uuidString))
     }
 
     @Test func corruptHistoryIsNotSilentlyOverwritten() throws {

@@ -6,6 +6,7 @@ import BitMatchEngine
 struct ModularContentView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     let navigationPresentation: AdaptiveNavigationPresentation
+    @Binding var showingQueueInspector: Bool
     @State private var showingSettings = false
     @State private var showingTransfers = false
     @State private var showingVolumeSelector = false
@@ -16,18 +17,9 @@ struct ModularContentView: View {
     // one definition of which states keep results visible.
     
     var body: some View {
+        // System background, not a painted gradient: the navigation and tab
+        // chrome stay translucent and both color schemes work.
         ZStack {
-            // Background gradient (matching original)
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(red: 0.05, green: 0.05, blue: 0.05),
-                    Color(red: 0.1, green: 0.1, blue: 0.1)
-                ]),
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            .ignoresSafeArea()
-            
             Group {
                 if showingTransfers {
                     NavigationStack {
@@ -57,7 +49,6 @@ struct ModularContentView: View {
             }
             .padding(.top, 16)
         }
-        .preferredColorScheme(.dark)
         .onChange(of: coordinator.operationState) { oldValue, newValue in
             // Handle transfer completion logic
             if case .completed = newValue {
@@ -98,18 +89,19 @@ extension ModularContentView {
             return "compare-setup"
         }
         if coordinator.currentMode == .masterReport { return "master-report" }
-        if coordinator.isOperationInProgress { return "copy-running" }
-        if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-            return "copy-paused"
-        }
-        return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
+        return "copy-setup"
     }
 
     @ViewBuilder
     private var mainContentArea: some View {
         VStack(spacing: 0) {
             // Header with gear icon (always visible)  
-            HeaderSectionView(showingSettings: $showingSettings, showingTransfers: $showingTransfers)
+            HeaderSectionView(
+                coordinator: coordinator,
+                showingSettings: $showingSettings,
+                showingTransfers: $showingTransfers,
+                showingQueueInspector: $showingQueueInspector
+            )
             let attentionCount = TransferLibraryPresentation.needsAttentionCount(
                 coordinator.transferJournal.records,
                 excluding: Set([coordinator.queuePausedRecordID].compactMap { $0 })
@@ -124,59 +116,14 @@ extension ModularContentView {
                     .padding(.top, 8)
             }
             
-            // Three-state architecture using components. Compare shows its own
-            // progress and outcome inside CompareScreen, so it stays on the
-            // mode view instead of the transfer progress/completion screens.
-            if coordinator.currentMode == .compareFolders {
-                IdleStateView(coordinator: coordinator, navigationPresentation: navigationPresentation, showingTransfers: $showingTransfers)
-            } else if coordinator.isOperationInProgress {
-                // OPERATION STATE: the shared progress screen, scrolled so
-                // many backups never clip in a short split view.
-                ScrollView {
-                    VStack(spacing: 16) {
-                        OperationProgressView(coordinator: coordinator)
-                        ActiveQueueSection(coordinator: coordinator)
-                    }
-                    .padding(.horizontal)
-                }
-                    .onAppear {
-                        SharedLogger.debug("UI switched to OPERATION view")
-                    }
-            } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-                // A queue problem belongs inside Queue. Setup remains the
-                // stable workbench until the person explicitly reviews it.
-                VStack(spacing: 16) {
-                    IdleStateView(
-                        coordinator: coordinator,
-                        navigationPresentation: navigationPresentation,
-                        showingTransfers: $showingTransfers
-                    )
-                    ActiveQueueSection(coordinator: coordinator)
-                        .padding(.horizontal)
-                }
-            } else if coordinator.showsOutcomeSummary {
-                // COMPLETION STATE: Show transfer summary
-                ScrollView {
-                    VStack(spacing: 16) {
-                        CompletionSummaryView(coordinator: coordinator)
-                        ActiveQueueSection(coordinator: coordinator)
-                    }
-                    .padding(.horizontal)
-                }
-                    .onAppear {
-                        SharedLogger.debug("UI switched to COMPLETION view")
-                    }
-            } else {
-                // IDLE STATE: Show file selection interface
-                VStack(spacing: 16) {
-                    IdleStateView(coordinator: coordinator, navigationPresentation: navigationPresentation, showingTransfers: $showingTransfers)
-                    ActiveQueueSection(coordinator: coordinator)
-                        .padding(.horizontal)
-                }
-                    .onAppear {
-                        SharedLogger.debug("UI switched to IDLE view")
-                    }
-            }
+            // Setup remains the workbench while transfers run and finish.
+            // The transfer queue is presented by the adaptive bar or inspector;
+            // Compare and Master Report keep their own inline state.
+            IdleStateView(
+                coordinator: coordinator,
+                navigationPresentation: navigationPresentation,
+                showingTransfers: $showingTransfers
+            )
         }
         .frame(maxWidth: .infinity)
     }
@@ -185,8 +132,10 @@ extension ModularContentView {
 // MARK: - Header Section Component
 
 struct HeaderSectionView: View {
+    @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var showingSettings: Bool
     @Binding var showingTransfers: Bool
+    @Binding var showingQueueInspector: Bool
     
     var body: some View {
         HStack {
@@ -195,13 +144,19 @@ struct HeaderSectionView: View {
             }
                 .frame(minHeight: 44)
             Spacer()
+
+            QueueInspectorToolbarButton(
+                coordinator: coordinator,
+                isInspectorPresented: showingQueueInspector,
+                action: { showingQueueInspector.toggle() }
+            )
             
             Button {
                 showingSettings = true
             } label: {
                 Image(systemName: "gear")
                     .font(.system(size: 18, weight: .medium))
-                    .foregroundColor(.white.opacity(0.7))
+                    .foregroundStyle(.secondary)
                     // Audit H6: the icon alone was well under 44pt.
                     .frame(minWidth: 44, minHeight: 44)
                     .contentShape(Rectangle())
@@ -227,7 +182,7 @@ struct IdleStateView: View {
             if navigationPresentation == .sidebar {
                 HStack(alignment: .top, spacing: 0) {
                     AdaptiveModeNavigation(coordinator: coordinator, presentation: .sidebar)
-                    Divider().overlay(Color.white.opacity(0.09))
+                    Divider().overlay(Color.primary.opacity(0.09))
                     modeContent
                 }
             } else {
@@ -300,7 +255,7 @@ private struct RecentTransfersSection: View {
 
 /// Builds the shared `ComparePresentation` from `SharedAppCoordinator`.
 /// Readiness, progress and the outcome all render inside `CompareScreen`;
-/// Compare never routes to the transfer progress or completion screens.
+/// Compare never uses the transfer rows' progress or finished content.
 struct CompareFoldersView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     /// Compare draws its progress inline; the coordinator does not republish
@@ -313,47 +268,9 @@ struct CompareFoldersView: View {
         _liveProgress = ObservedObject(wrappedValue: coordinator.liveProgress)
     }
 
-    static func presentation(for coordinator: SharedAppCoordinator) -> ComparePresentation {
-        ComparePresentation.make(
-            left: slot(url: coordinator.leftURL, info: coordinator.leftFolderInfo, coordinator: coordinator),
-            right: slot(url: coordinator.rightURL, info: coordinator.rightFolderInfo, coordinator: coordinator),
-            choice: coordinator.checkAgainst,
-            savedAvailability: coordinator.savedChecksumAvailability,
-            mode: coordinator.verificationMode,
-            isRunning: coordinator.isOperationInProgress,
-            progress: coordinator.progress.map {
-                CompareProgressPresentation(
-                    fraction: $0.overallProgress,
-                    filesProcessed: $0.filesProcessed,
-                    totalFiles: $0.totalFiles,
-                    currentFile: $0.currentFile
-                )
-            },
-            stats: coordinator.lastCompareStats,
-            savedResult: coordinator.lastSavedChecksumResult,
-            end: coordinator.lastCompareEnd
-        )
-    }
-
-    private static func slot(
-        url: URL?,
-        info: EnhancedFolderInfo?,
-        coordinator: SharedAppCoordinator
-    ) -> CompareFolderSlot {
-        CompareFolderSlot.make(
-            url: url,
-            infoURL: info?.url,
-            fileCount: info?.fileCount,
-            totalSize: info?.totalSize,
-            // A scan that has not started yet (no entry) counts as loading, so
-            // Compare cannot enable in the moment between picking and scanning.
-            isFetching: url.map { coordinator.folderInfoLoadingState[$0] != false } ?? false
-        )
-    }
-
     var body: some View {
         CompareScreen(
-            presentation: Self.presentation(for: coordinator),
+            presentation: ComparePresentation.make(coordinator: coordinator),
             checkAgainst: $coordinator.checkAgainst,
             verificationMode: $coordinator.verificationMode,
             advancedExpanded: $advancedExpanded,
@@ -364,7 +281,7 @@ struct CompareFoldersView: View {
                 clearRight: { coordinator.rightURL = nil },
                 dropLeft: nil,
                 dropRight: nil,
-                compare: { Task { await coordinator.compareFolders() } },
+                compare: { ComparePresentation.startIfReady(coordinator) },
                 cancel: { coordinator.cancelOperation() }
             )
         )
@@ -494,7 +411,6 @@ struct SettingsSheetView: View {
                 }
             }
         }
-        .preferredColorScheme(.dark)
         .task { await notifier.refreshAuthorizationStatus() }
     }
     
@@ -566,7 +482,6 @@ private struct RemoteDestinationSettingsSection: View {
                     }
                 }
             }
-            .preferredColorScheme(.dark)
         }
     }
 
@@ -624,6 +539,5 @@ struct VolumeSelector: View {
             .padding()
         }
         .background(Color.black)
-        .preferredColorScheme(.dark)
     }
 }

@@ -105,6 +105,276 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(String(decoding: csv.data, as: UTF8.self).contains("\"Venice Shoot\",\"requested\""))
     }
 
+    func testRunSnapshotIsolatedFromComposerAndQueuedReplay() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let composerSource = f.root.appendingPathComponent("next-composer-card", isDirectory: true)
+        let composerDestination = f.root.appendingPathComponent("next-composer-backup", isDirectory: true)
+        let queuedSource = f.root.appendingPathComponent("queued-card", isDirectory: true)
+        let queuedDestination = f.root.appendingPathComponent("queued-backup", isDirectory: true)
+        for directory in [composerSource, composerDestination, queuedSource, queuedDestination] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        }
+        try Data("next".utf8).write(to: composerSource.appendingPathComponent("clip.mov"))
+        try Data("queued".utf8).write(to: queuedSource.appendingPathComponent("clip.mov"))
+
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let operations = SnapshotIsolationOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        coordinator.verificationMode = .standard
+        coordinator.cameraLabelSettings = CameraLabelSettings(label: "Direct")
+        coordinator.reportSettings = ReportPrefs(makeReport: true)
+        coordinator.generateASCMHL = false
+
+        let directTask = Task { await coordinator.startOperation() }
+        let directStarted = await waitUntil { await operations.starts.count == 1 }
+        XCTAssertTrue(directStarted)
+        let directID = try XCTUnwrap(coordinator.activeRunContext?.journalRecordID)
+
+        coordinator.sourceURL = composerSource
+        coordinator.destinationURLs = [composerDestination]
+        coordinator.verificationMode = .paranoid
+        coordinator.cameraLabelSettings = CameraLabelSettings(label: "Composer")
+        coordinator.reportSettings = ReportPrefs(makeReport: false)
+        coordinator.generateASCMHL = true
+        XCTAssertEqual(coordinator.presentedSourceURL?.resolvingSymlinksInPath(), f.source.resolvingSymlinksInPath())
+        XCTAssertEqual(
+            coordinator.presentedDestinationURLs.map { $0.resolvingSymlinksInPath() },
+            [f.destination.resolvingSymlinksInPath()]
+        )
+
+        var queuedReports = ReportPrefs()
+        queuedReports.makeReport = false
+        let queuedID = try coordinator.enqueue(
+            source: queuedSource,
+            destinations: [queuedDestination],
+            verificationMode: .quick,
+            cameraSettings: CameraLabelSettings(label: "Queued"),
+            generateASCMHL: false,
+            reportSettings: queuedReports
+        )
+        await operations.releaseNext()
+        await directTask.value
+        XCTAssertFalse(coordinator.isOperationInProgress)
+        guard case .completed(let directCompletion) = coordinator.operationState else {
+            XCTFail("The direct transfer did not publish a completion verdict")
+            return
+        }
+        XCTAssertTrue(directCompletion.success, directCompletion.message)
+
+        let directRecord = try XCTUnwrap(journal.records.first { $0.id == directID })
+        XCTAssertEqual(directRecord.state, .completed, directRecord.summary)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: directRecord), .safeToErase)
+        XCTAssertTrue(directRecord.reportSettings.makeReport)
+        XCTAssertFalse(directRecord.generateASCMHL)
+        XCTAssertEqual(
+            directRecord.results.compactMap(\.destinationPath),
+            [SafetyValidator.resolvedDestinationRoot(
+                source: f.source, destination: f.destination, settings: CameraLabelSettings(label: "Direct")
+            ).appendingPathComponent("clip.mov").path]
+        )
+
+        let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
+        let jsonURL = try XCTUnwrap(try FileManager.default
+            .contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+            .first { $0.pathExtension == "json" })
+        let report = try XCTUnwrap(
+            try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any]
+        )
+        let reportDestinations = try XCTUnwrap(report["destinations"] as? [[String: Any]])
+        XCTAssertEqual(reportDestinations.compactMap { $0["path"] as? String }, [f.destination.path])
+        XCTAssertFalse(FileManager.default.fileExists(
+            atPath: composerDestination.appendingPathComponent("Reports").path
+        ))
+
+        coordinator.startQueue()
+        let queuedStarted = await waitUntil(timeout: .seconds(5)) { await operations.starts.count == 2 }
+        XCTAssertTrue(queuedStarted)
+
+        let starts = await operations.starts
+        guard starts.count == 2 else {
+            coordinator.cancelOperation()
+            return
+        }
+        XCTAssertEqual(starts[0].source.resolvingSymlinksInPath(), f.source.resolvingSymlinksInPath())
+        XCTAssertEqual(starts[0].destinations.map { $0.resolvingSymlinksInPath() }, [f.destination.resolvingSymlinksInPath()])
+        XCTAssertEqual(starts[0].mode, .standard)
+        XCTAssertEqual(starts[0].label, "Direct")
+        XCTAssertEqual(starts[1].source.resolvingSymlinksInPath(), queuedSource.resolvingSymlinksInPath())
+        XCTAssertEqual(starts[1].destinations.map { $0.resolvingSymlinksInPath() }, [queuedDestination.resolvingSymlinksInPath()])
+        XCTAssertEqual(starts[1].mode, .quick)
+        XCTAssertEqual(starts[1].label, "Queued")
+        XCTAssertEqual(coordinator.presentedSourceURL?.resolvingSymlinksInPath(), queuedSource.resolvingSymlinksInPath())
+        XCTAssertEqual(
+            coordinator.presentedDestinationURLs.map { $0.resolvingSymlinksInPath() },
+            [queuedDestination.resolvingSymlinksInPath()]
+        )
+
+        XCTAssertEqual(coordinator.sourceURL, composerSource)
+        XCTAssertEqual(coordinator.destinationURLs, [composerDestination])
+        XCTAssertEqual(coordinator.verificationMode, .paranoid)
+        XCTAssertEqual(coordinator.cameraLabelSettings.label, "Composer")
+        XCTAssertFalse(coordinator.reportSettings.makeReport)
+        XCTAssertTrue(coordinator.generateASCMHL)
+
+        await operations.releaseNext()
+        let queueFinished = await waitUntil(timeout: .seconds(5)) {
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(queueFinished)
+
+        let queuedRecord = try XCTUnwrap(journal.records.first { $0.id == queuedID })
+        XCTAssertEqual(queuedRecord.verificationMode, .quick)
+        XCTAssertEqual(queuedRecord.state, .issues)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: queuedRecord), .copiedNotVerified)
+        XCTAssertEqual(coordinator.sourceURL, composerSource)
+        XCTAssertEqual(coordinator.destinationURLs, [composerDestination])
+        XCTAssertEqual(coordinator.verificationMode, .paranoid)
+        XCTAssertEqual(coordinator.cameraLabelSettings.label, "Composer")
+        XCTAssertFalse(coordinator.reportSettings.makeReport)
+        XCTAssertTrue(coordinator.generateASCMHL)
+    }
+
+    /// Plant: use `sourceFolderInfo` (the next composer card) when creating a
+    /// queued run context instead of scanning the queued record's source.
+    func testQueuedRunPlansBytesFromItsOwnSource() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let secondDestination = f.root.appendingPathComponent("backup-2")
+        let composerSource = f.root.appendingPathComponent("next-card")
+        try FileManager.default.createDirectory(at: secondDestination, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: composerSource, withIntermediateDirectories: true)
+        try Data(repeating: 7, count: 101).write(to: composerSource.appendingPathComponent("large.mov"))
+
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(
+            sourceURL: f.source,
+            destinationURLs: [f.destination, secondDestination],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: false),
+            generateASCMHL: false
+        )
+        let operations = QueueRecordingOperations(blocked: true)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        coordinator.sourceURL = composerSource
+        coordinator.destinationURLs = [f.destination]
+        coordinator.startQueue()
+        let waited1 = await waitUntil { await operations.starts.count == 1 }
+        XCTAssertTrue(waited1)
+        XCTAssertEqual(coordinator.activeRunContext?.journalRecordID, id)
+        XCTAssertEqual(coordinator.activeRunContext?.estimatedFiles, 1)
+        XCTAssertEqual(coordinator.activeRunContext?.estimatedBytes, 4)
+        XCTAssertEqual(coordinator.activeRunContext?.plannedTotalBytes, 8)
+
+        coordinator.cancelOperation()
+        await operations.release()
+        let waited2 = await waitUntil { @MainActor in !coordinator.isOperationInProgress }
+        XCTAssertTrue(waited2)
+    }
+
+    /// A Review action cannot replace the active run's journal identity or
+    /// result rows while that run is still producing its own evidence.
+    /// Plant: remove the running guard from `reviewQueuedTransfer`.
+    func testReviewDuringRunCannotOverwriteRunEvidenceState() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let reviewedID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(makeReport: false),
+            generateASCMHL: false
+        )
+        let reviewedRow = ResultRow(
+            path: f.source.appendingPathComponent("old.mov").path,
+            status: ResultOutcome.failed.statusText,
+            size: 99,
+            checksum: nil,
+            destination: f.destination.lastPathComponent,
+            destinationPath: f.destination.appendingPathComponent("old.mov").path
+        )
+        try journal.markRunning(id: reviewedID)
+        try journal.finish(id: reviewedID, results: [reviewedRow], summary: "Old issue", hadIssues: true)
+
+        let currentSource = f.root.appendingPathComponent("current-card")
+        try FileManager.default.createDirectory(at: currentSource, withIntermediateDirectories: true)
+        try Data("current".utf8).write(to: currentSource.appendingPathComponent("clip.mov"))
+        let operations = SnapshotIsolationOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        coordinator.sourceURL = currentSource
+        coordinator.destinationURLs = [f.destination]
+        coordinator.reportSettings.makeReport = false
+        let run = Task { await coordinator.startOperation() }
+        let waited3 = await waitUntil { await operations.starts.count == 1 }
+        XCTAssertTrue(waited3)
+        let runningID = try XCTUnwrap(coordinator.activeRunContext?.journalRecordID)
+
+        coordinator.reviewQueuedTransfer(reviewedID)
+
+        XCTAssertEqual(coordinator.outcomeRecord?.id, runningID)
+        XCTAssertTrue(coordinator.results.isEmpty)
+        await operations.releaseNext()
+        _ = await run.value
+    }
+
+    /// The journal consumes the run-owned authoritative rows even if shared
+    /// review state changes after the engine publishes those rows.
+    /// Plant: pass coordinator `results` to `transferJournal.finish`.
+    func testJournalFinishUsesRunOwnedAuthoritativeResults() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let operations = SnapshotIsolationOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        coordinator.reportSettings.makeReport = false
+        let foreignRow = ResultRow(
+            path: "/reviewed/other.mov",
+            status: ResultOutcome.failed.statusText,
+            size: 999,
+            checksum: nil,
+            destination: "Other",
+            destinationPath: "/reviewed-backup/other.mov"
+        )
+        coordinator.photographerReportFinalizer = { _ in
+            coordinator.results = [foreignRow]
+            return PhotographerFinalizationResult(context: nil, locallySafe: true)
+        }
+
+        let run = Task { await coordinator.startOperation() }
+        let waited4 = await waitUntil { await operations.starts.count == 1 }
+        XCTAssertTrue(waited4)
+        let recordID = try XCTUnwrap(coordinator.activeRunContext?.journalRecordID)
+        await operations.releaseNext()
+        _ = await run.value
+        coordinator.photographerReportFinalizer = nil
+
+        let record = try XCTUnwrap(journal.records.first { $0.id == recordID })
+        XCTAssertEqual(record.results.count, 1)
+        XCTAssertEqual(record.results.first?.path, f.source.appendingPathComponent("clip.mov").path)
+        XCTAssertEqual(record.results.first?.size, 4)
+        XCTAssertNotEqual(record.results.first?.path, foreignRow.path)
+    }
+
     func testFailedRequestedReportKeepsIssuesHistoryAndStopsQueue() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -747,7 +1017,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(persisted.skippedRecordIDs, [firstID, secondID])
     }
 
-    func testEndedSessionClearsForNextQueueAndFreshNewTransfer() async throws {
+    func testEndedSessionKeepsFinishedRowsUntilTheyAreClearedOrANewTransferResetsThem() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
         let missing = f.root.appendingPathComponent("old-card")
@@ -770,14 +1040,14 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(coordinator.queueSessionEnded)
 
         let newID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
-        XCTAssertEqual(coordinator.queueSessionRecordIDs, [newID])
+        XCTAssertEqual(coordinator.queueSessionRecordIDs, [oldID, newID])
         XCTAssertFalse(coordinator.queueSessionEnded)
-        XCTAssertEqual(try XCTUnwrap(journal.loadQueueSession()).recordIDs, [newID])
+        XCTAssertEqual(Set(try XCTUnwrap(journal.loadQueueSession()).recordIDs), [oldID, newID])
 
         // A card still waiting keeps the session: New Transfer must not
         // strand it without a Resume Queue action.
         coordinator.startNewTransfer()
-        XCTAssertEqual(coordinator.queueSessionRecordIDs, [newID])
+        XCTAssertEqual(coordinator.queueSessionRecordIDs, [oldID, newID])
         XCTAssertTrue(coordinator.queueRunCommandEnabled)
 
         // Once nothing is waiting or unresolved, New Transfer starts fresh.
@@ -1096,11 +1366,16 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(QueueDockBadgePolicy.totalUnresolvedCount(
             rows: coordinator.queuePresentation.rows,
             reviewedIDs: coordinator.reviewedQueueAttentionIDs,
-            standaloneAttentionCount: coordinator.standaloneAttentionRecordIDsSinceLaunch.count
+            standaloneAttentionIDs: coordinator.standaloneAttentionRecordIDsSinceLaunch
         ), 1)
         let id = try XCTUnwrap(coordinator.standaloneAttentionRecordIDsSinceLaunch.first)
         coordinator.dismissAttention(for: id)
         XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
+        XCTAssertEqual(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: coordinator.queuePresentation.rows,
+            reviewedIDs: coordinator.reviewedQueueAttentionIDs,
+            standaloneAttentionIDs: coordinator.standaloneAttentionRecordIDsSinceLaunch
+        ), 0)
     }
 
     /// Plant: include `.copiedNotVerified` in the pausing branch of
@@ -1185,6 +1460,84 @@ private final class QuickQueueRecordingOperations: FileOperationsService, @unche
     func resumeOperation() async {}
 }
 
+private actor SnapshotIsolationGate {
+    private(set) var starts: [QueueStartSnapshot] = []
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    func recordAndWait(_ snapshot: QueueStartSnapshot) async {
+        starts.append(snapshot)
+        await withCheckedContinuation { waiters.append($0) }
+    }
+
+    func releaseNext() {
+        guard !waiters.isEmpty else { return }
+        waiters.removeFirst().resume()
+    }
+}
+
+private final class SnapshotIsolationOperations: FileOperationsService, @unchecked Sendable {
+    private let gate = SnapshotIsolationGate()
+    var starts: [QueueStartSnapshot] { get async { await gate.starts } }
+
+    func releaseNext() async { await gate.releaseNext() }
+
+    func performFileOperation(
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        settings: CameraLabelSettings,
+        estimatedTotalBytes: Int64?,
+        progressCallback: @escaping ProgressCallback,
+        onFileResult: FileResultCallback?
+    ) async throws -> FileOperation {
+        await gate.recordAndWait(QueueStartSnapshot(
+            source: sourceURL,
+            destinations: destinationURLs,
+            label: settings.label,
+            mode: verificationMode
+        ))
+        let sourceFile = sourceURL.appendingPathComponent("clip.mov")
+        let results = destinationURLs.map { destination -> FileOperationResult in
+            let verification = verificationMode == .quick ? nil : VerificationResult(
+                sourceChecksum: "hash",
+                destinationChecksum: "hash",
+                matches: true,
+                checksumType: .sha256,
+                processingTime: 0,
+                fileSize: 4
+            )
+            return FileOperationResult(
+                sourceURL: sourceFile,
+                // Where the real engine puts it: the card's folder under the
+                // backup, which completion coverage checks exactly.
+                destinationURL: SafetyValidator.resolvedDestinationRoot(
+                    source: sourceURL, destination: destination, settings: settings
+                ).appendingPathComponent("clip.mov"),
+                success: true,
+                error: nil,
+                fileSize: 4,
+                verificationResult: verification,
+                processingTime: 0
+            )
+        }
+        return FileOperation(
+            sourceURL: sourceURL,
+            destinationURLs: destinationURLs,
+            startTime: Date(),
+            endTime: Date(),
+            results: results,
+            sourceManifest: [sourceFile],
+            verificationMode: verificationMode,
+            settings: settings,
+            estimatedTotalBytes: estimatedTotalBytes
+        )
+    }
+
+    func cancelOperation() {}
+    func pauseOperation() async {}
+    func resumeOperation() async {}
+}
+
 private struct QueueFixture {
     let root: URL
     let source: URL
@@ -1209,7 +1562,7 @@ private struct QueueFixture {
     }
 }
 
-private struct QueueStartSnapshot {
+private struct QueueStartSnapshot: Sendable {
     let source: URL
     let destinations: [URL]
     let label: String

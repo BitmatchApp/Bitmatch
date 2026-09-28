@@ -149,10 +149,17 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         let stack = layout == .compact
             ? AnyLayout(VStackLayout(spacing: 8))
             : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
-        return stack {
-            workflowButton(.quick)
-                .disabled(presentation.isWorkflowLocked)
-            workflowButton(.project)
+        return VStack(alignment: .leading, spacing: 6) {
+            stack {
+                workflowButton(.quick)
+                workflowButton(.project)
+            }
+            .disabled(presentation.isWorkflowLocked)
+            if let hint = presentation.workflowLockHint {
+                Text(hint)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Transfer workflow")
@@ -248,6 +255,13 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             .background(display.tone.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Preflight: \(display.title). \(display.detail)")
+        }
+        ForEach(presentation.informationalLines, id: \.self) { line in
+            Label(line, systemImage: "clock.arrow.circlepath")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(line)
         }
     }
 

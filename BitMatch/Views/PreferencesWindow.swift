@@ -355,10 +355,10 @@ struct PreferencesWindow: View {
 
     private var verificationExplanation: String {
         switch coordinator.verificationMode {
-        case .standard: "Standard verifies each copy with SHA-256 checksums."
+        case .standard: "Standard reads the card once and checks every drive."
         case .quick: "Quick compares file sizes without checking file contents."
-        case .thorough: "Thorough verifies each copy with SHA-256 and MD5 checksums."
-        case .paranoid: "Paranoid compares every byte and verifies SHA-256 checksums."
+        case .thorough: "Thorough also re-reads the card for verification."
+        case .paranoid: "Paranoid also compares every byte."
         }
     }
 }

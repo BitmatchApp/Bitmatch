@@ -18,51 +18,9 @@ struct CompareFoldersView: View {
         _advancedExpanded = advancedExpanded
     }
 
-    /// Also used by ⌘R, so the keyboard path obeys the same readiness rule.
-    static func presentation(for shared: SharedAppCoordinator) -> ComparePresentation {
-        ComparePresentation.make(
-            left: CompareFolderSlot.make(
-                url: shared.leftURL,
-                infoURL: shared.leftFolderInfo?.url,
-                fileCount: shared.leftFolderInfo?.fileCount,
-                totalSize: shared.leftFolderInfo?.totalSize,
-                isFetching: shared.isAnalysingLeft
-            ),
-            right: CompareFolderSlot.make(
-                url: shared.rightURL,
-                infoURL: shared.rightFolderInfo?.url,
-                fileCount: shared.rightFolderInfo?.fileCount,
-                totalSize: shared.rightFolderInfo?.totalSize,
-                isFetching: shared.isAnalysingRight
-            ),
-            choice: shared.checkAgainst,
-            savedAvailability: shared.savedChecksumAvailability,
-            mode: shared.verificationMode,
-            isRunning: shared.isOperationInProgress,
-            progress: shared.progress.map {
-                CompareProgressPresentation(
-                    fraction: $0.overallProgress,
-                    filesProcessed: $0.filesProcessed,
-                    totalFiles: $0.totalFiles,
-                    currentFile: $0.currentFile
-                )
-            },
-            stats: shared.lastCompareStats,
-            savedResult: shared.lastSavedChecksumResult,
-            end: shared.lastCompareEnd
-        )
-    }
-
-    /// Starts only when the shared readiness rule says so.
-    static func startIfReady(_ coordinator: SharedAppCoordinator) {
-        guard presentation(for: coordinator).readiness.canStart else { return }
-        coordinator.switchMode(to: .compareFolders)
-        Task { await coordinator.startCurrentMode() }
-    }
-
     var body: some View {
         CompareScreen(
-            presentation: Self.presentation(for: coordinator),
+            presentation: ComparePresentation.make(coordinator: coordinator),
             checkAgainst: $coordinator.checkAgainst,
             verificationMode: $coordinator.verificationMode,
             advancedExpanded: $advancedExpanded,
@@ -73,7 +31,7 @@ struct CompareFoldersView: View {
                 clearRight: { coordinator.rightURL = nil },
                 dropLeft: { url in acceptDrop(url) { coordinator.leftURL = $0 } },
                 dropRight: { url in acceptDrop(url) { coordinator.rightURL = $0 } },
-                compare: { Self.startIfReady(coordinator) },
+                compare: { ComparePresentation.startIfReady(coordinator) },
                 cancel: { coordinator.cancelOperation() }
             )
         )

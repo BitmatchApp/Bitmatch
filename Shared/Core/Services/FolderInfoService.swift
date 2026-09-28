@@ -9,6 +9,8 @@ final class FolderInfoService: ObservableObject {
 
     // MARK: - Published State
     @Published private(set) var sourceFolderInfo: EnhancedFolderInfo?
+    @Published private(set) var sourceFingerprint: String?
+    @Published private(set) var sourceScanError: String?
     @Published private(set) var leftFolderInfo: EnhancedFolderInfo?
     @Published private(set) var rightFolderInfo: EnhancedFolderInfo?
     @Published private(set) var destinationFolderInfos: [URL: EnhancedFolderInfo] = [:]
@@ -33,7 +35,8 @@ final class FolderInfoService: ObservableObject {
     // MARK: - Public API
 
     /// Update source folder info when source URL changes
-    /// Perf 8: returns fast count+size immediately, then updates with full details asynchronously
+    /// Publishes only the authoritative manifest scan. A metadata-prefetch
+    /// pass could hydrate cloud placeholders before the dataless guard runs.
     func updateSource(_ url: URL?) async {
         sourceWork?.cancel()
         sourceGeneration &+= 1
@@ -44,24 +47,37 @@ final class FolderInfoService: ObservableObject {
         sourceURL = url
         guard let url else {
             sourceFolderInfo = nil
+            sourceFingerprint = nil
+            sourceScanError = nil
             return
         }
+        sourceFolderInfo = nil
+        sourceFingerprint = nil
+        sourceScanError = nil
         folderInfoLoadingState[url] = true
-        // Owned task: fast pass, then full details. Cancellation stops the
-        // enumeration; the generation guard stops stale publishes.
+        // Owned task: cancellation stops enumeration; the generation guard
+        // stops stale results from publishing.
         sourceWork = Task.detached(priority: .userInitiated) { [weak self] in
             guard let self else { return }
             if Task.isCancelled { return }
-            let fastInfo = self.scanFastFolderInfo(for: url)
-            await MainActor.run {
-                guard generation == self.sourceGeneration, self.sourceURL == url else { return }
-                self.sourceFolderInfo = fastInfo
+            let fullResult: Result<(EnhancedFolderInfo, String), Error>
+            do {
+                fullResult = .success(try self.scanEnhancedFolderInfo(for: url))
+            } catch {
+                fullResult = .failure(error)
             }
-            if Task.isCancelled { return }
-            let fullInfo = self.scanEnhancedFolderInfo(for: url)
             await MainActor.run {
                 guard generation == self.sourceGeneration, self.sourceURL == url else { return }
-                self.sourceFolderInfo = fullInfo
+                switch fullResult {
+                case .success(let (fullInfo, fingerprint)):
+                    self.sourceFolderInfo = fullInfo
+                    self.sourceFingerprint = fingerprint
+                    self.sourceScanError = nil
+                case .failure(let error):
+                    self.sourceFolderInfo = nil
+                    self.sourceFingerprint = nil
+                    self.sourceScanError = error.localizedDescription
+                }
                 self.folderInfoLoadingState[url] = false
             }
         }
@@ -90,7 +106,7 @@ final class FolderInfoService: ObservableObject {
                 self.leftFolderInfo = fastInfo
             }
             if Task.isCancelled { return }
-            let fullInfo = self.scanEnhancedFolderInfo(for: url)
+            let fullInfo = (try? self.scanEnhancedFolderInfo(for: url))?.0
             await MainActor.run {
                 guard generation == self.leftGeneration, self.leftURL == url else { return }
                 self.leftFolderInfo = fullInfo
@@ -122,7 +138,7 @@ final class FolderInfoService: ObservableObject {
                 self.rightFolderInfo = fastInfo
             }
             if Task.isCancelled { return }
-            let fullInfo = self.scanEnhancedFolderInfo(for: url)
+            let fullInfo = (try? self.scanEnhancedFolderInfo(for: url))?.0
             await MainActor.run {
                 guard generation == self.rightGeneration, self.rightURL == url else { return }
                 self.rightFolderInfo = fullInfo
@@ -221,63 +237,29 @@ final class FolderInfoService: ObservableObject {
         rightURL != url || isFolderInfoLoading(for: url)
     }
 
-    /// Clear all cached folder info
-    func clearAll() {
-        sourceWork?.cancel()
-        leftWork?.cancel()
-        rightWork?.cancel()
-        sourceWork = nil
-        leftWork = nil
-        rightWork = nil
-        sourceGeneration &+= 1
-        leftGeneration &+= 1
-        rightGeneration &+= 1
-        sourceFolderInfo = nil
-        leftFolderInfo = nil
-        rightFolderInfo = nil
-        destinationFolderInfos.removeAll()
-        folderInfoLoadingState.removeAll()
-        sourceURL = nil
-        leftURL = nil
-        rightURL = nil
-        destinationURLs.removeAll()
-    }
-
     // MARK: - Private Scanning Methods
 
     /// Perf 8: Fast pass - count + size only, returns quickly.
     /// Synchronous: callers run it on an owned background task so
     /// cancellation actually stops the enumeration.
+    ///
+    /// Counts with the engine's enumeration (`CardSource`), not a Foundation
+    /// enumerator: Foundation hides `._` AppleDouble sidecars on Apple
+    /// filesystems, so setup's count must come from the same manifest the
+    /// transfer copies and verifies.
     nonisolated private func scanFastFolderInfo(for url: URL) -> EnhancedFolderInfo? {
-            var fileCount = 0
+            if Task.isCancelled { return nil }
+            guard let entries = try? CardSource.enumerateRegularFiles(base: url) else { return nil }
+            if Task.isCancelled { return nil }
             var totalSize: Int64 = 0
-
-            let fastKeys: [URLResourceKey] = [.isRegularFileKey, .fileSizeKey, .isSymbolicLinkKey]
-            guard let enumerator = FileManager.default.enumerator(
-                at: url,
-                includingPropertiesForKeys: fastKeys,
-                options: []
-            ) else { return nil }
-
-            while let file = enumerator.nextObject() {
-                if Task.isCancelled { return nil }
-                guard let fileURL = file as? URL else { continue }
-                if enumerator.level == 1, CardSource.isRootVolumeMetadataDirectory(fileURL) {
-                    enumerator.skipDescendants()
-                    continue
-                }
-                guard let rv = try? fileURL.resourceValues(forKeys: Set(fastKeys)) else { continue }
-                if rv.isSymbolicLink == true { continue }
-                if rv.isRegularFile == true {
-                    fileCount += 1
-                    totalSize += Int64(rv.fileSize ?? 0)
-                }
+            for entry in entries {
+                totalSize += entry.size
             }
 
             let folderModified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
             return EnhancedFolderInfo(
                 url: url,
-                fileCount: fileCount,
+                fileCount: entries.count,
                 totalSize: totalSize,
                 lastModified: folderModified,
                 isInternalDrive: !url.path.starts(with: "/Volumes/"),
@@ -291,7 +273,11 @@ final class FolderInfoService: ObservableObject {
     /// Full scan for source folders - includes file type breakdown.
     /// Synchronous: callers run it on an owned background task so
     /// cancellation actually stops the enumeration.
-    nonisolated private func scanEnhancedFolderInfo(for url: URL) -> EnhancedFolderInfo? {
+    ///
+    /// Built on the engine's enumeration (`CardSource`) for the same reason
+    /// as the fast pass: the count, sizes, and dates must match the manifest
+    /// the transfer copies and verifies, including `._` sidecars.
+    nonisolated private func scanEnhancedFolderInfo(for url: URL) throws -> (EnhancedFolderInfo, String) {
             var fileCount = 0
             var totalSize: Int64 = 0
             var fileTypeBreakdown: [String: Int] = [:]
@@ -299,74 +285,31 @@ final class FolderInfoService: ObservableObject {
             var oldestFile: Date? = nil
             var newestFile: Date? = nil
 
-            let fileEnumKeys: [URLResourceKey] = [
-                .isRegularFileKey,
-                .fileSizeKey,
-                .isSymbolicLinkKey,
-                .contentModificationDateKey,
-                .nameKey
-            ]
-
-            guard let enumerator = FileManager.default.enumerator(
-                at: url,
-                includingPropertiesForKeys: fileEnumKeys,
-                options: []
-            ) else {
-                return nil
-            }
-
-            while let file = enumerator.nextObject() {
-                if Task.isCancelled { return nil }
-                guard let fileURL = file as? URL else { continue }
-                if enumerator.level == 1, CardSource.isRootVolumeMetadataDirectory(fileURL) {
-                    enumerator.skipDescendants()
-                    continue
+            let entries = try CardSource.enumerateRegularFiles(base: url)
+            for entry in entries {
+                try Task.checkCancellation()
+                fileCount += 1
+                totalSize += max(0, entry.size)
+                let fileExtension = entry.url.pathExtension.uppercased()
+                let displayExtension = fileExtension.isEmpty ? "No Extension" : fileExtension
+                fileTypeBreakdown[displayExtension, default: 0] += 1
+                if largestFile == nil || entry.size > largestFile!.size {
+                    largestFile = (name: entry.url.lastPathComponent, size: entry.size)
                 }
-                autoreleasepool {
-                    guard let rv = try? fileURL.resourceValues(forKeys: Set(fileEnumKeys)) else { return }
-                    if rv.isSymbolicLink == true { return }
+                if let date = entry.modificationDate {
+                    oldestFile = oldestFile.map { min($0, date) } ?? date
+                    newestFile = newestFile.map { max($0, date) } ?? date
+                }
 
-                    if rv.isRegularFile == true {
-                        fileCount += 1
-                        let fileSize = Int64(rv.fileSize ?? 0)
-                        totalSize += fileSize
-
-                        let fileExtension = fileURL.pathExtension.uppercased()
-                        let displayExtension = fileExtension.isEmpty ? "No Extension" : fileExtension
-                        fileTypeBreakdown[displayExtension, default: 0] += 1
-
-                        if let lf = largestFile {
-                            if fileSize > lf.size {
-                                largestFile = (name: fileURL.lastPathComponent, size: fileSize)
-                            }
-                        } else {
-                            largestFile = (name: fileURL.lastPathComponent, size: fileSize)
-                        }
-
-                        if let modDate = rv.contentModificationDate {
-                            if let oldest = oldestFile {
-                                if modDate < oldest { oldestFile = modDate }
-                            } else {
-                                oldestFile = modDate
-                            }
-                            if let newest = newestFile {
-                                if modDate > newest { newestFile = modDate }
-                            } else {
-                                newestFile = modDate
-                            }
-                        }
-
-                        if fileCount % 5000 == 0 && fileCount > 0 {
-                            let formatted = ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
-                            SharedLogger.debug("FolderInfo: analyzed \(fileCount) files, size=\(formatted) at \(url.path)", category: .transfer)
-                        }
-                    }
+                if fileCount % 5000 == 0 && fileCount > 0 {
+                    let formatted = ByteCountFormatter.string(fromByteCount: totalSize, countStyle: .file)
+                    SharedLogger.debug("FolderInfo: analyzed \(fileCount) files, size=\(formatted) at \(url.path)", category: .transfer)
                 }
             }
 
             let folderModified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
 
-            return EnhancedFolderInfo(
+            let info = EnhancedFolderInfo(
                 url: url,
                 fileCount: fileCount,
                 totalSize: totalSize,
@@ -377,6 +320,7 @@ final class FolderInfoService: ObservableObject {
                 oldestFileDate: oldestFile,
                 newestFileDate: newestFile
             )
+            return (info, SourceFingerprint.make(entries))
     }
 
     /// Lightweight scan for destination folders - just basic metadata

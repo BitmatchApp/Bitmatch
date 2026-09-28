@@ -45,7 +45,7 @@ struct ProgressControls: Equatable, Sendable {
 
 /// One backup's line while a run is in progress. It reports copying only:
 /// the engine counts a backup's files as they are copied (failures
-/// included), and verification is judged on the outcome screen. So a row is
+/// included), and verification is judged in the finished transfer row. So a row is
 /// never green and never says "Done" (accessibility audit C1).
 struct DestinationProgressRow: Equatable, Identifiable, Sendable {
     enum State: Equatable, Sendable {
@@ -107,7 +107,7 @@ enum ProgressDevice: Equatable, Sendable {
 
 /// Everything the shared `ProgressScreen` shows while a transfer runs, on
 /// Mac, iPad and iPhone (UI plan step 4.9, §3.3). It decides nothing about
-/// the verdict; the outcome screen does that when the run ends.
+/// the verdict; the finished transfer row does that when the run ends.
 struct TransferProgressPresentation: Equatable, Sendable {
     let phase: ProgressPhase
     let title: String
@@ -150,6 +150,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
     /// Speed and time left before enough copying has been measured.
     static let estimating = "Estimating..."
     static let estimatingTimeLeft = estimating
+    static let iOSBackgroundLimit = "Keep BitMatch open — iOS pauses copies in the background."
 
     static let cancelConfirmationTitle = "Cancel this transfer?"
     static let cancelConfirmationMessage =
@@ -381,7 +382,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
             // An actual limit, stated plainly (AGENTS.md): iOS gives an app
             // only a few minutes in the background.
             notes.append(ProgressDeviceNote(
-                text: "Keep BitMatch open until the transfer ends. In the background, iOS allows only a few minutes.",
+                text: iOSBackgroundLimit,
                 symbol: "iphone",
                 isWarning: false
             ))

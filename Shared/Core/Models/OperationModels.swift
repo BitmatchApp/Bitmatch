@@ -86,28 +86,6 @@ struct OperationCompletionInfo: Equatable {
     var copiedNotVerified: Bool = false
 }
 
-// MARK: - Completion State
-enum CompletionState: Equatable {
-    case idle
-    case inProgress
-    case success(message: String)
-    case issues(message: String)
-    case failed(message: String)
-    case cancelled(message: String)
-
-    var isActive: Bool {
-        if case .inProgress = self { return true }
-        return false
-    }
-
-    var isComplete: Bool {
-        switch self {
-        case .success, .issues, .failed, .cancelled: return true
-        default: return false
-        }
-    }
-}
-
 // MARK: - Volume Event
 struct VolumeEvent {
     let type: VolumeEventType

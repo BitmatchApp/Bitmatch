@@ -29,9 +29,8 @@ extension ProgressTone {
 ///
 /// It has no scroll view of its own: every shell already scrolls.
 ///
-/// Redraws: this view is rebuilt on every engine tick by
-/// `CoordinatorProgressScreen`, which is the only view that observes the
-/// live progress. The shells around it do not observe progress at all.
+/// Redraws: the shared transfer queue observes the live feed and rebuilds this
+/// expanded row on engine ticks. The shells around it do not observe progress.
 struct ProgressScreen: View {
     let presentation: TransferProgressPresentation
     let actions: ProgressActions
@@ -54,6 +53,7 @@ struct ProgressScreen: View {
             header
             progressBar
             stats
+            currentFile
             issue
             destinationList
             deviceNotes
@@ -83,6 +83,22 @@ struct ProgressScreen: View {
             }
         } message: {
             Text(TransferProgressPresentation.cancelConfirmationMessage)
+        }
+    }
+
+    @ViewBuilder
+    private var currentFile: some View {
+        if let file = presentation.currentFile {
+            HStack(spacing: 6) {
+                Text("Current file")
+                    .foregroundStyle(.secondary)
+                Text(URL(fileURLWithPath: file).lastPathComponent)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .font(.caption)
+            .help(file)
+            .accessibilityElement(children: .combine)
         }
     }
 

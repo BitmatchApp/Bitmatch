@@ -108,10 +108,11 @@ struct SetupLocationsPresentation: Equatable {
     let source: Source?
     let stagedSources: [StagedSource]
     let backups: [Backup]
-    /// False while a transfer runs: no clearing, removing, adding or drops.
+    /// A one-time active transfer owns a snapshot, so its composer remains
+    /// editable for the next card. A project run may still lock it.
     let canEdit: Bool
-    /// Waiting cards own snapshots, so backups remain editable for the next
-    /// composer card. Only a running operation locks them.
+    /// Waiting and one-time running cards own snapshots, so backups remain
+    /// editable for the next composer card.
     let canEditBackups: Bool
     /// The empty source box receives neutral next-step emphasis.
     let highlightsSource: Bool
@@ -135,6 +136,7 @@ struct SetupLocationsPresentation: Equatable {
         destinationURLs: [URL],
         capacity: (URL) -> Capacity?,
         isOperationInProgress: Bool,
+        keepsComposerEditableDuringOperation: Bool = false,
         showsAddAnotherCard: Bool = false,
         canAddAnotherCard: Bool? = nil,
         addAnotherCardDisabledReason: String? = nil,
@@ -164,14 +166,14 @@ struct SetupLocationsPresentation: Equatable {
                     folderPath: destinationFolderPath(for: url, driveName: title)
                 )
             },
-            canEdit: !isOperationInProgress,
-            canEditBackups: !isOperationInProgress,
+            canEdit: !isOperationInProgress || keepsComposerEditableDuringOperation,
+            canEditBackups: !isOperationInProgress || keepsComposerEditableDuringOperation,
             highlightsSource: sourceURL == nil && nextStep == .chooseSource,
             highlightsBackups: destinationURLs.isEmpty && nextStep == .addBackup,
             sideBySide: layout != .compact,
             showsAddAnotherCard: showsAddAnotherCard,
             canAddAnotherCard: canAddAnotherCard
-                ?? (!isOperationInProgress && sourceURL != nil && !destinationURLs.isEmpty),
+                ?? (sourceURL != nil && !destinationURLs.isEmpty),
             addAnotherCardDisabledReason: addAnotherCardDisabledReason
         )
     }

@@ -23,13 +23,20 @@ enum ReportExporter {
                        totalBytesProcessed: Int64,
                        copyDurationSeconds: TimeInterval? = nil,
                        verifyDurationSeconds: TimeInterval? = nil,
+                       performanceTelemetry: TransferPerformanceTelemetry? = nil,
                        safetyState: CardSafetyState,
                        generateFullReport: Bool = true,
                        photographerContext: PhotographerReportContext? = nil) async throws {
 
+        var reportPrefs = prefs
+        let automaticNotes = ResultPresentation.automaticReportNotes(results)
+        if !automaticNotes.isEmpty {
+            reportPrefs.notes = ([EvidenceWriter.normalizedNotes(prefs.notes)].compactMap { $0 } + automaticNotes)
+                .joined(separator: "\n")
+        }
         let appVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
         let osVersion = ProcessInfo.processInfo.operatingSystemVersionString
-        let verification = EvidenceWriter.verificationDescription(for: prefs)
+        let verification = EvidenceWriter.verificationDescription(for: reportPrefs)
         let method = verification.label
 
         let destinationPaths = destinationURLs.map { $0.path }
@@ -68,7 +75,7 @@ enum ReportExporter {
             clientLogoData: nil,
             companyLogoData: nil,
             photographyJob: photographerPayload,
-            notes: EvidenceWriter.normalizedNotes(prefs.notes),
+            notes: EvidenceWriter.normalizedNotes(reportPrefs.notes),
             safetyState: safetyState
         )
 
@@ -99,13 +106,14 @@ enum ReportExporter {
                                        duration: duration,
                                        copyDurationSeconds: copyDurationSeconds,
                                        verifyDurationSeconds: verifyDurationSeconds,
+                                       performanceTelemetry: performanceTelemetry,
                                        sourceURL: sourceURL,
                                        fileCount: fileCount,
                                        matchCount: matchCount,
                                        totalBytesProcessed: totalBytesProcessed,
                                        workers: workers,
                                        filesPerSecond: filesPerSecond,
-                                       prefs: prefs,
+                                       prefs: reportPrefs,
                                        generateFullReport: shouldGenerateFullReport,
                                        projectCSV: projectCSV,
                                        projectJSON: projectJSON)
@@ -142,6 +150,7 @@ enum ReportExporter {
         filesPerSecond: Double,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         photographerContext: PhotographerReportContext?,
         prefs: ReportPrefs? = nil
     ) throws -> String {
@@ -152,6 +161,7 @@ enum ReportExporter {
             filesPerSecond: filesPerSecond,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             project: try photographerContext.map { try projectCSVEvidence(context: $0, results: results) },
             prefs: prefs
         )
@@ -172,6 +182,7 @@ enum ReportExporter {
         duration: TimeInterval,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
+        performanceTelemetry: TransferPerformanceTelemetry? = nil,
         workers: Int,
         prefs: ReportPrefs,
         photographerContext: PhotographerReportContext?
@@ -190,6 +201,7 @@ enum ReportExporter {
             duration: duration,
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
+            performanceTelemetry: performanceTelemetry,
             workers: workers,
             prefs: prefs,
             project: try photographerContext.map {

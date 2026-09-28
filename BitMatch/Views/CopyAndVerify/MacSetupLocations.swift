@@ -16,10 +16,15 @@ struct MacSetupLocations: View {
     @ObservedObject private var volumeMonitor = VolumeMonitorService.shared
     let context: SetupLocationsContext
     let advanced: AnyView
+    let transferTransitionContext: QueueTransferTransitionContext
 
     var body: some View {
         CoordinatorSetupLocations(
-            coordinator: coordinator, context: context, advanced: advanced, platform: platform
+            coordinator: coordinator,
+            context: context,
+            advanced: advanced,
+            platform: platform,
+            transferTransitionContext: transferTransitionContext
         )
     }
 
@@ -32,6 +37,7 @@ struct MacSetupLocations: View {
             removeBackup: { volumeAccess.removeDestination($0) },
             connectedSources: connectedSourceChoices,
             connectedDestinations: connectedDestinationChoices,
+            showsStagedQueue: false,
             pickFolderOnDrive: { drive in
                 Self.chooseFolders(multiple: false, prompt: "Choose Folder", startingAt: drive).first
             },

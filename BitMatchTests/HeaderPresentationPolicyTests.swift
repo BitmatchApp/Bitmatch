@@ -2,11 +2,6 @@ import Testing
 @testable import BitMatch
 
 struct HeaderPresentationPolicyTests {
-    @Test func fullModeStripOnlyAppearsWhenItHasRoom() {
-        #expect(HeaderPresentationPolicy.presentation(for: 760) == .expanded)
-        #expect(HeaderPresentationPolicy.presentation(for: 759) == .compact)
-    }
-
     @Test func theWindowCanGrowIntoAnExpandedWorkbench() {
         #expect(WindowPresentationPolicy.maximumWidth >= 1200)
         #expect(WindowPresentationPolicy.initialWidth == 900)
@@ -14,7 +9,8 @@ struct HeaderPresentationPolicyTests {
 
     @Test func minimumWindowAlwaysKeepsThePrincipalModePickerVisible() {
         #expect(HeaderPresentationPolicy.modePickerWidth == 390)
-        #expect(WindowPresentationPolicy.minimumWidth >= HeaderPresentationPolicy.expandedThreshold)
+        #expect(WindowPresentationPolicy.minimumWidth >= 760)
+        #expect(WindowPresentationPolicy.minimumWidth >= HeaderPresentationPolicy.modePickerWidth)
         #expect(WindowPresentationPolicy.initialWidth >= WindowPresentationPolicy.minimumWidth)
     }
 

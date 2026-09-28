@@ -210,26 +210,6 @@ final class MacRemoteBackupController: ObservableObject {
 
     // MARK: - Pause, retry, cancel
 
-    /// Parks a card's off-site items through the queue actor so in-flight work
-    /// stops and the scheduler cannot pick them back up.
-    func pauseRemoteBackup(for cardIngestID: UUID) {
-        Task { [weak self] in
-            guard let self, let queue = self.remoteBackupQueue else { return }
-            do {
-                try await queue.restore()
-                for item in await queue.itemsForCardIngest(cardIngestID) {
-                    try await queue.pause(item.id)
-                }
-            } catch {
-                self.photographerJobViewModel.setRemoteFeedback("Could not pause off-site backup: \(error.localizedDescription)")
-                await self.armRemoteBackupTimer()
-                return
-            }
-            await self.armRemoteBackupTimer()
-            await self.refreshRemoteBackupSummary(for: cardIngestID)
-        }
-    }
-
     /// Returns parked, backing-off, or retry-exhausted items to the runnable
     /// queue and runs what is due now.
     func retryRemoteBackup(for cardIngestID: UUID) {

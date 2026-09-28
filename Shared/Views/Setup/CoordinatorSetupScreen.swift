@@ -42,11 +42,12 @@ extension SetupPresentation {
             return record.destinations.map { BackupTargetPolicy.canonicalPath($0.url) }
         }
         let hasPreparedCard = jobs.hasPreparedIngestAwaitingStart
+        let independence = coordinator.destinationIndependence
         let projectBlocker: String? = hasPreparedCard
             ? jobs.startPresentation(
                 preflightReady: plan.canStart,
                 sourceURL: coordinator.sourceURL,
-                destinationCount: coordinator.destinationURLs.count,
+                destinationCount: independence.independentCopyCount,
                 verificationMode: coordinator.verificationMode
             ).blocker
             : nil
@@ -56,7 +57,8 @@ extension SetupPresentation {
             hasPreparedCard: hasPreparedCard,
             projectBlocker: projectBlocker,
             projectUnit: jobs.selectedWorkflow.sourceUnitLabel,
-            isOperationInProgress: coordinator.isOperationInProgress,
+            isOperationInProgress: coordinator.isOperationInProgress || coordinator.queueIsRunning,
+            isProjectRunInProgress: coordinator.isProjectRunInProgress,
             isQueuePaused: coordinator.hasUnresolvedQueueRecords,
             hasComposerCard: !isEditingStagedTransfer
                 && coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
@@ -68,8 +70,9 @@ extension SetupPresentation {
             stagedVerificationModes: stagedVerificationModes,
             sourceFileCount: coordinator.sourceFolderInfo?.fileCount,
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
-            destinationCount: coordinator.destinationURLs.count,
-            hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true)
+            destinationCount: independence.independentCopyCount,
+            hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
+            informationalLines: coordinator.alreadyBackedUpLine.map { [$0] } ?? []
         )
     }
 }
@@ -132,6 +135,11 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
                 // The one Start: the same rule as ⌘R, including S-2.
                 let presentation = SetupPresentation.make(coordinator: coordinator)
                 guard presentation.start.canStart else { return }
+                if presentation.start.action == .addToQueue {
+                    do { try coordinator.enqueueSelection() }
+                    catch { Task { await coordinator.showError(error) } }
+                    return
+                }
                 coordinator.switchMode(to: .copyAndVerify)
                 if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
                     stagedCardCount: coordinator.stagedSetupTransfers.count,

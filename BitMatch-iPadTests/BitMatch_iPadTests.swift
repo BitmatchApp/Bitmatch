@@ -32,6 +32,28 @@ struct BitMatch_iPadTests {
         #expect(AdaptiveNavigationPolicy.presentation(for: 1_024) == .sidebar)
     }
 
+    @Test func portraitPadUsesQueueBarToProtectSetupWidth() {
+        let usesInspector = AdaptiveQueueLayoutPolicy.usesInspector(
+            availableWidth: 834,
+            isPad: true,
+            isRegularWidth: true
+        )
+        #expect(!usesInspector)
+    }
+
+    @Test func widePadCanUseQueueInspector() {
+        let usesInspector = AdaptiveQueueLayoutPolicy.usesInspector(
+            availableWidth: 1_024,
+            isPad: true,
+            isRegularWidth: true
+        )
+        #expect(usesInspector)
+    }
+
+    @Test func iOSKeepsWaitingCardsOutOfTheSetupComposer() {
+        #expect(!SetupQueuePlacementPolicy.showsComposerAdjacentQueue)
+    }
+
     @Test @MainActor func portableProjectStoreRoundTripsProjectAndDestination() throws {
         let suiteName = "BitMatch-iPadTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -116,14 +138,28 @@ struct BitMatch_iPadTests {
         #expect(!NotificationPermissionPolicy.requestsAtLaunch)
     }
 
-    @Test func activeTransferUsesTheSamePauseAndVerificationLanguageAsMac() {
-        let paused = TransferOperationPresentation.make(state: .copying, isPaused: true)
-        let verifying = TransferOperationPresentation.make(state: .verifying, isPaused: false)
+    @Test @MainActor func pickedButUnscannedFolderKeepsCompareDisabledOniOS() {
+        let suiteName = "BitMatch-iPadTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let coordinator = SharedAppCoordinator(
+            platformManager: IOSPlatformManager.shared,
+            defaults: defaults
+        )
+        let base = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-ipad-compare-presentation", isDirectory: true)
+        coordinator.leftURL = base.appendingPathComponent("card", isDirectory: true)
+        coordinator.rightURL = base.appendingPathComponent("backup", isDirectory: true)
 
-        #expect(paused.title == "Transfer paused")
-        #expect(paused.controlTitle == "Resume")
-        #expect(verifying.title == "Verifying")
-        #expect(verifying.controlTitle == "Pause")
+        let presentation = ComparePresentation.make(coordinator: coordinator)
+
+        #expect(presentation.left.isLoading)
+        #expect(presentation.right.isLoading)
+        #expect(!presentation.readiness.canStart)
+
+        ComparePresentation.startIfReady(coordinator)
+        #expect(coordinator.currentMode == .copyAndVerify)
+        #expect(!coordinator.isOperationInProgress)
     }
 
     @Test func completionEvidenceUsesTheSameSafetyGuidanceAsMac() {

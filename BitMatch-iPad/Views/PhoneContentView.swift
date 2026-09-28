@@ -10,15 +10,6 @@ struct PhoneContentView: View {
     var body: some View {
         NavigationStack {
             ZStack {
-                LinearGradient(
-                    gradient: Gradient(colors: [
-                        Color(red: 0.05, green: 0.05, blue: 0.05),
-                        Color(red: 0.1, green: 0.1, blue: 0.1)
-                    ]),
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
-                ).ignoresSafeArea()
-
                 Group {
                     if showingTransfers {
                         TransferLibraryView(
@@ -75,7 +66,6 @@ struct PhoneContentView: View {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { showSettings = true } label: {
                         Image(systemName: "gear")
-                            .foregroundColor(.white.opacity(0.9))
                     }
                     .accessibilityLabel("Settings")
                 }
@@ -83,7 +73,6 @@ struct PhoneContentView: View {
             .sheet(isPresented: $showSettings) {
                 SettingsSheetView(coordinator: coordinator)
             }
-            .preferredColorScheme(.dark)
         }
     }
 
@@ -95,35 +84,10 @@ struct PhoneContentView: View {
             return "compare-setup"
         }
         if coordinator.currentMode == .masterReport { return "master-report" }
-        if coordinator.isOperationInProgress { return "copy-running" }
-        if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-            return "copy-paused"
-        }
-        return coordinator.showsOutcomeSummary ? "copy-finished" : "copy-setup"
+        return "copy-setup"
     }
 
-    @ViewBuilder
     private var copyAndVerifyStack: some View {
-        if coordinator.isOperationInProgress {
-            VStack(spacing: 16) {
-                OperationProgressView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        } else if coordinator.queuePausedRecordID != nil && coordinator.reviewedQueueRecordID == nil {
-            VStack(spacing: 16) {
-                CopyAndVerifyView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        } else if coordinator.showsOutcomeSummary {
-            VStack(spacing: 16) {
-                CompletionSummaryView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        } else {
-            VStack(spacing: 16) {
-                CopyAndVerifyView(coordinator: coordinator)
-                ActiveQueueSection(coordinator: coordinator)
-            }
-        }
+        CopyAndVerifyView(coordinator: coordinator)
     }
 }

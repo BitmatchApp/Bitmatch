@@ -41,11 +41,6 @@ enum KeychainHelper {
         save(Data(value.utf8), forKey: key)
     }
 
-    static func loadString(forKey key: String) -> String? {
-        guard let data = load(forKey: key) else { return nil }
-        return String(data: data, encoding: .utf8)
-    }
-
     @discardableResult
     static func delete(forKey key: String) -> Bool {
         let query: [String: Any] = [

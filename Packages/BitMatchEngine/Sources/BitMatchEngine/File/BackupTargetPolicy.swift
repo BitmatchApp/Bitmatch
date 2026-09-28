@@ -65,6 +65,9 @@ public enum BackupTargetPolicy: Sendable {
         /// False for a network volume (a NAS or SMB share); nil when the
         /// system does not say. Defaulted so existing call sites compile.
         public var isLocal: Bool? = nil
+        /// True when the selected URL or its volume is managed by a cloud
+        /// provider and writing may evict or hydrate files unexpectedly.
+        public var isUbiquitousItem: Bool = false
 
         /// Facts for the volume holding `url`, or nil when they cannot be
         /// read (nothing there, or no access).
@@ -82,6 +85,8 @@ public enum BackupTargetPolicy: Sendable {
             ]), let volumeURL = values.volume else {
                 return nil
             }
+            let itemIsUbiquitous = (try? resolved.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true
+            let volumeIsUbiquitous = (try? volumeURL.resourceValues(forKeys: [.isUbiquitousItemKey]).isUbiquitousItem) == true
             return VolumeFacts(
                 volumeRootPath: BackupTargetPolicy.canonicalPath(volumeURL),
                 volumeID: values.volumeUUIDString,
@@ -90,7 +95,8 @@ public enum BackupTargetPolicy: Sendable {
                 isInternal: values.volumeIsInternal,
                 isRemovable: values.volumeIsRemovable ?? false,
                 isEjectable: values.volumeIsEjectable ?? false,
-                isLocal: values.volumeIsLocal
+                isLocal: values.volumeIsLocal,
+                isUbiquitousItem: itemIsUbiquitous || volumeIsUbiquitous
             )
         }
 
@@ -99,7 +105,7 @@ public enum BackupTargetPolicy: Sendable {
         /// A NAS or SMB share, as the system reports it.
         public var isNetwork: Bool { isLocal == false }
 
-        public init(volumeRootPath: String, volumeID: String?, volumeName: String?, isRootFileSystem: Bool, isInternal: Bool?, isRemovable: Bool, isEjectable: Bool, isLocal: Bool? = nil) {
+        public init(volumeRootPath: String, volumeID: String?, volumeName: String?, isRootFileSystem: Bool, isInternal: Bool?, isRemovable: Bool, isEjectable: Bool, isLocal: Bool? = nil, isUbiquitousItem: Bool = false) {
             self.volumeRootPath = volumeRootPath
             self.volumeID = volumeID
             self.volumeName = volumeName
@@ -108,6 +114,7 @@ public enum BackupTargetPolicy: Sendable {
             self.isRemovable = isRemovable
             self.isEjectable = isEjectable
             self.isLocal = isLocal
+            self.isUbiquitousItem = isUbiquitousItem
         }
     }
 
@@ -133,6 +140,9 @@ public enum BackupTargetPolicy: Sendable {
         }
         if PathContainment.isWithin(path, root: "/System") {
             return "\(name) is a macOS system volume and cannot be a destination."
+        }
+        if isCloudManagedPath(path) || targetFacts?.isUbiquitousItem == true {
+            return "\(name) is in a cloud-managed location. Choose a folder on a local disk."
         }
         if let targetFacts, isVolumeRoot {
             if targetFacts.isRootFileSystem {
@@ -226,6 +236,15 @@ public enum BackupTargetPolicy: Sendable {
 
     private static func temporaryRootPaths(_ temporaryDirectory: URL) -> [String] {
         [canonicalPath(temporaryDirectory), "/private/var/folders", "/private/tmp", "/var/folders", "/tmp"]
+    }
+
+    static func isCloudManagedPath(_ path: String) -> Bool {
+        let components = URL(fileURLWithPath: path).standardizedFileURL.pathComponents
+        guard let library = components.indices.first(where: { index in
+            components[index].caseInsensitiveCompare("Library") == .orderedSame && index > 0
+        }), components.indices.contains(library + 1) else { return false }
+        let container = components[library + 1].lowercased()
+        return container == "cloudstorage" || container == "mobile documents"
     }
 
     private static func sameVolume(_ lhs: VolumeFacts, _ rhs: VolumeFacts) -> Bool {
