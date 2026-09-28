@@ -36,6 +36,24 @@ xcodebuild archive \
   CODE_SIGN_STYLE=Manual \
   CODE_SIGN_IDENTITY="$SIGN_IDENTITY"
 
+SPARKLE_FRAMEWORK="$APP_PATH/Contents/Frameworks/Sparkle.framework"
+if [[ -d "$SPARKLE_FRAMEWORK" ]]; then
+  # Sparkle's helpers come pre-signed by their maintainers; notarization needs
+  # every nested binary signed with our Developer ID, hardened runtime and a
+  # secure timestamp. Sign innermost first, then the framework, then the app.
+  echo "Re-signing Sparkle helpers with the Developer ID"
+  resign() {
+    codesign --force --sign "$SIGN_IDENTITY" --options runtime --timestamp \
+      --preserve-metadata=entitlements "$1"
+  }
+  resign "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Installer.xpc"
+  resign "$SPARKLE_FRAMEWORK/Versions/B/XPCServices/Downloader.xpc"
+  resign "$SPARKLE_FRAMEWORK/Versions/B/Autoupdate"
+  resign "$SPARKLE_FRAMEWORK/Versions/B/Updater.app"
+  resign "$SPARKLE_FRAMEWORK"
+  resign "$APP_PATH"
+fi
+
 echo "Verifying code signature"
 codesign --verify --deep --strict --verbose=2 "$APP_PATH"
 codesign --display --verbose=4 "$APP_PATH"
