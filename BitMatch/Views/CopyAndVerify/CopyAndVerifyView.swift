@@ -6,8 +6,13 @@ import SwiftUI
 struct CopyAndVerifyView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var optionsExpanded: Bool
+    let transferTransitionContext: QueueTransferTransitionContext
 
     var body: some View {
-        MacSetupView(coordinator: coordinator, optionsExpanded: $optionsExpanded)
+        MacSetupView(
+            coordinator: coordinator,
+            optionsExpanded: $optionsExpanded,
+            transferTransitionContext: transferTransitionContext
+        )
     }
 }

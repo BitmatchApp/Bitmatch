@@ -14,27 +14,23 @@ struct MacSetupView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @EnvironmentObject var remoteBackups: MacRemoteBackupController
     @Binding var optionsExpanded: Bool
-    @State private var transitioningQueueID: UUID?
-    @Namespace private var queueTransition
+    let transferTransitionContext: QueueTransferTransitionContext
 
     var body: some View {
         CoordinatorSetupScreen(
             coordinator: coordinator,
-            optionsExpanded: $optionsExpanded
+            optionsExpanded: $optionsExpanded,
+            transferTransitionContext: transferTransitionContext
         ) { context, advanced in
-            let transition = QueueTransferTransitionContext(
-                namespace: queueTransition,
-                activeID: $transitioningQueueID
-            )
             // The shared boxes, with the Mac's open panel and drag and drop.
             VStack(alignment: .leading, spacing: 12) {
                 MacSetupLocations(
                     coordinator: coordinator,
                     context: context,
                     advanced: advanced,
-                    transferTransitionContext: transition
+                    transferTransitionContext: transferTransitionContext
                 )
-                MacQueueSection(coordinator: coordinator, transferTransitionContext: transition)
+                MacQueueSection(coordinator: coordinator, transferTransitionContext: transferTransitionContext)
             }
         } problems: {
             // A card macOS cannot read is a real, actionable problem.

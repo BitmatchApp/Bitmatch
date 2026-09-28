@@ -29,6 +29,7 @@ struct SetupLocationsDrops {
 struct QueueTransferTransitionContext {
     let namespace: Namespace.ID
     let activeID: Binding<UUID?>
+    let perform: (_ reduceMotion: Bool, _ operation: @escaping () -> UUID?) -> Void
 }
 
 /// The shared transfer composer. Accent colour means selected; green remains
@@ -68,16 +69,7 @@ struct SetupLocationsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             composer
-            if let summary = composerSummary {
-                transferSummary(summary)
-                    .transferTransition(
-                        id: AnyHashable("composer-transfer"),
-                        namespace: transitionNamespace,
-                        enabled: !reduceMotion
-                    )
-                    .transition(.opacity)
-            }
-            composerAction
+            composerFooter
             advanced
             if SetupQueuePlacementPolicy.showsComposerAdjacentQueue,
                !presentation.stagedSources.isEmpty {
@@ -88,8 +80,20 @@ struct SetupLocationsView: View {
         .onDisappear { transitionClearTask?.cancel() }
     }
 
-    @ViewBuilder
     private var composer: some View {
+        composerLayout
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: ComposerFrameKey.self,
+                        value: proxy.frame(in: .named(QueueFlightSpace.name))
+                    )
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var composerLayout: some View {
         if presentation.sideBySide && !stacksVertically {
             HStack(alignment: .top, spacing: 0) {
                 sourceBox.frame(minWidth: 180, maxWidth: .infinity)
@@ -407,21 +411,60 @@ struct SetupLocationsView: View {
     }
 
     @ViewBuilder
-    private var composerAction: some View {
-        if presentation.showsAddAnotherCard || editingID != nil {
-            HStack {
-                Spacer()
-                if editingID != nil {
-                    Button("Cancel", action: actions.cancelEdit).keyboardShortcut(.cancelAction)
+    private var composerFooter: some View {
+        let showsActions = presentation.showsAddAnotherCard || editingID != nil
+        if let summary = composerSummary {
+            if showsActions {
+                ViewThatFits(in: .horizontal) {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        transitioningComposerSummary(summary)
+                            .frame(minWidth: 260, alignment: .leading)
+                            .layoutPriority(1)
+                        Spacer(minLength: 8)
+                        composerActions
+                    }
+                    VStack(alignment: .leading, spacing: 8) {
+                        transitioningComposerSummary(summary)
+                        HStack {
+                            Spacer(minLength: 0)
+                            composerActions
+                        }
+                    }
                 }
-                Button(editingID == nil ? "Add to queue" : "Update", action: addOrUpdate)
-                    .buttonStyle(.bordered)
-                    .disabled(!presentation.canAddAnotherCard)
-                    .accessibilityHint(presentation.canAddAnotherCard
-                        ? "Saves this card and its current destinations and settings"
-                        : presentation.addAnotherCardDisabledReason ?? "This card is not ready")
+            } else {
+                transitioningComposerSummary(summary)
+            }
+        } else if showsActions {
+            HStack {
+                Spacer(minLength: 0)
+                composerActions
             }
         }
+    }
+
+    private func transitioningComposerSummary(_ summary: SetupLocationsPresentation.StagedSource) -> some View {
+        transferSummary(summary)
+            .transferTransition(
+                id: AnyHashable("composer-transfer"),
+                namespace: transitionNamespace,
+                enabled: !reduceMotion
+            )
+            .transition(.opacity)
+    }
+
+    private var composerActions: some View {
+        HStack(spacing: 8) {
+            if editingID != nil {
+                Button("Cancel", action: actions.cancelEdit).keyboardShortcut(.cancelAction)
+            }
+            Button(editingID == nil ? "Add to queue" : "Update", action: addOrUpdate)
+                .buttonStyle(.bordered)
+                .disabled(!presentation.canAddAnotherCard)
+                .accessibilityHint(presentation.canAddAnotherCard
+                    ? "Saves this card and its current destinations and settings"
+                    : presentation.addAnotherCardDisabledReason ?? "This card is not ready")
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var setupQueue: some View {
@@ -525,8 +568,8 @@ struct SetupLocationsView: View {
     }
 
     private var composerSummary: SetupLocationsPresentation.StagedSource? {
-        guard presentation.showsAddAnotherCard || editingID != nil,
-              let source = presentation.source else { return nil }
+        guard let source = presentation.source,
+              !presentation.backups.isEmpty else { return nil }
         return .init(
             id: editingID ?? UUID(),
             title: source.title,
@@ -573,7 +616,11 @@ struct SetupLocationsView: View {
         performTransition { actions.editStagedCard(id) ? id : nil }
     }
 
-    private func performTransition(_ operation: () -> UUID?) {
+    private func performTransition(_ operation: @escaping () -> UUID?) {
+        if let transferTransitionContext {
+            transferTransitionContext.perform(reduceMotion, operation)
+            return
+        }
         transitionClearTask?.cancel()
         let animation: Animation = reduceMotion
             ? .easeInOut(duration: 0.18)
@@ -582,22 +629,14 @@ struct SetupLocationsView: View {
         withAnimation(animation) {
             committedID = operation()
             guard let id = committedID else { return }
-            if let transferTransitionContext {
-                transferTransitionContext.activeID.wrappedValue = id
-            } else {
-                transitioningQueueID = id
-            }
+            transitioningQueueID = id
         }
         guard committedID != nil else { return }
         transitionClearTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             await MainActor.run {
-                if let transferTransitionContext {
-                    transferTransitionContext.activeID.wrappedValue = nil
-                } else {
-                    transitioningQueueID = nil
-                }
+                transitioningQueueID = nil
             }
         }
     }

@@ -20,9 +20,9 @@ struct TransferQueueSection: View {
     @State private var exportType = UTType.json
     @State private var showingExporter = false
     @State private var choosingSource = false
-    @State private var transitionClearTask: Task<Void, Never>?
     @FocusState private var focusedWaitingID: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.hiddenQueueRowID) private var hiddenQueueRowID
 
     private let offersAddCard: Bool
     private let showsHeaderTitle: Bool
@@ -56,7 +56,7 @@ struct TransferQueueSection: View {
                             presentation: presentation,
                             review: { id in
                                 coordinator.markQueueTransferReviewed(id)
-                                expandedIDs.insert(id)
+                                expand(id)
                             },
                             skipAndContinue: coordinator.skipPausedCardAndContinue,
                             remove: removePausedCard
@@ -76,14 +76,24 @@ struct TransferQueueSection: View {
                         .fill(Color.primary.opacity(0.03))
                         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
                 )
+                .transition(
+                    reduceMotion
+                        ? .opacity
+                        : .move(edge: .top)
+                            .combined(with: .scale(scale: 0.96, anchor: .top))
+                            .combined(with: .opacity)
+                )
             }
         }
+        .animation(
+            reduceMotion ? .easeInOut(duration: 0.18) : .spring(duration: 0.4, bounce: 0.18),
+            value: presentation.rows.map(\.id)
+        )
         .onChange(of: presentation.rows) { oldRows, newRows in
             handleRowChanges(from: oldRows, to: newRows)
         }
         .onDisappear {
             heroDismissTask?.cancel()
-            transitionClearTask?.cancel()
         }
         .fileImporter(
             isPresented: $choosingSource,
@@ -198,8 +208,19 @@ struct TransferQueueSection: View {
     @ViewBuilder
     private func transferRows(_ rows: [QueueSessionRow]) -> some View {
         ForEach(rows) { row in
-            if row.isEditable { reorderableWaitingRow(row, rows: rows) }
-            else { transferRow(row) }
+            Group {
+                if row.isEditable { reorderableWaitingRow(row, rows: rows) }
+                else { transferRow(row) }
+            }
+            .opacity(hiddenQueueRowID == row.id ? 0 : 1)
+            .background {
+                GeometryReader { proxy in
+                    Color.clear.preference(
+                        key: QueueRowFramesKey.self,
+                        value: [row.id: proxy.frame(in: .named(QueueFlightSpace.name))]
+                    )
+                }
+            }
         }
     }
 
@@ -235,11 +256,23 @@ struct TransferQueueSection: View {
     private func transferRow(_ row: QueueSessionRow) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             collapsedRow(row)
-            if expandedIDs.contains(row.id) {
+            if row.isFinished {
+                FinishedQueueRowExpansion(
+                    isExpanded: expandedIDs.contains(row.id),
+                    reduceMotion: reduceMotion
+                ) {
+                    Divider().padding(.horizontal, 10)
+                    expandedContent(row).padding(12)
+                }
+            } else if expandedIDs.contains(row.id) {
                 Divider().padding(.horizontal, 10)
                 expandedContent(row)
                     .padding(12)
-                    .transition(.opacity.combined(with: .move(edge: .top)))
+                    .transition(
+                        reduceMotion
+                            ? .opacity
+                            : .opacity.combined(with: .move(edge: .top))
+                    )
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -449,12 +482,16 @@ struct TransferQueueSection: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         #endif
         if let transferTransitionContext {
-            text.matchedGeometryEffect(
-                id: transferTransitionContext.activeID.wrappedValue == row.id
-                    ? AnyHashable("composer-transfer")
-                    : AnyHashable(row.id),
-                in: transferTransitionContext.namespace
-            )
+            if reduceMotion {
+                text.transition(.opacity)
+            } else {
+                text.matchedGeometryEffect(
+                    id: transferTransitionContext.activeID.wrappedValue == row.id
+                        ? AnyHashable("composer-transfer")
+                        : AnyHashable(row.id),
+                    in: transferTransitionContext.namespace
+                )
+            }
         } else {
             text
         }
@@ -474,12 +511,12 @@ struct TransferQueueSection: View {
             #if os(macOS)
             Button("Review") {
                 coordinator.markQueueTransferReviewed(row.id)
-                expandedIDs.insert(row.id)
+                expand(row.id)
             }
             #else
             Button("Review") {
                 coordinator.markQueueTransferReviewed(row.id)
-                expandedIDs.insert(row.id)
+                expand(row.id)
             }
             .controlSize(.large)
             .buttonStyle(.bordered)
@@ -707,10 +744,17 @@ struct TransferQueueSection: View {
     }
 
     private func toggleExpanded(_ id: UUID) {
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) {
+        let update = {
             if expandedIDs.contains(id) { expandedIDs.remove(id) }
             else { expandedIDs.insert(id) }
         }
+        if reduceMotion { update() }
+        else { withAnimation(.easeInOut(duration: 0.22), update) }
+    }
+
+    private func expand(_ id: UUID) {
+        if reduceMotion { expandedIDs.insert(id) }
+        else { withAnimation(.easeInOut(duration: 0.22)) { expandedIDs.insert(id) } }
     }
 
     private func handleRowChanges(from oldRows: [QueueSessionRow], to newRows: [QueueSessionRow]) {
@@ -736,7 +780,7 @@ struct TransferQueueSection: View {
     private func showHero(for row: QueueSessionRow) {
         heroDismissTask?.cancel()
         heroID = row.id
-        expandedIDs.insert(row.id)
+        expand(row.id)
         heroDismissTask = Task {
             try? await Task.sleep(for: .seconds(4))
             guard !Task.isCancelled else { return }
@@ -749,7 +793,8 @@ struct TransferQueueSection: View {
         heroDismissTask?.cancel()
         heroDismissTask = nil
         heroID = nil
-        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.25)) { expandedIDs.remove(id) }
+        if reduceMotion { expandedIDs.remove(id) }
+        else { withAnimation(.easeInOut(duration: 0.25)) { expandedIDs.remove(id) } }
     }
 
     private func remove(_ id: UUID) { perform { try coordinator.removeQueuedTransfer(id) } }
@@ -759,15 +804,15 @@ struct TransferQueueSection: View {
             perform { try coordinator.editSetupTransfer(id) }
             return
         }
-        transitionClearTask?.cancel()
-        withAnimation(reduceMotion ? .easeInOut(duration: 0.18) : .spring(duration: 0.4, bounce: 0.18)) {
-            transferTransitionContext.activeID.wrappedValue = id
-            perform { try coordinator.editSetupTransfer(id) }
-        }
-        transitionClearTask = Task {
-            try? await Task.sleep(for: .milliseconds(500))
-            guard !Task.isCancelled else { return }
-            await MainActor.run { transferTransitionContext.activeID.wrappedValue = nil }
+        transferTransitionContext.perform(reduceMotion) {
+            do {
+                try coordinator.editSetupTransfer(id)
+                errorMessage = nil
+                return id
+            } catch {
+                errorMessage = error.localizedDescription
+                return nil
+            }
         }
     }
     private func removePausedCard(_ id: UUID) { perform { try coordinator.removePausedCardFromQueue(id) } }
@@ -839,6 +884,50 @@ struct TransferQueueSection: View {
             exportType = asCSV ? .commaSeparatedText : .json
             showingExporter = true
         } catch { errorMessage = error.localizedDescription }
+    }
+}
+
+/// Finished details stay laid out while collapsed so expansion and collapse
+/// animate the same known height. Running progress remains conditional, so a
+/// collapsed live row does no extra work when progress publishes.
+private struct FinishedQueueRowExpansion<Content: View>: View {
+    let isExpanded: Bool
+    let reduceMotion: Bool
+    private let content: Content
+    @State private var naturalHeight: CGFloat = 0
+
+    init(
+        isExpanded: Bool,
+        reduceMotion: Bool,
+        @ViewBuilder content: () -> Content
+    ) {
+        self.isExpanded = isExpanded
+        self.reduceMotion = reduceMotion
+        self.content = content()
+    }
+
+    @ViewBuilder
+    var body: some View {
+        if reduceMotion {
+            if isExpanded {
+                content
+                    .transition(.opacity)
+                    .animation(.easeInOut(duration: 0.18), value: isExpanded)
+            }
+        } else {
+            content
+                .fixedSize(horizontal: false, vertical: true)
+                .onGeometryChange(for: CGFloat.self) { proxy in
+                    proxy.size.height
+                } action: { height in
+                    naturalHeight = height
+                }
+                .frame(height: isExpanded ? naturalHeight : 0, alignment: .top)
+                .opacity(isExpanded ? 1 : 0)
+                .clipped()
+                .allowsHitTesting(isExpanded)
+                .accessibilityHidden(!isExpanded)
+        }
     }
 }
 

@@ -189,6 +189,58 @@ struct MainScreenQueueTests {
         #expect(await waitUntil { !coordinator.isOperationInProgress })
     }
 
+    @Test func setupStartReturnsTheComposerRecordID() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+
+        let committedID = try #require(try coordinator.startSetupTransfers())
+
+        #expect(coordinator.queuePresentation.rows.contains { $0.id == committedID })
+        #expect(coordinator.sourceURL == nil)
+        coordinator.cancelOperation()
+        await fixture.operations.gate.release()
+        #expect(await waitUntil { !coordinator.isOperationInProgress })
+    }
+
+    @Test func setupStartReturnsNilWhenStartingOnlyStagedCards() async throws {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+        let stagedID = try coordinator.enqueueSelection()
+
+        let committedID = try coordinator.startSetupTransfers()
+
+        #expect(committedID == nil)
+        #expect(coordinator.queuePresentation.rows.contains { $0.id == stagedID })
+        #expect(coordinator.queueIsRunning)
+        coordinator.cancelOperation()
+        await fixture.operations.gate.release()
+        #expect(await waitUntil { !coordinator.isOperationInProgress })
+    }
+
+    @Test func setupStartRejectsAnEmptyBatch() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.sourceURL = nil
+
+        do {
+            _ = try coordinator.startSetupTransfers()
+            Issue.record("Expected an empty setup batch to be rejected")
+        } catch let error as FileOperationError {
+            guard case .unsafeOperation(let message) = error else {
+                Issue.record("Expected unsafeOperation, got \(error)")
+                return
+            }
+            #expect(message == "Choose a source and destinations first.")
+        }
+    }
+
     @Test func editCancelRestoresComposerAndUpdateReplacesSnapshotInPlace() async throws {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }

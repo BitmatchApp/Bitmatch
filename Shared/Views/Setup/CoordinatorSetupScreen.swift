@@ -82,6 +82,8 @@ extension SetupPresentation {
 struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelContent: View, ProjectEvidence: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var optionsExpanded: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    private let transferTransitionContext: QueueTransferTransitionContext?
     private let locations: (SetupLocationsContext, AnyView) -> Locations
     private let problems: Problems
     private let projectSetup: ProjectSetup
@@ -91,6 +93,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     init(
         coordinator: SharedAppCoordinator,
         optionsExpanded: Binding<Bool>,
+        transferTransitionContext: QueueTransferTransitionContext? = nil,
         @ViewBuilder locations: @escaping (SetupLocationsContext, AnyView) -> Locations,
         @ViewBuilder problems: () -> Problems,
         @ViewBuilder projectSetup: () -> ProjectSetup,
@@ -99,6 +102,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     ) {
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _optionsExpanded = optionsExpanded
+        self.transferTransitionContext = transferTransitionContext
         self.locations = locations
         self.problems = problems()
         self.projectSetup = projectSetup()
@@ -136,8 +140,13 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
                 let presentation = SetupPresentation.make(coordinator: coordinator)
                 guard presentation.start.canStart else { return }
                 if presentation.start.action == .addToQueue {
-                    do { try coordinator.enqueueSelection() }
-                    catch { Task { await coordinator.showError(error) } }
+                    performQueueTransition {
+                        do { return try coordinator.enqueueSelection() }
+                        catch {
+                            Task { await coordinator.showError(error) }
+                            return nil
+                        }
+                    }
                     return
                 }
                 coordinator.switchMode(to: .copyAndVerify)
@@ -146,12 +155,28 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
                     hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
                     isOperationInProgress: coordinator.isOperationInProgress
                 ) {
-                    do { try coordinator.startSetupTransfers() }
-                    catch { Task { await coordinator.showError(error) } }
+                    performQueueTransition {
+                        do { return try coordinator.startSetupTransfers() }
+                        catch {
+                            Task { await coordinator.showError(error) }
+                            return nil
+                        }
+                    }
                 } else {
                     Task { await coordinator.startCurrentMode() }
                 }
             }
         )
+    }
+
+    private func performQueueTransition(_ operation: @escaping () -> UUID?) {
+        if let transferTransitionContext {
+            transferTransitionContext.perform(
+                reduceMotion,
+                operation
+            )
+        } else {
+            _ = operation()
+        }
     }
 }

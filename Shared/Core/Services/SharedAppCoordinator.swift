@@ -1080,17 +1080,20 @@ class SharedAppCoordinator: ObservableObject {
     /// Starts the cards assembled on Setup. If more than one card is ready,
     /// the current selection first enters the same validated journal path as
     /// every other queued card, then the existing serial queue runs them.
-    func startSetupTransfers() throws {
+    @discardableResult
+    func startSetupTransfers() throws -> UUID? {
         guard !usesProjectWorkflow, !photographerJobViewModel.hasPreparedIngestAwaitingStart else {
             throw FileOperationError.unsafeOperation("Finish setting up the project card before starting.")
         }
+        var committedID: UUID?
         if sourceURL != nil {
-            try enqueueSelection()
+            committedID = try enqueueSelection()
         }
         guard !stagedSetupTransfers.isEmpty else {
             throw FileOperationError.unsafeOperation("Choose a source and destinations first.")
         }
         startQueue()
+        return committedID
     }
 
     var runningOneTimeTransfer: LocalTransferRecord? {
