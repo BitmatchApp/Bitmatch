@@ -25,6 +25,22 @@ final class ClipIntegrityCheckTests: XCTestCase {
         XCTAssertEqual(try ClipIntegrityCheck.inspect(url: url), .incomplete)
     }
 
+    func testRandomBytesNamedMP4AreUnknown() throws {
+        let bytes = Data((0..<64).map { UInt8(($0 * 37 + 11) & 0xff) })
+        let url = try fixture("random.MP4", data: bytes)
+
+        XCTAssertEqual(try ClipIntegrityCheck.inspect(url: url), .unknown)
+    }
+
+    func testAppleDoubleMP4IsNeverInspected() throws {
+        var bytes = uint32(0x00051607)
+        bytes.append(Data(repeating: 0, count: 28))
+        let url = try fixture("._C0001.MP4", data: bytes)
+
+        XCTAssertFalse(ClipIntegrityCheck.supports(url))
+        XCTAssertNil(try ClipIntegrityCheck.inspect(url: url))
+    }
+
     func testAtomThatOverrunsFileLooksIncomplete() throws {
         var bytes = atom("ftyp")
         bytes.append(contentsOf: uint32(32))
@@ -133,6 +149,43 @@ final class ClipIntegrityCheckTests: XCTestCase {
         )
         let row = TransferCompletion.row(from: result, destinationRoots: [destinationDirectory])
         XCTAssertTrue(row.isVerifiedStatus)
+        #else
+        throw XCTSkip("Pinned destination verification uses Darwin file descriptors")
+        #endif
+    }
+
+    func testTransferWithBrokenClipAndAppleDoubleSiblingReportsOnlyRealClipIncomplete() async throws {
+        #if os(macOS)
+        let source = fixtureDirectory.appendingPathComponent("Card", isDirectory: true)
+        let destination = fixtureDirectory.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        try [atom("ftyp"), atom("mdat")].reduce(into: Data()) { $0.append($1) }
+            .write(to: source.appendingPathComponent("C0001.MP4"))
+        var appleDouble = uint32(0x00051607)
+        appleDouble.append(Data(repeating: 0, count: 28))
+        try appleDouble.write(to: source.appendingPathComponent("._C0001.MP4"))
+
+        let operation = try await TransferPipeline(
+            fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared
+        ).performFileOperation(
+            sourceURL: source,
+            destinationURLs: [destination],
+            verificationMode: .standard,
+            settings: CameraLabelSettings(),
+            estimatedTotalBytes: nil,
+            progressCallback: { _ in },
+            onFileResult: nil
+        )
+
+        XCTAssertEqual(operation.results.filter { $0.clipIntegrity == .incomplete }.count, 1)
+        XCTAssertEqual(
+            operation.results.first { $0.sourceURL.lastPathComponent == "C0001.MP4" }?.clipIntegrity,
+            .incomplete
+        )
+        XCTAssertNil(
+            operation.results.first { $0.sourceURL.lastPathComponent == "._C0001.MP4" }?.clipIntegrity
+        )
         #else
         throw XCTSkip("Pinned destination verification uses Darwin file descriptors")
         #endif

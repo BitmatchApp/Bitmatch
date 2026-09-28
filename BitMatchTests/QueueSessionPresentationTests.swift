@@ -155,6 +155,24 @@ struct QueueSessionPresentationTests {
         #expect(lines[3].contains("needs attention: 1 file failed on \(expectedDrive)"))
     }
 
+    @Test func fullyReusedSafeRowSaysNothingNewWasCopied() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let repeated = try fixture.record(
+            name: "A001", state: .completed, outcome: .verified,
+            wasReused: true, at: 1
+        )
+
+        let row = try #require(QueueSessionPresentation.make(
+            records: [repeated], sessionIDs: [repeated.id], progress: nil,
+            mountedSourceIDs: [repeated.id]
+        ).rows.first)
+
+        #expect(row.safetyState == .safeToErase)
+        #expect(row.copySummary.contains("verified, nothing new copied"))
+        #expect(row.outcome?.verdict.detail.contains("verified, nothing new copied") == true)
+    }
+
     @Test func pauseBannerUsesOnlyThePausedRecordAndNamesItsState() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -389,6 +407,7 @@ private final class QueuePresentationFixture {
         outcome: ResultOutcome? = nil,
         size: Int64 = 64,
         summary: String = "Ready",
+        wasReused: Bool = false,
         at seconds: TimeInterval,
         projectID: UUID? = nil,
         projectCardID: UUID? = nil
@@ -407,7 +426,8 @@ private final class QueuePresentationFixture {
             record.results = [ResultRow(
                 path: source.appendingPathComponent("clip.mov").path,
                 status: outcome.statusText, size: size, checksum: outcome == .verified ? "abc" : nil,
-                destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip.mov").path
+                destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip.mov").path,
+                wasReused: wasReused
             )]
         }
         return record

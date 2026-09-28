@@ -94,6 +94,9 @@ public struct FileOperationResult: Sendable {
     /// Advisory only. A verified copy remains verified when its source clip
     /// appears incomplete, because the destination still matches the card.
     public let clipIntegrity: ClipIntegrityFinding?
+    /// True when the destination file already existed and was proven identical,
+    /// so this run verified it without writing a new copy.
+    public let wasReused: Bool
     
     public var outcome: ResultOutcome {
         if let verification = verificationResult {
@@ -104,7 +107,7 @@ public struct FileOperationResult: Sendable {
 
     public var statusDescription: String { outcome.statusText }
 
-    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil) {
+    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil, wasReused: Bool = false) {
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
         self.success = success
@@ -113,5 +116,15 @@ public struct FileOperationResult: Sendable {
         self.verificationResult = verificationResult
         self.processingTime = processingTime
         self.clipIntegrity = clipIntegrity
+        self.wasReused = wasReused
+    }
+
+    func preservingReuse(_ reused: Bool) -> Self {
+        Self(
+            sourceURL: sourceURL, destinationURL: destinationURL, success: success,
+            error: error, fileSize: fileSize, verificationResult: verificationResult,
+            processingTime: processingTime, clipIntegrity: clipIntegrity,
+            wasReused: success && (wasReused || reused)
+        )
     }
 }

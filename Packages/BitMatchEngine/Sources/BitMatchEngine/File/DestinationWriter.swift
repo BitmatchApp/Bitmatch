@@ -495,7 +495,7 @@ public final class DestinationWriter {
         checksumService: any ChecksumService,
         preEnumeratedFiles: [URL],
         pauseCheck: (@Sendable () async throws -> Void)? = nil,
-        onProgress: @escaping @Sendable (String, Int64) async -> Void,
+        onProgress: @escaping @Sendable (String, Int64, Bool) async -> Void,
         onError: @escaping @Sendable (String, Error) async -> Void
     ) async throws {
         try await copyAllSafelyFanOut(
@@ -506,7 +506,9 @@ public final class DestinationWriter {
             checksumService: checksumService,
             preEnumeratedFiles: preEnumeratedFiles,
             pauseCheck: pauseCheck,
-            onProgress: { _, path, size in await onProgress(path, size) },
+            onProgress: { _, path, size, wasReused in
+                await onProgress(path, size, wasReused)
+            },
             onError: { _, path, error in await onError(path, error) }
         )
     }
@@ -521,7 +523,7 @@ public final class DestinationWriter {
         pauseCheck: (@Sendable () async throws -> Void)? = nil,
         hooks: FanOutHooks? = nil,
         onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void = { _, _ in },
-        onProgress: @escaping @Sendable (Int, String, Int64) async -> Void,
+        onProgress: @escaping @Sendable (Int, String, Int64, Bool) async -> Void,
         onError: @escaping @Sendable (Int, String, Error) async -> Void
     ) async throws {
         for destination in destinations {
@@ -683,7 +685,7 @@ public final class DestinationWriter {
         pauseCheck: (@Sendable () async throws -> Void)?,
         hooks: FanOutHooks?,
         onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void,
-        onProgress: @escaping @Sendable (Int, String, Int64) async -> Void,
+        onProgress: @escaping @Sendable (Int, String, Int64, Bool) async -> Void,
         onError: @escaping @Sendable (Int, String, Error) async -> Void
     ) async throws {
         let fm = FileManager.default
@@ -735,7 +737,7 @@ public final class DestinationWriter {
 
         guard !active.isEmpty else {
             for destination in pendingReuse {
-                await onProgress(destination.index, relativePath, sourceSize)
+                await onProgress(destination.index, relativePath, sourceSize, true)
             }
             return
         }
@@ -886,7 +888,7 @@ public final class DestinationWriter {
         }
 
         for destination in pendingReuse {
-            await onProgress(destination.index, relativePath, sourceSize)
+            await onProgress(destination.index, relativePath, sourceSize, true)
         }
         for file in active {
             do {
@@ -927,7 +929,7 @@ public final class DestinationWriter {
                 file.markPublished()
                 try PinnedDestinationDirectory.synchronizeDirectory(file.parentFD)
                 try hooks?.afterPublish?(file.destination.index, file.destination.root.logicalRootURL)
-                await onProgress(file.destination.index, relativePath, sourceSize)
+                await onProgress(file.destination.index, relativePath, sourceSize, false)
             } catch is CancellationError {
                 file.cleanup()
                 throw CancellationError()

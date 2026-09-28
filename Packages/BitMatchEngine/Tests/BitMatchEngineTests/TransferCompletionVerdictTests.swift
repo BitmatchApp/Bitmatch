@@ -18,7 +18,8 @@ struct TransferCompletionVerdictTests {
     private func row(
         _ file: URL,
         at destination: URL,
-        outcome: ResultOutcome = .verified
+        outcome: ResultOutcome = .verified,
+        wasReused: Bool = false
     ) -> ResultRow {
         ResultRow(
             path: file.path,
@@ -26,7 +27,8 @@ struct TransferCompletionVerdictTests {
             size: outcome == .failed ? 0 : 1,
             checksum: outcome == .verified ? "x" : nil,
             destination: destination.lastPathComponent,
-            destinationPath: destination.appendingPathComponent("source").appendingPathComponent(file.lastPathComponent).path
+            destinationPath: destination.appendingPathComponent("source").appendingPathComponent(file.lastPathComponent).path,
+            wasReused: wasReused
         )
     }
 
@@ -57,10 +59,30 @@ struct TransferCompletionVerdictTests {
         #expect(verdict([verified], mhl: true) == .init(success: true, message: "All files copied and verified; ASC MHL handoff records saved"))
     }
 
+    @Test func everyFileReusedAndVerifiedRecordsThatNothingWasCopied() {
+        let reused = row(fileA, at: shuttleA, wasReused: true)
+
+        #expect(verdict([reused]) == .init(
+            success: true,
+            message: "All files already existed and were verified; nothing new copied"
+        ))
+    }
+
     /// Plant: in `TransferCompletion.verdict`, drop `mode != .quick`.
     @Test func quickIsNeverSuccess() {
         let copied = row(fileA, at: shuttleA, outcome: .copiedUnverified)
         #expect(verdict([copied], mode: .quick) == .init(success: false, message: "All files copied. Not verified: Quick mode only compares file sizes.", copiedNotVerified: true))
+    }
+
+    @Test func quickRowsNeverClaimReusedFilesWereVerified() {
+        let syntheticReusedRow = row(fileA, at: shuttleA, wasReused: true)
+
+        let result = verdict([syntheticReusedRow], mode: .quick)
+
+        #expect(!result.success)
+        #expect(result.copiedNotVerified)
+        #expect(!result.message.contains("verified; nothing new copied"))
+        #expect(result.message.contains("Not verified"))
     }
 
     /// "Copied, not verified" only when Quick was the one gap: a failed

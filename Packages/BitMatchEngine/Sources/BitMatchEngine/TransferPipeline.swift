@@ -134,7 +134,7 @@ public actor RunLedger {
             // turn a failed copy (e.g. a folder that failed to save after
             // publish) back into a success.
             if !rows[index].success && row.success { return }
-            rows[index] = row
+            rows[index] = row.preservingReuse(rows[index].wasReused)
         } else {
             rowIndex[key] = rows.count
             rows.append(row)
@@ -717,7 +717,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 onSourceReadEvidence: { relativePath, evidence in
                     await sourceReadEvidence.record(evidence, for: relativePath)
                 },
-                onProgress: { destIndex, relativePath, fileSize in
+                onProgress: { destIndex, relativePath, fileSize, wasReused in
                     guard let pinnedDestination = pinnedByIndex[destIndex] else { return }
                     let srcURL = manifestURLByRelativePath[relativePath]
                         ?? operation.sourceURL.appendingPathComponent(relativePath)
@@ -729,7 +729,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         error: nil,
                         fileSize: max(0, fileSize),
                         verificationResult: nil,
-                        processingTime: 0
+                        processingTime: 0,
+                        wasReused: wasReused
                     )
                     let copied = await ledger.recordCopy(
                         copyResult,

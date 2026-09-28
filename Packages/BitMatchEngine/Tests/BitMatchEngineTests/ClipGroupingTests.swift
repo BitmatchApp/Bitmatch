@@ -48,6 +48,14 @@ final class ClipGroupingTests: XCTestCase {
         XCTAssertEqual(group.files.map(\.lastPathComponent), ["C0001.MP4", "C0001.XML"])
     }
 
+    func testAppleDoubleFilesAreExcludedFromClipAndSidecarGroups() throws {
+        let files = urls("/Card/C0001.MP4", "/Card/._C0001.MP4", "/Card/C0001.XMP")
+        let group = try XCTUnwrap(ClipGrouping.group(containing: files[0], among: files))
+
+        XCTAssertEqual(group.files.map(\.lastPathComponent), ["C0001.MP4", "C0001.XMP"])
+        XCTAssertNil(ClipGrouping.group(containing: files[1], among: files))
+    }
+
     private func urls(_ paths: String...) -> [URL] {
         paths.map { URL(fileURLWithPath: $0) }
     }

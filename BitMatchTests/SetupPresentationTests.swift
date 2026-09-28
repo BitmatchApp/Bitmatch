@@ -139,6 +139,62 @@ struct SetupPresentationTests {
     }
 
     @MainActor
+    @Test func choosingSourceAgainAfterVerifiedRunShowsPriorBackupLine() async throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let journal = LocalTransferJournal(fileURL: folders.journalURL)
+        let fingerprint = SourceFingerprint.make(try CardSource.enumerateRegularFiles(base: folders.source))
+        let recordID = try journal.enqueue(
+            sourceURL: folders.source,
+            destinationURLs: [folders.primary],
+            verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(),
+            generateASCMHL: false
+        )
+        try journal.markRunning(id: recordID)
+        try journal.finish(
+            id: recordID,
+            results: [ResultRow(
+                path: folders.source.appendingPathComponent("A.ARW").path,
+                status: ResultOutcome.verified.statusText,
+                size: 4,
+                checksum: "verified",
+                destination: folders.primary.lastPathComponent,
+                destinationPath: folders.primary.appendingPathComponent("A.ARW").path
+            )],
+            summary: "All files copied and verified",
+            hadIssues: false,
+            sourceFingerprint: fingerprint
+        )
+        // Finder may add these after a completed run. They must not make the
+        // same physical card look like a new source on its next selection.
+        try Data([0x00, 0x05, 0x16, 0x07]).write(
+            to: folders.source.appendingPathComponent("._A.ARW")
+        )
+        try Data("finder view".utf8).write(
+            to: folders.source.appendingPathComponent(".DS_Store")
+        )
+        let spotlight = folders.source.appendingPathComponent(".Spotlight-V100", isDirectory: true)
+        try FileManager.default.createDirectory(at: spotlight, withIntermediateDirectories: true)
+        try Data("index".utf8).write(to: spotlight.appendingPathComponent("store.db"))
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: journal,
+            defaults: folders.defaults
+        )
+
+        coordinator.sourceURL = folders.source
+        let matchedHistory = await waitUntil(timeout: .seconds(5)) {
+            coordinator.alreadyBackedUpLine != nil
+        }
+
+        #expect(matchedHistory)
+        let destinationTitle = DestinationIdentityPresentation.title(for: folders.primary)
+        #expect(coordinator.alreadyBackedUpLine?.hasPrefix("Backed up before to \(destinationTitle) on ") == true)
+    }
+
+    @MainActor
     @Test func coordinatorFeedsSameDiskCountAndWarningIntoSetupReadiness() async {
         let coordinator = SharedAppCoordinator(
             platformManager: MacOSPlatformManager.shared,

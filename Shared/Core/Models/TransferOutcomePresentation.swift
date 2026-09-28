@@ -201,6 +201,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         let sourceEvidence = sourceEvidence(rows)
         let algorithm = algorithmLabel(verificationMode)
         let destinationNames = destinations.map(destinationDriveName)
+        let allFilesReused = safetyState == .safeToErase
+            && !rows.isEmpty
+            && rows.allSatisfy { $0.isVerifiedStatus && $0.wasReused }
         let reason = issueReason(
             safetyState: safetyState,
             completionDetail: baseVerdict.detail,
@@ -229,6 +232,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 algorithm: algorithm,
                 duration: duration,
                 reason: reason,
+                allFilesReused: allFilesReused,
                 fallback: baseVerdict.detail
             ),
             symbol: safetyState.symbol,
@@ -277,7 +281,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 sourceBytes: sourceBytes,
                 destinations: destinationNames,
                 algorithm: algorithm,
-                reason: reason
+                reason: reason,
+                allFilesReused: allFilesReused
             )
         )
     }
@@ -515,9 +520,13 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         sourceBytes: Int64?,
         destinations: [String],
         algorithm: String?,
-        reason: String?
+        reason: String?,
+        allFilesReused: Bool = false
     ) -> String {
         if safetyState == .waiting { return "\(cardName) · not started" }
+        if allFilesReused {
+            return "\(cardName) · Already on \(naturalList(destinations)) · verified, nothing new copied"
+        }
         let verdict: String
         switch safetyState {
         case .waiting: verdict = "not started"
@@ -550,11 +559,15 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         algorithm: String?,
         duration: TimeInterval?,
         reason: String?,
+        allFilesReused: Bool,
         fallback: String
     ) -> String {
         let destinationText = naturalList(destinations)
         switch safetyState {
         case .safeToErase:
+            if allFilesReused {
+                return "Already on \(destinationText) · verified, nothing new copied"
+            }
             let files = sourceFileCount == 1 ? "1 file" : "\(sourceFileCount) files"
             let size = ByteCountPresentation.fileSize(sourceBytes)
             return ["\(files) · \(size) verified on \(destinationText)", algorithm, duration.map(durationText)]

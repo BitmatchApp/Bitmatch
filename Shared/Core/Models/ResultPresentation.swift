@@ -247,7 +247,8 @@ enum ResultPresentation {
 
     static func incompleteClipAdvisory(_ rows: [ResultRow]) -> String? {
         let clipPaths = Set(rows.compactMap { row in
-            row.clipIntegrity == .incomplete ? row.path : nil
+            let name = URL(fileURLWithPath: row.path).lastPathComponent
+            return row.clipIntegrity == .incomplete && !name.hasPrefix("._") ? row.path : nil
         })
         guard !clipPaths.isEmpty else { return nil }
         let subject = clipPaths.count == 1 ? "1 clip looks incomplete" : "\(clipPaths.count) clips look incomplete"

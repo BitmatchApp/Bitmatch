@@ -4,16 +4,22 @@ import Testing
 @testable import BitMatchEngine
 
 struct RunLedgerTests {
-    private func row(_ name: String, verified: Bool = false) -> FileOperationResult {
+    private func row(
+        _ name: String,
+        verified: Bool = false,
+        success: Bool = true,
+        wasReused: Bool = false
+    ) -> FileOperationResult {
         FileOperationResult(
             sourceURL: URL(fileURLWithPath: "/src/\(name)"),
             destinationURL: URL(fileURLWithPath: "/dst/\(name)"),
-            success: true, error: nil, fileSize: 10,
+            success: success, error: nil, fileSize: 10,
             verificationResult: verified
                 ? VerificationResult(sourceChecksum: "a", destinationChecksum: "a", matches: true,
                                      checksumType: .sha256, processingTime: 0, fileSize: 10)
                 : nil,
-            processingTime: 0
+            processingTime: 0,
+            wasReused: wasReused
         )
     }
 
@@ -46,5 +52,43 @@ struct RunLedgerTests {
         let rows = await ledger.results()
         #expect(rows.count == 2)
         #expect(rows.first?.verificationResult != nil)
+    }
+
+    @Test func verifiedResultPreservesEarlierReuseClassification() async {
+        let ledger = RunLedger(destinationCount: 1, filesPerDestination: 1, throttle: 0)
+        _ = await ledger.recordCopy(
+            row("a", wasReused: true),
+            relativePath: "a",
+            destination: 0,
+            now: Date()
+        )
+
+        await ledger.record(row("a", verified: true), relativePath: "a", destination: 0)
+
+        let rows = await ledger.results()
+        #expect(rows.count == 1)
+        #expect(rows[0].outcome == .verified)
+        #expect(rows[0].wasReused)
+    }
+
+    @Test func laterFailureClearsEarlierReuseClassification() async {
+        let ledger = RunLedger(destinationCount: 1, filesPerDestination: 1, throttle: 0)
+        _ = await ledger.recordCopy(
+            row("a", wasReused: true),
+            relativePath: "a",
+            destination: 0,
+            now: Date()
+        )
+
+        await ledger.record(
+            row("a", success: false),
+            relativePath: "a",
+            destination: 0
+        )
+
+        let rows = await ledger.results()
+        #expect(rows.count == 1)
+        #expect(!rows[0].success)
+        #expect(!rows[0].wasReused)
     }
 }

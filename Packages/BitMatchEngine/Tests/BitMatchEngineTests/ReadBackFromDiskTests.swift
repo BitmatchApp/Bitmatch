@@ -90,7 +90,7 @@ struct ReadBackFromDiskTests {
                 workers: 1,
                 checksumService: ChecksumEngine.shared,
                 preEnumeratedFiles: try CardSource.enumerateRegularFiles(base: source).map(\.url),
-                onProgress: { _, _ in },
+                onProgress: { _, _, _ in },
                 onError: { path, error in await errors.record("\(path): \(error.localizedDescription)") }
             )
             let recorded = await errors.errors

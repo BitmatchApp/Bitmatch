@@ -239,6 +239,9 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let destinationNames = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
         let cause = cause(for: record, state: state)
         let outcome = finishedOutcome(for: record, state: state)
+        let allFilesReused = state == .safeToErase
+            && !record.results.isEmpty
+            && record.results.allSatisfy { $0.isVerifiedStatus && $0.wasReused }
         let action: QueueRowAction?
         if isEjected && state.canEject { action = .ejected }
         else if state.canEject && isMounted { action = .eject }
@@ -259,7 +262,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 sourceBytes: bytes,
                 destinations: destinationNames,
                 algorithm: TransferOutcomePresentation.algorithmLabel(record.verificationMode),
-                reason: cause
+                reason: cause,
+                allFilesReused: allFilesReused
             ),
             outcome: outcome,
             destinationNames: destinationNames,

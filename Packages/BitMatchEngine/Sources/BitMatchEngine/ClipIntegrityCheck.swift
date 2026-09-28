@@ -16,9 +16,18 @@ public enum ClipIntegrityFinding: String, Codable, Equatable, Sendable {
 public enum ClipIntegrityCheck: Sendable {
     public static let maximumAtomCount = 10_000
     private static let supportedExtensions = Set(["mov", "mp4", "m4v", "braw"])
+    private static let recognizedFirstAtomTypes: Set<[UInt8]> = [
+        Array("ftyp".utf8), Array("wide".utf8), Array("free".utf8),
+        Array("skip".utf8), Array("mdat".utf8), Array("moov".utf8),
+        Array("uuid".utf8), Array("pnot".utf8), Array("PICT".utf8),
+    ]
 
     public static func supports(_ url: URL) -> Bool {
-        supportedExtensions.contains(url.pathExtension.lowercased())
+        !isAppleDouble(url) && supportedExtensions.contains(url.pathExtension.lowercased())
+    }
+
+    static func isAppleDouble(_ url: URL) -> Bool {
+        url.lastPathComponent.hasPrefix("._")
     }
 
     /// Opens `url` for the duration of the check. Unsupported extensions are
@@ -36,10 +45,12 @@ public enum ClipIntegrityCheck: Sendable {
         return try inspect(fileDescriptor: handle.fileDescriptor, fileSize: info.st_size)
     }
 
-    /// Inspects at most 10,000 8/16-byte top-level atom headers. The caller
-    /// retains ownership of `fileDescriptor`.
+    /// Inspects at most 10,000 8/16-byte top-level atom headers. Files shorter
+    /// than one header are unknown because they cannot be recognized as
+    /// ISO-BMFF/QuickTime; trailing short bytes after a valid atom are an
+    /// incomplete atom chain. The caller retains ownership of `fileDescriptor`.
     public static func inspect(fileDescriptor: Int32, fileSize: Int64) throws -> ClipIntegrityFinding {
-        guard fileSize >= 0 else { return .incomplete }
+        guard fileSize >= 8 else { return .unknown }
         let length = UInt64(fileSize)
         var offset: UInt64 = 0
         var atomCount = 0
@@ -49,7 +60,10 @@ public enum ClipIntegrityCheck: Sendable {
             guard length - offset >= 8 else { return .incomplete }
             let header = try readExactly(8, from: fileDescriptor, offset: offset)
             let shortSize = uint32(header[0..<4])
-            let type = header[4..<8]
+            let type = Array(header[4..<8])
+            if atomCount == 0, !recognizedFirstAtomTypes.contains(type) {
+                return .unknown
+            }
             var headerSize: UInt64 = 8
             let atomSize: UInt64
 
@@ -57,7 +71,7 @@ public enum ClipIntegrityCheck: Sendable {
             case 0:
                 atomSize = length - offset
             case 1:
-                guard length - offset >= 16 else { return .incomplete }
+                guard length - offset >= 16 else { return atomCount == 0 ? .unknown : .incomplete }
                 let extended = try readExactly(8, from: fileDescriptor, offset: offset + 8)
                 headerSize = 16
                 atomSize = uint64(extended[0..<8])
@@ -65,7 +79,9 @@ public enum ClipIntegrityCheck: Sendable {
                 atomSize = UInt64(shortSize)
             }
 
-            guard atomSize >= headerSize, atomSize <= length - offset else { return .incomplete }
+            guard atomSize >= headerSize, atomSize <= length - offset else {
+                return atomCount == 0 ? .unknown : .incomplete
+            }
             if type.elementsEqual([0x6D, 0x6F, 0x6F, 0x76]) { foundMOOV = true } // moov
             offset += atomSize
             atomCount += 1
@@ -131,6 +147,7 @@ public enum ClipGrouping: Sendable {
 
     /// Groups names only. It does not influence copying or verification.
     public static func group(containing file: URL, among candidates: [URL]) -> ClipGroup? {
+        guard !ClipIntegrityCheck.isAppleDouble(file) else { return nil }
         let folder = file.deletingLastPathComponent().standardizedFileURL.path
         let fileExtension = file.pathExtension.lowercased()
         var baseStem = file.deletingPathExtension().lastPathComponent
@@ -142,6 +159,7 @@ public enum ClipGrouping: Sendable {
         let fileIsSidecar = sidecarExtensions.contains(fileExtension)
 
         let matches = candidates.filter { candidate in
+            guard !ClipIntegrityCheck.isAppleDouble(candidate) else { return false }
             guard candidate.deletingLastPathComponent().standardizedFileURL.path == folder else { return false }
             if candidate.standardizedFileURL == file.standardizedFileURL { return true }
             let candidateExtension = candidate.pathExtension.lowercased()

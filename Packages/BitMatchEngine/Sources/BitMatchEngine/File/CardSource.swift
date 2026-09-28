@@ -23,9 +23,11 @@ public struct FileEntry: Sendable {
 
 public enum SourceFingerprint: Sendable {
     /// SHA-256 of a canonical, order-independent manifest listing. Length
-    /// prefixes keep file names containing separators unambiguous.
+    /// prefixes keep file names containing separators unambiguous. Finder
+    /// metadata is excluded so mounting a card on macOS cannot change its
+    /// identity by adding AppleDouble, `.DS_Store`, or volume metadata.
     public static func make<S: Sequence>(_ entries: S) -> String where S.Element == FileEntry {
-        let sorted = entries.sorted {
+        let sorted = entries.filter { !isMacMetadata($0.relativePath) }.sorted {
             if $0.relativePath != $1.relativePath { return $0.relativePath < $1.relativePath }
             if $0.size != $1.size { return $0.size < $1.size }
             return dateBits($0.modificationDate) < dateBits($1.modificationDate)
@@ -41,6 +43,13 @@ public enum SourceFingerprint: Sendable {
 
     private static func dateBits(_ date: Date?) -> UInt64 {
         date?.timeIntervalSince1970.bitPattern ?? UInt64.max
+    }
+
+    private static func isMacMetadata(_ relativePath: String) -> Bool {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: true)
+        guard let first = components.first, let last = components.last else { return false }
+        if last == ".DS_Store" || last.hasPrefix("._") { return true }
+        return CardSource.skippedVolumeMetadataDirectories.contains(String(first))
     }
 }
 

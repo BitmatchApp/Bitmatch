@@ -16,7 +16,8 @@ public enum TransferCompletion: Sendable {
             checksum: result.verificationResult?.sourceChecksum,
             destination: destinationLabel(for: result.destinationURL, roots: destinationRoots),
             destinationPath: result.destinationURL.path,
-            clipIntegrity: result.clipIntegrity
+            clipIntegrity: result.clipIntegrity,
+            wasReused: result.wasReused
         )
     }
 
@@ -366,11 +367,19 @@ public enum TransferCompletion: Sendable {
         // run from success here too, not only in the app's own verdict: the
         // Dock tile and the finish notification read this success.
         let everyRowVerified = rows.allSatisfy(\.isVerifiedStatus)
+        let allFilesReused = mode != .quick
+            && !rows.isEmpty
+            && everyRowVerified
+            && rows.allSatisfy(\.wasReused)
         let fileResultsMessage: String
         if rows.isEmpty {
             fileResultsMessage = "No files were copied"
         } else if fileResultsSucceeded {
-            fileResultsMessage = mode == .quick || !everyRowVerified ? "All files copied" : "All files copied and verified"
+            if allFilesReused {
+                fileResultsMessage = "All files already existed and were verified; nothing new copied"
+            } else {
+                fileResultsMessage = mode == .quick || !everyRowVerified ? "All files copied" : "All files copied and verified"
+            }
         } else {
             fileResultsMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
         }

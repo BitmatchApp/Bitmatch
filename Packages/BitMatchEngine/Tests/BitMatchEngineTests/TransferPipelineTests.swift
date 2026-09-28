@@ -79,6 +79,106 @@ struct TransferPipelineTests {
     }
 
     @Test
+    func repeatRunMarksEveryVerifiedDestinationFileAsReused() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fm = FileManager.default
+            let root = fm.temporaryDirectory.appendingPathComponent("bitmatch_repeat_\(UUID().uuidString)")
+            let source = root.appendingPathComponent("Card", isDirectory: true)
+            let destinations = ["SHUTTLE A", "SHUTTLE B"].map {
+                root.appendingPathComponent($0, isDirectory: true)
+            }
+            try fm.createDirectory(at: source, withIntermediateDirectories: true)
+            for destination in destinations {
+                try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+            }
+            defer { try? fm.removeItem(at: root) }
+            try Data("clip".utf8).write(to: source.appendingPathComponent("A001.mov"))
+
+            let pipeline = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            func run() async throws -> FileOperation {
+                try await pipeline.performFileOperation(
+                    sourceURL: source,
+                    destinationURLs: destinations,
+                    verificationMode: .standard,
+                    settings: CameraLabelSettings(),
+                    estimatedTotalBytes: nil,
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+            }
+
+            let first = try await run()
+            let repeated = try await run()
+
+            #expect(first.results.count == 2)
+            #expect(first.results.allSatisfy { !$0.wasReused })
+            #expect(repeated.results.count == 2)
+            #expect(repeated.results.allSatisfy { $0.wasReused && $0.outcome == .verified })
+        #else
+            #expect(true)
+        #endif
+        }
+    }
+
+    @Test
+    func sameSizeDifferentDestinationContentIsNotReusedOrSafe() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fm = FileManager.default
+            let root = fm.temporaryDirectory.appendingPathComponent("bitmatch_corrupt_reuse_\(UUID().uuidString)")
+            let source = root.appendingPathComponent("Card", isDirectory: true)
+            let destination = root.appendingPathComponent("SHUTTLE A", isDirectory: true)
+            try fm.createDirectory(at: source, withIntermediateDirectories: true)
+            try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+            defer { try? fm.removeItem(at: root) }
+            try Data("clip".utf8).write(to: source.appendingPathComponent("A001.mov"))
+
+            let settings = CameraLabelSettings()
+            let pipeline = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            func run() async throws -> FileOperation {
+                try await pipeline.performFileOperation(
+                    sourceURL: source,
+                    destinationURLs: [destination],
+                    verificationMode: .standard,
+                    settings: settings,
+                    estimatedTotalBytes: nil,
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+            }
+
+            let first = try await run()
+            let writtenFile = try #require(first.results.first?.destinationURL)
+            try Data("evil".utf8).write(to: writtenFile)
+
+            let repeated = try await run()
+            let rows = TransferCompletion.rows(from: repeated)
+            let verdict = TransferCompletion.verdict(
+                rows: rows,
+                sourceFiles: repeated.sourceManifest,
+                destinations: [destination],
+                source: source,
+                settings: settings,
+                mode: .standard,
+                generateASCMHL: false,
+                handoffIssues: [],
+                reportIssue: nil,
+                project: .init(didPersist: true, locallySafe: nil)
+            )
+
+            #expect(repeated.results.count == 1)
+            #expect(repeated.results.allSatisfy { !$0.wasReused && $0.outcome != .verified })
+            #expect(!verdict.success)
+            #expect(!verdict.message.contains("nothing new copied"))
+            #expect(try Data(contentsOf: writtenFile) == Data("evil".utf8))
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
     func emptySourceIsRejectedBeforeAnyCopy() async throws {
         try await FileOperationsTestLock.shared.run {
             let fm = FileManager.default

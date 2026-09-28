@@ -159,7 +159,7 @@ private struct ReuseFixture {
             checksumService: checksumService,
             preEnumeratedFiles: try CardSource.enumerateRegularFiles(base: source).map(\.url),
             hooks: hooks,
-            onProgress: { _, _, _ in await events.recordProgress() },
+            onProgress: { _, _, _, _ in await events.recordProgress() },
             onError: { _, _, error in await events.recordError(error.localizedDescription) }
         )
         let progressCount = await events.progressCount

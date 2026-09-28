@@ -10,14 +10,21 @@ struct TransferOutcomePresentationTests {
     private let backupA = URL(fileURLWithPath: "/Volumes/A/Backup", isDirectory: true)
     private let backupB = URL(fileURLWithPath: "/Volumes/B/Backup", isDirectory: true)
 
-    private func row(_ name: String, _ outcome: ResultOutcome, size: Int64 = 100, backup: URL) -> ResultRow {
+    private func row(
+        _ name: String,
+        _ outcome: ResultOutcome,
+        size: Int64 = 100,
+        backup: URL,
+        wasReused: Bool = false
+    ) -> ResultRow {
         ResultRow(
             path: "/Card/\(name)",
             status: outcome.statusText,
             size: size,
             checksum: outcome == .verified ? "abc" : nil,
             destination: backup.lastPathComponent,
-            destinationPath: backup.appendingPathComponent(name).path
+            destinationPath: backup.appendingPathComponent(name).path,
+            wasReused: wasReused
         )
     }
 
@@ -159,6 +166,21 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.advisoryLines.isEmpty)
         #expect(outcome.safetyState == .safeToErase)
         #expect(outcome.canEject)
+    }
+
+    @Test func appleDoubleNeverProducesIncompleteClipAdvisoryEvenForLegacyRows() {
+        let rows = [ResultRow(
+            path: "/Card/._C0001.MP4", status: ResultOutcome.verified.statusText,
+            size: 100, checksum: "abc", destination: backupA.lastPathComponent,
+            destinationPath: backupA.appendingPathComponent("._C0001.MP4").path,
+            clipIntegrity: .incomplete
+        )]
+
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Verified")), rows: rows
+        )
+
+        #expect(outcome.advisoryLines.isEmpty)
     }
 
     @Test func absentIntegrityResultHasNoAdvisoryAndKeepsSafeVerdict() {
@@ -447,6 +469,36 @@ struct TransferOutcomePresentationTests {
 
         #expect(safe.copySummary == "The card · 100 bytes · safe to erase · SHA-256 · A, B")
         #expect(quick.copySummary == "The card · 100 bytes · copied, not verified (size check only) · do not erase the card · A, B")
+    }
+
+    @Test func fullyReusedVerifiedRunSaysNothingNewWasCopied() {
+        let reusedRows = [
+            row("A001.mov", .verified, backup: backupA, wasReused: true),
+            row("A001.mov", .verified, backup: backupB, wasReused: true),
+        ]
+        let outcome = make(
+            state: .completed(.init(success: true, message: "Already verified")),
+            rows: reusedRows
+        )
+
+        #expect(outcome.safetyState == .safeToErase)
+        #expect(outcome.verdict.detail == "Already on A and B · verified, nothing new copied")
+        #expect(outcome.copySummary == "The card · Already on A and B · verified, nothing new copied")
+    }
+
+    @Test func mixedNewAndReusedRunKeepsNormalVerifiedWording() {
+        let mixedRows = [
+            row("A001.mov", .verified, backup: backupA, wasReused: true),
+            row("A001.mov", .verified, backup: backupB),
+        ]
+        let outcome = make(
+            state: .completed(.init(success: true, message: "All files copied and verified")),
+            rows: mixedRows
+        )
+
+        #expect(outcome.verdict.detail.contains("verified on A and B"))
+        #expect(!outcome.verdict.detail.contains("nothing new copied"))
+        #expect(outcome.copySummary == "The card · 100 bytes · safe to erase · SHA-256 · A, B")
     }
 
     @Test func needsAttentionUsesNeutralFactualBackupRows() {

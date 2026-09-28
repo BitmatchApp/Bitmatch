@@ -40,6 +40,7 @@ public struct ResultRow: Identifiable, Sendable {
     public let destination: String?
     public let destinationPath: String?
     public let clipIntegrity: ClipIntegrityFinding?
+    public let wasReused: Bool
     
     public init(id: UUID = UUID(),
          path: String,
@@ -48,7 +49,8 @@ public struct ResultRow: Identifiable, Sendable {
          checksum: String?,
          destination: String?,
          destinationPath: String? = nil,
-         clipIntegrity: ClipIntegrityFinding? = nil) {
+         clipIntegrity: ClipIntegrityFinding? = nil,
+         wasReused: Bool = false) {
         self.id = id
         self.path = path
         self.status = status
@@ -57,6 +59,7 @@ public struct ResultRow: Identifiable, Sendable {
         self.destination = destination
         self.destinationPath = destinationPath
         self.clipIntegrity = clipIntegrity
+        self.wasReused = wasReused
     }
     
     public var fileName: String {
@@ -143,7 +146,7 @@ public struct ReportPrefs: Codable, Sendable {
 
 extension ResultRow: Codable {
     public enum CodingKeys: String, CodingKey, Sendable {
-        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity
+        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused
     }
 
     public init(from decoder: Decoder) throws {
@@ -156,8 +159,9 @@ extension ResultRow: Codable {
         let destination = try container.decodeIfPresent(String.self, forKey: .destination)
         let destinationPath = try container.decodeIfPresent(String.self, forKey: .destinationPath)
         let clipIntegrity = try container.decodeIfPresent(ClipIntegrityFinding.self, forKey: .clipIntegrity)
+        let wasReused = try container.decodeIfPresent(Bool.self, forKey: .wasReused) ?? false
 
-        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity)
+        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -170,5 +174,6 @@ extension ResultRow: Codable {
         try container.encodeIfPresent(destination, forKey: .destination)
         try container.encodeIfPresent(destinationPath, forKey: .destinationPath)
         try container.encodeIfPresent(clipIntegrity, forKey: .clipIntegrity)
+        if wasReused { try container.encode(true, forKey: .wasReused) }
     }
 }
