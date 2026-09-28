@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-28
+
+Faster, safer, and the same design on every device.
+
+- Faster: each card is read once and written to every drive at the same time. A two-drive Standard copy is about 30% faster; Thorough is about 40% faster.
+- Safer: `._` files are copied and verified; a card or destination folder that changes during a copy is never marked safe; online-only iCloud/Dropbox files are refused; two destinations on the same physical drive count as one backup; cards you already backed up are recognized.
+- Verification modes: Standard reads the card once and checks every drive; Thorough also re-reads the card; Paranoid also compares every byte.
+- iPhone and iPad use the same transfer rows as the Mac: a progress bar on iPhone that opens the queue, and a queue panel on iPad.
+- Clips that look cut off (camera stopped early) are flagged; a failed file names its clip and sidecars.
+- Copy and verify times are shown separately in History and reports.
+- In-app updates on Mac (Sparkle). Updates are signed and checked before they install.
+
 ## [0.2.0] - 2026-09-26
 
 A redesign release. On Mac, BitMatch is now one window that changes as you work: pick a card, pick destinations, Start, and it tells you in plain words when the card is safe to erase. Queue the next card right from the main screen, see past transfers in History, and get a notification when a card is done. Verification now reads the backup drive itself rather than a copy left in memory, and a transfer only counts as complete when every file is verified at its exact place on every destination. Settings, Compare, Master Report and the iPad layout were rebuilt to match, and the copy and verify engine is one Swift 6 package shared by every platform.
