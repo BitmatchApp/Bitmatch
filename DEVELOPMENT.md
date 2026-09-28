@@ -1,5 +1,7 @@
 # BitMatch Development Guide
 
+The working to-do list is [docs/TODO.md](docs/TODO.md).
+
 Read [docs/THESIS.md](docs/THESIS.md) for what BitMatch promises and the current plan, and [ARCHITECTURE.md](ARCHITECTURE.md) for how the code is laid out. [AGENTS.md](AGENTS.md) has the platform rules every change follows. This guide covers building, testing, debugging and releasing.
 
 ## Building
@@ -112,6 +114,15 @@ Debug builds of the Mac app have a **Developer** menu (`BitMatch/App/BitMatchApp
 
 Prerequisites: a Developer ID Application certificate for the release team, a notarytool profile named `bitmatch-notary` (override with `NOTARY_PROFILE`), and a Sparkle EdDSA key in the login Keychain.
 
+Release in this order:
+
+1. Raise `MARKETING_VERSION` **and** `CURRENT_PROJECT_VERSION` in the project, and add the version to `CHANGELOG.md`. Sparkle decides "newer" by the build number, so an unchanged build number means nobody gets the update.
+2. `Scripts/release_mac.sh <version>`: signed, notarized DMG in `dist/`. It re-signs Sparkle's helpers, which notarization requires.
+3. Smoke-test the signed app in `dist/BitMatch-<version>.xcarchive` on real or sample drives.
+4. Tag `v<version>` and publish the GitHub release as Latest with the DMG and its `.sha256`.
+5. `Scripts/bump_cask.sh <version>` for Homebrew.
+6. `Scripts/publish_appcast.sh <version>`, so installed copies see the update.
+
 ```bash
 xcrun notarytool store-credentials bitmatch-notary \
   --apple-id "APPLE_ID_EMAIL" \
@@ -123,7 +134,16 @@ Scripts/release_mac.sh 0.1.7
 
 The script builds, signs, notarizes, staples and checksums `dist/BitMatch-<version>.dmg` with a matching `.sha256`. `SKIP_NOTARIZE=1 Scripts/release_mac.sh <version>` checks signing and DMG creation without submitting to Apple. iPhone and iPad are build-from-source for now.
 
-Back up the Sparkle private key before the first release and store the export securely. From Sparkle's resolved package artifacts, run `generate_keys --account bitmatch -x <private-key-file>`. BitMatch uses its own Keychain account, `bitmatch`, separate from any other app's Sparkle key. Never commit the exported key. Use `generate_keys --account bitmatch -f <private-key-file>` to restore it on another Mac.
+### Where the Sparkle signing key lives
+
+Every update must be signed with the same private key, or installed copies refuse it. It lives in exactly two places, and neither is this repo:
+
+1. **The release Mac's login Keychain:** a generic password with account `bitmatch` (service `https://sparkle-project.org`). `Scripts/publish_appcast.sh` signs with it from there; nothing needs to be found by hand.
+2. **The backup:** an entry named **"BitMatch Sparkle private key"** in Apple's Passwords app. It syncs end-to-end encrypted to the maintainer's other Apple devices through iCloud Keychain.
+
+The matching public key is `SUPublicEDKey` in `Config/BitMatch-Info.plist`. Never change it; doing so cuts off updates to every existing install.
+
+To restore on a new Mac, copy the backup into a temporary file, run `generate_keys --account bitmatch -f <file>` from Sparkle's resolved package artifacts, then delete the file. To make a fresh backup export, run `generate_keys --account bitmatch -x <file>`. BitMatch uses its own Keychain account, `bitmatch`, separate from any other app's Sparkle key. Never commit an exported key.
 
 Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card to two destinations, check "safe to erase", Eject, and relaunch. Debug builds and tests do not exercise the sandboxed release paths.
 
