@@ -14,6 +14,8 @@ Faster, safer, and the same design on every device.
 - iPhone and iPad use the same transfer rows as the Mac: a progress bar on iPhone that opens the queue, and a queue panel on iPad.
 - Clips that look cut off (camera stopped early) are flagged; a failed file names its clip and sidecars.
 - Copy and verify times are shown separately in History and reports.
+- Smoother Mac window: it no longer jumps when you pick a card, Start and Add to queue carry the card down into its queue row, and finished rows open and close smoothly.
+- A card you copy again says "Already on … · verified, nothing new copied".
 - In-app updates on Mac (Sparkle). Updates are signed and checked before they install.
 
 ## [0.2.0] - 2026-09-26
