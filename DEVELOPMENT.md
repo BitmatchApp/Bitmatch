@@ -123,7 +123,7 @@ Scripts/release_mac.sh 0.1.7
 
 The script builds, signs, notarizes, staples and checksums `dist/BitMatch-<version>.dmg` with a matching `.sha256`. `SKIP_NOTARIZE=1 Scripts/release_mac.sh <version>` checks signing and DMG creation without submitting to Apple. iPhone and iPad are build-from-source for now.
 
-Back up the Sparkle private key before the first release and store the export securely. From Sparkle's resolved package artifacts, run `generate_keys -x <private-key-file>`. Never commit the exported key. Use `generate_keys -f <private-key-file>` to restore it on another Mac.
+Back up the Sparkle private key before the first release and store the export securely. From Sparkle's resolved package artifacts, run `generate_keys --account bitmatch -x <private-key-file>`. BitMatch uses its own Keychain account, `bitmatch`, separate from any other app's Sparkle key. Never commit the exported key. Use `generate_keys --account bitmatch -f <private-key-file>` to restore it on another Mac.
 
 Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card to two destinations, check "safe to erase", Eject, and relaunch. Debug builds and tests do not exercise the sandboxed release paths.
 
@@ -133,7 +133,7 @@ After publishing the GitHub release, publish its signed appcast entry:
 Scripts/publish_appcast.sh 0.1.7
 ```
 
-The script reads the archived app's build and short versions, signs the matching DMG with Sparkle's `sign_update` and the login Keychain, updates `appcast.xml` in [BitmatchApp/bitmatchapp.github.io](https://github.com/BitmatchApp/bitmatchapp.github.io), then commits and pushes the newest entry. It uses the resolved Sparkle package's tool when available and downloads the matching Sparkle release tools otherwise. It never exports the private key.
+The script reads the archived app's build and short versions, signs the matching DMG with Sparkle's `sign_update` and the `bitmatch` key in the login Keychain, updates `appcast.xml` in [BitmatchApp/bitmatchapp.github.io](https://github.com/BitmatchApp/bitmatchapp.github.io), then commits and pushes the newest entry. It uses the resolved Sparkle package's tool when available and downloads the matching Sparkle release tools otherwise. It never exports the private key.
 
 Then run `Scripts/bump_cask.sh <version>`. It checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
 

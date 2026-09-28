@@ -8,7 +8,7 @@
 	<key>SUFeedURL</key>
 	<string>https://bitmatchapp.github.io/appcast.xml</string>
 	<key>SUPublicEDKey</key>
-	<string>REPLACE_WITH_PUBLIC_ED_KEY</string>
+	<string>yPAreZNKpvD/1dUjfbAjtTt/7l2d5Xaf7UPiXxktnv4=</string>
 	<key>SUEnableInstallerLauncherService</key>
 	<true/>
 	<key>SUEnableAutomaticChecks</key>

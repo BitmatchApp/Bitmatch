@@ -118,8 +118,8 @@ if [[ -z "$SIGN_UPDATE" ]]; then
   exit 66
 fi
 
-echo "Signing BitMatch-$VERSION.dmg with the Sparkle key in the login Keychain"
-SIGN_OUTPUT=$("$SIGN_UPDATE" "$DMG_PATH")
+echo "Signing BitMatch-$VERSION.dmg with the BitMatch Sparkle key (Keychain account "bitmatch")"
+SIGN_OUTPUT=$("$SIGN_UPDATE" --account bitmatch "$DMG_PATH")
 ED_SIGNATURE=$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' <<<"$SIGN_OUTPUT")
 FILE_LENGTH=$(sed -n 's/.*length="\([0-9]*\)".*/\1/p' <<<"$SIGN_OUTPUT")
 
