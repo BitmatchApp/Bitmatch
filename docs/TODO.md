@@ -38,7 +38,6 @@ Small, safety-first, no new settings.
 - [ ] **iPhone and iPad through TestFlight**, then the App Store, so nobody has to build from source.
 - [ ] **A 60-second demo video** on the README and website: plug in a card, pick drives, Start, card safe to erase.
 - [ ] **Real screenshots** with real card names instead of the demo queue, once real cards are on hand.
-- [ ] **Listings:** follow up on the awesome-list pull requests and AlternativeTo, and post in filmmaker and DIT communities when 0.2.2 ships.
 - [ ] **Hardware reports:** ask early users to fill in the [hardware report template](HARDWARE_REPORT_TEMPLATE.md) for their cameras, readers and drives.
 
 ## Developer chores
