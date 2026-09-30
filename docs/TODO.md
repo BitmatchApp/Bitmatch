@@ -13,6 +13,7 @@ Small, safety-first, no new settings.
 - [ ] **MHL round trip.** Confirm that a second offload onto the same drive adds a new ASC MHL generation to the existing history chain, and that Check verifies against an existing MHL. Fix whatever doesn't.
 - [ ] **macOS 15.0.** Find out whether the minimum can drop from 15.5 to 15.0 at no cost. Don't go below 15; Swift 6 `Mutex` and some SwiftUI APIs need it.
 - [ ] **Re-copy files that fail verification.** When a file this run just wrote fails verification, re-copy and re-verify it once automatically. Never overwrite files that were already on the drive before the run.
+- [ ] **More detail in History.** An expanded History row shows the summary, source, destinations and files, but not the numbers. Add the date and time, file count, total size, copy and verify durations, and average speed, read from the record or the report. The collapsed row stays as compact as it is now, and an older report without timings shows a dash.
 - [ ] **Opt-in crash reports.** Apple's MetricKit crash and hang diagnostics, off by default. Nothing is sent without the user saying yes, and no third-party service.
 
 ## Later (after the feature freeze)
