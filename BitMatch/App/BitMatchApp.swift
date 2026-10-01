@@ -59,6 +59,7 @@ struct BitMatchApp: App {
     }()
 
     init() {
+        SharedLogger.transferEvent(.appStarted, run: nil)
         let environment = MacAppEnvironment.make()
         _environment = StateObject(wrappedValue: environment)
         _updater = StateObject(wrappedValue: UpdaterController(coordinator: environment.coordinator))
@@ -286,6 +287,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        SharedLogger.transferEvent(.appEnded, run: nil)
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

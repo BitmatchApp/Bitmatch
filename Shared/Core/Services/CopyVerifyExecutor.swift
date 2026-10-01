@@ -95,6 +95,8 @@ final class CopyVerifyExecutor {
     private var handoffTask: Task<[String], Error>?
     private var reportTask: Task<Void, Error>?
     private var cancellationRequested = false
+    private var loggedFileError = false
+    private var lastDiagnosticProgress: Date?
     private var diagnosticRun: UUID?
     private var acceptsPipelineProgress = false
     private var lastDiagnosticStage: ProgressStage?
@@ -142,10 +144,12 @@ final class CopyVerifyExecutor {
         diagnosticRun = config.operationId
         acceptsPipelineProgress = true
         lastDiagnosticStage = nil
+        lastDiagnosticProgress = nil
+        loggedFileError = false
         SharedLogger.transferEvent(.admitted, run: config.operationId)
         SharedLogger.transferConfiguration(run: config.operationId, source: config.sourceURL,
                                            destinations: config.destinationURLs, mhl: config.generateASCMHL,
-                                           report: config.reportSettings.makeReport)
+                                           report: config.reportSettings.makeReport, mode: config.verificationMode)
         completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
         completedPerformanceTelemetry = TransferPerformanceTelemetry()
         destinationRoots = config.destinationURLs
@@ -272,6 +276,11 @@ final class CopyVerifyExecutor {
             SharedLogger.transferPhase(progressUpdate.currentStage, run: diagnosticRun)
         }
 
+        if lastDiagnosticProgress.map { Date().timeIntervalSince($0) >= 10 } ?? true {
+            lastDiagnosticProgress = Date()
+            SharedLogger.transferProgress(progressUpdate, run: diagnosticRun)
+        }
+
         // Update timing service
         if let bytesProcessed = progressUpdate.bytesProcessed {
             timingService.updateProgress(
@@ -295,6 +304,10 @@ final class CopyVerifyExecutor {
         verificationMode: VerificationMode,
         callbacks: CopyVerifyCallbacks
     ) async {
+        if !loggedFileError, let error = fileResult.error {
+            loggedFileError = true
+            SharedLogger.transferError(error, run: diagnosticRun)
+        }
         timingService.recordFileResult(fileResult, verificationMode: verificationMode)
         let resultRow = TransferCompletion.row(from: fileResult, destinationRoots: destinationRoots)
 

@@ -90,6 +90,10 @@ See the [validation status](docs/HARDWARE_COMPATIBILITY.md) and [hardware testin
 
 More detail (queue and recovery, ASC MHL, photographer jobs, SFTP, cards and drives, building and tests, FAQ): [the guide](docs/GUIDE.md).
 
+## Something Went Wrong?
+
+Keep the card, then open **History → Export diagnostics…**. Attach that file to your [bug report](https://github.com/BitmatchApp/Bitmatch/issues), along with the drives and dock you were using. It keeps recent transfer phases and errors across an app restart, without footage names or paths. Nothing gets sent automatically. [What it includes](docs/DIAGNOSTICS.md).
+
 ## Contributing
 
 PRs welcome. For anything big, start a thread in [Discussions](https://github.com/BitmatchApp/Bitmatch/discussions) first so we can talk it through before you sink time into it. BitMatch is supposed to stay simple, and I'd hate for you to build something that doesn't fit.
