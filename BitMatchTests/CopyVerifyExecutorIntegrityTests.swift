@@ -263,6 +263,53 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.appendingPathComponent("Reports").path))
     }
 
+    func testUnexpectedCancellationErrorIsNotAnIntentionalCancellation() async throws {
+        let harness = ExecutorHarness(returnedResults: [], emittedResults: [], thrownError: CancellationError())
+        do { _ = try await harness.execute(); XCTFail("Must propagate interruption") }
+        catch is CancellationError { }
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertNil(harness.terminalInfo)
+    }
+
+    func testAuthoritativeIdentityFailureCannotBecomeSuccessfulHandoff() async throws {
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [])
+        harness.onAuthoritativeResults = { throw TransferInterruption.runSuperseded }
+        do { _ = try await harness.execute(); XCTFail("Must propagate identity failure") }
+        catch let error as TransferInterruption { XCTAssertEqual(error, .runSuperseded) }
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertNil(harness.terminalInfo)
+    }
+
+    func testParentTaskCancellationIsAnInterruption() async throws {
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [])
+        harness.onAuthoritativeResults = { withUnsafeCurrentTask { $0?.cancel() } }
+        let work = Task { try await harness.execute() }
+        do { _ = try await work.value; XCTFail("Parent cancellation must propagate") }
+        catch is CancellationError { }
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertNil(harness.terminalInfo)
+        XCTAssertFalse(Task.isCancelled, "Only the operation task was cancelled")
+    }
+
+    func testExplicitCancelRemainsCancelled() async throws {
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [])
+        harness.onAuthoritativeResults = { harness.cancel() }
+        do { _ = try await harness.execute(); XCTFail("Must propagate cancel") }
+        catch is CancellationError { }
+        XCTAssertEqual(harness.lastState, .cancelled)
+    }
+
+    func testMHLReadProgressIsNotFinishedBeforePublication() {
+        let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 50, totalBytes: 100,
+                                                         filesProcessed: 0, totalFiles: 1, published: false))
+        XCTAssertEqual(update.overallProgress, 0.5)
+        XCTAssertEqual(update.bytesProcessed, 50)
+        XCTAssertEqual(update.currentStage, .generating)
+        let publishing = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 100, totalBytes: 100,
+                                                             filesProcessed: 1, totalFiles: 1, published: false))
+        XCTAssertLessThan(publishing.overallProgress, 1)
+    }
+
     // MARK: - Mac keep-awake
 
     // Plant: delete `defer { keepAwake.release() }` in CopyVerifyExecutor.execute.
@@ -414,7 +461,8 @@ private final class ExecutorHarness {
     private(set) var completedRows: [ResultRow] = []
     private(set) var terminalInfo: OperationCompletionInfo?
     private(set) var publishedTerminalStates: [OperationState] = []
-    var onAuthoritativeResults: (() -> Void)?
+    var onAuthoritativeResults: (() throws -> Void)?
+    private(set) var lastState: OperationState?
     var onPresentError: (() -> Void)? {
         get { platform.onPresentError }
         set { platform.onPresentError = newValue }
@@ -482,6 +530,7 @@ private final class ExecutorHarness {
                 onProgress: { _ in },
                 onResult: { _ in },
                 onStateChange: { [weak self] state in
+                    self?.lastState = state
                     self?.stateService.adopt(state)
                     guard case .completed(let info) = state else { return }
                     self?.terminalInfo = info
@@ -489,7 +538,7 @@ private final class ExecutorHarness {
                 onAuthoritativeResults: { [weak self] rows in
                     guard let self else { return }
                     self.completedRows = rows
-                    self.onAuthoritativeResults?()
+                    try self.onAuthoritativeResults?()
                 }
             )
         )

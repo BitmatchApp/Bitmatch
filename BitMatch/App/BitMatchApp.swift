@@ -1,5 +1,6 @@
 // BitMatchApp.swift - Main app with dark theme configuration
 import AppKit
+import BitMatchEngine
 import SwiftUI
 import UserNotifications
 
@@ -383,7 +384,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let coordinator else {
                     throw SharedAppCoordinator.CancellationSettlementError.journalRecordMissing
                 }
-                try await coordinator.cancelOperationAndWaitForSettlement()
+                let origin: TransferCancelOrigin
+                switch action { case .quit: origin = .appQuit; case .close: origin = .windowClose }
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: origin)
                 _ = exitGuard.settlementFinished(success: true)
                 finish(action: action, allowExit: true)
             } catch {

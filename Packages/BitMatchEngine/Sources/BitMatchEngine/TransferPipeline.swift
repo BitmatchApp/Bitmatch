@@ -335,6 +335,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             estimatedTotalBytes: estimatedTotalBytes
         )
         
+        if let runID = TransferDiagnostics.runID {
+            SharedLogger.correlatePipeline(run: runID, pipeline: operation.id)
+        }
         // The run's gate reaches every read below it, including the verify
         // tasks it starts, and nothing outside it (I9).
         let operationTask = Task { [pauseGate] in
@@ -866,8 +869,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 SharedLogger.info("✅ Completed destination \(destIndex + 1)/\(destinationCount): \(destFolder.path)", category: .transfer)
             }
 
+            SharedLogger.transferEvent(.copyDrained, run: TransferDiagnostics.runID ?? operation.id, taskCancelled: Task.isCancelled)
             submitVerify.finish()
             try await run.waitForAll()
+            SharedLogger.transferEvent(.verificationDrained, run: TransferDiagnostics.runID ?? operation.id, taskCancelled: Task.isCancelled)
         }
         try Task.checkCancellation()
 

@@ -1,5 +1,6 @@
 // TransferCompletion.swift - What a finished copy run means.
 import Foundation
+import Synchronization
 
 /// The engine's decisions once the pipeline returns: one result row per file
 /// per backup, which backups get an ASC MHL history, and the verdict. The
@@ -270,21 +271,40 @@ public enum TransferCompletion: Sendable {
         planIssues: [String],
         startTime: Date,
         source: URL,
-        toolVersion: String
+        toolVersion: String, progress: ASCMHLGenerator.ProgressHandler? = nil, diagnosticRun: UUID? = nil
     ) throws -> [String] {
         var failures = planIssues
+        let totalBytes = jobs.flatMap(\.files).reduce(Int64(0)) { $0 + max(0, $1.size) }
+        let totalFiles = jobs.reduce(0) { $0 + $1.files.count }
+        var precedingBytes: Int64 = 0
+        var precedingFiles = 0
         for job in jobs {
+            let byteOffset = precedingBytes
+            let fileOffset = precedingFiles
+            let precedingJobsSucceeded = failures.isEmpty
+            let observed = Mutex<(bytes: Int64, files: Int)>((0, 0))
             try Task.checkCancellation()
             do {
                 _ = try ASCMHLGenerator.generateInitialHistory(
                     destinationURL: job.root, files: job.files, startTime: startTime,
-                    sourceURL: source, toolVersion: toolVersion
+                    sourceURL: source, toolVersion: toolVersion,
+                    progress: { update in
+                        observed.withLock { $0 = (update.bytesProcessed, update.filesProcessed) }
+                        progress?(ASCMHLGenerator.Progress(
+                            bytesProcessed: byteOffset + update.bytesProcessed, totalBytes: totalBytes,
+                            filesProcessed: fileOffset + update.filesProcessed, totalFiles: totalFiles,
+                            published: precedingJobsSucceeded && update.published && fileOffset + update.filesProcessed == totalFiles))
+                    }, diagnosticRun: diagnosticRun
                 )
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                SharedLogger.transferError(error, run: diagnosticRun)
                 failures.append("\(job.root.lastPathComponent): ASC MHL — \(error.localizedDescription)")
             }
+            let last = observed.withLock { $0 }
+            precedingBytes += last.bytes
+            precedingFiles += last.files
         }
         return failures
     }
