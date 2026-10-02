@@ -1,6 +1,6 @@
 # Synthetic transfer matrix
 
-The matrix uses disposable mounted APFS, journaled HFS+, exFAT and case-sensitive APFS images. Source and backup images are separate. It checks source hashes before/after transfers, destination hashes, terminal verdicts, report exports and ASC MHL handoff. Disk images exercise the real filesystem drivers, not USB controllers or physical drive failure.
+The matrix uses disposable mounted APFS, journaled HFS+, exFAT, case-sensitive APFS and FAT32 images. Sources and backups use separate images. It checks source hashes before/after transfers, destination hashes, terminal verdicts, report exports and ASC MHL handoff. Disk images exercise the real filesystem drivers; all images still share one host disk. They cannot prove physical backup independence or reproduce a USB controller failure.
 
 ## Run
 
@@ -9,36 +9,53 @@ bash Scripts/test-transfer-regression-matrix.sh
 BITMATCH_EXTENDED_MATRIX=1 bash Scripts/test-transfer-regression-matrix.sh
 bash Scripts/test-filesystem-fault-matrix.sh
 bash Scripts/test-full-transfer-matrix.sh
+MATRIX_FOCUS=features bash Scripts/test-full-transfer-matrix.sh
+MATRIX_FOCUS=rename bash Scripts/test-full-transfer-matrix.sh
+MATRIX_FOCUS=limits bash Scripts/test-full-transfer-matrix.sh
 MATRIX_FOCUS=collision bash Scripts/test-full-transfer-matrix.sh
 MATRIX_KEY=exfat-exfat-Standard-1-3 bash Scripts/test-full-transfer-matrix.sh
 ```
 
-Extended runs need macOS, Xcode, several minutes and space for disposable sparse images. Run Mac test jobs sequentially when sharing DerivedData. `MATRIX_DERIVED_DATA` can select a separate directory. Scripts detach their owned images without force and remove them only after successful detach. Busy images are retained with an explicit path.
+Runs need macOS, Xcode and space for disposable sparse images. Run jobs sequentially when sharing DerivedData. `MATRIX_DERIVED_DATA` selects a separate directory. Tests check filesystem types, distinct mounted devices and ownership markers before mutation. Scripts detach owned images without force and remove them only after successful detach. Busy images are retained with an explicit path.
 
-## Coverage and October 1, 2026 results
+## Coverage
 
-| Suite | Coverage | Result |
-| --- | --- | --- |
-| Full executor | 4 source × 4 backup filesystems × 4 verification modes × 1/2 backups × MHL/report options; initial + repeat | 512 combinations / 1,024 operations completed; 27 combinations had 49 assertion failures |
-| Mounted faults/payloads | 48 fault conditions + 6 payload conditions per filesystem | 44 XCTest methods / 216 scenarios passed across four filesystems |
-| Filename collisions | Two distinct case-sensitive names onto four filesystems, four modes | 16 cases passed after correcting the test to honor the existing conservative manifest policy |
-| Seeded soak | 100 iterations, seed 20261001, nine files, two backups | Passed; 1,800 independently hash-checked outputs |
-| Issue #10 filesystem pair | Journaled HFS+ source → exFAT backup, full executor/MHL/report path | 26 selected tests passed |
-| Regular engine suite | Includes verifier interruption regression in sequential and pipelined paths | 106 XCTest methods, 15 opt-in skips, zero failures; 123 Swift Testing tests passed |
-| Mac app / iPad | Full Mac tests; iPad simulator build | Passed |
+| Suite | Coverage |
+| --- | --- |
+| Full executor | 5 source × 5 backup filesystems × 4 verification modes × 1/2 backups × 4 MHL/report options; 800 combinations, each initial + repeat (1,600 operations) |
+| Project ingest / reports | 270 combinations: five backup filesystems, three workflows, three labels, three verified modes, one/two backups; real draft preparation and ingest lifecycle, saved job roundtrip, MHL, PDF/CSV/JSON and Master Report |
+| Folder naming | 320 combinations: five filesystems, prefix/suffix, four separators, grouping on/off, Unicode/traversal-like labels, Quick/Standard; original media filenames unchanged |
+| Mounted faults / payloads | 55 XCTest methods, 270 scenarios across five filesystems |
+| Filename collisions | 20 cases, five backup filesystems and four modes; conservative rejection of ambiguous source names |
+| FAT32 file limit | Real sparse 4 GiB + 1 byte source to FAT32 and APFS simultaneously; FAT32 returns EFBIG, APFS independently verifies, overall verdict stays unsafe, failed backup has no complete MHL |
+| Seeded soak | 200 iterations, seed 20261002, nine files and two backups; 3,600 independently hash-checked outputs |
 
-Fixtures include empty files/directories, tiny files, 64 MiB files, 1,000-file cards, 24-level nesting, Unicode, spaces, hidden metadata and AppleDouble files. Faults include destination removal/replacement, conflicting files, incomplete histories, truncated media, write/flush/close/publication errors, readback errors, cancellation before start and cancellation thrown during copy/verification. Errors are injected through existing engine hooks; disks are not physically unplugged or filled to simulate ENOSPC.
+Fixtures include empty files/directories, tiny files, 64 MiB files, 1,000-file cards, 24-level nesting, Unicode, spaces, hidden metadata and real AppleDouble files. Faults include destination removal/replacement, conflicting files, incomplete histories, truncated media, write/flush/close/publication errors, readback errors, cancellation before start and cancellation thrown during copy/verification. Error hooks inject faults; disks are not physically unplugged or filled to simulate ENOSPC.
 
-## Confirmed fix
+## Confirmed defects and fixes
 
-A verifier that throws `CancellationError` without cancelling its parent previously had its interruption swallowed in the pipelined path, or recorded as an ordinary file error in the sequential path. The pipeline now propagates that interruption in both paths. A focused regression covers Standard, Thorough and Paranoid; mounted tests established failure before the fix and success afterward. This is a separate confirmed defect, not proof of the issue #10 reporter's cause.
+- Verifier `CancellationError` now propagates in both sequential and pipelined paths instead of being swallowed or recorded as an ordinary file error. This was reproduced before the fix.
+- Mounted runs exposed AppleDouble sidecar publication races. Media now finishes publication before its AppleDouble companions. No manifest entry is dropped. A deterministic ordering regression failed before the fix and passed afterward.
+- When a destination file appears during publication, verified modes may reuse it only after the existing pinned, uncached matching checks prove it matches. Conflicts remain failures and existing files are never overwritten. Deterministic publication-race regressions establish this behavior.
+- Reports previously counted result rows across backups as source files/bytes. They now count unique source paths; result statistics still count individual copies. Master Report no longer doubles card totals for two backups.
+- Saved JSON previously lost the overall transfer safety verdict. A transfer requiring attention could consequently become “Verified” in Master Report despite its terminal verdict. New version 3.1 reports preserve `safeToErase`. Declared result totals must also agree with matched counts.
+- New reports requesting a PDF include its filename and SHA-256. Master Report checks this final publication marker through pinned, uncached reads before accepting a verified verdict. Missing or damaged PDFs remain unverified. PDF checks are streamed and capped at 256 MiB. JSON-only reports need no PDF; legacy reports remain readable but cannot recover verdict information they never stored.
 
-## Open finding
+The initial expanded transfer run failed on metadata publication; the corrected 800-case run passed. Its 200 Quick combinations remain unverified by design. 48 initial Quick cases deliberately refuse metadata files they cannot prove match; repeat Quick transfers refuse existing files too. These are expected safety outcomes, not verified transfers. All 600 verified-mode combinations passed.
 
-The broad executor run intermittently refused publication of AppleDouble sidecars when an exFAT source was copied onto an exFAT backup. This also occurred when the exFAT backup was the second destination after HFS+. The destination sidecar appeared during publication or already existed when Quick mode attempted it. BitMatch refused overwrite, retained an unsafe terminal verdict, and withheld complete MHL history for the failed backup. Source and destination byte-hash assertions did not fail.
+Local red/green logs and final gate results are retained under `dist/validation/transfer-matrix-20261002`. XCTest exit status is authoritative; a count of completed combinations alone is not evidence of success.
 
-27 combinations failed the all-success expectation. A selected rerun of `exfat-exfat-Standard-1-3` passed. The source fixture has macOS provenance metadata and real AppleDouble files; whether the collision originates in app behavior or external filesystem metadata activity is unresolved. Do not suppress sidecars, overwrite them, weaken verdicts, or mark this matrix fully green. `MATRIX_INITIAL_FAILURE` records failed initial rows on future runs; XCTest's exit status is authoritative, not the number of combinations completed.
+## App and engine gates
 
-Local raw evidence is retained under `dist/validation/transfer-matrix-20261001` and `dist/validation/fault-matrix-20261001-210325`. The individual filter above is provided to aid further reproduction.
+Full Mac tests and the iPad simulator build passed. The engine bundle passed 109 XCTest tests (15 opt-in skips, zero failures) and 123 Swift Testing tests. On this Xcode installation, the standalone `swift test` launcher could not load its XCTest bundle, including after a clean native build. Running that same bundle directly with `xcrun xctest` passed both suites. The launcher error is not counted as a passing test run. The independent invocation was:
 
-Uncovered conditions include physical dock/cable disconnection, real power loss, SMB/NAS/cloud providers, files larger than 4 GiB, real out-of-space disks, extended thermal/throttling runs and iOS background suspension. Mounted images cannot reproduce the reporter's hardware chain exactly.
+```sh
+swift test --package-path Packages/BitMatchEngine --build-system native --scratch-path .derived-data/engine-native
+xcrun xctest .derived-data/engine-native/arm64-apple-macosx/debug/BitMatchEnginePackageTests.xctest
+```
+
+The first command builds the bundle but reports the launcher failure on this machine; the second must independently complete successfully.
+
+## Limits
+
+These findings are real local defects, not proof of the issue #10 reporter's exact cause. Uncovered conditions include physical dock/cable disconnection, real power loss, SMB/NAS/cloud providers, actual out-of-space disks, extended thermal/throttling runs and iOS background suspension. PDF tests parse actual generated documents; they do not replace a device UI walkthrough. Project coverage exercises BitMatch's card-ingest workflows, not a new external project-file import feature.

@@ -543,7 +543,7 @@ struct ReportView: View {
                 .font(.system(size: 14, weight: .semibold))
             
             HStack(spacing: 40) {
-                StatBox(title: "Files", value: "\(reportStatistics.totalFiles)", color: .blue)
+                StatBox(title: "File results", value: "\(reportStatistics.totalFiles)", color: .blue)
                 StatBox(title: "Verified", value: "\(verifiedFileCount)", color: isFullyVerified ? .green : .orange)
                 StatBox(title: "Issues", value: "\(issueCount)", color: issueCount > 0 ? .orange : .gray)
                 StatBox(title: "Success Rate",

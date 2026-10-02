@@ -15,6 +15,9 @@ if [[ "${BITMATCH_EXTENDED_MATRIX:-0}" == 1 ]]; then
   failed=0
   bash "$ROOT/Scripts/test-filesystem-fault-matrix.sh" > "$LOG_DIR/faults.log" 2>&1 || failed=1
   bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/full.log" 2>&1 || failed=1
+  MATRIX_FOCUS=features bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/features.log" 2>&1 || failed=1
+  MATRIX_FOCUS=rename bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/rename.log" 2>&1 || failed=1
+  MATRIX_FOCUS=limits bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/limits.log" 2>&1 || failed=1
   MATRIX_FOCUS=collision bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/collisions.log" 2>&1 || failed=1
   if [[ "$failed" != 0 ]]; then echo "Extended matrix has failures. Logs: $LOG_DIR" >&2; exit 1; fi
 fi

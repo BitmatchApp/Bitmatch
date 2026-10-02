@@ -10,6 +10,22 @@ import BitMatchEngine
 
 @MainActor
 final class ReportEvidenceBytesTests: XCTestCase {
+    func testSourceTotalsCountOriginalsOnceAcrossBackups() throws {
+        let rows = ["/card/clip.mov", "/card/clip.xml", "/card/empty.raw"].enumerated().flatMap { index, path in
+            ["A", "B", "C"].map { backup in
+                ResultRow(path: path, status: "✅ Verified", size: Int64(index * 1024),
+                    checksum: "digest", destination: backup, destinationPath: "/\(backup)/\(index)")
+            }
+        }
+        let report = try ReportExporter.makeEnhancedJSONReport(results: rows, jobID: UUID(), started: Date(), finished: Date(),
+            mode: .copyAndVerify, sourceURL: URL(fileURLWithPath: "/card"), destinationURLs: [],
+            fileCount: rows.count, matchCount: rows.count, totalBytesProcessed: 9216, duration: 1,
+            workers: 1, prefs: ReportPrefs(verificationMode: .standard), photographerContext: nil)
+        XCTAssertEqual(report.source.fileCount, 3)
+        XCTAssertEqual(report.source.totalSize, 3072)
+        XCTAssertEqual(report.results.count, 9)
+    }
+
     /// Fails if `CopyVerifyExecutor.generateReport` passes
     /// `config.estimatedBytes` as `totalBytesProcessed` again.
     func testReportBytesComeFromResultsNotTheEstimate() async throws {

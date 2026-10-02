@@ -59,6 +59,63 @@ struct ReportScannerTests {
         return url
     }
 
+    @Test(arguments: [CardSafetyState.safeToErase, .needsAttention, .failed, .interrupted, .copiedNotVerified])
+    func savedTerminalSafetySurvivesMasterReportScan(safety: CardSafetyState) async throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let finished = Date()
+        let rows = [ResultRow(path: "/card/clip.mov", status: "✅ Verified", size: 4096,
+            checksum: "abc", destination: root.path, destinationPath: root.appendingPathComponent("clip.mov").path)]
+        try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: finished.addingTimeInterval(-1),
+            finished: finished, sourceURL: URL(fileURLWithPath: "/card"), destinationURLs: [root], results: rows,
+            fileCount: 1, matchCount: 1, prefs: ReportPrefs(verificationMode: .standard, makeReport: true),
+            workers: 1, totalBytesProcessed: 4096, safetyState: safety)
+        let files = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let json = try #require(files.first { $0.pathExtension == "json" })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        #expect(object["safeToErase"] as? Bool == (safety == .safeToErase))
+        let cards = await ReportScanner.scan(at: root)
+        #expect(cards.count == 1)
+        #expect(cards.first?.verified == (safety == .safeToErase))
+    }
+
+    @Test(arguments: [true, false])
+    func missingOrDamagedRequestedPDFNeverClaimsVerification(remove: Bool) async throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let finished = Date()
+        let rows = [ResultRow(path: "/card/clip.mov", status: "✅ Verified", size: 4096, checksum: "abc", destination: root.path)]
+        try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: finished.addingTimeInterval(-1),
+            finished: finished, sourceURL: URL(fileURLWithPath: "/card"), destinationURLs: [root], results: rows,
+            fileCount: 1, matchCount: 1, prefs: ReportPrefs(verificationMode: .standard, makeReport: true),
+            workers: 1, totalBytesProcessed: 4096, safetyState: .safeToErase)
+        let initialCards = await ReportScanner.scan(at: root)
+        #expect(initialCards.first?.verified == true)
+        let files = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let pdf = try #require(files.first { $0.pathExtension == "pdf" })
+        if remove { try FileManager.default.removeItem(at: pdf) }
+        else { try Data("truncated PDF".utf8).write(to: pdf) }
+        let cards = await ReportScanner.scan(at: root)
+        #expect(cards.count == 1)
+        #expect(cards.first?.verified == false)
+    }
+
+    @Test(arguments: [0, 1, 3, -1])
+    func inconsistentResultTotalsNeverClaimVerification(declaredTotal: Int) async throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let finished = Date()
+        var object = try #require(JSONSerialization.jsonObject(with: reportData(mode: .standard, root: root, finished: finished)) as? [String: Any])
+        var statistics = try #require(object["statistics"] as? [String: Any])
+        statistics["totalFiles"] = declaredTotal
+        object["statistics"] = statistics
+        let url = root.appendingPathComponent(EvidenceWriter.reportFileName(finished: finished, pathExtension: "json"))
+        try JSONSerialization.data(withJSONObject: object).write(to: url)
+        let cards = await ReportScanner.scan(at: root)
+        #expect(cards.count == 1)
+        #expect(cards.first?.verified == false)
+    }
+
     // MARK: - Filenames
 
     /// Plant: in `EvidenceReader.isReportFilename`, delete the line

@@ -14,7 +14,7 @@ cleanup() {
 trap cleanup EXIT
 swift build --build-tests --package-path "$ROOT/Packages/BitMatchEngine" > "$LOG_DIR/build.log" 2>&1
 failed=0
-for item in 'apfs:APFS' 'hfs:JHFS+' 'exfat:ExFAT' 'apfsx:Case-sensitive APFS'; do
+for item in 'apfs:APFS' 'hfs:JHFS+' 'exfat:ExFAT' 'apfsx:Case-sensitive APFS' 'fat:MS-DOS FAT32'; do
  name=${item%%:*}; fs=${item#*:}
  mkdir "$PAIR/$name"
  hdiutil create -size 3g -type SPARSE -fs "$fs" -volname "BM_${name}" -o "$PAIR/$name.sparseimage"
@@ -22,7 +22,9 @@ for item in 'apfs:APFS' 'hfs:JHFS+' 'exfat:ExFAT' 'apfsx:Case-sensitive APFS'; d
  MOUNTS+=("$PAIR/$name")
  mkdir "$PAIR/$name/tmp"
  touch "$PAIR/$name/.bitmatch-fault-owned"
- BITMATCH_FAULT_MATRIX_MOUNT="$PAIR/$name" BITMATCH_FAULT_MATRIX_TYPE="${name/apfsx/apfs}" swift test --skip-build --package-path "$ROOT/Packages/BitMatchEngine" \
+ expected="${name/apfsx/apfs}"
+ if [[ "$name" == fat ]]; then expected=msdos; fi
+ BITMATCH_FAULT_MATRIX_MOUNT="$PAIR/$name" BITMATCH_FAULT_MATRIX_TYPE="$expected" swift test --skip-build --package-path "$ROOT/Packages/BitMatchEngine" \
   --filter MountedFilesystemFaultTests \
   > "$LOG_DIR/$name.log" 2>&1 || failed=1
  echo "Filesystem $name tested; log: $LOG_DIR/$name.log"
