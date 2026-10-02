@@ -1,5 +1,6 @@
 // BitMatchApp.swift - Main app with dark theme configuration
 import AppKit
+import BitMatchEngine
 import SwiftUI
 import UserNotifications
 
@@ -58,6 +59,7 @@ struct BitMatchApp: App {
     }()
 
     init() {
+        SharedLogger.transferEvent(.appStarted, run: nil)
         let environment = MacAppEnvironment.make()
         _environment = StateObject(wrappedValue: environment)
         _updater = StateObject(wrappedValue: UpdaterController(coordinator: environment.coordinator))
@@ -287,6 +289,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         NSApplication.shared.appearance = NSAppearance(named: .darkAqua)
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        SharedLogger.transferEvent(.appEnded, run: nil)
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         switch exitGuard.request(needsGuard: shouldAskToStopTransfer) {
         case .allowNow:
@@ -383,7 +389,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let coordinator else {
                     throw SharedAppCoordinator.CancellationSettlementError.journalRecordMissing
                 }
-                try await coordinator.cancelOperationAndWaitForSettlement()
+                let origin: TransferCancelOrigin
+                switch action { case .quit: origin = .appQuit; case .close: origin = .windowClose }
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: origin)
                 _ = exitGuard.settlementFinished(success: true)
                 finish(action: action, allowExit: true)
             } catch {

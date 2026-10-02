@@ -95,6 +95,11 @@ final class CopyVerifyExecutor {
     private var handoffTask: Task<[String], Error>?
     private var reportTask: Task<Void, Error>?
     private var cancellationRequested = false
+    private var loggedFileError = false
+    private var lastDiagnosticProgress: Date?
+    private var diagnosticRun: UUID?
+    private var acceptsPipelineProgress = false
+    private var lastDiagnosticStage: ProgressStage?
     private var destinationRoots: [URL] = []
     private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
     private(set) var completedPerformanceTelemetry = TransferPerformanceTelemetry()
@@ -125,7 +130,26 @@ final class CopyVerifyExecutor {
         config: CopyVerifyConfig,
         callbacks: CopyVerifyCallbacks
     ) async throws -> FileOperation? {
+        try await withTaskCancellationHandler(operation: {
+            try await TransferDiagnostics.$runID.withValue(config.operationId) {
+                try await executeRun(config: config, callbacks: callbacks)
+            }
+        }, onCancel: {
+            SharedLogger.transferEvent(.parentCancelled, run: config.operationId, taskCancelled: true)
+        })
+    }
+
+    private func executeRun(config: CopyVerifyConfig, callbacks: CopyVerifyCallbacks) async throws -> FileOperation? {
         cancellationRequested = false
+        diagnosticRun = config.operationId
+        acceptsPipelineProgress = true
+        lastDiagnosticStage = nil
+        lastDiagnosticProgress = nil
+        loggedFileError = false
+        SharedLogger.transferEvent(.admitted, run: config.operationId)
+        SharedLogger.transferConfiguration(run: config.operationId, source: config.sourceURL,
+                                           destinations: config.destinationURLs, mhl: config.generateASCMHL,
+                                           report: config.reportSettings.makeReport, mode: config.verificationMode)
         completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
         completedPerformanceTelemetry = TransferPerformanceTelemetry()
         destinationRoots = config.destinationURLs
@@ -162,11 +186,12 @@ final class CopyVerifyExecutor {
         callbacks.onStateChange(stateService.currentState)
 
         do {
+            try checkCancellation()
             timingService.updateStage(.copying)
 
             let progressCallback: FileOperationsService.ProgressCallback = { [weak self] progressUpdate in
                 Task { @MainActor in
-                    guard let self else { return }
+                    guard let self, self.acceptsPipelineProgress, self.diagnosticRun == config.operationId else { return }
                     self.handleProgress(progressUpdate, callbacks: callbacks)
                 }
             }
@@ -219,6 +244,10 @@ final class CopyVerifyExecutor {
             )
 #endif
 
+            acceptsPipelineProgress = false
+            SharedLogger.transferEvent(.pipelineDrained, run: config.operationId)
+            SharedLogger.correlatePipeline(run: config.operationId, pipeline: operation.id)
+            try checkCancellation()
             return try await handleSuccess(
                 operation: operation,
                 config: config,
@@ -226,6 +255,7 @@ final class CopyVerifyExecutor {
             )
 
         } catch {
+            acceptsPipelineProgress = false
             // Release before handleError, which can wait on an error alert.
             keepAwake.release()
             await handleError(
@@ -241,6 +271,15 @@ final class CopyVerifyExecutor {
 
     private func handleProgress(_ progressUpdate: OperationProgress, callbacks: CopyVerifyCallbacks) {
         callbacks.onProgress(progressUpdate)
+        if lastDiagnosticStage != progressUpdate.currentStage {
+            lastDiagnosticStage = progressUpdate.currentStage
+            SharedLogger.transferPhase(progressUpdate.currentStage, run: diagnosticRun)
+        }
+
+        if lastDiagnosticProgress.map { Date().timeIntervalSince($0) >= 10 } ?? true {
+            lastDiagnosticProgress = Date()
+            SharedLogger.transferProgress(progressUpdate, run: diagnosticRun)
+        }
 
         // Update timing service
         if let bytesProcessed = progressUpdate.bytesProcessed {
@@ -265,6 +304,10 @@ final class CopyVerifyExecutor {
         verificationMode: VerificationMode,
         callbacks: CopyVerifyCallbacks
     ) async {
+        if !loggedFileError, let error = fileResult.error {
+            loggedFileError = true
+            SharedLogger.transferError(error, run: diagnosticRun)
+        }
         timingService.recordFileResult(fileResult, verificationMode: verificationMode)
         let resultRow = TransferCompletion.row(from: fileResult, destinationRoots: destinationRoots)
 
@@ -320,6 +363,10 @@ final class CopyVerifyExecutor {
         // verified media stays described as verified, but completion is issues.
         let reportIssue: String?
         if config.reportSettings.makeReport && !allResults.isEmpty {
+            timingService.updateStage(.generating)
+            callbacks.onProgress(OperationProgress(
+                overallProgress: 0, currentFile: "Writing transfer reports…",
+                filesProcessed: 0, totalFiles: allResults.count, currentStage: .generating, speed: nil))
             reportIssue = try await generateReport(
                 operation: operation,
                 results: allResults,
@@ -388,22 +435,53 @@ final class CopyVerifyExecutor {
         timingService.beginMHL(bytes: mhlBytes)
         defer { timingService.endMHL() }
         stateService.updateCapabilities(canPause: false, canResume: false)
-        callbacks.onProgress(OperationProgress(
-            overallProgress: 1, currentFile: "Creating ASC MHL handoff records…",
-            filesProcessed: operation.results.count, totalFiles: operation.results.count,
-            currentStage: .verifying, speed: nil))
+        SharedLogger.transferEvent(.mhlStarted, run: config.operationId)
+        let channel = AsyncStream<ASCMHLGenerator.Progress>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let consumer = Task { @MainActor in
+            for await update in channel.stream {
+                self.handleProgress(Self.mhlProgress(update), callbacks: callbacks)
+            }
+        }
+        callbacks.onProgress(Self.mhlProgress(.init(bytesProcessed: 0, totalBytes: mhlBytes,
+                                                    filesProcessed: 0, totalFiles: plan.jobs.flatMap(\.files).count,
+                                                    published: false)))
         let sourceURL = config.sourceURL
         let startTime = operation.startTime
+        let run = config.operationId
         let toolVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
         let work = Task.detached(priority: .utility) { () throws -> [String] in
-            try TransferCompletion.writeASCMHL(
+            defer { channel.continuation.finish() }
+            return try TransferCompletion.writeASCMHL(
                 plan.jobs, planIssues: plan.issues, startTime: startTime,
-                source: sourceURL, toolVersion: toolVersion
+                source: sourceURL, toolVersion: toolVersion,
+                progress: { channel.continuation.yield($0) }, diagnosticRun: run
             )
         }
         handoffTask = work
         defer { handoffTask = nil }
-        return try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+        do {
+            let issues = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: {
+                SharedLogger.transferEvent(.parentCancelled, run: run)
+                work.cancel()
+            })
+            await consumer.value
+            SharedLogger.transferEvent(.mhlFinished, run: run, code: issues.count)
+            return issues
+        } catch {
+            await consumer.value
+            throw error
+        }
+    }
+
+    static func mhlProgress(_ update: ASCMHLGenerator.Progress) -> OperationProgress {
+        let fraction = update.totalBytes > 0
+            ? min(1, Double(update.bytesProcessed) / Double(update.totalBytes)) : 0
+        return OperationProgress(
+            overallProgress: update.published ? 1 : min(0.99, fraction),
+            currentFile: update.published ? "ASC MHL records saved" : "Creating ASC MHL — checking destination media…",
+            filesProcessed: update.filesProcessed, totalFiles: update.totalFiles,
+            currentStage: .generating, speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
+            bytesProcessed: update.bytesProcessed, totalBytes: update.totalBytes, stageProgress: fraction, isASCMHL: true)
     }
 
     private func handleError(
@@ -411,11 +489,17 @@ final class CopyVerifyExecutor {
         config: CopyVerifyConfig,
         callbacks: CopyVerifyCallbacks
     ) async {
-        if error is CancellationError {
+        SharedLogger.transferError(error, run: config.operationId, explicit: cancellationRequested)
+        if error is CancellationError || error is TransferInterruption {
             timingService.cancelOperation()
             errorService.completeErrorTracking()
-            stateService.cancelOperation(operationId: config.operationId)
-            callbacks.onStateChange(.cancelled)
+            if cancellationRequested {
+                stateService.cancelOperation(operationId: config.operationId)
+                callbacks.onStateChange(.cancelled)
+            } else {
+                stateService.failOperation(operationId: config.operationId)
+                callbacks.onStateChange(.failed)
+            }
         } else {
             let context = ErrorContext.general(operation: "File Operation", stage: "Execution")
             errorService.reportError(error, context: context)
@@ -444,6 +528,7 @@ final class CopyVerifyExecutor {
         phaseDurations: OperationPhaseDurations
     ) async throws -> String? {
         try checkCancellation()
+        SharedLogger.transferEvent(.reportStarted, run: config.operationId)
         // Matches are verified files only; a Quick copy is not a match.
         let matchCount = results.filter { TransferOutcomePresentation.isVerified($0) }.count
         // Evidence (Promise 3): bytes actually copied, one row per file per
@@ -490,6 +575,7 @@ final class CopyVerifyExecutor {
         do {
             try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
             try checkCancellation()
+            SharedLogger.transferEvent(.reportFinished, run: config.operationId)
             return nil
         } catch is CancellationError {
             throw CancellationError()
@@ -510,6 +596,8 @@ final class CopyVerifyExecutor {
                 didPersist: true,
                 locallySafe: result?.locallySafe
             )
+        } catch let interruption as TransferInterruption {
+            throw interruption
         } catch is CancellationError {
             throw CancellationError()
         } catch {

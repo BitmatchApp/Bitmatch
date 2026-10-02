@@ -221,17 +221,23 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
     /// Descends from `/` one descriptor at a time so `O_NOFOLLOW` protects
     /// every selected-destination component, not merely the final one.
     private static func openDirectory(at url: URL, description: String) throws -> Int32 {
-        let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
+        // Ancestors only need lookup/search access. O_RDONLY also asks to list
+        // their contents, which a scoped folder grant (or search-only mode)
+        // need not allow. The selected folder still opens for actual reads.
+        let searchFlags = O_SEARCH | O_NOFOLLOW | O_CLOEXEC
+        let selectedFlags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         let components = descriptorSafePathComponents(for: url)
         guard components.first == "/" else {
             throw FileOperationError.unsafeOperation("\(description) must be an absolute folder")
         }
 
-        var currentFD = "/".withCString { Darwin.open($0, flags) }
+        let rootFlags = components.count == 1 ? selectedFlags : searchFlags
+        var currentFD = "/".withCString { Darwin.open($0, rootFlags) }
         guard currentFD >= 0 else { throw posixError("Unable to open filesystem root") }
         do {
-            for component in components.dropFirst() {
+            for (index, component) in components.dropFirst().enumerated() {
                 try validate(component: component)
+                let flags = index == components.count - 2 ? selectedFlags : searchFlags
                 let childFD = component.withCString { openat(currentFD, $0, flags) }
                 guard childFD >= 0 else {
                     if errno == ELOOP || (errno == ENOTDIR && isSymbolicLink(named: component, relativeTo: currentFD)) {

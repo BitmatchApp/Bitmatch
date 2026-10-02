@@ -10,6 +10,8 @@ struct TransferLibraryView: View {
     @State private var errorMessage: String?
     @State private var exportDocument: TransferHistoryDocument?
     @State private var showExport = false
+    @State private var showDiagnostics = false
+    @State private var diagnosticsDocument: TransferDiagnosticsDocument?
     @State private var reauthorizeRecord: LocalTransferRecord?
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
@@ -74,6 +76,10 @@ struct TransferLibraryView: View {
                           defaultFilename: "BitMatch-transfer") { result in
                 if case .failure(let error) = result { errorMessage = error.localizedDescription }
             }
+            .fileExporter(isPresented: $showDiagnostics, document: diagnosticsDocument,
+                          contentType: .json, defaultFilename: "BitMatch-diagnostics") { result in
+                if case .failure(let error) = result { errorMessage = error.localizedDescription }
+            }
         #if os(macOS)
         .onExitCommand { onBack?() }
         #endif
@@ -124,6 +130,24 @@ struct TransferLibraryView: View {
                     #endif
                 }
             }
+            VStack(alignment: .leading, spacing: 4) {
+                Button {
+                    do {
+                        diagnosticsDocument = TransferDiagnosticsDocument(data: try TransferDiagnosticStore.shared.exportData())
+                        showDiagnostics = true
+                    } catch { errorMessage = "Diagnostics could not be exported. \(error.localizedDescription)" }
+                } label: {
+                    Label("Export diagnostics…", systemImage: "doc.badge.gearshape")
+                        .frame(minHeight: 44)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.primary)
+                Text("Recent transfer phases and errors. No footage names or paths. Nothing is sent automatically.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding()
         }
     }
 
@@ -441,5 +465,17 @@ struct ReauthorizeLocationsView: View {
             message = error.localizedDescription
             messageIsError = true
         }
+    }
+}
+
+private struct TransferDiagnosticsDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+    let data: Data
+    init(data: Data) { self.data = data }
+    init(configuration: ReadConfiguration) throws {
+        data = configuration.file.regularFileContents ?? Data()
+    }
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
     }
 }

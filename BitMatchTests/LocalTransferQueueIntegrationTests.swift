@@ -6,6 +6,27 @@ import BitMatchEngine
 
 @MainActor
 final class LocalTransferQueueIntegrationTests: XCTestCase {
+    func testUnexpectedCancellationErrorPersistsInterruptedRatherThanCancelled() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        var reports = ReportPrefs()
+        reports.makeReport = false
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                                     cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: UnexpectedCancellationOperations()),
+                                               transferJournal: journal, defaults: f.defaults)
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(5)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let persisted = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
+        XCTAssertEqual(persisted.first?.state, .interrupted)
+        XCTAssertTrue(persisted.first?.summary.contains("unexpectedly") == true)
+        XCTAssertFalse(coordinator.queueIsRunning)
+    }
+
     func testRealTwoCardQueueCopiesVerifiesAndPersistsBothAttempts() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -1672,4 +1693,15 @@ private final class QueueCameraDetectionService: CameraDetectionService {
     func analyzeFolderStructure(at url: URL) async throws -> [String: Any] { [:] }
     func extractVideoMetadata(from fileURL: URL) async throws -> [String: Any] { [:] }
     func parseXMLMetadata(from fileURL: URL) async throws -> [String: Any] { [:] }
+}
+
+private final class UnexpectedCancellationOperations: FileOperationsService, @unchecked Sendable {
+    func performFileOperation(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
+                              settings: CameraLabelSettings, estimatedTotalBytes: Int64?,
+                              progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?) async throws -> FileOperation {
+        throw CancellationError() // Deliberately NOT Task.cancel(): error type alone is not user intent.
+    }
+    func cancelOperation() {}
+    func pauseOperation() async {}
+    func resumeOperation() async {}
 }

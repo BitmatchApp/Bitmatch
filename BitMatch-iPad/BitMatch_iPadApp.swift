@@ -11,6 +11,7 @@ struct BitMatch_iPadApp: App {
     private let notifDelegate = NotificationDelegate()
     
     init() {
+        SharedLogger.transferEvent(.appStarted, run: nil)
         UNUserNotificationCenter.current().delegate = notifDelegate
         // Register background task handler (Info.plist contains permitted identifier)
         registerBackgroundTasks()

@@ -38,6 +38,7 @@ public struct OperationProgress: Codable, Sendable {
     public let peakSpeed: Double?
     public let bytesProcessed: Int64?
     public let totalBytes: Int64?
+    public let isASCMHL: Bool?
     public let stageProgress: Double? // Progress within current stage
     // Per-destination progress (optional)
     public let perDestinationTotals: [Int]?
@@ -58,12 +59,13 @@ public struct OperationProgress: Codable, Sendable {
         self.bytesProcessed = nil
         self.totalBytes = nil
         self.stageProgress = nil
+        self.isASCMHL = nil
         self.perDestinationTotals = nil
         self.perDestinationCompleted = nil
     }
     
     // Full initializer with timing information
-    public init(overallProgress: Double, currentFile: String?, filesProcessed: Int, totalFiles: Int, currentStage: ProgressStage, speed: Double?, elapsedTime: TimeInterval?, averageSpeed: Double?, peakSpeed: Double?, bytesProcessed: Int64?, totalBytes: Int64?, stageProgress: Double? = nil, reusedCopies: Int? = nil, perDestinationTotals: [Int]? = nil, perDestinationCompleted: [Int]? = nil) {
+    public init(overallProgress: Double, currentFile: String?, filesProcessed: Int, totalFiles: Int, currentStage: ProgressStage, speed: Double?, elapsedTime: TimeInterval?, averageSpeed: Double?, peakSpeed: Double?, bytesProcessed: Int64?, totalBytes: Int64?, stageProgress: Double? = nil, reusedCopies: Int? = nil, perDestinationTotals: [Int]? = nil, perDestinationCompleted: [Int]? = nil, isASCMHL: Bool? = nil) {
         self.overallProgress = overallProgress
         self.currentFile = currentFile
         self.filesProcessed = filesProcessed
@@ -77,6 +79,7 @@ public struct OperationProgress: Codable, Sendable {
         self.bytesProcessed = bytesProcessed
         self.totalBytes = totalBytes
         self.stageProgress = stageProgress
+        self.isASCMHL = isASCMHL
         self.perDestinationTotals = perDestinationTotals
         self.perDestinationCompleted = perDestinationCompleted
     }

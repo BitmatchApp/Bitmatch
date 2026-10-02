@@ -21,6 +21,9 @@ final class WorkflowSnapshotTests: XCTestCase {
         await settle()
         try capture(ContentView(environment: fixture.environment), size: CGSize(width: 680, height: 900), name: "mac-setup")
 
+        try capture(TransferLibraryView(coordinator: fixture.sharedCoordinator, journal: fixture.journal),
+                    size: CGSize(width: 680, height: 500), name: "mac-history-diagnostics")
+
         fixture.seedComparisonDifferences()
         await settle()
         try capture(ContentView(environment: fixture.environment), size: CGSize(width: 680, height: 900), name: "mac-comparison-differences")

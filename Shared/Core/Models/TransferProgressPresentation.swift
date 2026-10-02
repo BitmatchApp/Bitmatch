@@ -197,11 +197,13 @@ struct TransferProgressPresentation: Equatable, Sendable {
         let tone: ProgressTone = isPaused ? .paused : (issueCount > 0 ? .attention : .active)
         return Self(
             phase: phase,
-            title: Self.title(for: phase),
+            title: progress?.isASCMHL == true ? "Creating ASC MHL" : Self.title(for: phase),
             sourceName: sourceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the card",
             destinationNames: destinationNames ?? destinations.map { DestinationVolumeLabel.name(for: $0) },
             symbol: Self.symbol(for: phase),
-            detail: Self.detail(state: state, sourceName: sourceName, backupCount: destinations.count),
+            detail: progress?.isASCMHL == true
+                ? "Checking destination media and saving handoff records. Keep source media intact."
+                : Self.detail(state: state, sourceName: sourceName, backupCount: destinations.count),
             tone: tone,
             fraction: fraction,
             percentText: fraction.map { "\(Int(($0 * 100).rounded(.down)))%" },

@@ -433,6 +433,7 @@ class SharedAppCoordinator: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var activeStartID: UUID?
     private var startCancellationRequested = false
+    private var cancellationOrigin: TransferCancelOrigin = .user
     private var activeProjectCardID: UUID?
     var isProjectRunInProgress: Bool {
         isOperationInProgress && (activeRunContext?.projectCardID ?? activeProjectCardID) != nil
@@ -1392,7 +1393,7 @@ class SharedAppCoordinator: ObservableObject {
         case .copiedNotVerified: state = .completed(.init(success: false, message: record.summary, copiedNotVerified: true))
         case .needsAttention: state = .completed(.init(success: false, message: record.summary))
         case .failed: state = .failed
-        case .interrupted: state = .cancelled
+        case .interrupted: state = record.state == .cancelled ? .cancelled : .failed
         default: return
         }
         reviewedQueueAttentionIDs.insert(id)
@@ -1826,7 +1827,13 @@ class SharedAppCoordinator: ObservableObject {
             let belongsToQueueSession = currentTransferBelongsToQueueSession
             queueIsRunning = false
             do {
-                try transferJournal.cancel(id: recordID, results: [])
+                if startCancellationRequested {
+                    try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: [])
+                    SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
+                } else {
+                    try transferJournal.interrupt(id: recordID, summary: "Transfer interrupted before admission.", results: [])
+                    SharedLogger.transferEvent(.journalInterrupted, run: startID)
+                }
                 handleAttemptTerminal(
                     recordID: recordID,
                     belongsToQueueSession: belongsToQueueSession
@@ -1899,11 +1906,19 @@ class SharedAppCoordinator: ObservableObject {
                 self.updateProjectLifecycle(for: state, projectIdentity: projectIdentity)
             },
             onAuthoritativeResults: { [weak self] allResults in
-                guard let self,
-                      self.activeStartID == startID,
-                      !self.startCancellationRequested else {
+                guard let self else {
+                    SharedLogger.transferEvent(.authoritativeRefused, run: startID, code: TransferInterruption.ownerReleased.rawValue)
+                    throw TransferInterruption.ownerReleased
+                }
+                guard self.activeStartID == startID else {
+                    SharedLogger.transferEvent(.authoritativeRefused, run: startID, code: TransferInterruption.runSuperseded.rawValue)
+                    throw TransferInterruption.runSuperseded
+                }
+                guard !self.startCancellationRequested else {
+                    SharedLogger.transferEvent(.authoritativeRefused, run: startID, code: 3, explicit: true)
                     throw CancellationError()
                 }
+                SharedLogger.transferEvent(.authoritativeAccepted, run: startID)
                 runResults.replace(with: allResults)
                 self.results = allResults
             }
@@ -1924,7 +1939,8 @@ class SharedAppCoordinator: ObservableObject {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
             let belongsToQueueSession = runBelongsToQueueSession
             if startCancellationRequested {
-                try transferJournal.cancel(id: recordID, results: runResults.rows)
+                try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: runResults.rows)
+                SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else if case .completed(let info) = operationState {
                 let durations = copyVerifyExecutor.completedPhaseDurations
@@ -1938,19 +1954,27 @@ class SharedAppCoordinator: ObservableObject {
                     performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,
                     sourceFingerprint: currentOperation?.sourceFingerprint
                 )
+                SharedLogger.transferEvent(.journalFinished, run: startID)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else {
                 try transferJournal.interrupt(id: recordID, summary: "Transfer did not reach verified completion.", results: runResults.rows)
+                SharedLogger.transferEvent(.journalInterrupted, run: startID)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             }
         } catch {
             let belongsToQueueSession = runBelongsToQueueSession
             queueIsRunning = false
             do {
-                if startCancellationRequested || error is CancellationError {
-                    try transferJournal.cancel(id: recordID, results: runResults.rows)
+                if startCancellationRequested {
+                    try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: runResults.rows)
+                    SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 } else {
-                    try transferJournal.interrupt(id: recordID, summary: error.localizedDescription, results: runResults.rows)
+                    let summary = error is CancellationError || error is TransferInterruption
+                        ? "Transfer interrupted unexpectedly; partial results retained. Keep source media intact."
+                        : error.localizedDescription
+                    try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows)
+                    SharedLogger.transferEvent(.journalInterrupted, run: startID, code: (error as NSError).code,
+                                               taskCancelled: Task.isCancelled)
                 }
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } catch {
@@ -2222,7 +2246,9 @@ class SharedAppCoordinator: ObservableObject {
         return true
     }
 
-    func cancelOperation() {
+    func cancelOperation(origin: TransferCancelOrigin = .user) {
+        cancellationOrigin = origin
+        SharedLogger.cancelEvent(origin, run: activeStartID)
         queueIsRunning = false
         if activeStartID != nil {
             startCancellationRequested = true
@@ -2246,7 +2272,7 @@ class SharedAppCoordinator: ObservableObject {
     /// Requests cancellation, then waits until the running task has unwound,
     /// released its security scopes and durably moved its journal record out
     /// of `.running`. App termination and window closure must await this.
-    func cancelOperationAndWaitForSettlement() async throws {
+    func cancelOperationAndWaitForSettlement(origin: TransferCancelOrigin = .user) async throws {
         let startID = activeStartID
         let recordID = activeJournalRecordID
 
@@ -2257,7 +2283,7 @@ class SharedAppCoordinator: ObservableObject {
             queueIsRunning = false
             return
         }
-        cancelOperation()
+        cancelOperation(origin: origin)
 
         if let startID {
             while activeStartID == startID || isOperationInProgress {
@@ -2486,8 +2512,14 @@ class SharedAppCoordinator: ObservableObject {
             return
         } catch is CancellationError {
             isOperationInProgress = false
-            stateService.cancelOperation(operationId: operationID)
-            lastCompareEnd = .cancelled
+            if comparisonCoordinator.isCancellationRequested {
+                stateService.cancelOperation(operationId: operationID)
+                lastCompareEnd = .cancelled
+            } else {
+                SharedLogger.transferEvent(.parentCancelled, run: operationID, taskCancelled: Task.isCancelled)
+                stateService.failOperation(operationId: operationID)
+                lastCompareEnd = .failed("Comparison interrupted unexpectedly.")
+            }
             return
         } catch {
             isOperationInProgress = false
@@ -2554,8 +2586,14 @@ class SharedAppCoordinator: ObservableObject {
             )
         } catch is CancellationError {
             isOperationInProgress = false
-            stateService.cancelOperation(operationId: operationID)
-            lastCompareEnd = .cancelled
+            if comparisonCoordinator.isCancellationRequested {
+                stateService.cancelOperation(operationId: operationID)
+                lastCompareEnd = .cancelled
+            } else {
+                SharedLogger.transferEvent(.parentCancelled, run: operationID, taskCancelled: Task.isCancelled)
+                stateService.failOperation(operationId: operationID)
+                lastCompareEnd = .failed("Comparison interrupted unexpectedly.")
+            }
         } catch {
             isOperationInProgress = false
             stateService.failOperation(operationId: operationID)

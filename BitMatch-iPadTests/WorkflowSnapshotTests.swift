@@ -65,19 +65,35 @@ final class WorkflowSnapshotTests: XCTestCase {
         )
         fixture.endRunning()
 
-        try fixture.seedInterruptedTransfer()
+        // History uses a fresh fixture so earlier progress-screen lifetimes
+        // cannot affect the bookmark targets being captured here.
+        let recoveryFixture = try SnapshotFixture()
+        defer { recoveryFixture.restoreGlobalPreferences() }
+        try recoveryFixture.seedInterruptedTransfer()
         await settle()
         try capture(
-            TransferLibraryView(coordinator: fixture.coordinator, journal: fixture.journal),
+            TransferLibraryView(coordinator: recoveryFixture.coordinator, journal: recoveryFixture.journal),
             size: CGSize(width: 393, height: 852),
             name: "iphone-queue-recovery"
         )
         await settle()
         try capture(
-            TransferLibraryView(coordinator: fixture.coordinator, journal: fixture.journal),
+            TransferLibraryView(coordinator: recoveryFixture.coordinator, journal: recoveryFixture.journal),
             size: CGSize(width: 820, height: 1_100),
             name: "ipad-queue-recovery"
         )
+    }
+
+    func testCaptureDiagnosticsHistorySnapshots() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        try fixture.seedInterruptedTransfer()
+        await settle()
+        try capture(TransferLibraryView(coordinator: fixture.coordinator, journal: fixture.journal),
+                    size: CGSize(width: 393, height: 852), name: "iphone-history-diagnostics")
+        try capture(TransferLibraryView(coordinator: fixture.coordinator, journal: fixture.journal),
+                    size: CGSize(width: 820, height: 1_100), name: "ipad-history-diagnostics")
     }
 
     private func requireCaptureConfiguration() throws {
@@ -95,7 +111,7 @@ final class WorkflowSnapshotTests: XCTestCase {
         window.rootViewController = host
         window.makeKeyAndVisible()
         host.view.frame = CGRect(origin: .zero, size: size)
-        host.view.backgroundColor = .black
+        host.view.backgroundColor = .systemBackground
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
         RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))

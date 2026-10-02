@@ -154,7 +154,7 @@ struct MacMainView: View {
             ) {
                 Button(TransferProgressPresentation.cancelConfirmationAction, role: .destructive) {
                     confirmingTransferCancel = false
-                    coordinator.cancelOperation()
+                    coordinator.cancelOperation(origin: .menu)
                 }
                 Button(TransferProgressPresentation.cancelKeepAction, role: .cancel) {
                     confirmingTransferCancel = false
@@ -756,7 +756,7 @@ struct MacMainView: View {
                 if coordinator.currentMode == .copyAndVerify {
                     confirmingTransferCancel = true
                 } else {
-                    coordinator.cancelOperation()
+                    coordinator.cancelOperation(origin: .menu)
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: .ejectCard)) { _ in

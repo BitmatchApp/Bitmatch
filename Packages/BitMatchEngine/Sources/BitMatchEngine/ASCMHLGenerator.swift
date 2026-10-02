@@ -7,6 +7,19 @@ import Darwin
 /// the copy-verification algorithm; an independent MD5 digest provides ASC compatibility.
 /// No directory/root hashes are claimed: only the supplied files are inventoried.
 public enum ASCMHLGenerator: Sendable {
+    public struct Progress: Sendable {
+        public let bytesProcessed: Int64
+        public let totalBytes: Int64
+        public let filesProcessed: Int
+        public let totalFiles: Int
+        public let published: Bool
+        public init(bytesProcessed: Int64, totalBytes: Int64, filesProcessed: Int, totalFiles: Int, published: Bool) {
+            self.bytesProcessed = bytesProcessed; self.totalBytes = totalBytes
+            self.filesProcessed = filesProcessed; self.totalFiles = totalFiles; self.published = published
+        }
+    }
+    public typealias ProgressHandler = @Sendable (Progress) -> Void
+
     public struct VerifiedFile: Sendable {
         public let relativePath: String
         public let size: Int64
@@ -50,6 +63,7 @@ public enum ASCMHLGenerator: Sendable {
         var didOpenForRead: (@Sendable (String) -> Void)?
         var didRead: (@Sendable (String, Int) -> Void)?
         var fileSystemType: (@Sendable () -> String?)?
+        var didClaimHistory: (@Sendable () throws -> Void)?
     }
 
     public enum GenerationError: LocalizedError, Sendable {
@@ -75,7 +89,7 @@ public enum ASCMHLGenerator: Sendable {
     /// the destination with F_NOCACHE. Publication remains atomic and no-replace.
     public static func generateInitialHistory(
         destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
-        toolVersion: String
+        toolVersion: String, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil
     ) throws -> URL {
         try generateInitialHistory(
             destinationURL: destinationURL,
@@ -83,14 +97,14 @@ public enum ASCMHLGenerator: Sendable {
             startTime: startTime,
             sourceURL: sourceURL,
             toolVersion: toolVersion,
-            readHooks: nil
+            readHooks: nil, progress: progress, diagnosticRun: diagnosticRun
         )
     }
 
     static func generateInitialHistory(
         destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
         toolVersion: String,
-        readHooks: ReadHooks?
+        readHooks: ReadHooks?, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil
     ) throws -> URL {
         guard !files.isEmpty else { throw GenerationError.emptyInventory }
         let sourceFD: Int32
@@ -119,6 +133,14 @@ public enum ASCMHLGenerator: Sendable {
         )
         try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
         try rejectExistingHistory(root)
+        let totalBytes = files.reduce(Int64(0)) { $0 + max(0, $1.size) }
+        var processedBytes: Int64 = 0
+        var processedFiles = 0
+        func emit(_ published: Bool = false) {
+            progress?(Progress(bytesProcessed: processedBytes, totalBytes: totalBytes,
+                               filesProcessed: processedFiles, totalFiles: files.count, published: published))
+        }
+        emit()
         let date = ISO8601DateFormatter()
         var entries: [String] = []
         var paths = Set<String>()
@@ -183,6 +205,8 @@ public enum ASCMHLGenerator: Sendable {
                     md5.update(data: data)
                     count += Int64(data.count)
                     readHooks?.didRead?(path, data.count)
+                    processedBytes += Int64(data.count)
+                    emit()
                 }
                 digestsAndCount = (
                     sha256: hex(sha.finalize()),
@@ -190,6 +214,7 @@ public enum ASCMHLGenerator: Sendable {
                     count: count
                 )
             }
+            if canReuseReadback { processedBytes += file.size }
             var finishedIdentity = stat()
             guard fstat(fileFD, &finishedIdentity) == 0,
                   readIdentity.st_size == finishedIdentity.st_size,
@@ -205,6 +230,8 @@ public enum ASCMHLGenerator: Sendable {
                   digestsAndCount.sha256 == file.expectedSHA256.lowercased() else {
                 throw GenerationError.changedFile(path)
             }
+            processedFiles += 1
+            emit()
             let modified = after.contentModificationDate.map { " lastmodificationdate=\"\(date.string(from: $0))\"" } ?? ""
             entries.append("    <hash><path size=\"\(file.size)\"\(modified)>\(escape(actualParts.joined(separator: "/")))</path><md5 action=\"original\" hashdate=\"\(date.string(from: Date()))\">\(digestsAndCount.md5)</md5></hash>")
         }
@@ -274,8 +301,39 @@ public enum ASCMHLGenerator: Sendable {
             throw GenerationError.changedFile(root.path)
         }
         try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
-        guard renameatx_np(rootFD, stagingName, rootFD, "ascmhl", UInt32(RENAME_EXCL)) == 0 else { throw posixError() }
+        if renameatx_np(rootFD, stagingName, rootFD, "ascmhl", UInt32(RENAME_EXCL)) != 0 {
+            let publicationErrno = errno
+            SharedLogger.transferEvent(.mhlExclusiveRename, run: diagnosticRun, code: Int(publicationErrno))
+            // exFAT rejects exclusive directory rename. Claim an EMPTY directory
+            // with mkdirat (exclusive even on exFAT), then replace only that claim.
+            // POSIX directory rename cannot replace a nonempty history. No files
+            // are copied into the public directory: manifest + chain appear together.
+            guard publicationErrno == ENOTSUP || publicationErrno == ENOSYS || publicationErrno == EINVAL else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(publicationErrno))
+            }
+            guard mkdirat(rootFD, "ascmhl", 0o700) == 0 else { throw posixError() }
+            var claim = stat()
+            guard fstatat(rootFD, "ascmhl", &claim, AT_SYMLINK_NOFOLLOW) == 0 else { throw posixError() }
+            // On interruption leave the empty reservation as an incomplete history.
+            // A retry refuses it; cleanup must never delete somebody else's history.
+            try readHooks?.didClaimHistory?()
+            try Task.checkCancellation()
+            try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
+            var currentClaim = stat()
+            guard fstatat(rootFD, "ascmhl", &currentClaim, AT_SYMLINK_NOFOLLOW) == 0,
+                  currentClaim.st_dev == claim.st_dev, currentClaim.st_ino == claim.st_ino,
+                  (currentClaim.st_mode & S_IFMT) == S_IFDIR else { throw GenerationError.existingHistory }
+            guard renameat(rootFD, stagingName, rootFD, "ascmhl") == 0 else {
+                let code = errno
+                SharedLogger.transferEvent(.mhlClaimRename, run: diagnosticRun, code: Int(code))
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            SharedLogger.transferEvent(.mhlClaimRename, run: diagnosticRun)
+        } else {
+            SharedLogger.transferEvent(.mhlExclusiveRename, run: diagnosticRun)
+        }
         published = true
+        emit(true)
         // Do not remove successfully published contents in the deferred staging cleanup.
         // Closing the descriptor remains necessary; names are now owned by the history.
         return root.appendingPathComponent("ascmhl").appendingPathComponent(name)

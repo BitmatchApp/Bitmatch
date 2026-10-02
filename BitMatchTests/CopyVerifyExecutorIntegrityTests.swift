@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import CryptoKit
+import Darwin
 import XCTest
 @testable import BitMatch
 import BitMatchEngine
@@ -263,6 +264,53 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.appendingPathComponent("Reports").path))
     }
 
+    func testUnexpectedCancellationErrorIsNotAnIntentionalCancellation() async throws {
+        let harness = ExecutorHarness(returnedResults: [], emittedResults: [], thrownError: CancellationError())
+        do { _ = try await harness.execute(); XCTFail("Must propagate interruption") }
+        catch is CancellationError { }
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertNil(harness.terminalInfo)
+    }
+
+    func testAuthoritativeIdentityFailureCannotBecomeSuccessfulHandoff() async throws {
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [])
+        harness.onAuthoritativeResults = { throw TransferInterruption.runSuperseded }
+        do { _ = try await harness.execute(); XCTFail("Must propagate identity failure") }
+        catch let error as TransferInterruption { XCTAssertEqual(error, .runSuperseded) }
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertNil(harness.terminalInfo)
+    }
+
+    func testParentTaskCancellationIsAnInterruption() async throws {
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [])
+        harness.onAuthoritativeResults = { withUnsafeCurrentTask { $0?.cancel() } }
+        let work = Task { try await harness.execute() }
+        do { _ = try await work.value; XCTFail("Parent cancellation must propagate") }
+        catch is CancellationError { }
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertNil(harness.terminalInfo)
+        XCTAssertFalse(Task.isCancelled, "Only the operation task was cancelled")
+    }
+
+    func testExplicitCancelRemainsCancelled() async throws {
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [])
+        harness.onAuthoritativeResults = { harness.cancel() }
+        do { _ = try await harness.execute(); XCTFail("Must propagate cancel") }
+        catch is CancellationError { }
+        XCTAssertEqual(harness.lastState, .cancelled)
+    }
+
+    func testMHLReadProgressIsNotFinishedBeforePublication() {
+        let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 50, totalBytes: 100,
+                                                         filesProcessed: 0, totalFiles: 1, published: false))
+        XCTAssertEqual(update.overallProgress, 0.5)
+        XCTAssertEqual(update.bytesProcessed, 50)
+        XCTAssertEqual(update.currentStage, .generating)
+        let publishing = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 100, totalBytes: 100,
+                                                             filesProcessed: 1, totalFiles: 1, published: false))
+        XCTAssertLessThan(publishing.overallProgress, 1)
+    }
+
     // MARK: - Mac keep-awake
 
     // Plant: delete `defer { keepAwake.release() }` in CopyVerifyExecutor.execute.
@@ -380,6 +428,72 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         return (source, destination, result)
     }
 
+    /// Closer issue #10 reproduction: actual mounted source/destination drivers,
+    /// real pipeline, executor, independent readback, optional MHL and reports.
+    func testIssue10JournaledHFSToExFATFullExecutor() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard let sourcePath = environment["BITMATCH_ISSUE10_SOURCE"],
+              let destinationPath = environment["BITMATCH_ISSUE10_DESTINATION"] else {
+            throw XCTSkip("Run Scripts/test-issue10-filesystem-pair.sh to provision disposable mounted images")
+        }
+        let sourceMount = URL(fileURLWithPath: sourcePath)
+        let destinationMount = URL(fileURLWithPath: destinationPath)
+        for (mount, expected) in [(sourceMount, "hfs"), (destinationMount, "exfat")] {
+            var fs = statfs()
+            XCTAssertEqual(statfs(mount.path, &fs), 0)
+            let type = withUnsafePointer(to: &fs.f_fstypename) { $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) } }
+            XCTAssertEqual(type, expected)
+            if expected == "hfs" { XCTAssertNotEqual(fs.f_flags & UInt32(MNT_JOURNALED), 0) }
+        }
+        let source = sourceMount.appendingPathComponent("Card")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let chunk = Data(repeating: 0xA7, count: 1024 * 1024)
+        var originals: [URL: String] = [:]
+        for index in 0..<12 {
+            let file = source.appendingPathComponent("fixture-\(index).bin")
+            FileManager.default.createFile(atPath: file.path, contents: nil)
+            let handle = try FileHandle(forWritingTo: file)
+            // Mixed 1 KiB / 1 MiB / 64 MiB files; total 260 MiB + 4 KiB.
+            let data = index % 3 == 0 ? Data(chunk.prefix(1024)) : chunk
+            for _ in 0..<(index % 3 == 2 ? 64 : 1) { try handle.write(contentsOf: data) }
+            try handle.synchronize()
+            try handle.close()
+            originals[file] = SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined()
+        }
+        for mhl in [false, true] {
+            let destination = destinationMount.appendingPathComponent(mhl ? "WithMHL" : "WithoutMHL")
+            try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+            let harness = ExecutorHarness(returnedResults: [], emittedResults: [],
+                sourceURL: source, destinationURLs: [destination], generateASCMHL: mhl,
+                makeReport: true, realFileOperations: TransferPipeline(
+                    fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                estimatedFiles: 12, estimatedBytes: 272633856)
+            let started = Date()
+            let operation: FileOperation?
+            do { operation = try await harness.execute() }
+            catch {
+                XCTFail("Synthetic run mhl=\(mhl) failed: \(error); parentCancelled=\(Task.isCancelled); rows=\(harness.completedRows.count); state=\(String(describing: harness.lastState)); progress=\(harness.observedProgress.last.map { String(describing: $0) } ?? "none")")
+                throw error
+            }
+            XCTAssertEqual(operation?.results.count, 12)
+            XCTAssertTrue(operation?.results.allSatisfy { $0.success && $0.verificationResult?.isValid == true } == true)
+            XCTAssertEqual(harness.terminalInfo?.success, true)
+            XCTAssertEqual(harness.publishedTerminalStates.count, 1)
+            let reports = try FileManager.default.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+            XCTAssertTrue(reports.contains { $0.pathExtension == "csv" })
+            XCTAssertTrue(reports.contains { $0.pathExtension == "json" })
+            let copied = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: CameraLabelSettings())
+            XCTAssertEqual(FileManager.default.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path), mhl)
+            XCTAssertEqual(harness.observedProgress.contains { $0.isASCMHL == true }, mhl)
+            for (file, digest) in originals {
+                XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: file)).map { String(format: "%02x", $0) }.joined(), digest)
+                let backup = copied.appendingPathComponent(file.lastPathComponent)
+                XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: backup)).map { String(format: "%02x", $0) }.joined(), digest)
+            }
+            print("ISSUE10 full_executor source=hfs_journaled destination=exfat files=12 bytes=272633856 mhl=\(mhl) reports=true success=\(harness.terminalInfo?.success == true) cancelled=\(Task.isCancelled) seconds=\(Date().timeIntervalSince(started))")
+        }
+    }
+
     private func ascFixture() throws -> (source: URL, destination: URL, history: URL, result: FileOperationResult) {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("executor-asc-\(UUID())")
@@ -411,10 +525,12 @@ private final class ExecutorHarness {
     private let stateService: OperationStateService
     private var cancellables: Set<AnyCancellable> = []
 
+    private(set) var observedProgress: [OperationProgress] = []
     private(set) var completedRows: [ResultRow] = []
     private(set) var terminalInfo: OperationCompletionInfo?
     private(set) var publishedTerminalStates: [OperationState] = []
-    var onAuthoritativeResults: (() -> Void)?
+    var onAuthoritativeResults: (() throws -> Void)?
+    private(set) var lastState: OperationState?
     var onPresentError: (() -> Void)? {
         get { platform.onPresentError }
         set { platform.onPresentError = newValue }
@@ -433,6 +549,9 @@ private final class ExecutorHarness {
         generateASCMHL: Bool = false,
         makeReport: Bool = false,
         thrownError: Error? = nil,
+        realFileOperations: FileOperationsService? = nil,
+        estimatedFiles: Int? = nil,
+        estimatedBytes: Int64? = nil,
         sleepPreventer: TransferSleepPreventing = RecordingSleepPreventer()
     ) {
         let fileOperations = ExecutorFileOperationsService(
@@ -440,7 +559,7 @@ private final class ExecutorHarness {
             emittedResults: emittedResults,
             thrownError: thrownError
         )
-        let platform = ExecutorPlatformManager(fileOperations: fileOperations)
+        let platform = ExecutorPlatformManager(fileOperations: realFileOperations ?? fileOperations)
         self.platform = platform
         let stateService = OperationStateService()
         self.stateService = stateService
@@ -459,8 +578,8 @@ private final class ExecutorHarness {
             verificationMode: verificationMode,
             cameraLabelSettings: CameraLabelSettings(),
             reportSettings: ReportPrefs(makeReport: makeReport),
-            estimatedFiles: returnedResults.count,
-            estimatedBytes: returnedResults.reduce(0) { $0 + $1.fileSize },
+            estimatedFiles: estimatedFiles ?? returnedResults.count,
+            estimatedBytes: estimatedBytes ?? returnedResults.reduce(0) { $0 + $1.fileSize },
             currentMode: .copyAndVerify,
             photographerReportFinalizer: lifecycleCompletion,
             generateASCMHL: generateASCMHL
@@ -479,9 +598,10 @@ private final class ExecutorHarness {
         try await executor.execute(
             config: config,
             callbacks: CopyVerifyCallbacks(
-                onProgress: { _ in },
+                onProgress: { [weak self] progress in self?.observedProgress.append(progress) },
                 onResult: { _ in },
                 onStateChange: { [weak self] state in
+                    self?.lastState = state
                     self?.stateService.adopt(state)
                     guard case .completed(let info) = state else { return }
                     self?.terminalInfo = info
@@ -489,7 +609,7 @@ private final class ExecutorHarness {
                 onAuthoritativeResults: { [weak self] rows in
                     guard let self else { return }
                     self.completedRows = rows
-                    self.onAuthoritativeResults?()
+                    try self.onAuthoritativeResults?()
                 }
             )
         )
