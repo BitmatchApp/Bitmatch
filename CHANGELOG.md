@@ -11,6 +11,7 @@ A small reliability update for verified transfers and handoff records.
 - Fixed ASC MHL handoff records failing to save on exFAT drives after the files had copied and verified. Existing histories are preserved; an incomplete handoff is never reported as complete.
 - Progress now shows the extra destination read needed to create ASC MHL records, so the transfer no longer looks finished while that work is still running.
 - Unexpected transfer interruptions are recorded separately from intentional cancellation, with partial results retained for review.
+- Fixed destination setup failing when the selected folder was accessible but a parent folder could not be listed.
 - History now has **Export diagnostics**: a small record of recent transfer phases, progress, errors and cancellation origins that survives restarting the app. It excludes footage names and paths, and nothing is sent automatically.
 
 These changes fix a reproduced exFAT handoff problem. The unexpected cancellation reported in GitHub issue #10 has not yet been reproduced, so that issue remains under investigation.
