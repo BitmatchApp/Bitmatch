@@ -3,6 +3,7 @@ import Combine
 import CryptoKit
 import Darwin
 import XCTest
+import PDFKit
 @testable import BitMatch
 import BitMatchEngine
 
@@ -428,6 +429,434 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         return (source, destination, result)
     }
 
+    /// Full executor cross-product on four real, disposable filesystem drivers.
+    /// Run with Scripts/test-full-transfer-matrix.sh; no physical media is touched.
+    func testFullSyntheticFilesystemMatrix() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run Scripts/test-full-transfer-matrix.sh")
+        }
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: path)
+        guard fm.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        try validateMatrixMounts(root)
+        let names = ["apfs", "hfs", "exfat", "apfsx", "fat"]
+        let mounts = names.map { root.appendingPathComponent("destination-" + $0) }
+        let sourceMounts = names.map { root.appendingPathComponent("source-" + $0) }
+        for (index, mount) in mounts.enumerated() {
+            var info = statfs()
+            XCTAssertEqual(statfs(mount.path, &info), 0)
+            let type = withUnsafePointer(to: &info.f_fstypename) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) }
+            }
+            XCTAssertEqual(type, index == 1 ? "hfs" : index == 2 ? "exfat" : index == 4 ? "msdos" : "apfs")
+        }
+        var sources: [URL] = []
+        var inventories: [[String: String]] = []
+        var sourceBytes: [Int64] = []
+        for mount in sourceMounts {
+            let source = mount.appendingPathComponent("Matrix Card")
+            try fm.createDirectory(at: source.appendingPathComponent("DCIM/Nested Folder"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: source.appendingPathComponent("Empty Sidecars"), withIntermediateDirectories: true)
+            let special = ["empty.bin", "one byte.bin", "DCIM/clip 001.bin", "DCIM/Nested Folder/日本語 café.bin", ".camera-metadata", "DCIM/Large.bin"]
+            let sizes = [0, 1, 4096, 131072, 37, 1048576]
+            for (index, name) in special.enumerated() {
+                try Data(repeating: UInt8(index + 17), count: sizes[index]).write(to: source.appendingPathComponent(name))
+            }
+            for index in 0..<20 {
+                try Data(repeating: UInt8(index), count: index * 17).write(to: source.appendingPathComponent("DCIM/tiny-\(index).bin"))
+            }
+            sources.append(source)
+            inventories.append(try matrixHashes(source))
+            sourceBytes.append(try CardSource.enumerateRegularFiles(base: source).reduce(0) { $0 + $1.size })
+        }
+        let selectedKey = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_KEY"]
+        var completed = 0
+        var quickMetadataRefusals = 0
+        for si in mounts.indices {
+            for di in mounts.indices {
+                for mode in VerificationMode.allCases {
+                    for count in [1, 2] {
+                        for options in 0..<4 {
+                            let key = "\(names[si])-\(names[di])-\(mode.rawValue)-\(count)-\(options)"
+                            if let selectedKey, selectedKey != key { continue }
+                            let mhl = options & 1 != 0
+                            let reports = options & 2 != 0
+                            let destinationIndices = count == 1 ? [di] : [di, (di + 1) % mounts.count]
+                            let destinations = destinationIndices.map { mounts[$0].appendingPathComponent("run-\(key)") }
+                            for destination in destinations { try fm.createDirectory(at: destination, withIntermediateDirectories: true) }
+                            do {
+                                let inventory = inventories[si]
+                                let harness = ExecutorHarness(returnedResults: [], emittedResults: [],
+                                    sourceURL: sources[si], destinationURLs: destinations, verificationMode: mode,
+                                    generateASCMHL: mhl, makeReport: reports,
+                                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared,
+                                        fanOutHooks: ProcessInfo.processInfo.environment["BITMATCH_MATRIX_TRACE"] == "1" ? .init(
+                                            temporaryFileDidDisableCache: { index, fd in
+                                                var buffer = [CChar](repeating: 0, count: Int(MAXPATHLEN))
+                                                if fcntl(fd, F_GETPATH, &buffer) == 0 {
+                                                    let path = String(cString: buffer)
+                                                    let parent = URL(fileURLWithPath: path).deletingLastPathComponent()
+                                                    let names = (try? FileManager.default.contentsOfDirectory(atPath: parent.path)) ?? []
+                                                    print("MATRIX_TEMP_OPEN dest=\(index) temp=\(path) names=\(names.sorted())")
+                                                }
+                                            }, afterPublish: { index, root in
+                                                let names = (try? CardSource.enumerateRegularFiles(base: root).map(\.relativePath)) ?? []
+                                                print("MATRIX_AFTER_PUBLISH dest=\(index) names=\(names.sorted())")
+                                            }) : nil),
+                                    estimatedFiles: inventory.count, estimatedBytes: sourceBytes[si])
+                                let executed = try await harness.execute()
+                                let operation = try XCTUnwrap(executed, key)
+                                XCTAssertEqual(operation.results.count, inventory.count * count, key)
+                                for row in operation.results where !row.success {
+                                    print("MATRIX_INITIAL_FAILURE \(key) \(String(describing: row))")
+                                }
+                                let failures = operation.results.filter { !$0.success }
+                                if mode == .quick && !failures.isEmpty {
+                                    // macOS may create an AppleDouble companion while
+                                    // publishing media. Quick must refuse to reuse it;
+                                    // the independent byte checks below still prove the
+                                    // fixture contents and no success verdict is allowed.
+                                    XCTAssertTrue(failures.allSatisfy { row in
+                                        row.sourceURL.lastPathComponent.hasPrefix("._") &&
+                                        (row.error as NSError?)?.domain == "DestinationWriter" &&
+                                        (row.error as NSError?)?.code == NSFileWriteFileExistsError &&
+                                        row.error?.localizedDescription.contains("Quick mode cannot prove") == true
+                                    }, "Unexpected Quick failure: \(key)")
+                                    quickMetadataRefusals += 1
+                                } else {
+                                    XCTAssertTrue(failures.isEmpty, key)
+                                }
+                                XCTAssertEqual(harness.publishedTerminalStates.count, 1, key)
+                                XCTAssertEqual(harness.terminalInfo?.success, mode != .quick, key)
+                                XCTAssertEqual(try matrixHashes(sources[si]), inventory, "Source altered: \(key)")
+                                for (backupIndex, destination) in destinations.enumerated() {
+                                    let copied = SafetyValidator.resolvedDestinationRoot(source: sources[si], destination: destination, settings: CameraLabelSettings())
+                                    XCTAssertTrue(fm.fileExists(atPath: copied.appendingPathComponent("Empty Sidecars").path), key)
+                                    for (relative, digest) in inventory {
+                                        let bytes = try Data(contentsOf: copied.appendingPathComponent(relative))
+                                        XCTAssertEqual(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(), digest, "Destination mismatch: \(key) \(relative)")
+                                    }
+                                    XCTAssertEqual(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path), mhl && mode != .quick, key)
+                                    let reportRoot = destination.appendingPathComponent("Reports")
+                                    XCTAssertEqual(fm.fileExists(atPath: reportRoot.path), reports && backupIndex == 0, key)
+                                    if reports && backupIndex == 0 {
+                                        let saved = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil)
+                                        for ext in ["pdf", "csv", "json"] { XCTAssertTrue(saved.contains { $0.pathExtension == ext }, "Missing \(ext): \(key)") }
+                                    }
+                                }
+                                // Repeat into the same destinations: prove reuse without attempting
+                                // to create a second initial MHL history or replace existing reports.
+                                let repeated = ExecutorHarness(returnedResults: [], emittedResults: [],
+                                    sourceURL: sources[si], destinationURLs: destinations, verificationMode: mode,
+                                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                                    estimatedFiles: inventory.count, estimatedBytes: sourceBytes[si])
+                                let repeatExecuted = try await repeated.execute()
+                                let repeatOperation = try XCTUnwrap(repeatExecuted, key)
+                                XCTAssertEqual(repeatOperation.results.count, inventory.count * count, key)
+                                if mode == .quick {
+                                    // Size-only Quick cannot prove reuse; it must refuse overwrite.
+                                    XCTAssertTrue(repeatOperation.results.allSatisfy { !$0.success && !$0.wasReused }, key)
+                                } else {
+                                    XCTAssertTrue(repeatOperation.results.allSatisfy { $0.success && $0.wasReused }, "Repeat failed/re-copied: \(key)")
+                                }
+                                XCTAssertEqual(repeated.terminalInfo?.success, mode != .quick, key)
+                                XCTAssertEqual(try matrixHashes(sources[si]), inventory, key)
+                                completed += 1
+                                print("MATRIX_CASE \(key) completed=\(completed) rows=\(operation.results.count) repeatRows=\(repeatOperation.results.count)")
+                            } catch {
+                                XCTFail("MATRIX_CASE \(key) threw \(error)")
+                                print("MATRIX_CASE_ERROR \(key) \(error)")
+                            }
+                            for destination in destinations { try fm.removeItem(at: destination) }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(completed, selectedKey == nil ? 800 : 1)
+        print("MATRIX_SUMMARY combinations=\(completed) transfers=\(completed * 2) quickMetadataRefusalCases=\(quickMetadataRefusals)")
+    }
+
+    func testCaseCollisionsAcrossRealFilesystems() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run MATRIX_FOCUS=collision Scripts/test-full-transfer-matrix.sh")
+        }
+        let root = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        try validateMatrixMounts(root)
+        let source = root.appendingPathComponent("source-apfsx/Case Card")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data("first distinct file".utf8).write(to: source.appendingPathComponent("Clip.bin"))
+        try Data("second distinct file".utf8).write(to: source.appendingPathComponent("clip.bin"))
+        let original = try matrixHashes(source)
+        XCTAssertEqual(original.count, 2, "Fixture must actually be case-sensitive")
+        var cases = 0
+        for name in ["apfs", "hfs", "exfat", "apfsx", "fat"] {
+            for mode in VerificationMode.allCases {
+                let destination = root.appendingPathComponent("destination-\(name)/case-\(mode.rawValue)")
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source,
+                    destinationURLs: [destination], verificationMode: mode, generateASCMHL: true, makeReport: true,
+                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                    estimatedFiles: 2, estimatedBytes: 39)
+                do {
+                    let operation = try await harness.execute()
+                    // The manifest deliberately rejects case-colliding source paths
+                    // on every filesystem, so a later backup cannot silently lose one.
+                    XCTAssertFalse(harness.terminalInfo?.success == true, "Colliding files must never be safe")
+                    XCTAssertTrue(operation?.results.contains { !$0.success } == true)
+                } catch {
+                    XCTAssertTrue(String(describing: error).contains("collide"), "Unexpected refusal: \(error)")
+                    XCTAssertFalse(harness.terminalInfo?.success == true)
+                }
+                XCTAssertEqual(try matrixHashes(source), original, "Source altered")
+                try FileManager.default.removeItem(at: destination)
+                cases += 1
+                print("COLLISION_CASE \(name) \(mode.rawValue)")
+            }
+        }
+        XCTAssertEqual(cases, 20)
+        print("COLLISION_SUMMARY cases=\(cases)")
+    }
+
+    func testFAT32LargeFileLimitKeepsOtherBackupVerified() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run MATRIX_FOCUS=limits Scripts/test-full-transfer-matrix.sh")
+        }
+        let root = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        try validateMatrixMounts(root)
+        let source = root.appendingPathComponent("source-apfs/Large Card")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let clip = source.appendingPathComponent("large.mov")
+        let fd = open(clip.path, O_CREAT | O_EXCL | O_RDWR | O_NOFOLLOW, 0o600)
+        XCTAssertGreaterThanOrEqual(fd, 0)
+        guard fd >= 0 else { return }
+        let size: Int64 = 4 * 1024 * 1024 * 1024 + 1
+        XCTAssertEqual(ftruncate(fd, off_t(size)), 0)
+        XCTAssertEqual(fsync(fd), 0)
+        close(fd)
+        let destinations = ["apfs", "fat"].map { root.appendingPathComponent("destination-" + $0).appendingPathComponent("large-limit") }
+        for destination in destinations { try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true) }
+        let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source,
+            destinationURLs: destinations, verificationMode: .standard, generateASCMHL: true, makeReport: true,
+            realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+            estimatedFiles: 1, estimatedBytes: size)
+        let executed = try await harness.execute()
+        let operation = try XCTUnwrap(executed)
+        XCTAssertEqual(operation.results.count, 2)
+        XCTAssertEqual(operation.results.filter(\.success).count, 1)
+        XCTAssertFalse(harness.terminalInfo?.success == true)
+        let failed = try XCTUnwrap(operation.results.first { !$0.success })
+        XCTAssertTrue(failed.destinationURL.path.contains("destination-fat"))
+        let error = try XCTUnwrap(failed.error) as NSError
+        print("FAT32_LIMIT_ERROR domain=\(error.domain) code=\(error.code)")
+        XCTAssertEqual(error.domain, NSPOSIXErrorDomain)
+        XCTAssertEqual(error.code, Int(EFBIG), "Must reach FAT32's file limit, not run out of image space")
+        let good = try XCTUnwrap(operation.results.first(where: \.success))
+        XCTAssertTrue(good.verificationResult?.isValid == true)
+        let sourceDigest = try await ChecksumEngine.shared.generateChecksum(for: clip, type: .sha256, progressCallback: nil)
+        let backupDigest = try await ChecksumEngine.shared.generateChecksum(for: good.destinationURL, type: .sha256, progressCallback: nil)
+        XCTAssertEqual(sourceDigest, backupDigest)
+        XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: clip.path)[.size] as? Int64, size)
+        let badRoot = SafetyValidator.resolvedDestinationRoot(source: source, destination: destinations[1], settings: CameraLabelSettings())
+        XCTAssertFalse(FileManager.default.fileExists(atPath: badRoot.appendingPathComponent("ascmhl/ascmhl_chain.xml").path))
+        print("FAT32_LIMIT_SUMMARY bytes=\(size) goodBackups=1 failedBackups=1")
+    }
+
+    func testCameraRenameFilesystemMatrix() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run MATRIX_FOCUS=rename Scripts/test-full-transfer-matrix.sh")
+        }
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: path)
+        guard fm.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        try validateMatrixMounts(root)
+        let source = root.appendingPathComponent("source-apfs/Rename Card")
+        try fm.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data(repeating: 83, count: 4096).write(to: source.appendingPathComponent("original clip.mov"))
+        let inventory = try matrixHashes(source)
+        var cases = 0
+        for name in ["apfs", "hfs", "exfat", "apfsx", "fat"] {
+            for position in CameraLabelSettings.LabelPosition.allCases {
+                for separator in CameraLabelSettings.Separator.allCases {
+                    for group in [false, true] {
+                        for label in ["A Cam", "../日本語%2Fcafé"] {
+                            for mode in [VerificationMode.quick, .standard] {
+                                let settings = CameraLabelSettings(label: label, position: position, separator: separator, groupByCamera: group)
+                                let destination = root.appendingPathComponent("destination-" + name).appendingPathComponent("rename-\(cases)")
+                                try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+                                let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source,
+                                    destinationURLs: [destination], verificationMode: mode, generateASCMHL: true,
+                                    cameraSettings: settings,
+                                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                                    estimatedFiles: 1, estimatedBytes: 4096)
+                                let executed = try await harness.execute()
+                                let operation = try XCTUnwrap(executed)
+                                XCTAssertEqual(operation.results.count, 1)
+                                XCTAssertTrue(operation.results.allSatisfy(\.success))
+                                XCTAssertEqual(harness.terminalInfo?.success, mode != .quick)
+                                let copied = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: settings)
+                                XCTAssertTrue(PathContainment.isWithin(copied.path, root: destination.path))
+                                XCTAssertEqual(try matrixHashes(source), inventory)
+                                for (relative, hash) in inventory {
+                                    XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: copied.appendingPathComponent(relative))).map { String(format: "%02x", $0) }.joined(), hash)
+                                }
+                                XCTAssertEqual(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path), mode != .quick)
+                                cases += 1
+                                print("RENAME_MATRIX_CASE \(name) \(position.rawValue) \(separator.rawValue) group=\(group) mode=\(mode.rawValue) completed=\(cases)")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(cases, 320)
+        print("RENAME_MATRIX_SUMMARY cases=\(cases)")
+    }
+
+    /// Real project preparation → renamed recipe → transfer → report scan → master PDF.
+    func testProjectAndReportFilesystemMatrix() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run MATRIX_FOCUS=features Scripts/test-full-transfer-matrix.sh")
+        }
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: path)
+        guard fm.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        try validateMatrixMounts(root)
+        let names = ["apfs", "hfs", "exfat", "apfsx", "fat"]
+        let source = root.appendingPathComponent("source-apfs/Feature Card")
+        try fm.createDirectory(at: source.appendingPathComponent("DCIM/Sidecars"), withIntermediateDirectories: true)
+        for (name, bytes) in [("DCIM/clip.mov", Data(repeating: 71, count: 131072)),
+                              ("DCIM/Sidecars/clip.xml", Data("<clip>日本語</clip>".utf8)),
+                              ("empty.raw", Data())] {
+            try bytes.write(to: source.appendingPathComponent(name))
+        }
+        let inventory = try matrixHashes(source)
+        let entries = try CardSource.enumerateRegularFiles(base: source)
+        let labels = ["Day 3", "日本語 café", "../Job%2FName"]
+        var cases = 0
+        for (di, name) in names.enumerated() {
+            for workflow in ProjectWorkflow.allCases {
+                for (li, label) in labels.enumerated() {
+                    for mode in [VerificationMode.standard, .thorough, .paranoid] {
+                        for count in [1, 2] {
+                            let key = "feature-\(name)-\(workflow.rawValue)-\(li)-\(mode.rawValue)-\(count)"
+                            let indices = count == 1 ? [di] : [di, (di + 1) % names.count]
+                            let destinations = indices.map { root.appendingPathComponent("destination-" + names[$0]).appendingPathComponent(key) }
+                            for destination in destinations { try fm.createDirectory(at: destination, withIntermediateDirectories: true) }
+                            let defaults = UserDefaults(suiteName: "BitMatchFeatureMatrix-" + UUID().uuidString)!
+                            let store = InMemoryPhotographerJobStore()
+                            let project = PhotographerJobViewModel(store: store, workflowDefaults: defaults)
+                            project.selectWorkflow(workflow)
+                            let signature = PhotographerSetupSignature(clientName: "Synthetic Client", jobName: label, eventDate: Date(),
+                                photographerName: "Operator", cameraName: "A Cam", cardNumber: 1, recipe: project.draftRecipe)
+                            project.startPreparingDraftCard(sourceURL: source, setupSignature: signature)
+                            await project.waitForSetupForTesting()
+                            XCTAssertNil(project.preparationError, key)
+                            let rendered = try XCTUnwrap(project.renderedRecipe)
+                            let settings = PhotographerDestinationResolver.operationSettings(
+                                base: CameraLabelSettings(label: label, position: li == 1 ? .suffix : .prefix,
+                                    separator: .dash, groupByCamera: li == 2), renderedRecipe: rendered)
+                            // A project needs two copies by default. One-backup cases exercise
+                            // transfer evidence without claiming the project is fully backed up.
+                            let started = project.beginIngest(destinationCount: count, sourceURL: source, verificationMode: mode)
+                            XCTAssertEqual(started, count == 2, key)
+                            let finalizer: (@MainActor ([ResultRow]) throws -> PhotographerFinalizationResult)?
+                            if started { finalizer = { rows in try project.completeIngest(results: rows) } }
+                            else { finalizer = nil }
+                            let harness = ExecutorHarness(returnedResults: [], emittedResults: [],
+                                lifecycleCompletion: finalizer,
+                                sourceURL: source, destinationURLs: destinations, verificationMode: mode,
+                                generateASCMHL: true, makeReport: true, cameraSettings: settings,
+                                realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                                estimatedFiles: entries.count, estimatedBytes: entries.reduce(0) { $0 + $1.size })
+                            let executed = try await harness.execute()
+                            let operation = try XCTUnwrap(executed, key)
+                            XCTAssertTrue(operation.results.allSatisfy(\.success), key)
+                            XCTAssertEqual(operation.results.count, entries.count * count, key)
+                            XCTAssertEqual(try matrixHashes(source), inventory, "Source changed: \(key)")
+                            for destination in destinations {
+                                let copied = try SafetyValidator.resolvedDestinationRootChecked(source: source, destination: destination, settings: settings)
+                                XCTAssertTrue(PathContainment.isWithin(copied.path, root: destination.path), key)
+                                for (relative, hash) in inventory {
+                                    XCTAssertEqual(SHA256.hash(data: try Data(contentsOf: copied.appendingPathComponent(relative))).map { String(format: "%02x", $0) }.joined(), hash, key)
+                                }
+                                XCTAssertTrue(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path), key)
+                            }
+                            let reportRoot = destinations[0].appendingPathComponent("Reports")
+                            let files = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil)
+                            let pdf = try XCTUnwrap(files.first { $0.pathExtension == "pdf" }, key)
+                            let document = try XCTUnwrap(PDFDocument(url: pdf), key)
+                            XCTAssertGreaterThan(document.pageCount, 0)
+                            XCTAssertTrue(document.string?.contains("BitMatch") == true, key)
+                            XCTAssertTrue(files.contains { $0.pathExtension == "csv" }, key)
+                            let scan = await ReportScanner.scanReports(at: destinations[0])
+                            XCTAssertTrue(scan.skipped.isEmpty, key)
+                            XCTAssertEqual(scan.cards.count, 1, key)
+                            let master = try await SharedReportGenerationService().generateMasterReport(transfers: scan.cards, configuration: .default())
+                            XCTAssertEqual(master.reportData.summary.totalTransfers, 1, key)
+                            XCTAssertEqual(master.reportData.summary.totalFiles, entries.count, key)
+                            let masterPDF = try XCTUnwrap(PDFDocument(data: master.pdfData), key)
+                            XCTAssertGreaterThan(masterPDF.pageCount, 0)
+                            XCTAssertFalse(master.jsonData.isEmpty)
+                            XCTAssertEqual(project.activeCard?.localState, count == 2 ? .locallySafe : .notStarted, key)
+                            let savedJob = try XCTUnwrap(try store.jobs().first)
+                            let encoded = try JSONEncoder().encode(savedJob)
+                            XCTAssertEqual(try JSONDecoder().decode(PhotographerJob.self, from: encoded), savedJob)
+                            // The owning script disposes these unique case folders after unmount.
+                            cases += 1
+                            print("FEATURE_MATRIX_CASE \(key) completed=\(cases)")
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(cases, 270)
+        print("FEATURE_MATRIX_SUMMARY cases=\(cases)")
+    }
+
+    private func validateMatrixMounts(_ root: URL) throws {
+        var devices = Set<dev_t>()
+        for role in ["source", "destination"] {
+            for (name, expected) in [("apfs", "apfs"), ("hfs", "hfs"), ("exfat", "exfat"), ("apfsx", "apfs"), ("fat", "msdos")] {
+                let mount = root.appendingPathComponent(role + "-" + name)
+                var info = statfs()
+                guard statfs(mount.path, &info) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                let actual = withUnsafePointer(to: &info.f_fstypename) {
+                    $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) }
+                }
+                guard actual == expected else {
+                    throw NSError(domain: "MatrixFilesystemMismatch", code: 1, userInfo: [NSLocalizedDescriptionKey: "\(role)-\(name): expected \(expected), got \(actual)"])
+                }
+                var identity = stat()
+                guard stat(mount.path, &identity) == 0, devices.insert(identity.st_dev).inserted else {
+                    throw NSError(domain: "MatrixNeedsSeparateMountedImages", code: 1)
+                }
+            }
+        }
+    }
+
+    private func matrixHashes(_ root: URL) throws -> [String: String] {
+        var hashes: [String: String] = [:]
+        // Foundation enumeration can hide AppleDouble sidecars on exFAT.
+        // Snapshot the complete authoritative manifest, including those files.
+        for entry in try CardSource.enumerateRegularFiles(base: root) {
+            hashes[entry.relativePath] = SHA256.hash(data: try Data(contentsOf: entry.url)).map { String(format: "%02x", $0) }.joined()
+        }
+        return hashes
+    }
+
     /// Closer issue #10 reproduction: actual mounted source/destination drivers,
     /// real pipeline, executor, independent readback, optional MHL and reports.
     func testIssue10JournaledHFSToExFATFullExecutor() async throws {
@@ -548,6 +977,7 @@ private final class ExecutorHarness {
         verificationMode: VerificationMode = .standard,
         generateASCMHL: Bool = false,
         makeReport: Bool = false,
+        cameraSettings: CameraLabelSettings = CameraLabelSettings(),
         thrownError: Error? = nil,
         realFileOperations: FileOperationsService? = nil,
         estimatedFiles: Int? = nil,
@@ -576,7 +1006,7 @@ private final class ExecutorHarness {
             sourceURL: sourceURL,
             destinationURLs: destinationURLs,
             verificationMode: verificationMode,
-            cameraLabelSettings: CameraLabelSettings(),
+            cameraLabelSettings: cameraSettings,
             reportSettings: ReportPrefs(makeReport: makeReport),
             estimatedFiles: estimatedFiles ?? returnedResults.count,
             estimatedBytes: estimatedBytes ?? returnedResults.reduce(0) { $0 + $1.fileSize },

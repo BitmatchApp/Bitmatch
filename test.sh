@@ -28,7 +28,13 @@ case "$JOB" in
     run_xcodebuild ipad-test test -scheme BitMatch-iPad -destination "$IOS_SIMULATOR_DESTINATION" -only-testing:BitMatch-iPadTests
     ;;
   engine-test)
-    swift test --package-path "$ROOT/Packages/BitMatchEngine"
+    # Match the Apple Silicon test host to the package's arm64 bundle. Newer
+    # Xcode hosts may otherwise choose arm64e and refuse to load XCTest.
+    if [[ "$(uname -m)" == arm64 ]]; then
+      arch -arm64 swift test --package-path "$ROOT/Packages/BitMatchEngine" --build-system native
+    else
+      swift test --package-path "$ROOT/Packages/BitMatchEngine" --build-system native
+    fi
     ;;
   release-builds)
     run_xcodebuild mac-release build -scheme BitMatch -configuration Release -destination 'platform=macOS'

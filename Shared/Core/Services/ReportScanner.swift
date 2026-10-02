@@ -1,5 +1,6 @@
 // ReportScanner.swift - Turns found reports into Master Report cards.
 import Foundation
+import CryptoKit
 import BitMatchEngine
 
 /// The app's side of reading reports: `EvidenceReader` finds and decodes
@@ -24,8 +25,16 @@ enum ReportScanner {
     /// were too large or could not be read. `maxBytes` exists for tests.
     static func scanReports(at root: URL, day: Date = Date(), calendar: Calendar = .current,
                             maxBytes: Int = EvidenceReader.maxReportBytes) async -> ScanResult {
+        let scoped = root.startAccessingSecurityScopedResource()
+        defer { if scoped { root.stopAccessingSecurityScopedResource() } }
         let found = await EvidenceReader.scanReports(at: root, day: day, calendar: calendar, maxBytes: maxBytes)
-        let cards = found.reports.map { transferCard(from: $0.snapshot, reportURL: $0.url) }
+        var cards: [TransferCard] = []
+        for report in found.reports {
+            if Task.isCancelled { break }
+            let pdfIsValid = await validatePDF(report.snapshot.pdfEvidence, beside: report.url)
+            if Task.isCancelled { break }
+            cards.append(transferCard(from: report.snapshot, reportURL: report.url, pdfIsValid: pdfIsValid))
+        }
         return ScanResult(cards: cards.sorted { $0.timestamp > $1.timestamp }, skipped: found.skipped)
     }
 
@@ -35,9 +44,11 @@ enum ReportScanner {
             .map { transferCard(from: $0, reportURL: reportURL) }
     }
 
-    static func transferCard(from report: Snapshot, reportURL: URL) -> TransferCard {
+    static func transferCard(from report: Snapshot, reportURL: URL, pdfIsValid: Bool? = nil) -> TransferCard {
         let mode = EvidenceReader.verificationMode(method: report.verification?.method, algorithm: report.verification?.algorithm)
-        let verified = EvidenceReader.isVerified(matches: report.statistics.matches, issues: report.statistics.issues, mode: mode)
+        let verified = EvidenceReader.isVerified(matches: report.statistics.matches, issues: report.statistics.issues, mode: mode,
+            totalResults: report.statistics.totalFiles, safeToErase: report.safeToErase)
+            && (report.pdfEvidence == nil || pdfIsValid == true)
         let sourceURL = URL(fileURLWithPath: report.source.path)
         let destinationURLs = report.destinations.map { URL(fileURLWithPath: $0.path) }
         let cameraName = cameraName(for: report)
@@ -76,6 +87,10 @@ enum ReportScanner {
         let message: String
         if verified {
             message = "Verified"
+        } else if report.safeToErase == false {
+            message = mode == .quick ? "Copied, not verified" : "Review required"
+        } else if report.pdfEvidence != nil && pdfIsValid != true {
+            message = "Report PDF could not be validated"
         } else if report.statistics.issues > 0 {
             message = "\(report.statistics.issues) issues"
         } else {
@@ -89,6 +104,44 @@ enum ReportScanner {
             progress: 1.0,
             state: .completed(OperationCompletionInfo(success: verified, message: message))
         )
+    }
+
+    /// PDF is the writer's final commit marker. A saved JSON must not gain a
+    /// green verdict if its requested PDF never published or later changed.
+    private static func validatePDF(_ evidence: ReportPDFEvidence?, beside reportURL: URL) async -> Bool {
+        guard let evidence else { return true } // Legacy / JSON-only report.
+        let name = evidence.filename
+        guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.contains("\\"), !name.contains("\0"),
+              name.lowercased().hasSuffix(".pdf"), evidence.sha256.count == 64,
+              evidence.sha256.lowercased().unicodeScalars.allSatisfy({ (48...57).contains($0.value) || (97...102).contains($0.value) }) else { return false }
+        do {
+            try Task.checkCancellation()
+            let root = try PinnedDestinationDirectory.open(destination: reportURL.deletingLastPathComponent(), rootComponents: [])
+            let file = try root.openRegularFile(at: [name])
+            let before = try file.snapshot()
+            // JSON scanning already has a size limit. Bound PDF work too,
+            // while streaming chunks keeps memory independent of report size.
+            guard before.st_size > 0, before.st_size <= 256 * 1024 * 1024 else { return false }
+            let handle = try file.readingHandle()
+            defer { try? handle.close() }
+            var hash = SHA256()
+            var bytes: Int64 = 0
+            while true {
+                try Task.checkCancellation()
+                let chunk = try handle.read(upToCount: 1024 * 1024) ?? Data()
+                if chunk.isEmpty { break }
+                hash.update(data: chunk)
+                bytes += Int64(chunk.count)
+            }
+            let after = try file.snapshot()
+            let live = try root.openRegularFile(at: [name]).snapshot()
+            guard before.st_dev == after.st_dev, before.st_ino == after.st_ino, before.st_size == after.st_size,
+                  before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+                  before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+                  before.st_dev == live.st_dev, before.st_ino == live.st_ino, before.st_size == live.st_size,
+                  bytes == Int64(before.st_size), root.logicalRootStillMatchesPinnedDirectory() else { return false }
+            return hash.finalize().map { String(format: "%02x", $0) }.joined() == evidence.sha256.lowercased()
+        } catch { return false }
     }
 
     /// The detected camera, else the card's folder name. The Master Report

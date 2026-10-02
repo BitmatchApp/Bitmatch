@@ -539,76 +539,83 @@ public final class DestinationWriter {
         }
         let sourceResolver = RelativePathResolver(base: src)
 
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            // Workers copy exactly the fail-closed source manifest, never a
-            // second walk of the card.
-            let cursor = ManifestCursor(preEnumeratedFiles)
+        // FAT/exFAT companion publication can retire or change an AppleDouble
+        // entry. Finish media publication before copying its metadata files;
+        // retain every manifest entry and the same no-overwrite/reuse proofs.
+        let ordinaryFiles = preEnumeratedFiles.filter { !$0.lastPathComponent.hasPrefix("._") }
+        let appleDoubleFiles = preEnumeratedFiles.filter { $0.lastPathComponent.hasPrefix("._") }
+        for files in [ordinaryFiles, appleDoubleFiles] where !files.isEmpty {
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                // Workers copy exactly the fail-closed source manifest, never a
+                // second walk of the card.
+                let cursor = ManifestCursor(files)
 
-            for _ in 0..<max(1, workers) {
-                group.addTask {
-                    while true {
-                        try Task.checkCancellation()
-                        if let pauseCheck { try await pauseCheck() }
-                        guard let fileURL = cursor.next() else { break }
-                        let relativePath: String
-                        do {
-                            relativePath = try sourceResolver.resolve(fileURL)
-                        } catch {
-                            for destination in destinations {
-                                await onError(destination.index, fileURL.path, error)
+                for _ in 0..<max(1, workers) {
+                    group.addTask {
+                        while true {
+                            try Task.checkCancellation()
+                            if let pauseCheck { try await pauseCheck() }
+                            guard let fileURL = cursor.next() else { break }
+                            let relativePath: String
+                            do {
+                                relativePath = try sourceResolver.resolve(fileURL)
+                            } catch {
+                                for destination in destinations {
+                                    await onError(destination.index, fileURL.path, error)
+                                }
+                                continue
                             }
-                            continue
-                        }
-                        guard let components = safeRelativeComponents(relativePath) else {
-                            let error = NSError(
-                                domain: "DestinationWriter",
-                                code: NSFileWriteNoPermissionError,
-                                userInfo: [NSLocalizedDescriptionKey: "Path contains traversal component"]
-                            )
-                            for destination in destinations {
-                                await onError(destination.index, relativePath, error)
+                            guard let components = safeRelativeComponents(relativePath) else {
+                                let error = NSError(
+                                    domain: "DestinationWriter",
+                                    code: NSFileWriteNoPermissionError,
+                                    userInfo: [NSLocalizedDescriptionKey: "Path contains traversal component"]
+                                )
+                                for destination in destinations {
+                                    await onError(destination.index, relativePath, error)
+                                }
+                                continue
                             }
-                            continue
-                        }
 
-                        let resolvedSource = fileURL.resolvingSymlinksKeepingCase()
-                        guard PathContainment.isWithin(resolvedSource.path, root: src.resolvingSymlinksKeepingCase().path) else {
-                            let error = NSError(
-                                domain: "DestinationWriter",
-                                code: NSFileWriteNoPermissionError,
-                                userInfo: [NSLocalizedDescriptionKey: "Source file resolves outside source directory"]
-                            )
-                            for destination in destinations {
-                                await onError(destination.index, relativePath, error)
+                            let resolvedSource = fileURL.resolvingSymlinksKeepingCase()
+                            guard PathContainment.isWithin(resolvedSource.path, root: src.resolvingSymlinksKeepingCase().path) else {
+                                let error = NSError(
+                                    domain: "DestinationWriter",
+                                    code: NSFileWriteNoPermissionError,
+                                    userInfo: [NSLocalizedDescriptionKey: "Source file resolves outside source directory"]
+                                )
+                                for destination in destinations {
+                                    await onError(destination.index, relativePath, error)
+                                }
+                                continue
                             }
-                            continue
-                        }
 
-                        do {
-                            try await copyFileFanOut(
-                                from: fileURL,
-                                relativePath: relativePath,
-                                components: components,
-                                destinations: destinations,
-                                verificationMode: verificationMode,
-                                checksumService: checksumService,
-                                pauseCheck: pauseCheck,
-                                hooks: hooks,
-                                onSourceReadEvidence: onSourceReadEvidence,
-                                onProgress: onProgress,
-                                onError: onError
-                            )
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {
-                            for destination in destinations {
-                                await onError(destination.index, relativePath, error)
+                            do {
+                                try await copyFileFanOut(
+                                    from: fileURL,
+                                    relativePath: relativePath,
+                                    components: components,
+                                    destinations: destinations,
+                                    verificationMode: verificationMode,
+                                    checksumService: checksumService,
+                                    pauseCheck: pauseCheck,
+                                    hooks: hooks,
+                                    onSourceReadEvidence: onSourceReadEvidence,
+                                    onProgress: onProgress,
+                                    onError: onError
+                                )
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                for destination in destinations {
+                                    await onError(destination.index, relativePath, error)
+                                }
                             }
                         }
                     }
                 }
+                try await group.waitForAll()
             }
-            try await group.waitForAll()
         }
     }
     #endif
@@ -919,18 +926,36 @@ public final class DestinationWriter {
                 try hooks?.beforeClose?(file.destination.index, file.destination.root.logicalRootURL)
                 try file.closeTemporaryFile()
                 try hooks?.beforePublish?(file.destination.index, file.destination.root.logicalRootURL)
-                if hooks?.useClaimedNamePublish?(file.destination.index) == true {
-                    try PinnedDestinationDirectory.publishByClaimingName(
-                        temporaryName: file.temporaryName,
-                        name: file.filename,
-                        relativeTo: file.parentFD
-                    )
-                } else {
-                    try PinnedDestinationDirectory.publishTemporaryFile(
-                        named: file.temporaryName,
-                        as: file.filename,
-                        relativeTo: file.parentFD
-                    )
+                do {
+                    if hooks?.useClaimedNamePublish?(file.destination.index) == true {
+                        try PinnedDestinationDirectory.publishByClaimingName(
+                            temporaryName: file.temporaryName,
+                            name: file.filename,
+                            relativeTo: file.parentFD
+                        )
+                    } else {
+                        try PinnedDestinationDirectory.publishTemporaryFile(
+                            named: file.temporaryName,
+                            as: file.filename,
+                            relativeTo: file.parentFD
+                        )
+                    }
+                } catch {
+                    let failure = error as NSError
+                    guard verificationMode != .quick,
+                          failure.domain == NSPOSIXErrorDomain, failure.code == Int(EEXIST) else { throw error }
+                    // A matching file may appear after the initial exists check
+                    // (including filesystem-created AppleDouble metadata). Never
+                    // replace it: use the same pinned, uncached reuse proof as a
+                    // file that was already present at the start of this copy.
+                    let existing = try file.destination.root.openRegularFile(at: components)
+                    try await validateReusableExistingDestinationFile(
+                        source: source, destination: existing, sourceSize: sourceSize,
+                        verificationMode: verificationMode, checksumService: checksumService,
+                        destinationIndex: file.destination.index, relativePath: relativePath, hooks: hooks)
+                    file.cleanup()
+                    await onProgress(file.destination.index, relativePath, sourceSize, true)
+                    continue
                 }
                 file.markPublished()
                 try PinnedDestinationDirectory.synchronizeDirectory(file.parentFD)
@@ -1054,7 +1079,7 @@ public final class DestinationWriter {
 
         if verificationMode == .quick {
             throw existingDestinationConflictError(
-                "Quick mode cannot prove an existing destination file matches; choose Standard verification or an empty destination"
+                "Quick mode cannot prove an existing destination file matches. Choose Standard verification to check existing files without overwriting them."
             )
         }
 

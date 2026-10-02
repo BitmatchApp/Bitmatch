@@ -539,7 +539,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let copyWorkers = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2))
 
         // One verify, recorded whatever happens except cancellation.
-        let verify: @Sendable (VerifyJob) async -> Void = { job in
+        let verify: @Sendable (VerifyJob) async throws -> Void = { job in
             let verificationStarted = Date()
             do {
                 try Task.checkCancellation()
@@ -580,7 +580,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 }
                 await onFileResult?(verified)
             } catch is CancellationError {
-                // Skip result on cancellation
+                // Propagate interruption even when a verifier throws it without
+                // cancelling its parent task. Never silently drop that outcome.
+                throw CancellationError()
             } catch {
                 let failure = FileOperationResult(
                     sourceURL: job.source,
@@ -613,16 +615,17 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             defer { submitVerify.finish() }
             if shouldPipelineVerify {
                 run.addTask {
-                    await withTaskGroup(of: Void.self) { verifiers in
+                    try await withThrowingTaskGroup(of: Void.self) { verifiers in
                         var inFlight = 0
                         for await job in verifyJobs {
                             if inFlight >= verifyConcurrency {
-                                await verifiers.next()
+                                try await verifiers.next()
                                 inFlight -= 1
                             }
-                            verifiers.addTask { await verify(job) }
+                            verifiers.addTask { try await verify(job) }
                             inFlight += 1
                         }
+                        try await verifiers.waitForAll()
                     }
                 }
             }
@@ -843,6 +846,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                 )
                                 await onFileResult?(result)
 
+                            } catch is CancellationError {
+                                throw CancellationError()
                             } catch {
                                 let nsErr = error as NSError
                                 SharedLogger.error("Verify error on dest #\(destIndex + 1): \(fileURL.lastPathComponent) – \(nsErr.domain)(\(nsErr.code)): \(nsErr.localizedDescription)", category: .transfer)

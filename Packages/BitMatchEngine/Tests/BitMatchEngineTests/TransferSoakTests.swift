@@ -182,13 +182,9 @@ private func writeSoakSummary(_ summary: SoakSummary, to resultURL: URL) throws 
 }
 
 private func soakCanonicalFileURL(_ url: URL) -> URL {
-    #if canImport(Darwin)
-    guard let resolved = realpath(url.path, nil) else { return url.standardizedFileURL }
-    defer { free(resolved) }
-    return URL(fileURLWithPath: String(cString: resolved), isDirectory: true)
-    #else
-    return url.resolvingSymlinksInPath().standardizedFileURL
-    #endif
+    // Use the engine's canonicalization: realpath expands /var to
+    // /private/var, which does not match the engine-issued result paths.
+    url.standardizedFileURL.resolvingSymlinksKeepingCase()
 }
 
 private func describeSoakResults(_ results: [FileOperationResult]) -> String {

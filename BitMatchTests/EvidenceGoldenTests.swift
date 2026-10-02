@@ -66,7 +66,9 @@ struct EvidenceGoldenTests {
         try Self.check(json, against: Self.expectedJSON, name: "json")
     }
 
-    @Test func projectJSONIsUnchanged() throws {
+    // Source totals now describe the 100-byte RAW and 50-byte JPEG rather
+    // than the unrelated processed-byte argument. All other golden fields stay fixed.
+    @Test func projectJSONRecordsActualSourceBytes() throws {
         let json = try Self.json(rows: Self.projectRows, context: Self.projectContext)
         try Self.check(json, against: Self.expectedProjectJSON, name: "project-json")
     }
@@ -420,7 +422,7 @@ Notes,"Shot day 3, ""B"" camera."
     "fileCount" : 2,
     "name" : "CARD",
     "path" : "\/golden-missing\/CARD",
-    "totalSize" : 1054730
+    "totalSize" : 150
   },
   "statistics" : {
     "averageFileSize" : 527365,

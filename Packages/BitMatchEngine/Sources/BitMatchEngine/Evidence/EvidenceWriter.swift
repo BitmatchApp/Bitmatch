@@ -1,5 +1,6 @@
 // EvidenceWriter.swift - Writes a transfer's CSV, JSON and checksum evidence.
 import Foundation
+import CryptoKit
 
 // MARK: - Export Outcome
 
@@ -18,11 +19,22 @@ public enum ReportExportError: LocalizedError, Sendable {
 }
 
 // MARK: - Enhanced JSON Report Structures
+/// Identifies the PDF published last for this report, including its byte digest.
+public struct ReportPDFEvidence: Codable, Sendable {
+    public let filename: String
+    public let sha256: String
+    public init(filename: String, sha256: String) {
+        self.filename = filename
+        self.sha256 = sha256
+    }
+}
+
 /// `Project` is the optional project section (`photographyJob`); the app
 /// supplies its own type, and the engine only encodes it.
 public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable {
     // Version 3.0 adds the optional photographyJob object. When it is nil,
-    // every pre-existing report field retains its 2.0 meaning.
+    // every pre-existing report field retains its 2.0 meaning. Version 3.1
+    // records the terminal safety verdict and optional PDF publication evidence.
     public let reportVersion: String
     public let timestamp: Date
     public let jobId: UUID
@@ -38,6 +50,8 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
     public let results: [JSONReportItem]
     public let photographyJob: Project?
     public var notes: String? = nil
+    public let safeToErase: Bool?
+    public let pdfEvidence: ReportPDFEvidence?
     
     public struct SourceInfo: Codable, Sendable {
         public let path: String
@@ -189,7 +203,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         }
     }
 
-    public init(reportVersion: String, timestamp: Date, jobId: UUID, mode: String, source: SourceInfo, destinations: [DestinationInfo], statistics: Statistics, extensions: [String: Int], performance: Performance, verification: Verification, results: [JSONReportItem], photographyJob: Project?, notes: String? = nil) {
+    public init(reportVersion: String, timestamp: Date, jobId: UUID, mode: String, source: SourceInfo, destinations: [DestinationInfo], statistics: Statistics, extensions: [String: Int], performance: Performance, verification: Verification, results: [JSONReportItem], photographyJob: Project?, notes: String? = nil, safeToErase: Bool? = nil, pdfEvidence: ReportPDFEvidence? = nil) {
         self.reportVersion = reportVersion
         self.timestamp = timestamp
         self.jobId = jobId
@@ -203,6 +217,8 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         self.results = results
         self.photographyJob = photographyJob
         self.notes = notes
+        self.safeToErase = safeToErase
+        self.pdfEvidence = pdfEvidence
     }
 }
 
@@ -321,7 +337,7 @@ public enum EvidenceWriter: Sendable {
                                         prefs: ReportPrefs,
                                         generateFullReport: Bool,
                                         projectCSV: ProjectCSVEvidence?,
-                                        projectJSON: Project?) async throws {
+                                        projectJSON: Project?, safeToErase: Bool? = nil) async throws {
         
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
@@ -385,7 +401,12 @@ public enum EvidenceWriter: Sendable {
                 performanceTelemetry: performanceTelemetry,
                 workers: workers,
                 prefs: prefs,
-                project: projectJSON
+                project: projectJSON,
+                safeToErase: safeToErase,
+                pdfEvidence: generateFullReport ? pdfData.map {
+                    ReportPDFEvidence(filename: pdfURL.lastPathComponent,
+                        sha256: SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined())
+                } : nil
             )
             
             // If checksums were used, auto-export checksum file (no dialog)
@@ -537,7 +558,9 @@ public enum EvidenceWriter: Sendable {
                                                  performanceTelemetry: TransferPerformanceTelemetry?,
                                                  workers: Int,
                                                  prefs: ReportPrefs,
-                                                 project: Project?) throws {
+                                                 project: Project?,
+                                                 safeToErase: Bool? = nil,
+                                                 pdfEvidence: ReportPDFEvidence? = nil) throws {
         let report = try makeEnhancedJSONReport(
             results: results,
             jobID: jobID,
@@ -555,9 +578,9 @@ public enum EvidenceWriter: Sendable {
             performanceTelemetry: performanceTelemetry,
             workers: workers,
             prefs: prefs,
-            project: project
+            project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence
         )
-        try encodeEnhancedJSONReport(report).write(to: url)
+        try encodeEnhancedJSONReport(report).write(to: url, options: .withoutOverwriting)
     }
 
     /// The bytes written for a JSON report. `ReportScanner` reads these back.
@@ -585,7 +608,9 @@ public enum EvidenceWriter: Sendable {
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         workers: Int,
         prefs: ReportPrefs,
-        project: Project?
+        project: Project?,
+        safeToErase: Bool? = nil,
+        pdfEvidence: ReportPDFEvidence? = nil
     ) throws -> EnhancedJSONReport<Project> {
         // Calculate file extensions breakdown
         var extensions: [String: Int] = [:]
@@ -646,12 +671,17 @@ public enum EvidenceWriter: Sendable {
             return "Unknown"
         }()
         
-        // Create source info
+        // Result rows are per source file per backup. The source card totals
+        // count each original once; performance/statistics retain all copies.
+        let sourceRows = Dictionary(grouping: results, by: \.path)
+        let sourceBytes = sourceRows.values.reduce(Int64(0)) { total, rows in
+            total + max(0, rows.map(\.size).max() ?? 0)
+        }
         let sourceInfo = EnhancedJSONReport<Project>.SourceInfo(
             path: sourceURL?.path ?? "—",
             name: sourceURL?.lastPathComponent ?? "—",
-            totalSize: totalBytesProcessed,
-            fileCount: fileCount,
+            totalSize: sourceBytes,
+            fileCount: sourceRows.count,
             cameraDetected: nil, // Could be detected if needed
             driveType: sourceDriveType
         )
@@ -696,7 +726,7 @@ public enum EvidenceWriter: Sendable {
         
         // Create the enhanced report
         return EnhancedJSONReport<Project>(
-            reportVersion: "3.0",
+            reportVersion: safeToErase == nil ? "3.0" : "3.1",
             timestamp: finished,
             jobId: jobID,
             mode: kind.jsonMode,
@@ -741,7 +771,8 @@ public enum EvidenceWriter: Sendable {
             ),
             results: results.map { JSONReportItem(from: $0) },
             photographyJob: project,
-            notes: normalizedNotes(prefs.notes)
+            notes: normalizedNotes(prefs.notes),
+            safeToErase: safeToErase, pdfEvidence: pdfEvidence
         )
     }
     

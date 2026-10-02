@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-10-01
+
+A reliability update for transfers and reports.
+
+- Fixed transfers sometimes stopping on small macOS metadata files, especially between exFAT drives. These files are still copied and checked; existing files are never overwritten.
+- Fixed interrupted verification being treated as normal completion. Partial results remain available for review.
+- Fixed reports counting the same source files more than once when copying to multiple backups.
+- Master Report now keeps the transfer’s original safety verdict. A transfer that needs attention won’t later appear verified just because its individual files matched.
+- Master Report also checks that a requested PDF report was saved and is intact before showing the transfer as verified.
+
+Tested across APFS, HFS+, exFAT, case-sensitive APFS and FAT32, including repeat transfers, project folders, camera labels, reports and injected failures. Quick mode remains a size-only copy, not a verified backup.
+
+The exact cause of the cancellation reported in issue #10 is still unconfirmed. If it happens again, use **History → Export diagnostics** and attach the file to the issue. It excludes footage names and paths; nothing is sent automatically.
+
 ## [0.2.2] - 2026-10-01
 
 A small reliability update for verified transfers and handoff records.

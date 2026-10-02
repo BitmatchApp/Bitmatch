@@ -116,7 +116,8 @@ enum ReportExporter {
                                        prefs: reportPrefs,
                                        generateFullReport: shouldGenerateFullReport,
                                        projectCSV: projectCSV,
-                                       projectJSON: projectJSON)
+                                       projectJSON: projectJSON,
+                                       safeToErase: safetyState == .safeToErase)
     }
 
     /// Converts the engine's authoritative verdict into the one safety state

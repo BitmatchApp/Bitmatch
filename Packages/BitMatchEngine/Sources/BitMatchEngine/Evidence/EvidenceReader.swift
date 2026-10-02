@@ -164,8 +164,10 @@ public enum EvidenceReader: Sendable {
     /// Verified means every file matched, at least one file was checked, and
     /// the report says contents were compared. A Quick (size-only) copy or a
     /// report with no recorded method is never verified (promise 2).
-    public static func isVerified(matches: Int, issues: Int, mode: VerificationMode?) -> Bool {
+    public static func isVerified(matches: Int, issues: Int, mode: VerificationMode?, totalResults: Int? = nil, safeToErase: Bool? = nil) -> Bool {
         guard let mode, mode != .quick else { return false }
+        guard safeToErase != false else { return false }
+        if let totalResults { guard totalResults > 0, matches == totalResults else { return false } }
         return issues == 0 && matches > 0
     }
 
@@ -181,6 +183,8 @@ public enum EvidenceReader: Sendable {
         public let statistics: Statistics
         public let performance: Performance
         public let verification: Verification?
+        public let safeToErase: Bool?
+        public let pdfEvidence: ReportPDFEvidence?
 
         public struct Source: Decodable, Sendable {
             public let path: String
@@ -208,10 +212,12 @@ public enum EvidenceReader: Sendable {
         public struct Statistics: Decodable, Sendable {
             public let matches: Int
             public let issues: Int
+            public let totalFiles: Int?
 
-            public init(matches: Int, issues: Int) {
+            public init(matches: Int, issues: Int, totalFiles: Int? = nil) {
                 self.matches = matches
                 self.issues = issues
+                self.totalFiles = totalFiles
             }
         }
 
@@ -261,13 +267,15 @@ public enum EvidenceReader: Sendable {
             }
         }
 
-        public init(timestamp: Date, source: Source, destinations: [Destination], statistics: Statistics, performance: Performance, verification: Verification?) {
+        public init(timestamp: Date, source: Source, destinations: [Destination], statistics: Statistics, performance: Performance, verification: Verification?, safeToErase: Bool? = nil, pdfEvidence: ReportPDFEvidence? = nil) {
             self.timestamp = timestamp
             self.source = source
             self.destinations = destinations
             self.statistics = statistics
             self.performance = performance
             self.verification = verification
+            self.safeToErase = safeToErase
+            self.pdfEvidence = pdfEvidence
         }
     }
 
