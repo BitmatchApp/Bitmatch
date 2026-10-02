@@ -11,4 +11,11 @@ BITMATCH_SOAK_SEED="${BITMATCH_SOAK_SEED:-20261001}" \
 BITMATCH_SOAK_ITERATIONS="${BITMATCH_SOAK_ITERATIONS:-100}" \
 swift test --package-path "$ROOT/Packages/BitMatchEngine" --filter TransferSoakTests > "$LOG_DIR/soak.log" 2>&1
 bash "$ROOT/Scripts/test-issue10-filesystem-pair.sh" > "$LOG_DIR/filesystem-pair.log" 2>&1
+if [[ "${BITMATCH_EXTENDED_MATRIX:-0}" == 1 ]]; then
+  failed=0
+  bash "$ROOT/Scripts/test-filesystem-fault-matrix.sh" > "$LOG_DIR/faults.log" 2>&1 || failed=1
+  bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/full.log" 2>&1 || failed=1
+  MATRIX_FOCUS=collision bash "$ROOT/Scripts/test-full-transfer-matrix.sh" > "$LOG_DIR/collisions.log" 2>&1 || failed=1
+  if [[ "$failed" != 0 ]]; then echo "Extended matrix has failures. Logs: $LOG_DIR" >&2; exit 1; fi
+fi
 echo "Regression matrix passed. Logs: $LOG_DIR"

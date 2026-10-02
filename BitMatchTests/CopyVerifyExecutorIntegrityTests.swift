@@ -428,6 +428,177 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         return (source, destination, result)
     }
 
+    /// Full executor cross-product on four real, disposable filesystem drivers.
+    /// Run with Scripts/test-full-transfer-matrix.sh; no physical media is touched.
+    func testFullSyntheticFilesystemMatrix() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run Scripts/test-full-transfer-matrix.sh")
+        }
+        let fm = FileManager.default
+        let root = URL(fileURLWithPath: path)
+        guard fm.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        let names = ["apfs", "hfs", "exfat", "apfsx"]
+        let mounts = names.map { root.appendingPathComponent("destination-" + $0) }
+        let sourceMounts = names.map { root.appendingPathComponent("source-" + $0) }
+        for (index, mount) in mounts.enumerated() {
+            var info = statfs()
+            XCTAssertEqual(statfs(mount.path, &info), 0)
+            let type = withUnsafePointer(to: &info.f_fstypename) {
+                $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) }
+            }
+            XCTAssertEqual(type, index == 1 ? "hfs" : index == 2 ? "exfat" : "apfs")
+        }
+        var sources: [URL] = []
+        var inventories: [[String: String]] = []
+        for mount in sourceMounts {
+            let source = mount.appendingPathComponent("Matrix Card")
+            try fm.createDirectory(at: source.appendingPathComponent("DCIM/Nested Folder"), withIntermediateDirectories: true)
+            try fm.createDirectory(at: source.appendingPathComponent("Empty Sidecars"), withIntermediateDirectories: true)
+            let special = ["empty.bin", "one byte.bin", "DCIM/clip 001.bin", "DCIM/Nested Folder/日本語 café.bin", ".camera-metadata", "DCIM/Large.bin"]
+            let sizes = [0, 1, 4096, 131072, 37, 1048576]
+            for (index, name) in special.enumerated() {
+                try Data(repeating: UInt8(index + 17), count: sizes[index]).write(to: source.appendingPathComponent(name))
+            }
+            for index in 0..<20 {
+                try Data(repeating: UInt8(index), count: index * 17).write(to: source.appendingPathComponent("DCIM/tiny-\(index).bin"))
+            }
+            sources.append(source)
+            inventories.append(try matrixHashes(source))
+        }
+        let selectedKey = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_KEY"]
+        var completed = 0
+        for si in mounts.indices {
+            for di in mounts.indices {
+                for mode in VerificationMode.allCases {
+                    for count in [1, 2] {
+                        for options in 0..<4 {
+                            let key = "\(names[si])-\(names[di])-\(mode.rawValue)-\(count)-\(options)"
+                            if let selectedKey, selectedKey != key { continue }
+                            let mhl = options & 1 != 0
+                            let reports = options & 2 != 0
+                            let destinationIndices = count == 1 ? [di] : [di, (di + 1) % mounts.count]
+                            let destinations = destinationIndices.map { mounts[$0].appendingPathComponent("run-\(key)") }
+                            for destination in destinations { try fm.createDirectory(at: destination, withIntermediateDirectories: true) }
+                            do {
+                                let inventory = inventories[si]
+                                let harness = ExecutorHarness(returnedResults: [], emittedResults: [],
+                                    sourceURL: sources[si], destinationURLs: destinations, verificationMode: mode,
+                                    generateASCMHL: mhl, makeReport: reports,
+                                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                                    estimatedFiles: inventory.count, estimatedBytes: 1185068)
+                                let executed = try await harness.execute()
+                                let operation = try XCTUnwrap(executed, key)
+                                XCTAssertEqual(operation.results.count, inventory.count * count, key)
+                                for row in operation.results where !row.success {
+                                    print("MATRIX_INITIAL_FAILURE \(key) \(String(describing: row))")
+                                }
+                                XCTAssertTrue(operation.results.allSatisfy(\.success), key)
+                                XCTAssertEqual(harness.publishedTerminalStates.count, 1, key)
+                                XCTAssertEqual(harness.terminalInfo?.success, mode != .quick, key)
+                                XCTAssertEqual(try matrixHashes(sources[si]), inventory, "Source altered: \(key)")
+                                for (backupIndex, destination) in destinations.enumerated() {
+                                    let copied = SafetyValidator.resolvedDestinationRoot(source: sources[si], destination: destination, settings: CameraLabelSettings())
+                                    XCTAssertTrue(fm.fileExists(atPath: copied.appendingPathComponent("Empty Sidecars").path), key)
+                                    for (relative, digest) in inventory {
+                                        let bytes = try Data(contentsOf: copied.appendingPathComponent(relative))
+                                        XCTAssertEqual(SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined(), digest, "Destination mismatch: \(key) \(relative)")
+                                    }
+                                    XCTAssertEqual(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path), mhl && mode != .quick, key)
+                                    let reportRoot = destination.appendingPathComponent("Reports")
+                                    XCTAssertEqual(fm.fileExists(atPath: reportRoot.path), reports && backupIndex == 0, key)
+                                    if reports && backupIndex == 0 {
+                                        let saved = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil)
+                                        for ext in ["pdf", "csv", "json"] { XCTAssertTrue(saved.contains { $0.pathExtension == ext }, "Missing \(ext): \(key)") }
+                                    }
+                                }
+                                // Repeat into the same destinations: prove reuse without attempting
+                                // to create a second initial MHL history or replace existing reports.
+                                let repeated = ExecutorHarness(returnedResults: [], emittedResults: [],
+                                    sourceURL: sources[si], destinationURLs: destinations, verificationMode: mode,
+                                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                                    estimatedFiles: inventory.count, estimatedBytes: 1185068)
+                                let repeatExecuted = try await repeated.execute()
+                                let repeatOperation = try XCTUnwrap(repeatExecuted, key)
+                                XCTAssertEqual(repeatOperation.results.count, inventory.count * count, key)
+                                if mode == .quick {
+                                    // Size-only Quick cannot prove reuse; it must refuse overwrite.
+                                    XCTAssertTrue(repeatOperation.results.allSatisfy { !$0.success && !$0.wasReused }, key)
+                                } else {
+                                    XCTAssertTrue(repeatOperation.results.allSatisfy { $0.success && $0.wasReused }, "Repeat failed/re-copied: \(key)")
+                                }
+                                XCTAssertEqual(repeated.terminalInfo?.success, mode != .quick, key)
+                                XCTAssertEqual(try matrixHashes(sources[si]), inventory, key)
+                                completed += 1
+                                print("MATRIX_CASE \(key) completed=\(completed) rows=\(operation.results.count) repeatRows=\(repeatOperation.results.count)")
+                            } catch {
+                                XCTFail("MATRIX_CASE \(key) threw \(error)")
+                                print("MATRIX_CASE_ERROR \(key) \(error)")
+                            }
+                            for destination in destinations { try fm.removeItem(at: destination) }
+                        }
+                    }
+                }
+            }
+        }
+        XCTAssertEqual(completed, selectedKey == nil ? 512 : 1)
+        print("MATRIX_SUMMARY combinations=\(completed) transfers=\(completed * 2)")
+    }
+
+    func testCaseCollisionsAcrossRealFilesystems() async throws {
+        guard let path = ProcessInfo.processInfo.environment["BITMATCH_MATRIX_ROOT"] else {
+            throw XCTSkip("Run MATRIX_FOCUS=collision Scripts/test-full-transfer-matrix.sh")
+        }
+        let root = URL(fileURLWithPath: path)
+        guard FileManager.default.fileExists(atPath: root.appendingPathComponent(".bitmatch-matrix-owned").path) else {
+            return XCTFail("Disposable matrix ownership marker missing")
+        }
+        let source = root.appendingPathComponent("source-apfsx/Case Card")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data("first distinct file".utf8).write(to: source.appendingPathComponent("Clip.bin"))
+        try Data("second distinct file".utf8).write(to: source.appendingPathComponent("clip.bin"))
+        let original = try matrixHashes(source)
+        XCTAssertEqual(original.count, 2, "Fixture must actually be case-sensitive")
+        var cases = 0
+        for name in ["apfs", "hfs", "exfat", "apfsx"] {
+            for mode in VerificationMode.allCases {
+                let destination = root.appendingPathComponent("destination-\(name)/case-\(mode.rawValue)")
+                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+                let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source,
+                    destinationURLs: [destination], verificationMode: mode, generateASCMHL: true, makeReport: true,
+                    realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+                    estimatedFiles: 2, estimatedBytes: 39)
+                do {
+                    let operation = try await harness.execute()
+                    // The manifest deliberately rejects case-colliding source paths
+                    // on every filesystem, so a later backup cannot silently lose one.
+                    XCTAssertFalse(harness.terminalInfo?.success == true, "Colliding files must never be safe")
+                    XCTAssertTrue(operation?.results.contains { !$0.success } == true)
+                } catch {
+                    XCTAssertTrue(String(describing: error).contains("collide"), "Unexpected refusal: \(error)")
+                    XCTAssertFalse(harness.terminalInfo?.success == true)
+                }
+                XCTAssertEqual(try matrixHashes(source), original, "Source altered")
+                try FileManager.default.removeItem(at: destination)
+                cases += 1
+                print("COLLISION_CASE \(name) \(mode.rawValue)")
+            }
+        }
+        XCTAssertEqual(cases, 16)
+        print("COLLISION_SUMMARY cases=\(cases)")
+    }
+
+    private func matrixHashes(_ root: URL) throws -> [String: String] {
+        var hashes: [String: String] = [:]
+        // Foundation enumeration can hide AppleDouble sidecars on exFAT.
+        // Snapshot the complete authoritative manifest, including those files.
+        for entry in try CardSource.enumerateRegularFiles(base: root) {
+            hashes[entry.relativePath] = SHA256.hash(data: try Data(contentsOf: entry.url)).map { String(format: "%02x", $0) }.joined()
+        }
+        return hashes
+    }
+
     /// Closer issue #10 reproduction: actual mounted source/destination drivers,
     /// real pipeline, executor, independent readback, optional MHL and reports.
     func testIssue10JournaledHFSToExFATFullExecutor() async throws {
