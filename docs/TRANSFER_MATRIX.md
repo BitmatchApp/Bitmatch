@@ -47,14 +47,7 @@ Local red/green logs and final gate results are retained under `dist/validation/
 
 ## App and engine gates
 
-Full Mac tests and the iPad simulator build passed. The engine bundle passed 109 XCTest tests (15 opt-in skips, zero failures) and 123 Swift Testing tests. On this Xcode installation, the standalone `swift test` launcher could not load its XCTest bundle, including after a clean native build. Running that same bundle directly with `xcrun xctest` passed both suites. The launcher error is not counted as a passing test run. The independent invocation was:
-
-```sh
-swift test --package-path Packages/BitMatchEngine --build-system native --scratch-path .derived-data/engine-native
-xcrun xctest .derived-data/engine-native/arm64-apple-macosx/debug/BitMatchEnginePackageTests.xctest
-```
-
-The first command builds the bundle but reports the launcher failure on this machine; the second must independently complete successfully.
+Full Mac tests and the iPad simulator build passed. The engine bundle passed 109 XCTest tests (15 opt-in skips, zero failures) and 123 Swift Testing tests. On this Xcode installation, the standalone runner initially selected an incompatible XCTest host. An explicitly ARM64 host loaded the same bundle and passed both suites. `./test.sh engine-test` now selects that host on Apple Silicon and uses the native Swift package build system.
 
 ## Limits
 
