@@ -251,12 +251,14 @@ public final class ChecksumEngine: ChecksumService, Sendable {
             await Task.yield()
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let data = try fileHandle.read(upToCount: chunkSize) ?? Data()
-            if data.isEmpty { break }
-            autoreleasepool {
-                hasher.update(data: data)
+            // Include the read so temporary Foundation buffers drain per chunk.
+            let count = try autoreleasepool { () throws -> Int in
+                let data = try fileHandle.read(upToCount: chunkSize) ?? Data()
+                if !data.isEmpty { hasher.update(data: data) }
+                return data.count
             }
-            bytesProcessed += Int64(data.count)
+            if count == 0 { break }
+            bytesProcessed += Int64(count)
             let progress = Double(bytesProcessed) / Double(initial.size)
             progressCallback?(progress, "Computing MD5 (legacy)...")
         }
@@ -289,13 +291,14 @@ public final class ChecksumEngine: ChecksumService, Sendable {
             await Task.yield()
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let data = try fileHandle.read(upToCount: chunkSize) ?? Data()
-            if data.isEmpty { break }
-
-            autoreleasepool {
-                hasher.update(data: data)
+            // Include the read so temporary Foundation buffers drain per chunk.
+            let count = try autoreleasepool { () throws -> Int in
+                let data = try fileHandle.read(upToCount: chunkSize) ?? Data()
+                if !data.isEmpty { hasher.update(data: data) }
+                return data.count
             }
-            bytesProcessed += Int64(data.count)
+            if count == 0 { break }
+            bytesProcessed += Int64(count)
 
             // Update progress
             let progress = Double(bytesProcessed) / Double(initial.size)
@@ -330,14 +333,14 @@ public final class ChecksumEngine: ChecksumService, Sendable {
             await Task.yield()
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let data = try fileHandle.read(upToCount: chunkSize) ?? Data()
-            if data.isEmpty { break }
-
-            autoreleasepool {
-                hasher.update(data: data)
+            // Include the read so temporary Foundation buffers drain per chunk.
+            let count = try autoreleasepool { () throws -> Int in
+                let data = try fileHandle.read(upToCount: chunkSize) ?? Data()
+                if !data.isEmpty { hasher.update(data: data) }
+                return data.count
             }
-
-            bytesProcessed += Int64(data.count)
+            if count == 0 { break }
+            bytesProcessed += Int64(count)
 
             // Update progress
             let progress = Double(bytesProcessed) / Double(initial.size)

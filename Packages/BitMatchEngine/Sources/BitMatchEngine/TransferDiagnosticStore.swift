@@ -1,4 +1,7 @@
 import Foundation
+#if canImport(Darwin)
+import Darwin
+#endif
 
 /// A bounded, local record of structured events only. Never accepts free-form
 /// log messages, source metadata, bookmarks, or error descriptions.
@@ -33,6 +36,12 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         var bytesProcessed: Int64?
         var totalBytes: Int64?
         var isASCMHL: Bool?
+        /// Which verify job in the run (1-based copy order), never a name.
+        var ordinal: Int?
+        var verifyOutcome: SharedLogger.VerifyOutcome?
+        var verifyConcurrency: Int?
+        /// The process's physical memory footprint, in MiB, when recorded.
+        var footprintMB: Int?
     }
     private let directory: URL
     private let limit: Int
@@ -54,6 +63,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
             event: event, run: run)
+        entry.footprintMB = Self.physicalFootprintMB()
         configure(&entry)
         do {
             let encoder = JSONEncoder()
@@ -85,6 +95,24 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             // app exit does not depend on a pending dispatch queue being drained.
             try handle.synchronize()
         } catch { writeFailed = true } // Diagnostics must never fail a transfer.
+    }
+
+    /// Physical footprint is a resource-pressure clue, not a diagnosis of
+    /// why a process ended. Sampling failure must never fail a transfer.
+    static func physicalFootprintMB() -> Int? {
+        #if canImport(Darwin)
+        var info = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard result == KERN_SUCCESS else { return nil }
+        return Int(info.phys_footprint / 1_048_576)
+        #else
+        return nil
+        #endif
     }
 
     /// Only our typed records are exported. Never includes unified logs or the

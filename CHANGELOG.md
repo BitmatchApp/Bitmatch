@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Verification now drains temporary Foundation read buffers after each chunk, limiting potential memory growth during large-file checks. Whether memory pressure caused the reported interruption is still under investigation.
+- Exported diagnostics now record each verify's start, destination open, read progress every 8 GB, digest finish and end, identified by number only. Every event also includes BitMatch's memory footprint when available. Completion breadcrumbs distinguish matched, mismatched, failed and cancelled checks.
+
 ## [0.2.3] - 2026-10-01
 
 A reliability update for transfers and reports.

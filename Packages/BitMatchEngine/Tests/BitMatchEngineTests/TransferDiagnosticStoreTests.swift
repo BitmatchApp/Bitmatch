@@ -83,6 +83,19 @@ final class TransferDiagnosticStoreTests: XCTestCase {
         XCTAssertEqual(events.first?["kind"] as? String, "other")
         XCTAssertEqual(events.last?["filesProcessed"] as? Int, 2)
     }
+    func testVerifyBreadcrumbsCarryNumbersAndMemoryFootprintOnly() throws {
+        let run = UUID()
+        SharedLogger.verifyEvent(.verifyStarted, run: run, ordinal: 8, destinationIndex: 0, bytes: 45_344_117_808)
+        SharedLogger.verifyEvent(.verifyRead, run: run, ordinal: 8, destinationIndex: 0, bytes: 8 * 1024 * 1024 * 1024)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: TransferDiagnosticStore.shared.exportData()) as? [String: Any])
+        let events = try XCTUnwrap(object["events"] as? [[String: Any]])
+            .filter { ($0["run"] as? String) == run.uuidString }
+        XCTAssertEqual(events.map { $0["event"] as? String }, ["verifyStarted", "verifyRead"])
+        XCTAssertEqual(events.first?["ordinal"] as? Int, 8)
+        XCTAssertEqual(events.first?["bytesProcessed"] as? Int, 45_344_117_808)
+        XCTAssertEqual(events.last?["bytesProcessed"] as? Int, 8 * 1024 * 1024 * 1024)
+        XCTAssertGreaterThan(events.first?["footprintMB"] as? Int ?? 0, 0)
+    }
     func testConcurrentWritersProduceCompleteRecords() async throws {
         let root = try fixture()
         let store = TransferDiagnosticStore(directory: root)

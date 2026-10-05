@@ -44,6 +44,8 @@ extension SharedLogger {
         case reportStarted, reportFinished, explicitCancel, parentCancelled
         case phase, cancelOrigin, error, pipelineResult, config, destination, progress, appStarted, appEnded
         case terminalError, journalCancelled, journalInterrupted, journalFinished, phaseChanged
+        case verifyStarted, verifyOpenedDestination, verifyRead, verifyDigestFinished, verifyFinished
+        case verifyConfiguration, clipInspectionStarted, clipInspectionFinished
     }
     public static func transferEvent(_ event: TransferEvent, run: UUID?, code: Int = 0,
                                      taskCancelled: Bool = false, explicit: Bool = false) {
@@ -51,6 +53,22 @@ extension SharedLogger {
             $0.code = code; $0.taskCancelled = taskCancelled; $0.explicit = explicit
         }
         logger(for: .transfer).notice("event=\(event.rawValue, privacy: .public) run=\(run?.uuidString ?? "none", privacy: .public) code=\(code, privacy: .public) task_cancelled=\(taskCancelled, privacy: .public) explicit=\(explicit, privacy: .public)")
+    }
+}
+
+extension SharedLogger {
+    /// One verify job's milestone. Numbers only: the job's ordinal, its size
+    /// or bytes read so far, and the destination index. Never a name or path.
+    public enum VerifyOutcome: String, Codable, Sendable { case matched, mismatched, failed, cancelled }
+    public static func verifyConfiguration(run: UUID?, concurrency: Int) {
+        TransferDiagnosticStore.shared.record(.verifyConfiguration, run: run) { $0.verifyConcurrency = concurrency }
+    }
+    public static func verifyEvent(_ event: TransferEvent, run: UUID?, ordinal: Int?,
+                                   destinationIndex: Int, bytes: Int64?, totalBytes: Int64? = nil, outcome: VerifyOutcome? = nil) {
+        TransferDiagnosticStore.shared.record(event, run: run) {
+            $0.ordinal = ordinal; $0.destinationIndex = destinationIndex; $0.bytesProcessed = bytes; $0.totalBytes = totalBytes; $0.verifyOutcome = outcome
+        }
+        logger(for: .transfer).notice("event=\(event.rawValue, privacy: .public) run=\(run?.uuidString ?? "none", privacy: .public) ordinal=\(ordinal ?? -1, privacy: .public) destination=\(destinationIndex, privacy: .public) bytes=\(bytes ?? -1, privacy: .public) outcome=\(outcome?.rawValue ?? "pending", privacy: .public)")
     }
 }
 
@@ -116,6 +134,8 @@ extension SharedLogger {
 /// tasks receive the same UUID explicitly. Never carries source metadata.
 public enum TransferDiagnostics {
     @TaskLocal public static var runID: UUID?
+    /// The pipelined verify job running in this task, for read breadcrumbs.
+    @TaskLocal public static var verifyOrdinal: Int?
 }
 
 extension SharedLogger {
