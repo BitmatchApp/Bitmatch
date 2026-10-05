@@ -70,3 +70,15 @@ BITMATCH_45GB_TEST=1 arch -arm64 swift test --package-path Packages/BitMatchEngi
 ```
 
 Two sparse 45,000,000,000-byte files exercise 90 GB through the actual uncached pinned verification loop. Both readers must open before either begins reading; the test checks all bytes, both independently computed SHA-256 results, and process-footprint growth below 128 MiB. Sparse zero payloads save physical disk space. This is a full-size read/hash stress test, not a 120 GB physical copy, camera parser, USB dock or HDD reproduction.
+
+## Additional local validation
+
+- Two simultaneous 45 GB pinned readers: 90,000,000,000 bytes read, 10,729 chunks per reader, both SHA-256 checks pass, footprint 16 → 20 MiB; 148.699 seconds. Sparse payload limitation applies.
+- Developer ID signed, notarized diagnostic app and DMG: 0.2.4 build 13, prepared locally without publishing or changing updater metadata.
+- Signed-app walkthrough on disposable exFAT → HFS+ images: Standard copy, explicit cancellation with partial results and unsafe verdict, Retry, MHL, PDF/CSV/JSON reports, and successful journal settlement. Two results (2 GiB media plus AppleDouble). Independent source/destination SHA-256 and both MHL MD5 checks pass. Diagnostics record user cancellation separately from the completed retry. Original setup preferences and queue restored; images detached and removed.
+- Address Sanitizer: all eight outcome/ordering combinations in the verification breadcrumb test pass (pipelined/sequential × matched/mismatched/failed/cancelled), 1.059 seconds. Footprint tests are intentionally disabled under sanitizer instrumentation.
+
+The full Mac test suite remains a separate gate; the signed walkthrough does not substitute for it. CI initially failed with Xcode 16.4 on existing non-Sendable app models crossing async boundaries. CI now selects the runner's Xcode 26.3; local testing remains the requested source of validation.
+
+- Thread Sanitizer: the same eight verification outcome combinations pass, 1.173 seconds, no race report.
+- Full local Mac suite: an ad-hoc-signed Release host with `ENABLE_TESTABILITY=YES` builds, then stalls in dyld dependency loading before app code (224 KiB footprint). It was sampled and stopped. An earlier Release attempt lacked `ENABLE_TESTABILITY` and failed to compile test imports; that configuration error was corrected. Neither attempt is counted as a suite pass.
