@@ -1428,7 +1428,10 @@ class SharedAppCoordinator: ObservableObject {
         let records = transferJournal.records.filter { queueSessionRecordIDs.contains($0.id) }
         let mounted = Set(records.compactMap { record -> UUID? in
             guard let access = try? transferJournal.prepareSourceForEjection(id: record.id) else { return nil }
-            access.release()
+            defer { access.release() }
+            #if os(macOS)
+            guard CardEjectService.isEjectable(access.sourceURL) else { return nil }
+            #endif
             return record.id
         })
         return QueueSessionPresentation.make(
@@ -2468,14 +2471,16 @@ class SharedAppCoordinator: ObservableObject {
             speed: nil)
 
         do {
-            let stats = try await comparisonCoordinator.compareFolders(
-                left: left,
-                right: right,
-                verificationMode: comparedMode,
-                onProgress: { [weak self] prog in
-                    self?.progress = prog
-                }
-            )
+            let stats = try await TransferDiagnostics.$runID.withValue(operationID) {
+                try await comparisonCoordinator.compareFolders(
+                    left: left,
+                    right: right,
+                    verificationMode: comparedMode,
+                    onProgress: { [weak self] prog in
+                        self?.progress = prog
+                    }
+                )
+            }
             if Task.isCancelled || comparisonCoordinator.isCancellationRequested {
                 throw CancellationError()
             }

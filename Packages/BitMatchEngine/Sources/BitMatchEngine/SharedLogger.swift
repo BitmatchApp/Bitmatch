@@ -46,6 +46,7 @@ extension SharedLogger {
         case terminalError, journalCancelled, journalInterrupted, journalFinished, phaseChanged
         case verifyStarted, verifyOpenedDestination, verifyRead, verifyDigestFinished, verifyFinished
         case verifyConfiguration, clipInspectionStarted, clipInspectionFinished
+        case compareStarted, comparePhase, compareProgress, compareFinished
     }
     public static func transferEvent(_ event: TransferEvent, run: UUID?, code: Int = 0,
                                      taskCancelled: Bool = false, explicit: Bool = false) {
@@ -147,5 +148,29 @@ extension SharedLogger {
             $0.bytesProcessed = progress.bytesProcessed; $0.totalBytes = progress.totalBytes
             $0.isASCMHL = progress.isASCMHL
         }
+    }
+}
+
+
+extension SharedLogger {
+    public enum ComparisonPhase: String, Codable, Sendable {
+        case listingSource, listingDestination, checkingContents
+    }
+    public enum ComparisonOutcome: String, Codable, Sendable { case completed, failed, cancelled }
+
+    /// Comparison diagnostics carry counts and closed vocabulary only. Paths stay in
+    /// the explicit differences report, never in the diagnostics export.
+    public static func comparisonEvent(_ event: TransferEvent, run: UUID,
+                                       mode: VerificationMode? = nil, phase: ComparisonPhase? = nil,
+                                       outcome: ComparisonOutcome? = nil, stats: CompareStats? = nil,
+                                       checked: Int? = nil, total: Int? = nil) {
+        TransferDiagnosticStore.shared.record(event, run: run) {
+            $0.verificationMode = mode; $0.comparisonPhase = phase; $0.comparisonOutcome = outcome
+            $0.filesProcessed = checked; $0.totalFiles = total; $0.taskCancelled = Task.isCancelled
+            $0.onlyInSourceCount = stats?.onlyInLeftCount
+            $0.onlyInDestinationCount = stats?.onlyInRightCount
+            $0.mismatchedCount = stats?.mismatchedCount; $0.matchingCount = stats?.commonCount
+        }
+        logger(for: .transfer).notice("event=\(event.rawValue, privacy: .public) run=\(run.uuidString, privacy: .public) comparison_phase=\(phase?.rawValue ?? "none", privacy: .public) outcome=\(outcome?.rawValue ?? "pending", privacy: .public) checked=\(checked ?? -1, privacy: .public)")
     }
 }

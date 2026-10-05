@@ -42,12 +42,12 @@ struct CompareResultsView: View {
                 .foregroundStyle(.secondary)
             if !stats.isClean {
                 pathSection(
-                    title: "Only in \(leftName)",
+                    title: "Missing from \(rightName)",
                     systemImage: "minus.circle",
                     paths: stats.onlyInLeftPaths
                 )
                 pathSection(
-                    title: "Only in \(rightName)",
+                    title: "Extra in \(rightName)",
                     systemImage: "plus.circle",
                     paths: stats.onlyInRightPaths
                 )
@@ -56,7 +56,7 @@ struct CompareResultsView: View {
                     systemImage: "exclamationmark.triangle",
                     paths: stats.mismatchedPaths
                 )
-                Text("Copy a path from the lists above when reporting a difference.")
+                Text("Expand a list to see the files. Extra files do not mean the matching copies are damaged. Missing files or mismatches need attention before clearing the source. Export differences includes file paths; diagnostics does not.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }

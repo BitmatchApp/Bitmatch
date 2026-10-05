@@ -32,6 +32,12 @@ final class WorkflowSnapshotTests: XCTestCase {
             name: "ipad-comparison-differences"
         )
 
+        try capture(
+            ContentView(coordinator: fixture.coordinator),
+            size: CGSize(width: 393, height: 852),
+            name: "iphone-comparison-differences"
+        )
+
         try fixture.seedCompletion()
         await settle()
         try capture(

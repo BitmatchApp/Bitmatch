@@ -1062,6 +1062,15 @@ public final class DestinationWriter {
 
 
     #if canImport(Darwin)
+    private static func reuseConflict(_ reason: String, relativePath: String) -> NSError {
+        guard (relativePath as NSString).lastPathComponent.hasPrefix("._") else {
+            return existingDestinationConflictError(reason)
+        }
+        return existingDestinationConflictError(
+            "A hidden companion file on the backup differs from the source. macOS can create or update these files on exFAT drives. BitMatch is refusing to overwrite it. Nothing was overwritten. Keep the source intact and export the results before retrying."
+        )
+    }
+
     private static func validateReusableExistingDestinationFile(
         source: URL,
         destination: PinnedDestinationFile,
@@ -1074,7 +1083,7 @@ public final class DestinationWriter {
     ) async throws {
         let destinationInfo = try destination.snapshot()
         guard Int64(destinationInfo.st_size) == sourceSize else {
-            throw existingDestinationConflictError("Existing destination file differs in size")
+            throw reuseConflict("Existing destination file differs in size", relativePath: relativePath)
         }
 
         if verificationMode == .quick {
@@ -1093,7 +1102,7 @@ public final class DestinationWriter {
                 relativePath: relativePath,
                 hooks: hooks
             ) else {
-                throw existingDestinationConflictError("Existing destination file bytes differ; refusing to overwrite it")
+                throw reuseConflict("Existing destination file bytes differ; refusing to overwrite it", relativePath: relativePath)
             }
         }
 
@@ -1106,7 +1115,7 @@ public final class DestinationWriter {
             relativePath: relativePath,
             hooks: hooks
         ) else {
-            throw existingDestinationConflictError("Existing destination file checksum differs; refusing to overwrite it")
+            throw reuseConflict("Existing destination file checksum differs; refusing to overwrite it", relativePath: relativePath)
         }
 
     }

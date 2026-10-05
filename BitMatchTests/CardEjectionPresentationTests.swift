@@ -38,6 +38,12 @@ struct CardEjectionPresentationTests {
         )
     }
 
+    @Test func internalStorageCannotBeEjected() async {
+        let folder = FileManager.default.temporaryDirectory
+        #expect(!CardEjectService.isEjectable(folder))
+        #expect(await CardEjectService.eject(folder) == "This folder is not on an ejectable drive. There is nothing to eject.")
+    }
+
     // MARK: shouldAutoEject: verified only
 
     @Test func onlyAFullyVerifiedResultAutoEjects() {
