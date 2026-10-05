@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Fixed Check closing the app when a saved MHL or BitMatch report contains more than one file.
+- Check now explains which folder has missing or extra files. An extra file alone does not mean the copied files are damaged.
+- Diagnostics include comparison progress, outcomes and cancellation, without footage names or paths.
+- Existing hidden macOS metadata conflicts now give a clearer explanation. Source files and existing backups remain protected from overwrite.
+- Eject is no longer offered for folders on internal storage.
+
 ## [0.2.4] - 2026-10-04
 
 A reliability update for large-file verification.

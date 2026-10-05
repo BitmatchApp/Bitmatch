@@ -1267,6 +1267,31 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertThrowsError(try coordinator.moveQueuedTransfer(id: firstID, to: 0))
     }
 
+    /// Plant: remove the ejectability guard from queuePresentation.
+    func testInternalSourceDoesNotOfferOrAttemptBulkEjection() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal, defaults: f.defaults)
+        let id = try coordinator.enqueue(source: f.source, destinations: [f.destination])
+        try journal.markRunning(id: id)
+        try journal.finish(id: id, results: [ResultRow(
+            path: "clip.mov", status: ResultOutcome.verified.statusText,
+            size: 4, checksum: "abc", destination: "backup",
+            destinationPath: f.destination.appendingPathComponent("clip.mov").path
+        )], summary: "Verified", hadIssues: false)
+        XCTAssertFalse(CardEjectService.isEjectable(f.source))
+        XCTAssertTrue(coordinator.queuePresentation.ejectableCardIDs.isEmpty)
+        XCTAssertNotEqual(coordinator.queuePresentation.rows.first?.action, .eject)
+        let recorder = EjectRecorder()
+        let error = await coordinator.ejectAllSafeQueueSources { await recorder.record($0) }
+        XCTAssertNil(error)
+        let attempted = await recorder.urls
+        XCTAssertTrue(attempted.isEmpty)
+    }
+
     func testEjectAllSafeCardsSkipsUnsafeRowsContinuesAndReportsFailures() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -1280,7 +1305,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
             transferJournal: journal,
-            defaults: f.defaults
+            defaults: f.defaults,
+            // Simulate removable cards; the fixture folders themselves are internal.
+            sourceEjectability: { _ in true }
         )
         let firstID = try coordinator.enqueue(source: f.source, destinations: [f.destination])
         let secondID = try coordinator.enqueue(source: second, destinations: [f.destination])

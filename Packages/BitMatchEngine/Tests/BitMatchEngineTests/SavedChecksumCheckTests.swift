@@ -94,6 +94,46 @@ struct SavedChecksumCheckTests {
         #expect(result.records.first?.kind == .ascMHL)
     }
 
+    /// Plant: use Dictionary(uniqueKeysWithValues:) for per-file record URLs.
+    @Test(arguments: [SavedChecksumCheck.RecordKind.ascMHL, .bitMatchReport])
+    func multiFileRecordIsDeduplicatedWithoutLosingFiles(kind: SavedChecksumCheck.RecordKind) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let first = try writeFile("first.mov", text: "first", under: root)
+        let second = try writeFile("second.mov", text: "second", under: root)
+        let record: URL
+        if kind == .ascMHL {
+            try writeMHL(root: root, path: "first.mov", sha256: sha256("first"))
+            record = root.appendingPathComponent("ascmhl/0001_test.mhl")
+            let xml = try String(contentsOf: record, encoding: .utf8)
+                .replacingOccurrences(of: "</hashes>", with:
+                    "<hash><path>second.mov</path><sha256>\(sha256("second"))</sha256></hash></hashes>")
+            try xml.write(to: record, atomically: true, encoding: .utf8)
+        } else {
+            record = try writeReport(root: root, target: first, checksum: sha256("first"), date: date(2026, 2, 1))
+            var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: record)) as? [String: Any])
+            var rows = try #require(object["results"] as? [[String: Any]])
+            rows.append(["target": second.path, "status": ResultOutcome.verified.statusText, "checksum": sha256("second")])
+            object["results"] = rows
+            try JSONSerialization.data(withJSONObject: object).write(to: record)
+        }
+        let originalRecord = try Data(contentsOf: record)
+        let checker = makeChecker()
+        let discovery = try await checker.discover(under: root)
+        #expect(discovery.expectedFiles.count == 2)
+        #expect(discovery.records.count == 1)
+        #expect(discovery.records.first?.kind == kind)
+        let matching = try await checker.check(discovery) { _ in }
+        #expect(matching.isIntact)
+        #expect(matching.matchingPaths == ["first.mov", "second.mov"])
+        try Data("broken".utf8).write(to: second)
+        let changed = try await checker.check(discovery) { _ in }
+        #expect(!changed.isIntact)
+        #expect(changed.matchingPaths == ["first.mov"])
+        #expect(changed.changedPaths == ["second.mov"])
+        #expect(try Data(contentsOf: record) == originalRecord)
+    }
+
     @Test func rootWithoutRecordsReportsNotFound() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

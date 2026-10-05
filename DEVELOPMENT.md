@@ -53,6 +53,8 @@ bash test.sh release-builds  # macOS and iOS simulator Release builds
 
 `ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to reuse a build folder (default `.derived-data/`).
 
+If the Mac test host stalls in `dyld` while opening Sparkle from a checkout under Desktop, try a build folder outside Desktop: `DERIVED_DATA_ROOT=/private/tmp/bitmatch-local-tests bash test.sh mac-test`. On Xcode 27.0 this allowed tests to execute without changing signing, sandbox or privacy settings. A loader stall is not a test pass; keep its log separate from the successful rerun.
+
 `.github/workflows/ci.yml` defines Mac tests, the iPad/iPhone build and engine tests on push and pull request. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests.
 
 ### Change workflow

@@ -18,7 +18,7 @@ class OperationStateService: ObservableObject {
     @Published var pauseResumeCapabilities = PauseResumeCapabilities()
     
     // MARK: - Private State
-    private var currentOperationId: UUID?
+    private(set) var currentOperationId: UUID?
 
     /// Single source of truth for state-transition legality. `currentState`
     /// stays the published facade; every mutation goes through `applyTransition`.

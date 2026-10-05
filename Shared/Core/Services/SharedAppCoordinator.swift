@@ -431,6 +431,7 @@ class SharedAppCoordinator: ObservableObject {
     var folderInfoLoadingState: [URL: Bool] { folderInfoService.folderInfoLoadingState }
     
     private var cancellables = Set<AnyCancellable>()
+    private let sourceEjectability: (@Sendable (URL) -> Bool)?
     private var activeStartID: UUID?
     private var startCancellationRequested = false
     private var cancellationOrigin: TransferCancelOrigin = .user
@@ -454,9 +455,11 @@ class SharedAppCoordinator: ObservableObject {
         projectStore: (any PhotographerJobStore)? = nil,
         photographerJobViewModel: PhotographerJobViewModel? = nil,
         defaults: UserDefaults = .standard,
-        physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider()
+        physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider(),
+        sourceEjectability: (@Sendable (URL) -> Bool)? = nil
     ) {
         self.platformManager = platformManager
+        self.sourceEjectability = sourceEjectability
         self.physicalDiskIdentityProvider = physicalDiskIdentityProvider
         self.defaults = defaults
         let environment = ProcessInfo.processInfo.environment
@@ -1430,7 +1433,7 @@ class SharedAppCoordinator: ObservableObject {
             guard let access = try? transferJournal.prepareSourceForEjection(id: record.id) else { return nil }
             defer { access.release() }
             #if os(macOS)
-            guard CardEjectService.isEjectable(access.sourceURL) else { return nil }
+            guard (sourceEjectability?(access.sourceURL) ?? CardEjectService.isEjectable(access.sourceURL)) else { return nil }
             #endif
             return record.id
         })
@@ -2251,7 +2254,7 @@ class SharedAppCoordinator: ObservableObject {
 
     func cancelOperation(origin: TransferCancelOrigin = .user) {
         cancellationOrigin = origin
-        SharedLogger.cancelEvent(origin, run: activeStartID)
+        SharedLogger.cancelEvent(origin, run: activeStartID ?? stateService.currentOperationId)
         queueIsRunning = false
         if activeStartID != nil {
             startCancellationRequested = true

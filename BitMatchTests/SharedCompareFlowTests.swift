@@ -522,7 +522,25 @@ struct SharedCompareFlowTests {
         let coordinator = await MainActor.run {
             SharedAppCoordinator(platformManager: platform, defaults: .isolatedWorkflowDefaults())
         }
-        checksum.onVerify = { await coordinator.cancelOperation() }
+        checksum.onVerify = {
+            await MainActor.run {
+                let run = coordinator.stateService.currentOperationId
+                coordinator.cancelOperation()
+                // Plant: log only activeStartID in cancelOperation. Compare has no
+                // copy start ID, so its user-cancel event would lose this run.
+                do {
+                    let data = try TransferDiagnosticStore.shared.exportData()
+                    let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                    let events = try #require(root["events"] as? [[String: Any]])
+                    let id = try #require(run)
+                    #expect(events.contains {
+                        $0["run"] as? String == id.uuidString
+                            && $0["event"] as? String == "cancelOrigin"
+                            && $0["origin"] as? String == "user"
+                    })
+                } catch { Issue.record(error) }
+            }
+        }
         await MainActor.run {
             coordinator.currentMode = .compareFolders
             coordinator.verificationMode = .standard

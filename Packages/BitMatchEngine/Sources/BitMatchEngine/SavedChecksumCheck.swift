@@ -405,10 +405,14 @@ public struct SavedChecksumCheck: Sendable {
         }
         var expected: [String: ExpectedFile] = [:]
         for entry in sorted { expected[entry.relativePath] = entry }
-        let usedURLs = Set(expected.values.map(\.record.url))
-        let records = Array(Dictionary(uniqueKeysWithValues: sorted.map { ($0.record.url, $0.record) }).values)
-            .filter { usedURLs.contains($0.url) }
-            .sorted { $0.date > $1.date }
+        // Every file in a report/history shares its record URL. Collect each
+        // contributing record once, after choosing the newest evidence per file.
+        var recordsByURL: [URL: Record] = [:]
+        for entry in expected.values { recordsByURL[entry.record.url] = entry.record }
+        let records = recordsByURL.values.sorted {
+            if $0.date != $1.date { return $0.date > $1.date }
+            return $0.url.path < $1.url.path
+        }
         return Discovery(root: root, expectedFiles: expected, records: records)
     }
 
