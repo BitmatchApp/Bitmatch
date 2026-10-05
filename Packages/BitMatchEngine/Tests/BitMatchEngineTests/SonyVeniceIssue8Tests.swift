@@ -86,7 +86,26 @@ A001CNXB/CUEUP.XML
         try await checkReportedTree(mode: mode, filesystem: filesystem)
     }
 
-    private func checkReportedTree(mode: VerificationMode, filesystem: String) async throws {
+    // Private reporter metadata stays outside the repository. Only an explicit local
+    // path enables these cases; MOV bytes, when requested, remain synthetic.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BITMATCH_ISSUE8_METADATA"] != nil),
+          arguments: [VerificationMode.quick, .standard, .thorough, .paranoid], [false, true])
+    func reporterMetadata(mode: VerificationMode, includeSyntheticMovies: Bool) async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["BITMATCH_ISSUE8_METADATA"])
+        try await checkReportedTree(mode: mode, filesystem: "local",
+                                    metadata: URL(fileURLWithPath: path), includeMovies: includeSyntheticMovies)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BITMATCH_ISSUE8_METADATA"] != nil),
+          arguments: ["ExFAT", "JHFS+"], [false, true])
+    func reporterMetadataMounted(filesystem: String, includeSyntheticMovies: Bool) async throws {
+        let path = try #require(ProcessInfo.processInfo.environment["BITMATCH_ISSUE8_METADATA"])
+        try await checkReportedTree(mode: .standard, filesystem: filesystem,
+                                    metadata: URL(fileURLWithPath: path), includeMovies: includeSyntheticMovies)
+    }
+
+    private func checkReportedTree(mode: VerificationMode, filesystem: String,
+                                   metadata: URL? = nil, includeMovies: Bool = true) async throws {
         try await FileOperationsTestLock.shared.run {
             let fm = FileManager.default
             let root = fm.temporaryDirectory.appendingPathComponent("bitmatch-issue8-\(UUID().uuidString)")
@@ -122,12 +141,20 @@ A001CNXB/CUEUP.XML
                     try fm.createDirectory(at: url, withIntermediateDirectories: true)
                 } else {
                     try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                    let data = Data(("synthetic " + relative + "\n").utf8)
+                    let data: Data
+                    if let metadata {
+                        let supplied = metadata.appendingPathComponent(relative)
+                        if fm.fileExists(atPath: supplied.path) {
+                            data = try Data(contentsOf: supplied)
+                        } else if includeMovies && url.pathExtension == "MOV" {
+                            data = Data(("synthetic " + relative + "\n").utf8)
+                        } else { continue }
+                    } else { data = Data(("synthetic " + relative + "\n").utf8) }
                     try data.write(to: url)
                     manifest[relative] = data
                 }
             }
-            #expect(manifest.count == 49) // 15 MOV, 15 BIM, 15 XML, three root XML, .DS_Store
+            #expect(manifest.count == (metadata == nil ? 49 : (includeMovies ? 48 : 33)))
             let pipeline = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared)
             let initialEntries = try CardSource.enumerateRegularFiles(base: source)
             let initialContents = try Dictionary(uniqueKeysWithValues: initialEntries.map {
@@ -174,7 +201,7 @@ A001CNXB/CUEUP.XML
             stats = try await compare()
             #expect(stats.onlyInRightPaths == ["Clip/EXTRA.BIM"])
             try fm.removeItem(at: destination.appendingPathComponent("Clip/EXTRA.BIM"))
-            let clip = "Clip/A001C001_260914A8.MOV"
+            let clip = includeMovies ? "Clip/A001C001_260914A8.MOV" : "Clip/A001C001_260914A8R01.BIM"
             var damaged = try #require(manifest[clip]); damaged[0] ^= 1
             try damaged.write(to: destination.appendingPathComponent(clip))
             stats = try await compare()
