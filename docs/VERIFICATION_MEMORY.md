@@ -55,6 +55,8 @@ The investigation remains open pending OS termination evidence or a reproduction
 
 ## Validation on 2026-10-04
 
+**October 5 follow-up:** the Mac test-host loading stall was avoided by placing DerivedData outside Desktop, without changing signing or privacy settings. The full Mac suite then passed (1,063 passed, eight skipped, zero failures), along with Mac and iOS Simulator Release builds for 0.2.5. See the [development guide](../DEVELOPMENT.md#testing) for the workaround and the [follow-up validation](ISSUE8_SONY_VENICE.md) for results. The attempts below remain the historical record; they are not counted as passes.
+
 - Actual pinned-read regression: green at 18 → 26 MiB for 256 MiB/64 chunks; isolated removal of only the read pool fails at 27 → 267 MiB. The source/destination checksum remains correct in both runs.
 - Eight-clip real-driver test: one and two workers both pass, 16 results each (eight media files plus eight AppleDouble companions), all independent destination and unchanged-source SHA-256 checks pass.
 - Engine suite: 110 XCTest cases, 15 opt-in skips, zero failures; 126 Swift Testing cases, two opt-in skips, zero failures. Memory and large-transfer tests are separately enabled above.

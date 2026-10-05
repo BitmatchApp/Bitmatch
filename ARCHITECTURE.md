@@ -10,7 +10,7 @@ Paths are relative to the repository root. Symbols are cited by type or function
 
 ### The engine package
 
-`Packages/BitMatchEngine` holds the code that makes promises 1-3 true, with no UI imports: `TransferPipeline` (one copy-and-verify run), `CardSource` (the fail-closed source manifest), `DestinationWriter` (pinned, never-replace writes and verified reads), `ChecksumEngine`, `FolderComparer` (Compare), `TransferCompletion` (result rows, the ASC MHL plan and the verdict), `TransferJournal`, `EvidenceWriter` and `EvidenceReader` (CSV, JSON, checksum manifest; reading reports back), `ASCMHLGenerator`, and the shared rules `SafetyValidator`, `BackupTargetPolicy`, `DestinationSelectionPolicy`, `TransferReadiness` and `PathContainment`. App files `import BitMatchEngine`. Its own tests run with `bash test.sh engine-test` (`swift test`, about 15 seconds); tests that need app types stay in `BitMatchTests`.
+`Packages/BitMatchEngine` holds the code that makes promises 1-3 true, with no UI imports: `TransferPipeline` (one copy-and-verify run), `CardSource` (the fail-closed source manifest), `DestinationWriter` (pinned, never-replace writes and verified reads), `ChecksumEngine`, `FolderComparer` (folder comparison), `SavedChecksumCheck` (checking files against saved reports and MHL records), `TransferCompletion` (result rows, the ASC MHL plan and the verdict), `TransferJournal`, `EvidenceWriter` and `EvidenceReader` (CSV, JSON, checksum manifest; reading reports back), `ASCMHLGenerator`, and the shared rules `SafetyValidator`, `BackupTargetPolicy`, `DestinationSelectionPolicy`, `TransferReadiness` and `PathContainment`. App files `import BitMatchEngine`. Its own tests run with `bash test.sh engine-test` (`swift test`; runtime depends on enabled fixtures); tests that need app types stay in `BitMatchTests`.
 
 | Target | Product | Platform | Compiles |
 |---|---|---|---|
@@ -68,7 +68,7 @@ Every flow is one shared screen in `Shared/Views/`. Each screen draws a pure pre
 - **Layout.** The layout is chosen by window width, not device idiom:
   - `.compact`: `BitMatch-iPad/Views/PhoneContentView.swift`
   - `.toolbar` or `.sidebar`: `BitMatch-iPad/Views/ModularContentView.swift`. The mode switcher is `AdaptiveModeNavigation` (`BitMatch-iPad/Views/HeaderTabsView.swift`).
-- **Modes.** Both layouts switch on `coordinator.currentMode` (`AppMode`: Copy & Verify, Compare Folders, Master Report). Copy & Verify always shows `CopyAndVerifyView`; its shared `TransferQueueSection` sits directly below the setup locations while transfers wait, run and finish. Compare shows its own progress and outcome inside `CompareScreen`.
+- **Modes.** Both layouts switch on `coordinator.currentMode` (`AppMode`: Copy & Verify, Check, Master Report). Copy & Verify always shows `CopyAndVerifyView`; its shared `TransferQueueSection` sits directly below the setup locations while transfers wait, run and finish. Compare shows its own progress and outcome inside `CompareScreen`.
 - **Settings.** `SettingsSheetView` in `ModularContentView.swift`: report and camera settings, the project's remote destination (kept for the Mac to upload), and screen dimming.
 
 ### macOS
@@ -221,6 +221,8 @@ For each operation, in order:
 
 ## Compare
 
+The public mode is **Check**; many source types retain their Compare names. It offers **Its saved checksums** and **Another folder**. `SavedChecksumCheck` discovers supported saved records, selects evidence per file and re-reads the selected folder. Contributing records are deduplicated by record URL, since one report or MHL can contain many files. The folder-to-folder path follows below. Both paths emit privacy-safe phase, count and terminal diagnostics correlated by run ID; exported differences can contain paths.
+
 - **Entry point.** `SharedAppCoordinator.compareFolders()` calls `ComparisonCoordinator.compareFolders(left:right:verificationMode:onProgress:)` (`Shared/Core/Services/ComparisonCoordinator.swift`).
 - **Callers.**
   - On Mac, `BitMatch/Views/CompareFoldersView.swift` starts it through `SharedAppCoordinator.startCurrentMode()`.
@@ -253,13 +255,13 @@ For each operation, in order:
 - **Checks before writing.**
   - Refuses to extend or replace an existing history: an `ascmhl` folder in, above, or below the root is an error.
   - Rejects unsafe or duplicate paths and symlinks.
-  - Re-reads each file through a pinned descriptor with `O_NOFOLLOW` and requires the SHA-256 to equal the transfer's verified SHA-256.
+  - Opens each file through a pinned descriptor with `O_NOFOLLOW`. It reuses verified SHA-256/MD5 readback evidence only on a filesystem with a real change time and matching descriptor identity, size and timestamps; otherwise it re-reads and requires SHA-256 to match the transfer. exFAT takes the re-read path. Progress includes this handoff work.
   - Refuses to write if the source and destination overlap.
 - **Output.**
   - `ascmhl/0001_BitMatch_<UTC timestamp>Z.mhl`, with one MD5 hash per file.
   - `ascmhl/ascmhl_chain.xml`, which references the manifest by its C4 ID.
 
-  Both files are written into a hidden staging folder, which is then renamed to `ascmhl` with `renameatx_np(..., RENAME_EXCL)`.
+  Both files are written into a hidden staging folder, then published together with `renameatx_np(..., RENAME_EXCL)`. On unsupported filesystems such as exFAT, the fallback exclusively creates an empty `ascmhl` directory, checks its identity, and renames the staged directory over that claim. It cannot replace a nonempty history. An interruption can leave an empty reservation; retry refuses it rather than treating it as a complete history. Publication diagnostics record errno without paths.
 - **Reference check.**
   - `Scripts/ascmhl/validate_reference.sh` builds a fixture with `Scripts/ascmhl/GenerateFixture.swift`.
   - It then validates the output against the official ascmitc/mhl XSDs and CLI, confirms that CLI can append a second generation, and confirms that a corrupted file fails verification.

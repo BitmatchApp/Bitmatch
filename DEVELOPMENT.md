@@ -44,6 +44,7 @@ Live progress and per-file rows reach views through `LiveProgressFeed` and `Live
 Run the named jobs from the repository root:
 
 ```bash
+bash test.sh engine-test     # shared engine tests
 bash test.sh mac-test        # BitMatchTests on macOS
 bash test.sh mac-build       # macOS Debug build
 bash test.sh ipad-build      # iOS simulator Debug build (the shared-code gate)

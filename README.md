@@ -34,6 +34,8 @@
 
 For indie filmmakers, YouTubers, photographers, and small productions that don't want a subscription just to copy files.
 
+BitMatch gets better with your help. I can test a lot here, but I can't try every camera, file format, card reader, drive, and dock people use. If something goes wrong, [file an issue](https://github.com/BitmatchApp/Bitmatch/issues). Got a question, an idea, or a setup that worked well? [Join the Discussions](https://github.com/BitmatchApp/Bitmatch/discussions). You don't have to write code to help. Real-world testing and feedback make a huge difference.
+
 ## Download
 
 Signed and notarized macOS build on the [Releases page](https://github.com/BitmatchApp/Bitmatch/releases/latest), or with [Homebrew](https://brew.sh):
@@ -41,7 +43,7 @@ Signed and notarized macOS build on the [Releases page](https://github.com/Bitma
 ```sh
 brew install --cask bitmatchapp/tap/bitmatch
 ```
- Supports Apple Silicon and Intel Macs.
+Supports Apple Silicon and Intel Macs.
 
 Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now; they require **iPadOS/iOS 18.5 or newer**.
 
@@ -65,7 +67,8 @@ Plug in your card and drives, allow BitMatch to use them once, and it picks up t
 - **Careful about "safe to erase"**: a card or folder that changes during the copy, online-only iCloud/Dropbox files, or two "backups" on the same physical drive never count as safe. Hidden `._` files are copied and verified too.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
-- **Folder compare** for stuff you already copied.
+- **Check** for stuff you already copied: compare two folders, or check a backup against its saved checksums.
+- **ASC MHL inventories** to hand over with your backups, so someone else can check them too.
 - **PDF, CSV, and JSON reports** for producers who want documentation, or you when you want to check what happened.
 - **Transfer queue and history** on Mac, iPad, and iPhone. Interrupted attempts can be reviewed and retried. Copying a card you already backed up tells you so.
 - **Updates itself** on Mac: new versions arrive inside the app, signed and checked before they install.
@@ -92,7 +95,7 @@ More detail (queue and recovery, ASC MHL, photographer jobs, SFTP, cards and dri
 
 ## Something Went Wrong?
 
-Keep the card, then open **History → Export diagnostics…**. Attach that file to your [bug report](https://github.com/BitmatchApp/Bitmatch/issues), along with the drives and dock you were using. It keeps recent transfer phases and errors across an app restart, without footage names or paths. Nothing gets sent automatically. [What it includes](docs/DIAGNOSTICS.md).
+Keep the card, then open **History → Export diagnostics…**. If the app closed, reopen it first. Attach that file to your [bug report](https://github.com/BitmatchApp/Bitmatch/issues), along with the exact error, whether you were using **Copy & Verify** or **Check**, and the drives and dock you were using. It keeps recent transfer and Check activity across an app restart, without footage names or paths. Nothing gets sent automatically. [What it includes](docs/DIAGNOSTICS.md).
 
 ## Contributing
 

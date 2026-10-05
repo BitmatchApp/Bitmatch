@@ -2,15 +2,27 @@
 
 ## Queue, Recovery, and Handoff
 
-Use **Add another card** under the source to queue the next card, right on the main screen. Open **History** from the toolbar to see what happened earlier. Each queued transfer keeps its own source, backups, and settings. The queue stops when something needs attention. A retry keeps the old attempt in history and checks the original folders before starting again; verified existing files can be reused after checking them.
+Choose the next source, backups, and settings, then use **Add to queue** while another transfer is running, right on the main screen. Open **History** from the toolbar to see what happened earlier. Each queued transfer keeps its own source, backups, and settings. The queue stops when something needs attention. A retry keeps the old attempt in history and checks the original folders before starting again; verified existing files can be reused after checking them.
 
 On iPhone and iPad, keep BitMatch open while it works. iOS can interrupt a transfer; the saved attempt will be marked interrupted when you reopen the app. Project cards stay with their project and need review there before another ingest.
 
 Notifications say when a card is safe to erase, when something needs you, and when the queue is done. Change them in Settings.
 
+## Check Existing Backups
+
+Choose **Check**, then pick the folder or drive you want to check. Use **Its saved checksums** when BitMatch finds supported records, such as a BitMatch JSON report or an ASC MHL inventory. It reads the files again and compares them with those records; the original card does not need to be connected.
+
+Use **Another folder** to compare two copies instead. Standard compares contents with SHA-256; Quick checks sizes only. The results separate changed files from files missing or extra in the other folder. An extra file alone does not mean the matching files are damaged. Check does not copy, delete, or repair anything.
+
+The differences export includes filenames and paths. For a bug report without those details, use **History → Export diagnostics…** instead.
+
+## Reports
+
+Transfer reports record the results for each destination. PDF, CSV, and JSON exports are available on Mac, iPad, and iPhone. **Master Report** scans a selected folder or drive for saved transfer reports for a chosen day and combines them into a PDF and JSON summary. It summarizes those records; it does not re-verify the media. Use **Check** for that.
+
 ## ASC MHL
 
-ASC MHL is on by default for verified copies. It adds another full read of each backup to create a compatible inventory. Existing ASC histories are left alone, with an issue shown instead of pretending they were extended. You can turn it off under **Advanced** when you don't need the handoff record.
+ASC MHL is on by default for verified copies. It creates an inventory someone else can use to check the backup. This may need another full read of the backup, including on exFAT; the handoff progress stays active while that happens. On supported filesystems, BitMatch can reuse the verified readback hashes after checking that the files have not changed. Existing ASC histories are left alone, with an issue shown instead of pretending they were extended. You can turn it off under **Advanced** when you don't need the handoff record.
 
 If a retry encounters an existing history, **History → the transfer's details → Retry without ASC MHL** rechecks the copies without replacing that history. The one workflow BitMatch supports—verify locally, hand over an initial inventory, receiver validates—is written down in [SUPPORTED_WORKFLOW.md](validation/ascmhl/SUPPORTED_WORKFLOW.md); there is no chain-of-custody claim. See the [scope and validation](validation/ascmhl/README.md) too.
 
@@ -55,16 +67,16 @@ Source scanning rejects unreadable metadata, unsafe paths, and portable filename
 
 There are automated tests for changing source files, truncated reads, destination conflicts, cancellation, large manifests, and transfer faults. That doesn't mean every drive and hub has been tested. The [validation status](HARDWARE_COMPATIBILITY.md) shows what we actually ran, including failures and things we couldn't test. If you want to help, follow the [hardware testing procedure](HARDWARE_TESTING.md) and send a [hardware test report](https://github.com/BitmatchApp/Bitmatch/issues/new?template=hardware-test.yml).
 
-Found a transfer problem? Include your app and OS versions, drives and filesystems, verification mode, and what you did. Strip private filenames and client info from shared reports.
+Found a problem? Follow the [diagnostics guide](DIAGNOSTICS.md), include the exact error, and say whether you were using Copy & Verify or Check. Include your app and OS versions, drives and filesystems, verification mode, and what you did. Strip private filenames and client info from screenshots and transfer reports before sharing them.
 
 The [latest release notes](https://github.com/BitmatchApp/Bitmatch/releases/latest) have the current fixes, build checks, and download checksum.
 
 ## Cards and Drives
 
-- **Sony VENICE SxS and AXS cards (Mac).** macOS can't read SxS cards recorded in UDF until Sony's SxS UDF Driver is installed ([Apple support article](https://support.apple.com/en-us/101826)), or AXS cards without Sony's AXS memory card reader software. When a connected card can't be read, BitMatch shows a notice on the setup screen saying what it needs, instead of showing nothing.
-- **exFAT backup drives** work from 0.1.7. In 0.1.4 through 0.1.6, every file copied to an exFAT drive failed ("Destination file appeared during copy"). Nothing was overwritten, but nothing was backed up either.
+- **Sony VENICE SxS and AXS cards (Mac).** If macOS sees a connected card but cannot read it, BitMatch shows a setup notice with driver guidance when it recognizes the card. A copied folder of Sony files passing a test is not the same as testing the original card and reader; that hardware still needs its own check.
+- **exFAT backup drives.** Use the latest release: recent updates fixed copy publication and ASC MHL handoff on exFAT. macOS can also create hidden companion files on these drives. If an existing companion differs from the source, BitMatch refuses to overwrite it and explains the conflict. Keep the source and review the results.
 - **Your Mac's startup disk.** A folder on it, for example in your home folder, is a valid backup. The disk itself and macOS system volumes (including Recovery) are not, and BitMatch says why. BitMatch never adds a drive like that by itself.
-- **iPad and iPhone.** Earlier builds refused every backup folder chosen in Files (On My iPad, iCloud Drive, an external drive) as a "system folder" on a real device. 0.1.7 fixes that. The fix has automated tests, but it has not been confirmed on a physical iPhone or iPad yet.
+- **iPad and iPhone.** Pick folders through Files and keep BitMatch open during transfers. Cloud files must be downloaded locally first. Automated tests and simulator builds cover the shared workflow, but physical-device storage and backgrounding still need testing.
 
 ## Who It's For
 
@@ -74,7 +86,7 @@ Not for big budget shows or union shoots with a full DIT cart.
 
 ## Building and Tests
 
-Xcode 16 or newer, with SDKs for the supported targets. CI uses Xcode 16.4.
+Use Xcode 26.3 or newer, with SDKs for the supported targets. See the [development guide](../DEVELOPMENT.md) for toolchain, simulator, and local test setup.
 
 1. Clone this repository and open `BitMatch.xcodeproj`.
 2. Pick `BitMatch` for Mac or `BitMatch-iPad` for iPad or iPhone.
@@ -84,6 +96,7 @@ Xcode 16 or newer, with SDKs for the supported targets. CI uses Xcode 16.4.
 Run tests from the repository root:
 
 ```bash
+bash test.sh engine-test    # shared transfer engine tests
 bash test.sh mac-test       # macOS unit and integration tests
 bash test.sh mac-build      # macOS Debug build
 bash test.sh ipad-build     # iPad simulator Debug build
@@ -91,7 +104,7 @@ bash test.sh ipad-test      # requires IOS_SIMULATOR_DESTINATION
 bash test.sh release-builds # macOS and iPad Release builds
 ```
 
-The CI workflow is included, but GitHub Actions is currently disabled. Run `mac-test` and `ipad-build` locally before submitting changes.
+Run the relevant tests locally before submitting changes. Shared-code changes need `mac-test` and `ipad-build`; changes to the engine also need `engine-test`. Keep test failures and skipped hardware checks separate from passing results.
 
 ## FAQ
 

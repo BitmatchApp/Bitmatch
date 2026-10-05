@@ -2,7 +2,9 @@
 
 The working list for BitMatch. Newest decisions at the top of each section. When something ships, move it to the [changelog](../CHANGELOG.md) and delete it here.
 
-## Next update (0.2.2)
+## Candidates for a future update
+
+Releases through 0.2.5 focused on reliability. These are follow-up ideas, not a promised release scope; check the [changelog](../CHANGELOG.md) before starting one.
 
 Small, safety-first, no new settings.
 
@@ -10,7 +12,7 @@ Small, safety-first, no new settings.
 - [ ] **Check everything again at Start.** Before copying anything, re-check that every chosen drive and card is still connected and is the same volume. Also refuse to start if two cards would land in the same destination folder, for example two cards named "NO NAME" with a naming pattern that has no card number. Say what's wrong and that nothing was copied. Add tests for both.
 - [ ] **Card-untouched test.** A test that hashes the entire source tree (names, sizes, dates, contents, extended attributes) before and after a transfer and proves nothing changed, in every verification mode.
 - [ ] **xxHash64 for verification.** Use xxHash64 as the verification hash, which ASC MHL supports natively. The XXH64 reader already exists in `SavedChecksumCheck.swift`. Measure before and after with `RealCopyBenchTests` on a fast drive.
-- [ ] **MHL round trip.** Confirm that a second offload onto the same drive adds a new ASC MHL generation to the existing history chain, and that Check verifies against an existing MHL. Fix whatever doesn't.
+- [ ] **Extend existing MHL histories.** Check can verify against an existing MHL. Writing another generation into that history is not supported: existing histories must stay untouched until safe chain extension is implemented and reference-tested.
 - [ ] **macOS 15.0.** Find out whether the minimum can drop from 15.5 to 15.0 at no cost. Don't go below 15; Swift 6 `Mutex` and some SwiftUI APIs need it.
 - [ ] **Re-copy files that fail verification.** When a file this run just wrote fails verification, re-copy and re-verify it once automatically. Never overwrite files that were already on the drive before the run.
 - [ ] **More detail in History.** An expanded History row shows the summary, source, destinations and files, but not the numbers. Add the date and time, file count, total size, copy and verify durations, and average speed, read from the record or the report. The collapsed row stays as compact as it is now, and an older report without timings shows a dash.
@@ -37,7 +39,6 @@ Small, safety-first, no new settings.
 ## Getting people using it
 
 - [ ] **iPhone and iPad through TestFlight**, then the App Store, so nobody has to build from source.
-- [ ] **A 60-second demo video** on the README and website: plug in a card, pick drives, Start, card safe to erase.
 - [ ] **Real screenshots** with real card names instead of the demo queue, once real cards are on hand.
 - [ ] **Hardware reports:** ask early users to fill in the [hardware report template](HARDWARE_REPORT_TEMPLATE.md) for their cameras, readers and drives.
 
