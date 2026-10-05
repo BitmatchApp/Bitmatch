@@ -46,6 +46,68 @@ struct VerificationMemoryTests {
         print("pinned memory initialMiB=\(measured.initial) peakMiB=\(measured.peak) chunks=\(measured.chunks)")
     }
 
+    /// Full logical size with sparse zero payloads; not a physical drive/media reproduction.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BITMATCH_45GB_TEST"] == "1"))
+    func two45GBPinnedReadsOverlapWithBoundedMemory() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-45gb-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let size: UInt64 = 45_000_000_000
+        let chunk = 4 * 1024 * 1024
+        var sha = SHA256()
+        var remaining = size
+        while remaining > 0 {
+            try Task.checkCancellation()
+            let count = Int(min(UInt64(chunk), remaining))
+            autoreleasepool { sha.update(data: Data(repeating: 0, count: count)) }
+            remaining -= UInt64(count)
+        }
+        let expected = sha.finalize().map { String(format: "%02x", $0) }.joined()
+        var inputs: [(URL, DestinationWriter.SourceReadEvidence)] = []
+        for index in 0..<2 {
+            let file = root.appendingPathComponent("clip\(index).bin")
+            #expect(FileManager.default.createFile(atPath: file.path, contents: nil))
+            let writer = try FileHandle(forWritingTo: file)
+            try writer.truncate(atOffset: size); try writer.close()
+            var st = stat(); try #require(lstat(file.path, &st) == 0)
+            let identity = VerifiedFileIdentity(device: UInt64(st.st_dev), inode: UInt64(st.st_ino), size: Int64(st.st_size),
+                modificationSeconds: Int64(st.st_mtimespec.tv_sec), modificationNanoseconds: Int64(st.st_mtimespec.tv_nsec),
+                changeSeconds: Int64(st.st_ctimespec.tv_sec), changeNanoseconds: Int64(st.st_ctimespec.tv_nsec))
+            inputs.append((file, .init(digests: VerifiedDigests(sha256: expected), identity: identity)))
+        }
+        let initial = try #require(TransferDiagnosticStore.physicalFootprintMB())
+        let samples = Mutex((opened: 0, peak: initial, bytes: [UInt64(0), UInt64(0)], chunks: [0, 0], barrierPassed: 0))
+        let gate = DispatchSemaphore(value: 0)
+        let hooks = DestinationWriter.FanOutHooks(destinationDidOpenForRead: { _, _ in
+            let ready = samples.withLock { state in state.opened += 1; return state.opened == 2 }
+            if ready { gate.signal(); gate.signal() }
+            if gate.wait(timeout: .now() + 30) == .success { samples.withLock { $0.barrierPassed += 1 } }
+        }, destinationDidRead: { index, _, count in
+            samples.withLock { state in
+                state.bytes[index] += UInt64(count); state.chunks[index] += 1
+                state.peak = max(state.peak, TransferDiagnosticStore.physicalFootprintMB() ?? 0)
+            }
+        })
+        let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+        let tasks = inputs.enumerated().map { index, input in
+            Task.detached {
+                try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(source: input.0, pinnedRoot: pinned,
+                    relativePath: input.0.lastPathComponent, verificationMode: .standard, checksumService: ChecksumEngine.shared,
+                    clipURL: input.0, sourceReadEvidence: input.1, destinationIndex: index, hooks: hooks).verification
+            }
+        }
+        defer { tasks.forEach { $0.cancel() } }
+        for task in tasks {
+            let result = try await task.value
+            #expect(result.matches); #expect(result.destinationChecksum == expected)
+        }
+        let measured = samples.withLock { $0 }
+        #expect(measured.barrierPassed == 2)
+        #expect(measured.bytes == [size, size])
+        #expect(measured.peak - initial < 128)
+        print("45GB pair initialMiB=\(initial) peakMiB=\(measured.peak) bytes=\(measured.bytes) chunks=\(measured.chunks) overlap=\(measured.barrierPassed)")
+    }
+
     @Test
     func verifyBreadcrumbsHaveConsistentRunAndTerminalOutcomes() async throws {
         try await FileOperationsTestLock.shared.run {

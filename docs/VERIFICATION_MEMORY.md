@@ -59,6 +59,14 @@ The investigation remains open pending OS termination evidence or a reproduction
 - Eight-clip real-driver test: one and two workers both pass, 16 results each (eight media files plus eight AppleDouble companions), all independent destination and unchanged-source SHA-256 checks pass.
 - Engine suite: 110 XCTest cases, 15 opt-in skips, zero failures; 126 Swift Testing cases, two opt-in skips, zero failures. Memory and large-transfer tests are separately enabled above.
 - Mac build and iPad/iPhone simulator build pass.
-- The full local Mac app test suite has not completed: its test host stalls in dyld before entering app code. Default, non-debug-dylib, ad-hoc-signed and explicit ARM64 attempts were sampled or observed and stopped. This is an outstanding validation limit, not a passed suite or proof of a code defect. GitHub reports the CI workflow as `disabled_manually`, so PR #13 has no remote checks until the owner approves re-enabling it.
+- The full local Mac app test suite has not completed: its test host stalls in dyld before entering app code. Default, non-debug-dylib, ad-hoc-signed and explicit ARM64 attempts were sampled or observed and stopped. This is an outstanding validation limit, not a passed suite or proof of a code defect. The owner approved re-enabling GitHub CI on October 4; remote validation is being run on PR #13.
 
 Detailed logs are kept locally under `dist/validation/verification-memory`. They include failed fixture expectations: Foundation's directory listing hid generated AppleDouble companions, while BitMatch correctly transferred 16 entries. The fixture was corrected with direct `lstat` checks rather than omitting companions. Those failed expectations are not product regressions.
+
+## Full logical-size concurrent read stress
+
+```sh
+BITMATCH_45GB_TEST=1 arch -arm64 swift test --package-path Packages/BitMatchEngine --build-system native --filter VerificationMemoryTests
+```
+
+Two sparse 45,000,000,000-byte files exercise 90 GB through the actual uncached pinned verification loop. Both readers must open before either begins reading; the test checks all bytes, both independently computed SHA-256 results, and process-footprint growth below 128 MiB. Sparse zero payloads save physical disk space. This is a full-size read/hash stress test, not a 120 GB physical copy, camera parser, USB dock or HDD reproduction.
