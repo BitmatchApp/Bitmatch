@@ -40,6 +40,12 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         var ordinal: Int?
         var verifyOutcome: SharedLogger.VerifyOutcome?
         var verifyConcurrency: Int?
+        var comparisonPhase: SharedLogger.ComparisonPhase?
+        var comparisonOutcome: SharedLogger.ComparisonOutcome?
+        var onlyInSourceCount: Int?
+        var onlyInDestinationCount: Int?
+        var mismatchedCount: Int?
+        var matchingCount: Int?
         /// The process's physical memory footprint, in MiB, when recorded.
         var footprintMB: Int?
     }

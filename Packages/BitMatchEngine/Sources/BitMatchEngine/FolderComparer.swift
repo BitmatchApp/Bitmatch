@@ -21,6 +21,24 @@ public struct FolderComparer: Sendable {
         verificationMode: VerificationMode,
         progress: @Sendable (OperationProgress) async -> Void
     ) async throws -> CompareStats {
+        let run = TransferDiagnostics.runID ?? UUID()
+        SharedLogger.comparisonEvent(.compareStarted, run: run, mode: verificationMode)
+        do {
+            let stats = try await compareContents(left: left, right: right,
+                                                  verificationMode: verificationMode, run: run, progress: progress)
+            SharedLogger.comparisonEvent(.compareFinished, run: run, outcome: .completed, stats: stats)
+            return stats
+        } catch {
+            SharedLogger.transferError(error, run: run)
+            SharedLogger.comparisonEvent(.compareFinished, run: run,
+                                         outcome: error is CancellationError ? .cancelled : .failed)
+            throw error
+        }
+    }
+
+    private func compareContents(left: URL, right: URL, verificationMode: VerificationMode,
+                                 run: UUID, progress: @Sendable (OperationProgress) async -> Void) async throws -> CompareStats {
+        try Task.checkCancellation()
         let didStartLeftScope = fileAccess.startAccessing(url: left)
         let didStartRightScope = fileAccess.startAccessing(url: right)
         defer {
@@ -32,7 +50,10 @@ public struct FolderComparer: Sendable {
             }
         }
 
+        SharedLogger.comparisonEvent(.comparePhase, run: run, phase: .listingSource)
         let sourceFiles = try await fileAccess.getFileList(from: left)
+        try Task.checkCancellation()
+        SharedLogger.comparisonEvent(.comparePhase, run: run, phase: .listingDestination)
         let destFiles = try await fileAccess.getFileList(from: right)
 
         let sourceMap = try buildFileMap(files: sourceFiles, base: left)
@@ -60,6 +81,7 @@ public struct FolderComparer: Sendable {
         let plan = CompareCheckPlan.make(for: verificationMode)
         let totalCommon = common.count
         var processedCommon = 0
+        SharedLogger.comparisonEvent(.comparePhase, run: run, phase: .checkingContents, checked: 0, total: totalCommon)
 
         await progress(OperationProgress(
             overallProgress: totalCommon == 0 ? 1.0 : 0.0,
@@ -81,6 +103,9 @@ public struct FolderComparer: Sendable {
             try Task.checkCancellation()
 
             processedCommon += 1
+            if processedCommon == 1 || processedCommon % 1000 == 0 || processedCommon == totalCommon {
+                SharedLogger.comparisonEvent(.compareProgress, run: run, checked: processedCommon, total: totalCommon)
+            }
             let overall = totalCommon == 0 ? 1.0 : Double(processedCommon) / Double(totalCommon)
             await progress(OperationProgress(
                 overallProgress: overall,

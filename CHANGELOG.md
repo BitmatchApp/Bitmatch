@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-10-05
+
+A reliability update for checking backups and investigating transfer problems.
+
+- Fixed Check closing the app when a saved MHL or BitMatch report contains more than one file.
+- Check now explains which folder has missing or extra files. An extra file alone does not mean the copied files are damaged.
+- Diagnostics include comparison progress, outcomes and cancellation, without footage names or paths.
+- Existing hidden macOS metadata conflicts now give a clearer explanation. Source files and existing backups remain protected from overwrite.
+- Eject is no longer offered for folders on internal storage.
+
+Tested locally with signed-app transfers, existing backups, cancellation, MHL and reports across HFS+, exFAT and APFS. The saved-checksum crash is confirmed and fixed; the exact cause of the Sony transfer error in issue #8 remains unconfirmed. If a transfer or check still fails, use **History → Export diagnostics** and include the exact error. Diagnostics exclude footage names and paths.
+
 ## [0.2.4] - 2026-10-04
 
 A reliability update for large-file verification.
