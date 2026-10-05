@@ -1244,6 +1244,14 @@ public final class DestinationWriter {
         let clipIntegrity: ClipIntegrityFinding?
         if verification.matches, let clipURL, ClipIntegrityCheck.supports(clipURL) {
             do {
+                if let ordinal = TransferDiagnostics.verifyOrdinal {
+                    SharedLogger.verifyEvent(.clipInspectionStarted, run: TransferDiagnostics.runID, ordinal: ordinal, destinationIndex: destinationIndex, bytes: verification.fileSize)
+                }
+                defer {
+                    if let ordinal = TransferDiagnostics.verifyOrdinal {
+                        SharedLogger.verifyEvent(.clipInspectionFinished, run: TransferDiagnostics.runID, ordinal: ordinal, destinationIndex: destinationIndex, bytes: verification.fileSize)
+                    }
+                }
                 clipIntegrity = try inspection(destination)
             } catch {
                 SharedLogger.warning(
@@ -1405,7 +1413,13 @@ public final class DestinationWriter {
             relativePath: relativePath,
             hooks: hooks
         ) { hasher.update($0) }
-        return PinnedDigestRead(digests: hasher.finalize(), identity: identity)
+        let digests = hasher.finalize()
+        if let ordinal = TransferDiagnostics.verifyOrdinal {
+            SharedLogger.verifyEvent(.verifyDigestFinished, run: TransferDiagnostics.runID,
+                                     ordinal: ordinal, destinationIndex: destinationIndex,
+                                     bytes: identity.size)
+        }
+        return PinnedDigestRead(digests: digests, identity: identity)
     }
 
     /// Thorough's independent card pass. SHA-256 and MD5 are accumulated
@@ -1431,11 +1445,15 @@ public final class DestinationWriter {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
             let requested = min(4 * 1024 * 1024, Int(Int64(initial.st_size) - bytesRead))
-            let data = try handle.read(upToCount: requested) ?? Data()
-            guard !data.isEmpty else { throw sourceChangedError() }
-            hasher.update(data)
-            hooks?.verificationSourceDidRead?(relativePath, data.count)
-            bytesRead += Int64(data.count)
+            // Drain each chunk's buffer; see readPinnedDestination.
+            let count = try autoreleasepool { () throws -> Int in
+                let data = try handle.read(upToCount: requested) ?? Data()
+                if !data.isEmpty { hasher.update(data) }
+                return data.count
+            }
+            guard count > 0 else { throw sourceChangedError() }
+            hooks?.verificationSourceDidRead?(relativePath, count)
+            bytesRead += Int64(count)
         }
         let trailingData = try handle.read(upToCount: 1) ?? Data()
         var final = stat()
@@ -1451,6 +1469,9 @@ public final class DestinationWriter {
         )
     }
 
+    /// How often a pipelined verify records how far it has read.
+    private static let verifyReadBreadcrumbInterval: Int64 = 8 * 1024 * 1024 * 1024
+
     private static func readPinnedDestination(
         _ destination: PinnedDestinationFile,
         destinationIndex: Int,
@@ -1463,15 +1484,31 @@ public final class DestinationWriter {
         let handle = try destination.readingHandle()
         hooks?.destinationDidOpenForRead?(destinationIndex, relativePath)
         defer { closeFileHandle(handle, context: "pinned destination") }
+        let ordinal = TransferDiagnostics.verifyOrdinal
+        if ordinal != nil {
+            SharedLogger.verifyEvent(.verifyOpenedDestination, run: TransferDiagnostics.runID,
+                                     ordinal: ordinal, destinationIndex: destinationIndex, bytes: 0)
+        }
         var bytesRead: Int64 = 0
+        var nextBreadcrumb = verifyReadBreadcrumbInterval
         while true {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let data = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-            if data.isEmpty { break }
-            consume(data)
-            hooks?.destinationDidRead?(destinationIndex, relativePath, data.count)
-            bytesRead += Int64(data.count)
+            // Bound temporary Foundation allocations to this chunk, even when
+            // the pause gate returns without suspending the task.
+            let count = try autoreleasepool { () throws -> Int in
+                let data = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                if !data.isEmpty { consume(data) }
+                return data.count
+            }
+            if count == 0 { break }
+            hooks?.destinationDidRead?(destinationIndex, relativePath, count)
+            bytesRead += Int64(count)
+            if ordinal != nil, bytesRead >= nextBreadcrumb {
+                nextBreadcrumb += verifyReadBreadcrumbInterval
+                SharedLogger.verifyEvent(.verifyRead, run: TransferDiagnostics.runID,
+                                         ordinal: ordinal, destinationIndex: destinationIndex, bytes: bytesRead)
+            }
         }
         let final = try destination.snapshot()
         guard bytesRead == Int64(initial.st_size), pinnedFileRemainedStable(initial, final) else {
@@ -1512,15 +1549,19 @@ public final class DestinationWriter {
         while bytesRead < sourceSize {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            let sourceData = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-            let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-            guard !sourceData.isEmpty, !destinationData.isEmpty else {
+            // Drain each chunk's buffers; see readPinnedDestination.
+            let (sourceCount, destinationCount, same) = try autoreleasepool { () throws -> (Int, Int, Bool) in
+                let sourceData = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                return (sourceData.count, destinationData.count, sourceData == destinationData)
+            }
+            guard sourceCount > 0, destinationCount > 0 else {
                 throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
             }
-            hooks?.verificationSourceDidRead?(relativePath, sourceData.count)
-            hooks?.destinationDidRead?(destinationIndex, relativePath, destinationData.count)
-            if sourceData != destinationData { return false }
-            bytesRead += Int64(sourceData.count)
+            hooks?.verificationSourceDidRead?(relativePath, sourceCount)
+            hooks?.destinationDidRead?(destinationIndex, relativePath, destinationCount)
+            if !same { return false }
+            bytesRead += Int64(sourceCount)
         }
 
         let sourceTrailingData = try sourceHandle.read(upToCount: 1) ?? Data()

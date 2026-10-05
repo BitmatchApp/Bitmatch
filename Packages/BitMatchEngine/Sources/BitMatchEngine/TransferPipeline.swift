@@ -162,6 +162,8 @@ private struct VerifyJob: Sendable {
     let destinationIndex: Int
     let pinnedRoot: PinnedDestinationDirectory
     let sourceReadEvidence: DestinationWriter.SourceReadEvidence?
+    /// Copy order within the run, recorded in diagnostics instead of a name.
+    let ordinal: Int
 }
 
 private actor SourceReadEvidenceStore {
@@ -287,6 +289,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
     /// platform managers turn it off with the hidden `DisablePipelinedVerify`
     /// default; the engine itself reads no settings.
     private let pipelinedVerification: Bool
+    private let verificationConcurrency: Int?
     private let activeOperations = ActiveOperationRegistry()
     private let pauseGate = PauseGate()
 
@@ -294,12 +297,14 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         fileSystem: any FileAccess,
         checksum: any ChecksumService,
         pipelinedVerification: Bool = true,
+        verificationConcurrency: Int? = nil,
         destinationSetupHook: (@Sendable (URL) throws -> Void)? = nil,
         fanOutHooks: DestinationWriter.FanOutHooks? = nil
     ) {
         self.fileSystem = fileSystem
         self.checksumService = checksum
         self.pipelinedVerification = pipelinedVerification
+        self.verificationConcurrency = verificationConcurrency.flatMap { $0 > 0 ? min($0, 16) : nil }
         self.destinationSetupHook = destinationSetupHook
         self.fanOutHooks = fanOutHooks
     }
@@ -493,8 +498,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Perf 5: pipelined verification on by default for checksum/byte-compare modes; user can disable
         let shouldPipelineVerify = operation.verificationMode != .quick
             && pipelinedVerification
-        // Perf 6: adaptive concurrency based on CPU count
-        let verifyConcurrency = max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
+        let verifyConcurrency = verificationConcurrency ?? max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
+        let diagnosticRun = TransferDiagnostics.runID ?? operation.id
+        SharedLogger.verifyConfiguration(run: diagnosticRun, concurrency: shouldPipelineVerify ? verifyConcurrency : 1)
+        let fileOrdinals = Dictionary(uniqueKeysWithValues: sourceManifest.enumerated().map { ($0.element.relativePath, $0.offset + 1) })
 
         // The one way progress is reported. Total bytes: the caller's
         // estimate, else the average copied file size times the plan.
@@ -541,20 +548,32 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // One verify, recorded whatever happens except cancellation.
         let verify: @Sendable (VerifyJob) async throws -> Void = { job in
             let verificationStarted = Date()
+            var diagnosticOutcome: SharedLogger.VerifyOutcome = .failed
+            SharedLogger.verifyEvent(.verifyStarted, run: diagnosticRun, ordinal: job.ordinal,
+                                     destinationIndex: job.destinationIndex, bytes: 0, totalBytes: job.fileSize)
+            defer {
+                SharedLogger.verifyEvent(.verifyFinished, run: diagnosticRun, ordinal: job.ordinal,
+                                         destinationIndex: job.destinationIndex, bytes: (diagnosticOutcome == .matched || diagnosticOutcome == .mismatched) ? job.fileSize : nil, totalBytes: job.fileSize, outcome: diagnosticOutcome)
+            }
             do {
                 try Task.checkCancellation()
                 try await self.waitIfPaused()
-                let checked = try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
-                    source: job.source,
-                    pinnedRoot: job.pinnedRoot,
-                    relativePath: job.relativePath,
-                    verificationMode: operation.verificationMode,
-                    checksumService: self.checksumService,
-                    clipURL: job.destination,
-                    sourceReadEvidence: job.sourceReadEvidence,
-                    destinationIndex: job.destinationIndex,
-                    hooks: self.fanOutHooks
-                )
+                let checked = try await TransferDiagnostics.$runID.withValue(diagnosticRun) {
+                    try await TransferDiagnostics.$verifyOrdinal.withValue(job.ordinal) {
+                        try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
+                            source: job.source,
+                            pinnedRoot: job.pinnedRoot,
+                            relativePath: job.relativePath,
+                            verificationMode: operation.verificationMode,
+                            checksumService: self.checksumService,
+                            clipURL: job.destination,
+                            sourceReadEvidence: job.sourceReadEvidence,
+                            destinationIndex: job.destinationIndex,
+                            hooks: self.fanOutHooks
+                        )
+                    }
+                }
+                diagnosticOutcome = checked.verification.matches ? .matched : .mismatched
                 let verificationResult = checked.verification
                 let verified = FileOperationResult(
                     sourceURL: job.source,
@@ -580,6 +599,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 }
                 await onFileResult?(verified)
             } catch is CancellationError {
+                diagnosticOutcome = .cancelled
                 // Propagate interruption even when a verifier throws it without
                 // cancelling its parent task. Never silently drop that outcome.
                 throw CancellationError()
@@ -755,7 +775,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             source: srcURL, destination: dstURL, relativePath: relativePath,
                             fileSize: max(0, fileSize), destinationIndex: destIndex,
                             pinnedRoot: pinnedDestination,
-                            sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath)
+                            sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath),
+                            ordinal: fileOrdinals[relativePath] ?? 0
                         ))
                     }
 
@@ -803,6 +824,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             let relativePath = entry.relativePath
                             let destinationFileURL = destFolder.appendingPathComponent(relativePath)
                             let fileStartTime = Date()
+                            let ordinal = fileOrdinals[relativePath] ?? 0
+                            var diagnosticOutcome: SharedLogger.VerifyOutcome = .failed
+                            SharedLogger.verifyEvent(.verifyStarted, run: diagnosticRun, ordinal: ordinal, destinationIndex: destIndex, bytes: 0, totalBytes: max(0, entry.size))
+                            defer {
+                                SharedLogger.verifyEvent(.verifyFinished, run: diagnosticRun, ordinal: ordinal, destinationIndex: destIndex, bytes: (diagnosticOutcome == .matched || diagnosticOutcome == .mismatched) ? max(0, entry.size) : nil, totalBytes: max(0, entry.size), outcome: diagnosticOutcome)
+                            }
 
                             do {
                                 let sizeForVerify = max(0, entry.size)
@@ -815,17 +842,22 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                         Double(event.snapshot.filesVerified) / Double(max(1, totalFiles))
                                     ))
                                 }
-                                let checked = try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
-                                    source: fileURL,
-                                    pinnedRoot: pinnedDestination,
-                                    relativePath: relativePath,
-                                    verificationMode: operation.verificationMode,
-                                    checksumService: self.checksumService,
-                                    clipURL: destinationFileURL,
-                                    sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath),
-                                    destinationIndex: destIndex,
-                                    hooks: fanOutHooks
-                                )
+                                let checked = try await TransferDiagnostics.$runID.withValue(diagnosticRun) {
+                                    try await TransferDiagnostics.$verifyOrdinal.withValue(ordinal) {
+                                        try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
+                                            source: fileURL,
+                                            pinnedRoot: pinnedDestination,
+                                            relativePath: relativePath,
+                                            verificationMode: operation.verificationMode,
+                                            checksumService: self.checksumService,
+                                            clipURL: destinationFileURL,
+                                            sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath),
+                                            destinationIndex: destIndex,
+                                            hooks: fanOutHooks
+                                        )
+                                    }
+                                }
+                                diagnosticOutcome = checked.verification.matches ? .matched : .mismatched
                                 let verificationResult = checked.verification
 
                                 let fileSize = sizeForVerify
@@ -847,6 +879,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                 await onFileResult?(result)
 
                             } catch is CancellationError {
+                                diagnosticOutcome = .cancelled
                                 throw CancellationError()
                             } catch {
                                 let nsErr = error as NSError

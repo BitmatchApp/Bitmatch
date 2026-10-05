@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-10-04
+
+A reliability update for large-file verification.
+
+- Fixed temporary read buffers building up in memory while checking large files. BitMatch now releases them after each chunk.
+- Diagnostics now show which numbered file and destination were being checked, how far the read got, and how much memory BitMatch was using. Footage names and paths remain private.
+- Verification diagnostics distinguish a matching copy, a mismatch, an error and cancellation, making an interrupted transfer easier to investigate.
+
+Tested with two 45 GB files verifying together, with memory staying flat, plus a signed-app copy, cancellation, retry, ASC MHL and report walkthrough. Synthetic tests do not reproduce every drive or camera setup; the exact cause of the interruption in issue #10 remains unconfirmed. If it happens again, use **History → Export diagnostics** after reopening BitMatch and attach the file to the issue.
+
 ## [0.2.3] - 2026-10-01
 
 A reliability update for transfers and reports.

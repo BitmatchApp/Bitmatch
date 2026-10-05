@@ -6,7 +6,7 @@ Read [docs/THESIS.md](docs/THESIS.md) for what BitMatch promises and the current
 
 ## Building
 
-- Xcode 16 or newer; CI uses Xcode 16.4. Open `BitMatch.xcodeproj`.
+- Use Xcode 26.3 or newer for the app concurrency settings; CI selects Xcode 26.3. Open `BitMatch.xcodeproj`.
 - Schemes:
   - `BitMatch`: the macOS app (macOS 15.5 or newer).
   - `BitMatch-iPad`: the iPhone and iPad app (iOS/iPadOS 18.5 or newer). Despite the name it targets both device families.
@@ -53,7 +53,7 @@ bash test.sh release-builds  # macOS and iOS simulator Release builds
 
 `ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to reuse a build folder (default `.derived-data/`).
 
-`.github/workflows/ci.yml` defines `mac-test` and `ipad-build` jobs on push and pull request. The README notes that GitHub Actions is currently disabled for the repository, so run both locally before submitting changes.
+`.github/workflows/ci.yml` defines Mac tests, the iPad/iPhone build and engine tests on push and pull request. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests.
 
 ### Change workflow
 
