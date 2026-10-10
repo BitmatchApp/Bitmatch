@@ -35,3 +35,13 @@ One concurrent validation run failed existing timing-based waits: five Mac tests
 - `git diff --check`: clean.
 
 All 14 new shared report/History tests pass on both Mac and the iPad simulator. Native extraction uses real synthetic video; deliberately wedged OS decoders and physical mobile share-sheet/picker workflows were not simulated. Preview failures and caller cancellation do not constitute evidence of successful media verification.
+
+## Signed Mac walkthrough — October 10
+
+Built this branch with the existing `release_mac.sh` process, `SKIP_NOTARIZE=1`, using the existing Developer ID identity. Archive and signature verification succeeded; this local build was not notarized or published.
+
+Through the actual app and native folder pickers, copied two synthetic H.264 clips and a text file from a disposable mounted APFS image to a second APFS image using Standard, reports, clip previews and ASC MHL. The 200 MB destination correctly blocked the transfer below the space reserve; after expanding it to 2 GB, all three copies verified, MHL and PDF/CSV/JSON/checksum reports were saved, and History showed the saved count, size and timings. Source hashes, sizes and modification timestamps were unchanged; every backup hash matched.
+
+Ejected the source image, then used History's **PDF with clip previews** action and native save panel. The one-page PDF contained both 256 × 144 previews and all three results. Poppler rendering was visually inspected. Existing user transfers were preserved; only this walkthrough's queue row and destination selection were removed. Report, preview and MHL preferences were restored. Both disposable disk images were ejected and deleted; generated reports and fixture receipts remain under `dist/validation/todo-reports/walkthrough`.
+
+The OS refused creation of the attempted exFAT sparse image (`Operation not permitted`), so this UI walkthrough establishes APFS coverage only. It does not replace real-exFAT engine tests, physical iPhone/iPad walkthroughs or proprietary-camera footage validation.
