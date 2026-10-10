@@ -58,3 +58,13 @@ Physical mobile picker/keyboard/share workflows and real USB/dock disconnects re
 - Fault matrix: **55 tests passed** (11 per filesystem) across APFS/HFS+/exFAT/case-sensitive APFS/FAT32. Injected write/flush/close/publication/read errors, replacement/removal, cancellation and existing/incomplete MHL preservation remain fail-closed. All mounts detached and owned images removed.
 - Seeded Standard soak: **200 iterations**, eight generated files to two backups each, independent digest comparison for every output; passed in **54.213 seconds**, seed **20261010**.
 - Existing `Scripts/release_mac.sh pr19-validation` with `SKIP_NOTARIZE=1`: universal signed archive and DMG built successfully. Deep/strict app signature and DMG signature verification passed. Bundle remains **0.2.6**; the artifact name identifies a local candidate, not a new public release. No signing credentials changed; no notarization submitted.
+
+### Published release — 0.2.7, build 17
+
+PR #19 merged through `cda16e94`. Version-only release preparation is `24e624de`; the previously validated implementation remains unchanged. The existing release script produced a universal Developer ID signed app and DMG. Apple accepted both notarization submissions; stapling and Gatekeeper assessment passed. The signed app launched and its General/File handling and collapsed Advanced/Transfer details UI were inspected without changing report/file-handling preferences or existing transfers.
+
+Release: https://github.com/BitmatchApp/Bitmatch/releases/tag/v0.2.7
+
+Published DMG SHA-256: `8e9a539b5aaff12fddc218eb82ee325f16aa739a7496480ff0cb9694fb9d924a`. GitHub's asset digest and an independently downloaded asset match the local file. The initial release API call rejected an abbreviated commit; creation succeeded with the full commit ID. Initial download checks returned transient 404s before the release was available; the final public download and cask check succeeded.
+
+Sparkle's signed appcast is live with version 17 / 0.2.7. Homebrew cask version and checksum were updated, and the full online cask audit passed. Release/build/distribution logs and posted comment drafts are retained under `dist/validation/release027`. Follow-ups were posted on #8 (clip preview request), #10 and #16; #10/#16 stay open pending user confirmation. No new claim is made that this reporting update resolves #10's hardware failure.
