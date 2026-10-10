@@ -4,8 +4,13 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-10-10
+
+An optional way to leave recognized Mac metadata companions out of a transfer.
+
 - Added an optional AppleDouble exclusion setting under Advanced on Mac, iPad and iPhone. Everything is still preserved by default. Review the list before starting; legitimate `._` files and other sidecars stay in the transfer.
 - Filtered transfers list their exclusions in history and reports. Selected files are still checked, but the whole card is never marked safe to erase when files were skipped.
+- Intentional exclusions are shown separately from failed files in transfer and destination summaries.
 
 ## [0.2.5] - 2026-10-05
 

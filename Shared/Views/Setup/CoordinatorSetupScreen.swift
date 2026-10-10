@@ -68,8 +68,8 @@ extension SetupPresentation {
             stagedDestinationNames: stagedDestinationNames,
             stagedDestinationIdentities: stagedDestinationIdentities,
             stagedVerificationModes: stagedVerificationModes,
-            sourceFileCount: coordinator.sourceFolderInfo?.fileCount,
-            sourceBytes: coordinator.sourceFolderInfo?.totalSize,
+            sourceFileCount: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.fileCount,
+            sourceBytes: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.totalSize,
             destinationCount: independence.independentCopyCount,
             hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
             informationalLines: [coordinator.alreadyBackedUpLine, coordinator.appleDoubleSelection.summaryLine].compactMap { $0 }

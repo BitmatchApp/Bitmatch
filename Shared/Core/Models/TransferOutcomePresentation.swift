@@ -14,14 +14,19 @@ struct OutcomeFileCounts: Equatable, Sendable {
     let copiedNotVerified: Int
     let needsAttention: Int
 
-    var total: Int { verified + copiedNotVerified + needsAttention }
+    var excluded: Int = 0
+
+    var total: Int { verified + copiedNotVerified + needsAttention + excluded }
 
     static func make(rows: [ResultRow]) -> Self {
         var verified = 0
         var copied = 0
         var attention = 0
+        var excluded = 0
         for row in rows {
-            if !row.isSuccessStatus {
+            if ResultOutcome(statusText: row.status) == .excludedAppleDouble {
+                excluded += 1
+            } else if !row.isSuccessStatus {
                 attention += 1
             } else if TransferOutcomePresentation.isVerified(row) {
                 verified += 1
@@ -29,7 +34,7 @@ struct OutcomeFileCounts: Equatable, Sendable {
                 copied += 1
             }
         }
-        return Self(verified: verified, copiedNotVerified: copied, needsAttention: attention)
+        return Self(verified: verified, copiedNotVerified: copied, needsAttention: attention, excluded: excluded)
     }
 }
 
@@ -350,6 +355,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             lines.append(counts.needsAttention == 1
                 ? "1 file failed"
                 : "\(counts.needsAttention) files failed")
+        }
+        if counts.excluded > 0 {
+            lines.append("\(counts.excluded) file \(counts.excluded == 1 ? "result" : "results") intentionally excluded")
         }
         // Quick mode's headline already says "copied, not verified"; an
         // identical issue line under it would only repeat the verdict.

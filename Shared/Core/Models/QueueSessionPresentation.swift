@@ -293,7 +293,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         }
         let uniqueFiles = Dictionary(grouping: record.results, by: \.path).values.compactMap(\.first)
         let sourceBytes = uniqueFiles.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
-        let issueCount = record.results.filter { !$0.isSuccessStatus }.count
+        let issueCount = record.results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count
         let duration = record.startedAt.flatMap { started in record.endedAt.map { $0.timeIntervalSince(started) } }
         return TransferOutcomePresentation.make(
             state: operationState,

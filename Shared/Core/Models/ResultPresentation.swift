@@ -392,12 +392,17 @@ struct DestinationResultSummary: Identifiable {
     let title: String
     let rows: [ResultRow]
 
-    var issueCount: Int { rows.filter { !$0.isSuccessStatus }.count }
+    var issueCount: Int { rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count }
+    var excludedCount: Int { rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count }
     var unverifiedCount: Int { rows.filter { $0.isSuccessStatus && ($0.checksum?.isEmpty != false || $0.status.contains("Copied")) }.count }
-    var needsAttention: Bool { rows.isEmpty || issueCount > 0 || unverifiedCount > 0 }
+    var needsAttention: Bool { rows.isEmpty || issueCount > 0 || unverifiedCount > 0 || excludedCount > 0 }
     var detail: String {
         guard !rows.isEmpty else { return "No files recorded" }
         if issueCount > 0 { return issueCount == 1 ? "1 file failed" : "\(issueCount) files failed" }
+        if excludedCount > 0 {
+            let verified = rows.filter(\.isVerifiedStatus).count
+            return "\(verified) verified, \(unverifiedCount) unverified, \(excludedCount) intentionally excluded"
+        }
         if unverifiedCount > 0 {
             return unverifiedCount == rows.count
                 ? "Sizes matched for \(rows.count) \(rows.count == 1 ? "file" : "files"), not verified"

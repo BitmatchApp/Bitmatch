@@ -45,4 +45,18 @@ Logs, result summaries and rendered images are retained locally under `dist/vali
 
 Disk images exercise the actual filesystem drivers, not physical drives, docks, disconnects or on-device Files providers. The UI captures are seeded renderer tests, not a physical-device walkthrough. These tests do not prove why the reporter's transfer failed, or that every AppleDouble variant can be safely excluded. Older/unknown containers are preserved.
 
-Keep #16 open. A useful follow-up is the exact error and **History → Export diagnostics**, plus source/destination filesystems and whether an existing copy was present. No release was published as part of this change.
+Keep #16 open. A useful follow-up is the exact error and **History → Export diagnostics**, plus source/destination filesystems and whether an existing copy was present. The implementation was merged through PR #17. Release validation for 0.2.6 is recorded below.
+
+## 0.2.6 release validation
+
+PR #17 was merged on October 10. The release is version 0.2.6, build 16.
+
+- Release-mode engine suite: 121 XCTest cases, 15 opt-in/platform skips, zero failures; 132 Swift Testing cases passed. The mounted filesystem matrix ran again.
+- Final full Mac suite: 1,068 passed, nine opt-in/platform skips, zero failures (1,077 total). Two skipped cases are the opt-in seeded screenshot captures already run for the feature review.
+- Final iOS Simulator Release build passed. iPad simulator tests for the feature review passed (49 cases); no physical-device pass is claimed.
+- The signed Mac app's picker-driven Standard transfer copied a source on mounted exFAT to two mounted backups (APFS and exFAT), with ASC MHL and PDF/CSV/JSON reports enabled. The source contained a macOS-generated companion and an ordinary `._notes.txt` file. The review excluded only `._clip.bin`; both selected files matched independent SHA-256 checks on both backups. Each MHL listed those two selected files. The primary JSON report recorded three source files, two selected, one excluded and `safeToErase=false`. Source paths, contents and modification dates were unchanged.
+- The signed walkthrough found and corrected two presentation gaps: the Start caption counted full source inventory as copy work, and expanded queue/destination summaries called exclusions failures. Filtered starts now avoid the full-inventory copy claim; intentional exclusions have their own count. A new regression preserves actual failed-file counts and an unsafe verdict for filtered transfers. The rebuilt signed app showed each backup as “2 verified, 0 unverified, 1 intentionally excluded” after relaunch, with no false failed-file label.
+
+The app and DMG both passed Apple notarization, ticket stapling and Gatekeeper assessment through the existing release script, with the existing Developer ID and notary profile. No credentials changed. Test preferences and destinations were restored afterward; existing user queue items were retained.
+
+The mounted fixtures are disposable disk images, not physical hardware. Reports and validation logs are retained locally in `dist/validation/issue16-release`. The original report still needs a user retest; #16 stays open.

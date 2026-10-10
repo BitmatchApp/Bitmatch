@@ -325,6 +325,23 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.emptyFileListText(issuesOnly: false).contains("interrupted"))
     }
 
+    @Test func intentionalExclusionsAreNotFailedFiles() {
+        let rows = [row("A.mov", .verified, backup: backupA), row("._A.mov", .excludedAppleDouble, backup: backupA)]
+        let outcome = make(state: .completed(OperationCompletionInfo(success: false, message: "Selected files verified; keep the source")), rows: rows)
+        #expect(outcome.counts.needsAttention == 0)
+        #expect(outcome.counts.excluded == 1)
+        #expect(outcome.counts.total == 2)
+        #expect(outcome.safetyState != .safeToErase)
+        #expect(!outcome.issueLines.contains { $0.contains("failed") })
+        let summary = DestinationResultSummary.make(rows: rows, destinations: [backupA])[0]
+        #expect(summary.issueCount == 0)
+        #expect(summary.needsAttention)
+        #expect(summary.detail.contains("1 intentionally excluded"))
+        let mixed = rows + [row("B.mov", .failed, backup: backupA)]
+        #expect(OutcomeFileCounts.make(rows: mixed).needsAttention == 1)
+        #expect(DestinationResultSummary.make(rows: mixed, destinations: [backupA])[0].detail == "1 file failed")
+    }
+
     // MARK: Evidence
 
     // Plant: in `TransferOutcomePresentation.make`, sum every row's size
