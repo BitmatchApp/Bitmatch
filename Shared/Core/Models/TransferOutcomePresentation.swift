@@ -301,6 +301,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         switch outcome {
         case .verified: return "Verified"
         case .copiedUnverified: return "Copied, not verified"
+        case .excludedAppleDouble: return "Excluded AppleDouble"
         case .checksumMismatch: return "Checksum mismatch"
         case .failed: return "Failed"
         }

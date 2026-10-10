@@ -81,6 +81,11 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 sourceGuidance: "Do not erase \(card)."
             )
         }
+        if case .completed(let info) = state,
+           rows.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
+            return Self(title: "Selected-file transfer", detail: info.message, symbol: "minus.circle",
+                sourceGuidance: "Keep \(card). AppleDouble companions were intentionally excluded, so the whole card is not backed up.")
+        }
         let verdict = CompletionVerdict.resolve(
             state: state,
             rows: rows,

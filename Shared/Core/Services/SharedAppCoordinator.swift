@@ -126,9 +126,21 @@ class SharedAppCoordinator: ObservableObject {
     /// The camera label for the next transfer: suggested from the card,
     /// remembered per camera and saved across launches (thesis decision).
     let cameraLabels: CameraLabelModel
+    let appleDoubleSelection: AppleDoubleReviewModel
     var cameraLabelSettings: CameraLabelSettings {
-        get { cameraLabels.settings }
-        set { cameraLabels.settings = newValue }
+        get {
+            var settings = cameraLabels.settings
+            settings.excludedAppleDoublePaths = appleDoubleSelection.enabled ? (appleDoubleSelection.paths ?? []) : nil
+            return settings
+        }
+        set {
+            var labelOnly = newValue
+            labelOnly.excludedAppleDoublePaths = nil
+            cameraLabels.settings = labelOnly
+            appleDoubleSelection.replaying = isReplayingQueuedTransfer
+            appleDoubleSelection.enabled = newValue.excludedAppleDoublePaths != nil
+            appleDoubleSelection.replaying = false
+        }
     }
     /// Camera settings for the next run only, used instead of
     /// `cameraLabelSettings` and cleared when that run starts. A prepared
@@ -462,6 +474,7 @@ class SharedAppCoordinator: ObservableObject {
         self.sourceEjectability = sourceEjectability
         self.physicalDiskIdentityProvider = physicalDiskIdentityProvider
         self.defaults = defaults
+        self.appleDoubleSelection = AppleDoubleReviewModel(defaults: defaults)
         let environment = ProcessInfo.processInfo.environment
         let isTesting = environment["XCTestConfigurationFilePath"] != nil || environment["XCTestBundlePath"] != nil
         let testJournalURL = isTesting ? FileManager.default.temporaryDirectory
@@ -553,6 +566,7 @@ class SharedAppCoordinator: ObservableObject {
         // coordinator must still refresh when it changes.
         stateService.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        appleDoubleSelection.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
         cameraLabels.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         generalSettings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
@@ -605,6 +619,7 @@ class SharedAppCoordinator: ObservableObject {
         // Detection no longer delays the scan.
         $sourceURL
             .sink { [weak self] url in
+                self?.appleDoubleSelection.refresh(source: url)
                 Task { @MainActor [weak self] in
                     await self?.folderInfoService.updateSource(url)
                 }
@@ -761,8 +776,16 @@ class SharedAppCoordinator: ObservableObject {
         // one backup, and is a 1 GB guess when the source was not scanned.
         let plannedTotalBytes: Int64?
         if let context = activeRunContext {
-            plannedTotalBytes = context.plannedTotalBytes
-                ?? prog.totalBytes.map { $0 * Int64(context.destinationURLs.count) }
+            if context.cameraLabelSettings.excludedAppleDoublePaths?.isEmpty == false,
+               prog.currentStage == .copying || prog.currentStage == .verifying {
+                plannedTotalBytes = prog.totalBytes.flatMap { total in
+                    let (bytes, overflow) = total.multipliedReportingOverflow(by: Int64(context.destinationURLs.count))
+                    return overflow ? nil : bytes
+                }
+            } else {
+                plannedTotalBytes = context.plannedTotalBytes
+                    ?? prog.totalBytes.map { $0 * Int64(context.destinationURLs.count) }
+            }
         } else {
             plannedTotalBytes = sourceFolderInfo.map { $0.totalSize * Int64(destinationURLs.count) }
         }
@@ -1635,7 +1658,10 @@ class SharedAppCoordinator: ObservableObject {
         preResolvedIndependence: BackupIndependenceAssessment? = nil
     ) async {
         // Capture every mutable composer input before execution can suspend.
-        let runCameraSettings = projectRunCameraSettings ?? cameraLabelSettings
+        var runCameraSettings = projectRunCameraSettings ?? cameraLabelSettings
+        if !isReplayingQueuedTransfer {
+            runCameraSettings.excludedAppleDoublePaths = cameraLabelSettings.excludedAppleDoublePaths
+        }
         let projectID = photographerReportFinalizer == nil ? nil : photographerJobViewModel.activeJob?.id
         let projectCardID = photographerReportFinalizer == nil ? nil : activeProjectCardID
         let projectIdentity = projectID.flatMap { jobID in
@@ -2805,7 +2831,7 @@ class SharedAppCoordinator: ObservableObject {
             destinations: destinationURLs,
             settings: cameraLabelSettings,
             verificationMode: verificationMode,
-            sourceIssue: folderInfoService.sourceScanError,
+            sourceIssue: folderInfoService.sourceScanError ?? appleDoubleSelection.readinessIssue,
             destinationWarnings: independence.warnings,
             availableBytes: { self.getDriveCapacity(for: $0) },
             isWritable: TransferReadiness.isWritableFolder

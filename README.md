@@ -64,7 +64,7 @@ Plug in your card and drives, allow BitMatch to use them once, and it picks up t
 ## What It Does
 
 - **Multi destination copy**: the card is read once and written to every drive at the same time, then each drive is read back and checked with SHA-256. Each destination gets its own results.
-- **Careful about "safe to erase"**: a card or folder that changes during the copy, online-only iCloud/Dropbox files, or two "backups" on the same physical drive never count as safe. Hidden `._` files are copied and verified too.
+- **Careful about "safe to erase"**: a card or folder that changes during the copy, online-only iCloud/Dropbox files, or two "backups" on the same physical drive never count as safe. Hidden `._` files are copied and verified by default. You can exclude recognized AppleDouble companions under **Advanced**, with a list of what will be skipped. That copy can verify the selected files, but it won't mark the whole card safe to erase.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
 - **Check** for stuff you already copied: compare two folders, or check a backup against its saved checksums.

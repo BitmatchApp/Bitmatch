@@ -453,11 +453,20 @@ public final class TransferPipeline: FileOperationsService, Sendable {
 
         // Step 2: Build one fail-closed source manifest before safety validation.
         SharedLogger.debug("Prep: enumerating source manifest at \(operation.sourceURL.path)", category: .transfer)
-        let sourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
-        guard !sourceManifest.isEmpty else {
-            throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
+        let completeSourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
+        let excluded = try AppleDoubleSelection.excluded(in: completeSourceManifest, reviewedPaths: operation.settings.excludedAppleDoublePaths)
+        if !excluded.isEmpty {
+            SharedLogger.transferEvent(.appleDoubleExcluded, run: TransferDiagnostics.runID ?? operation.id, code: excluded.count)
         }
-        let sourceFingerprint = SourceFingerprint.make(sourceManifest)
+        let excludedPaths = Set(excluded.map(\.relativePath))
+        let sourceManifest = excluded.isEmpty ? completeSourceManifest
+            : completeSourceManifest.filter { !excludedPaths.contains($0.relativePath) }
+        guard !sourceManifest.isEmpty else {
+            throw FileOperationError.unsafeOperation(excluded.isEmpty
+                ? "Source folder is empty. Choose a source that contains files."
+                : "No files remain after AppleDouble exclusions. Nothing was copied; keep the source.")
+        }
+        let sourceFingerprint = SourceFingerprint.make(completeSourceManifest)
         let manifestURLByRelativePath = Dictionary(
             sourceManifest.map { ($0.relativePath, $0.url) },
             uniquingKeysWith: { first, _ in first }
@@ -489,6 +498,18 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let totalStageUnits = operation.verificationMode == .quick ? 1 : 2
         // Perf 2: time-based throttle on progress callbacks (500ms)
         let ledger = RunLedger(destinationCount: destinationCount, filesPerDestination: perSourceFileCount, throttle: 0.5)
+        // Retain an exclusion row for every source/destination pair before any
+        // copying, so cancellation and saved history keep the selected scope.
+        for (index, destination) in operation.destinationURLs.enumerated() {
+            let root = try SafetyValidator.resolvedDestinationRootChecked(source: operation.sourceURL, destination: destination, settings: operation.settings)
+            for entry in excluded {
+                var row = FileOperationResult(sourceURL: entry.url, destinationURL: root.appendingPathComponent(entry.relativePath),
+                    success: false, error: nil, fileSize: entry.size, verificationResult: nil, processingTime: 0)
+                row.excludedAppleDouble = true
+                await ledger.record(row, relativePath: entry.relativePath, destination: index)
+                await onFileResult?(row)
+            }
+        }
         
         // Free space was checked once, above, by SafetyValidator: the
         // measured source plus 1 GB, the rule Setup shows.
@@ -510,6 +531,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             let elapsed = now.timeIntervalSince(startTime)
             let speed = elapsed > 0 ? Double(snapshot.bytesCopied) / elapsed : nil
             let totalBytes: Int64 = {
+                // The caller's scan includes omitted metadata. For a filtered
+                // run use the measured selected bytes per backup instead.
+                if !excludedPaths.isEmpty { return manifestBytes }
                 if let estimate = operation.estimatedTotalBytes, estimate > 0 { return estimate }
                 if snapshot.filesCopied > 0 {
                     return safeMultiply(Int64(totalFiles), snapshot.bytesCopied / Int64(snapshot.filesCopied))
@@ -918,7 +942,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // change invalidates the whole run, including a file added after the
         // initial manifest was captured.
         let finalSourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
-        if let reason = sourceChangeReason(initial: sourceManifest, current: finalSourceManifest) {
+        if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceManifest) {
             let error = completionGateError(reason)
             for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
                 let root = pinnedDestinations[destIndex]?.logicalRootURL
@@ -1061,7 +1085,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             startTime: operation.startTime,
             endTime: Date(),
             results: finalResults,
-            sourceManifest: sourceManifest.map(\.url),
+            sourceManifest: completeSourceManifest.map(\.url),
             sourceFingerprint: sourceFingerprint,
             verificationMode: operation.verificationMode,
             settings: operation.settings,

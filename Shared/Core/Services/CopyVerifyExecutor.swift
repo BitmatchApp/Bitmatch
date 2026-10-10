@@ -308,7 +308,9 @@ final class CopyVerifyExecutor {
             loggedFileError = true
             SharedLogger.transferError(error, run: diagnosticRun)
         }
-        timingService.recordFileResult(fileResult, verificationMode: verificationMode)
+        if !fileResult.excludedAppleDouble {
+            timingService.recordFileResult(fileResult, verificationMode: verificationMode)
+        }
         let resultRow = TransferCompletion.row(from: fileResult, destinationRoots: destinationRoots)
 
         callbacks.onResult(resultRow)
@@ -534,7 +536,7 @@ final class CopyVerifyExecutor {
         // Evidence (Promise 3): bytes actually copied, one row per file per
         // backup. config.estimatedBytes is a progress estimate that falls
         // back to a placeholder when the source was not measured.
-        let totalBytesProcessed = results.reduce(Int64(0)) { $0 + $1.size }
+        let totalBytesProcessed = results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.reduce(Int64(0)) { $0 + $1.size }
         let fileCount = results.count
         let workers = max(1, ProcessInfo.processInfo.activeProcessorCount)
 
@@ -543,6 +545,11 @@ final class CopyVerifyExecutor {
         let reportMode = config.currentMode
         var reportSettings = config.reportSettings
         reportSettings.verificationMode = config.verificationMode
+        let excluded = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
+        if !excluded.isEmpty {
+            let count = Set(excluded.map(\.path)).count
+            reportSettings.notes += "\nSelection: \(count) AppleDouble source files intentionally excluded (listed in results). Only selected files were copied. Keep the source; the whole card is not backed up."
+        }
         if let handoffSummary { reportSettings.notes += "\nASC MHL: \(handoffSummary)" }
         let reportResults = results
         let reportOperation = operation

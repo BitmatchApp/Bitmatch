@@ -41,6 +41,30 @@ final class WorkflowSnapshotTests: XCTestCase {
 
     }
 
+    func testCaptureAppleDoubleControls() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        fixture.seedSetup()
+        let coordinator = fixture.sharedCoordinator
+        let source = try XCTUnwrap(coordinator.sourceURL)
+        let media = source.appendingPathComponent("Camera clip.bin")
+        try Data("media".utf8).write(to: media)
+        var bytes = [UInt8](repeating: 0, count: 42)
+        func put(_ value: UInt32, _ offset: Int) {
+            for index in 0..<4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (24 - 8 * index)) }
+        }
+        put(0x00051607, 0); put(0x00020000, 4); bytes[25] = 1
+        put(2, 26); put(38, 30); put(4, 34)
+        try Data(bytes).write(to: source.appendingPathComponent("._Camera clip.bin"))
+        let review = coordinator.appleDoubleSelection
+        review.enabled = true
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while review.paths == nil && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        XCTAssertEqual(review.paths, ["._Camera clip.bin"])
+        try capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 580, height: 600), name: "mac-appledouble-selection")
+    }
+
     private func settle() async {
         for _ in 0..<8 { await Task.yield() }
         try? await Task.sleep(nanoseconds: 100_000_000)

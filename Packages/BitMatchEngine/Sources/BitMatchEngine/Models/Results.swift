@@ -9,6 +9,8 @@ public enum ResultOutcome: CaseIterable, Equatable, Sendable {
     case verified
     /// Copied without verification (Quick mode). A success, never "verified".
     case copiedUnverified
+    /// Intentionally omitted by the reviewed selection; never a success.
+    case excludedAppleDouble
     case checksumMismatch
     case failed
 
@@ -16,6 +18,7 @@ public enum ResultOutcome: CaseIterable, Equatable, Sendable {
         switch self {
         case .verified: "✅ Verified"
         case .copiedUnverified: "✅ Copied"
+        case .excludedAppleDouble: "⏭ Excluded AppleDouble (selected by user)"
         case .checksumMismatch: "⚠️ Checksum Mismatch"
         case .failed: "❌ Failed"
         }

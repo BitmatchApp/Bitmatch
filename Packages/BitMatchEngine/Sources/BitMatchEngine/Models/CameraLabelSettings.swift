@@ -10,6 +10,9 @@ public struct CameraLabelSettings: Codable, Sendable {
     public var groupByCamera: Bool = false
     public var generateUniqueName: Bool = true
     public var destinationPathComponents: [String]? = nil
+    /// Reviewed selection carried by this legacy transfer-settings container.
+    /// nil preserves all files and decodes older queued transfers safely.
+    public var excludedAppleDoublePaths: [String]? = nil
 
     /// Sanitizes a string for safe use as a folder/file name component.
     /// Prevents path traversal attacks and removes dangerous characters.
