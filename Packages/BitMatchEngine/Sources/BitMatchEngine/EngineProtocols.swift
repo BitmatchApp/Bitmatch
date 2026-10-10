@@ -98,7 +98,10 @@ public struct FileOperationResult: Sendable {
     /// so this run verified it without writing a new copy.
     public let wasReused: Bool
     
+    public var excludedAppleDouble: Bool = false
+
     public var outcome: ResultOutcome {
+        if excludedAppleDouble { return .excludedAppleDouble }
         if let verification = verificationResult {
             return verification.isValid ? .verified : .checksumMismatch
         }
@@ -120,11 +123,13 @@ public struct FileOperationResult: Sendable {
     }
 
     func preservingReuse(_ reused: Bool) -> Self {
-        Self(
+        var result = Self(
             sourceURL: sourceURL, destinationURL: destinationURL, success: success,
             error: error, fileSize: fileSize, verificationResult: verificationResult,
             processingTime: processingTime, clipIntegrity: clipIntegrity,
             wasReused: success && (wasReused || reused)
         )
+        result.excludedAppleDouble = excludedAppleDouble
+        return result
     }
 }

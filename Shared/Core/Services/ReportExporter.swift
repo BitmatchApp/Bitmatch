@@ -40,7 +40,7 @@ enum ReportExporter {
         let method = verification.label
 
         let destinationPaths = destinationURLs.map { $0.path }
-        let issues = results.filter { !$0.isSuccessStatus }
+        let issues = results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
 
         // Calculate performance metrics
         let duration = finished.timeIntervalSince(started)

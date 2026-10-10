@@ -47,6 +47,7 @@ struct ResultStatusPresentation: Equatable, Sendable {
             // error, and must not share the orange "missing"/warning
             // triangle. A distinct red glyph tells the two apart.
             case .checksumMismatch: return Self(tone: .failure, symbol: "xmark.octagon.fill")
+            case .excludedAppleDouble: return Self(tone: .warning, symbol: "minus.circle")
             case .failed: return Self(tone: .failure, symbol: "xmark.circle")
             }
         }

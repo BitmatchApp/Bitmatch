@@ -232,6 +232,12 @@ public enum TransferCompletion: Sendable {
         source: URL,
         settings: CameraLabelSettings
     ) -> (jobs: [ASCMHLJob], issues: [String]) {
+        // A filtered inventory describes only selected, verified destination
+        // contents. The report/history retain excluded rows and an unsafe
+        // whole-card verdict; the history is never a whole-source assertion.
+        let results = results.filter { !$0.excludedAppleDouble }
+        let excludedPaths = Set(settings.excludedAppleDoublePaths ?? [])
+        let sourceFiles = sourceFiles.map { files in files.filter { !excludedPaths.contains($0.relativePath(to: source)) } }
         let entries = results.map { CoverageEntry(source: $0.sourceURL, destination: $0.destinationURL) }
         let coverage = coverageAnalysis(
             entries: entries, sourceFiles: sourceFiles, destinations: destinations,
@@ -380,7 +386,22 @@ public enum TransferCompletion: Sendable {
             source: source,
             settings: settings
         )
-        let incompleteCoverageIssues = coverageIssues(coverage)
+        let excluded = rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
+        let excludedCount = Set(excluded.map(\.path)).count
+        let selectedCoverage: CoverageAnalysis
+        if excluded.isEmpty {
+            selectedCoverage = coverage
+        } else {
+            let excludedSourcePaths = Set(excluded.map(\.path))
+            let selectedSources = sourceFiles.map { files in files.filter { !excludedSourcePaths.contains($0.path) } }
+            selectedCoverage = coverageAnalysis(entries: coverageRows.map {
+                CoverageEntry(source: URL(fileURLWithPath: $0.path),
+                              destination: $0.destinationPath.map { URL(fileURLWithPath: $0) })
+            }, sourceFiles: selectedSources, destinations: destinations, source: source, settings: settings)
+        }
+        let incompleteCoverageIssues = coverageIssues(excludedCount > 0 ? selectedCoverage : coverage)
+        let excludedDescription = "\(excludedCount) AppleDouble \(excludedCount == 1 ? "file" : "files") intentionally excluded"
+        let actualIssueCount = rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count
         let issueCount = rows.filter { !$0.isSuccessStatus }.count
         let fileResultsSucceeded = !rows.isEmpty && issueCount == 0
         // Outside Quick, a row that was copied but not verified keeps the
@@ -400,6 +421,13 @@ public enum TransferCompletion: Sendable {
             } else {
                 fileResultsMessage = mode == .quick || !everyRowVerified ? "All files copied" : "All files copied and verified"
             }
+        } else if excludedCount > 0 {
+            let selected = rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+            fileResultsMessage = !selected.isEmpty && selectedCoverage.isExact && selected.allSatisfy(\.isVerifiedStatus)
+                ? "Selected files verified; \(excludedDescription). Keep the source: the whole card is not backed up"
+                : (mode == .quick && actualIssueCount == 0 && selectedCoverage.isExact
+                    ? "Selected files copied without verification; \(excludedDescription). Keep the source"
+                    : "\(excludedDescription); selected file results need review. Keep the source")
         } else {
             fileResultsMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
         }

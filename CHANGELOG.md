@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added an optional AppleDouble exclusion setting under Advanced on Mac, iPad and iPhone. Everything is still preserved by default. Review the list before starting; legitimate `._` files and other sidecars stay in the transfer.
+- Filtered transfers list their exclusions in history and reports. Selected files are still checked, but the whole card is never marked safe to erase when files were skipped.
+
 ## [0.2.5] - 2026-10-05
 
 A reliability update for checking backups and investigating transfer problems.

@@ -8,6 +8,14 @@ On iPhone and iPad, keep BitMatch open while it works. iOS can interrupt a trans
 
 Notifications say when a card is safe to erase, when something needs you, and when the queue is done. Change them in Settings.
 
+## AppleDouble Companions
+
+BitMatch preserves files by default, including hidden `._` companions that macOS uses for metadata on drives such as exFAT. Those can contain resource forks and Finder metadata; they're not always disposable.
+
+If you need a copy without them, open **Advanced → Exclude AppleDouble companion files**. BitMatch checks the file structure, shows the count, and lets you review the list before starting. A `._` filename alone isn't enough: unrecognized files and camera sidecars stay in the copy. If that list changes before Start, the transfer refuses to run until you review the source again.
+
+The option follows the transfer into the queue and history. Reports list the exclusions, and ASC MHL describes the selected destination files. **Keep the source:** “selected files verified” does not mean the whole card is backed up or safe to erase. Existing destination metadata is left alone, including companions macOS creates itself. This option doesn't repair conflicting files or filter an existing checksum inventory during Check.
+
 ## Check Existing Backups
 
 Choose **Check**, then pick the folder or drive you want to check. Use **Its saved checksums** when BitMatch finds supported records, such as a BitMatch JSON report or an ASC MHL inventory. It reads the files again and compares them with those records; the original card does not need to be connected.

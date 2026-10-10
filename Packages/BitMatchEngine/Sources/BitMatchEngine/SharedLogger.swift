@@ -47,6 +47,7 @@ extension SharedLogger {
         case verifyStarted, verifyOpenedDestination, verifyRead, verifyDigestFinished, verifyFinished
         case verifyConfiguration, clipInspectionStarted, clipInspectionFinished
         case compareStarted, comparePhase, compareProgress, compareFinished
+        case appleDoubleExcluded
     }
     public static func transferEvent(_ event: TransferEvent, run: UUID?, code: Int = 0,
                                      taskCancelled: Bool = false, explicit: Bool = false) {

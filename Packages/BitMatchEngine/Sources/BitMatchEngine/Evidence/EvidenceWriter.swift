@@ -18,6 +18,27 @@ public enum ReportExportError: LocalizedError, Sendable {
     }
 }
 
+public struct TransferSelectionEvidence: Codable, Sendable {
+    public let policy: String
+    /// Partial exports may not contain every source file; counts describe retained rows.
+    public let countsBasis: String
+    public let sourceFileCount: Int
+    public let selectedFileCount: Int
+    public let excludedFileCount: Int
+    public let excludedSourcePaths: [String]
+
+    public init(results: [ResultRow]) {
+        let all = Set(results.map(\.path))
+        let excluded = Set(results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.map(\.path))
+        policy = "exclude-appledouble-companions"
+        countsBasis = "recorded-source-results"
+        sourceFileCount = all.count
+        selectedFileCount = all.subtracting(excluded).count
+        excludedFileCount = excluded.count
+        excludedSourcePaths = excluded.sorted()
+    }
+}
+
 // MARK: - Enhanced JSON Report Structures
 /// Identifies the PDF published last for this report, including its byte digest.
 public struct ReportPDFEvidence: Codable, Sendable {
@@ -52,6 +73,8 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
     public var notes: String? = nil
     public let safeToErase: Bool?
     public let pdfEvidence: ReportPDFEvidence?
+    /// Explicit scope, present only when source files were deliberately omitted.
+    public var selection: TransferSelectionEvidence? = nil
     
     public struct SourceInfo: Codable, Sendable {
         public let path: String
@@ -95,16 +118,18 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let totalBytes: Int64
         public let matches: Int
         public let issues: Int
+        public var excluded: Int? = nil
         public let successRate: Double
         public let averageFileSize: Int64
         public let largestFile: FileInfo?
         public let smallestFile: FileInfo?
 
-        public init(totalFiles: Int, totalBytes: Int64, matches: Int, issues: Int, successRate: Double, averageFileSize: Int64, largestFile: FileInfo?, smallestFile: FileInfo?) {
+        public init(totalFiles: Int, totalBytes: Int64, matches: Int, issues: Int, successRate: Double, averageFileSize: Int64, largestFile: FileInfo?, smallestFile: FileInfo?, excluded: Int? = nil) {
             self.totalFiles = totalFiles
             self.totalBytes = totalBytes
             self.matches = matches
             self.issues = issues
+            self.excluded = excluded
             self.successRate = successRate
             self.averageFileSize = averageFileSize
             self.largestFile = largestFile
@@ -505,13 +530,21 @@ public enum EvidenceWriter: Sendable {
         // Add summary at the end
         csvContent += "\n# Summary\n"
         csvContent += csvRow(["Total Files", String(results.count)])
+        if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
+            let scope = TransferSelectionEvidence(results: results)
+            csvContent += csvRow(["Selection Policy", scope.policy])
+            csvContent += csvRow(["Recorded Source Files", String(scope.sourceFileCount)])
+            csvContent += csvRow(["Selected Recorded Source Files", String(scope.selectedFileCount)])
+            csvContent += csvRow(["Excluded Source Files", String(scope.excludedFileCount)])
+            csvContent += csvRow(["Whole Card Backed Up", "No — keep the source"])
+        }
         csvContent += csvRow(["Started", dateFormatter.string(from: started)])
         csvContent += csvRow(["Finished", dateFormatter.string(from: started.addingTimeInterval(duration))])
         // Verified and copied-but-unverified are counted apart (Promise 2):
         // a Quick copy is not a match.
         csvContent += csvRow(["Verified", String(results.filter { $0.isVerifiedStatus }.count)])
         csvContent += csvRow(["Copied, not verified", String(results.filter { isMatchStatus($0.status) && !$0.isVerifiedStatus }.count)])
-        csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) }.count)])
+        csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count)])
         csvContent += csvRow(["Duration", "\(String(format: "%.2f", duration)) seconds"])
         if copyDurationSeconds != nil || verifyDurationSeconds != nil {
             csvContent += csvRow(["Copy Duration", copyDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
@@ -612,6 +645,7 @@ public enum EvidenceWriter: Sendable {
         safeToErase: Bool? = nil,
         pdfEvidence: ReportPDFEvidence? = nil
     ) throws -> EnhancedJSONReport<Project> {
+        let safeToErase = results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble } ? false : safeToErase
         // Calculate file extensions breakdown
         var extensions: [String: Int] = [:]
         var largestFile: EnhancedJSONReport<Project>.FileInfo?
@@ -642,7 +676,7 @@ public enum EvidenceWriter: Sendable {
         
         // Calculate issues by type
         var issuesByType: [String: Int] = [:]
-        for result in results.filter({ !isMatchStatus($0.status) }) {
+        for result in results.filter({ !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }) {
             let key = normalizedStatus(result.status)
             issuesByType[key, default: 0] += 1
         }
@@ -725,7 +759,7 @@ public enum EvidenceWriter: Sendable {
         }
         
         // Create the enhanced report
-        return EnhancedJSONReport<Project>(
+        var report = EnhancedJSONReport<Project>(
             reportVersion: safeToErase == nil ? "3.0" : "3.1",
             timestamp: finished,
             jobId: jobID,
@@ -738,11 +772,13 @@ public enum EvidenceWriter: Sendable {
                 matches: matchCount,
                 // Failed rows only: a copied-but-unverified file is neither a
                 // match nor an issue.
-                issues: results.filter { !isMatchStatus($0.status) }.count,
+                issues: results.filter { !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count,
                 successRate: fileCount > 0 ? Double(matchCount) / Double(fileCount) * 100 : 100,
                 averageFileSize: averageFileSize,
                 largestFile: largestFile,
-                smallestFile: smallestFile
+                smallestFile: smallestFile,
+                excluded: results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
+                    ? results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count : nil
             ),
             extensions: extensions,
             performance: EnhancedJSONReport<Project>.Performance(
@@ -774,6 +810,10 @@ public enum EvidenceWriter: Sendable {
             notes: normalizedNotes(prefs.notes),
             safeToErase: safeToErase, pdfEvidence: pdfEvidence
         )
+        if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
+            report.selection = TransferSelectionEvidence(results: results)
+        }
+        return report
     }
     
     /// Automatic reports use the checksums retained by verification. Re-reading

@@ -72,7 +72,7 @@ extension SetupPresentation {
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
             destinationCount: independence.independentCopyCount,
             hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
-            informationalLines: coordinator.alreadyBackedUpLine.map { [$0] } ?? []
+            informationalLines: [coordinator.alreadyBackedUpLine, coordinator.appleDoubleSelection.summaryLine].compactMap { $0 }
         )
     }
 }
@@ -124,7 +124,11 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
             locations: locations,
             problems: { problems },
             projectSetup: { projectSetup },
-            labelContent: { labelContent },
+            labelContent: {
+                AppleDoubleSelectionView(review: coordinator.appleDoubleSelection)
+                Divider()
+                labelContent
+            },
             projectEvidence: { projectEvidence }
         )
     }
