@@ -89,7 +89,8 @@ public enum ASCMHLGenerator: Sendable {
     /// the destination with F_NOCACHE. Publication remains atomic and no-replace.
     public static func generateInitialHistory(
         destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
-        toolVersion: String, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil
+        toolVersion: String, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil,
+        operatorName: String = "", notes: String = ""
     ) throws -> URL {
         try generateInitialHistory(
             destinationURL: destinationURL,
@@ -97,14 +98,15 @@ public enum ASCMHLGenerator: Sendable {
             startTime: startTime,
             sourceURL: sourceURL,
             toolVersion: toolVersion,
-            readHooks: nil, progress: progress, diagnosticRun: diagnosticRun
+            readHooks: nil, progress: progress, diagnosticRun: diagnosticRun, operatorName: operatorName, notes: notes
         )
     }
 
     static func generateInitialHistory(
         destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
         toolVersion: String,
-        readHooks: ReadHooks?, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil
+        readHooks: ReadHooks?, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil,
+        operatorName: String = "", notes: String = ""
     ) throws -> URL {
         guard !files.isEmpty else { throw GenerationError.emptyInventory }
         let sourceFD: Int32
@@ -242,7 +244,7 @@ public enum ASCMHLGenerator: Sendable {
             <creationdate>\(date.string(from: startTime))</creationdate>
             <hostname>\(escape(ProcessInfo.processInfo.hostName))</hostname>
             <tool version="\(escape(toolVersion))">BitMatch</tool>
-            <comment>Initial destination inventory. MD5 computed after checking destination bytes against the transfer SHA-256. Includes listed files only; no inherited history or directory hashes.</comment>
+            <comment>\(escape(creatorComment(operatorName: operatorName, notes: notes)))</comment>
           </creatorinfo>
           <processinfo><process>in-place</process></processinfo>
           <hashes>
@@ -462,6 +464,20 @@ public enum ASCMHLGenerator: Sendable {
             output.insert(alphabet[remainder], at: output.startIndex)
         }
         return "c4" + String(repeating: "1", count: max(0, 88 - output.count)) + output
+    }
+
+    /// Keep user-entered context in the schema's existing free-text comment.
+    /// Replace characters XML 1.0 cannot represent; never insert raw XML markup.
+    private static func creatorComment(operatorName: String, notes: String) -> String {
+        var parts = ["Initial destination inventory. MD5 computed after checking destination bytes against the transfer SHA-256. Includes listed files only; no inherited history or directory hashes."]
+        if let name = EvidenceWriter.normalizedNotes(operatorName) { parts.append("Operator: \(name)") }
+        if let notes = EvidenceWriter.normalizedNotes(notes) { parts.append("Notes: \(notes)") }
+        return String(String.UnicodeScalarView(parts.joined(separator: "\n").unicodeScalars.map { scalar in
+            switch scalar.value {
+            case 0x9, 0xA, 0xD, 0x20...0xD7FF, 0xE000...0xFFFD, 0x10000...0x10FFFF: scalar
+            default: UnicodeScalar(0xFFFD)!
+            }
+        }))
     }
 
     private static func escape(_ string: String) -> String {

@@ -451,12 +451,14 @@ final class CopyVerifyExecutor {
         let startTime = operation.startTime
         let run = config.operationId
         let toolVersion = (Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0"
+        let reportSettings = config.reportSettings
         let work = Task.detached(priority: .utility) { () throws -> [String] in
             defer { channel.continuation.finish() }
             return try TransferCompletion.writeASCMHL(
                 plan.jobs, planIssues: plan.issues, startTime: startTime,
                 source: sourceURL, toolVersion: toolVersion,
-                progress: { channel.continuation.yield($0) }, diagnosticRun: run
+                progress: { channel.continuation.yield($0) }, diagnosticRun: run,
+                operatorName: reportSettings.operatorName, notes: reportSettings.notes
             )
         }
         handoffTask = work

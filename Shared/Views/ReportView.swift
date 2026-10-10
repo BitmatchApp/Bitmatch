@@ -413,6 +413,9 @@ struct ReportView: View {
             if let phaseDuration {
                 Text(phaseDuration).font(.system(size: 10)).foregroundColor(.secondary)
             }
+            if let operatorName = s.operatorName, !operatorName.isEmpty {
+                Text("Operator: \(operatorName)").font(.system(size: 10)).fixedSize(horizontal: false, vertical: true)
+            }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
 
@@ -422,6 +425,9 @@ struct ReportView: View {
             Text("Verification Summary")
                 .font(.system(size: 14, weight: .semibold))
             
+            if let operatorName = s.operatorName, !operatorName.isEmpty {
+                Text("Operator: \(operatorName)").font(.system(size: 11))
+            }
             Grid(horizontalSpacing: 24, verticalSpacing: 8) {
                 GridRow {
                     Text("Mode:").foregroundColor(.secondary).font(.system(size: 11))

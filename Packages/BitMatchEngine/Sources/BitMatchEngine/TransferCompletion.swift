@@ -277,7 +277,8 @@ public enum TransferCompletion: Sendable {
         planIssues: [String],
         startTime: Date,
         source: URL,
-        toolVersion: String, progress: ASCMHLGenerator.ProgressHandler? = nil, diagnosticRun: UUID? = nil
+        toolVersion: String, progress: ASCMHLGenerator.ProgressHandler? = nil, diagnosticRun: UUID? = nil,
+        operatorName: String = "", notes: String = ""
     ) throws -> [String] {
         var failures = planIssues
         let totalBytes = jobs.flatMap(\.files).reduce(Int64(0)) { $0 + max(0, $1.size) }
@@ -300,7 +301,7 @@ public enum TransferCompletion: Sendable {
                             bytesProcessed: byteOffset + update.bytesProcessed, totalBytes: totalBytes,
                             filesProcessed: fileOffset + update.filesProcessed, totalFiles: totalFiles,
                             published: precedingJobsSucceeded && update.published && fileOffset + update.filesProcessed == totalFiles))
-                    }, diagnosticRun: diagnosticRun
+                    }, diagnosticRun: diagnosticRun, operatorName: operatorName, notes: notes
                 )
             } catch is CancellationError {
                 throw CancellationError()

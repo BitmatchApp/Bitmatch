@@ -125,9 +125,9 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
             problems: { problems },
             projectSetup: { projectSetup },
             labelContent: {
-                AppleDoubleSelectionView(review: coordinator.appleDoubleSelection)
-                Divider()
                 labelContent
+                Divider()
+                TransferDetailsSection(prefs: $coordinator.reportSettings)
             },
             projectEvidence: { projectEvidence }
         )

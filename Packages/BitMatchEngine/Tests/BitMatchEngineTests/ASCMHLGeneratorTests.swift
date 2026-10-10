@@ -5,6 +5,38 @@ import XCTest
 @testable import BitMatchEngine
 
 final class ASCMHLGeneratorTests: XCTestCase {
+    func testCreatorDetailsAreEscapedWithoutChangingMediaOrExistingHistory() throws {
+        let (root, file) = try fixture()
+        let media = try Data(contentsOf: root.appendingPathComponent("clip.txt"))
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            operatorName: "  Renée & <DIT>  ", notes: "First line\nBackup \"B\" <ready>\u{0}"
+        )
+        let bytes = try Data(contentsOf: manifest)
+        let document = try XMLDocument(data: bytes)
+        let comment = try XCTUnwrap(document.nodes(forXPath: "//*[local-name()='comment']").first?.stringValue)
+        XCTAssertTrue(comment.contains("Operator: Renée & <DIT>"))
+        XCTAssertTrue(comment.contains("Notes: First line\nBackup \"B\" <ready>�"))
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("clip.txt")), media)
+        let chain = try XMLDocument(contentsOf: manifest.deletingLastPathComponent().appendingPathComponent("ascmhl_chain.xml"))
+        XCTAssertEqual(try chain.nodes(forXPath: "//*[local-name()='c4']").first?.stringValue,
+                       ASCMHLGenerator.c4(bytes))
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            operatorName: "Someone else", notes: "Replacement"))
+        XCTAssertEqual(try Data(contentsOf: manifest), bytes)
+    }
+
+    func testBlankCreatorDetailsKeepOriginalComment() throws {
+        let (root, file) = try fixture()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test", operatorName: " ", notes: "\n")
+        let document = try XMLDocument(contentsOf: manifest)
+        let comment = try XCTUnwrap(document.nodes(forXPath: "//*[local-name()='comment']").first?.stringValue)
+        XCTAssertFalse(comment.contains("Operator:"))
+        XCTAssertFalse(comment.contains("Notes:"))
+    }
+
     func testC4MatchesOfficialReferenceEmptyDataVector() {
         XCTAssertEqual(ASCMHLGenerator.c4(Data()), "c459dsjfscH38cYeXXYogktxf4Cd9ibshE3BHUo6a58hBXmRQdZrAkZzsWcbWtDg5oQstpDuni4Hirj75GEmTc1sFT")
     }

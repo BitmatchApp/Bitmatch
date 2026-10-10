@@ -39,10 +39,14 @@ struct SharedSettingsPersistenceTests {
 
         let first = makeCoordinator(suite.defaults, folders: folders)
         first.reportSettings.clientName = "Acme"
+        first.reportSettings.operatorName = "Alex"
+        first.reportSettings.notes = "Next card too"
         first.reportSettings.makeReport = false
 
         let relaunched = makeCoordinator(suite.defaults, folders: folders)
         #expect(relaunched.reportSettings.clientName == "Acme")
+        #expect(relaunched.reportSettings.operatorName == "Alex")
+        #expect(relaunched.reportSettings.notes == "Next card too")
         #expect(!relaunched.reportSettings.makeReport)
     }
 

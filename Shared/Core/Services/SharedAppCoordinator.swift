@@ -905,7 +905,7 @@ class SharedAppCoordinator: ObservableObject {
     /// waits for it on every platform (the Mac's stricter rule, decided).
     var isAnalysingSource: Bool {
         guard let sourceURL else { return false }
-        return folderInfoService.isAwaitingSourceInfo(for: sourceURL)
+        return folderInfoService.isAwaitingSourceInfo(for: sourceURL) || appleDoubleSelection.isReviewing
     }
 
     var isSelectedSourceKnownEmpty: Bool {
@@ -2831,7 +2831,7 @@ class SharedAppCoordinator: ObservableObject {
             destinations: destinationURLs,
             settings: cameraLabelSettings,
             verificationMode: verificationMode,
-            sourceIssue: folderInfoService.sourceScanError ?? appleDoubleSelection.readinessIssue,
+            sourceIssue: folderInfoService.sourceScanError ?? appleDoubleSelection.error,
             destinationWarnings: independence.warnings,
             availableBytes: { self.getDriveCapacity(for: $0) },
             isWritable: TransferReadiness.isWritableFolder

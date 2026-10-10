@@ -143,6 +143,11 @@ struct PreferencesWindow: View {
                 Toggle(GeneralSettingsPresentation.playSounds, isOn: $generalSettings.playSounds)
             }
 
+            Section("File handling") {
+                AppleDoubleSelectionView(review: coordinator.appleDoubleSelection)
+                    .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
+            }
+
             Section("Updates") {
                 Toggle(
                     "Check for updates automatically",
@@ -221,6 +226,7 @@ struct PreferencesWindow: View {
 
             if coordinator.reportSettings.makeReport {
                 Section {
+                    reportField("Operator", text: $coordinator.reportSettings.operatorName, prompt: "Operator name")
                     reportField("Client", text: $coordinator.reportSettings.clientName, prompt: "Client name")
                     reportField("Project", text: $coordinator.reportSettings.projectName, prompt: "Project name")
                     reportField("Production", text: $coordinator.reportSettings.production, prompt: "Production title")
@@ -370,6 +376,7 @@ private extension PreferencesWindow {
         prefs.projectName = ""
         prefs.production = ""
         prefs.company = ""
+        prefs.operatorName = ""
         prefs.notes = ""
         coordinator.reportSettings = prefs
     }

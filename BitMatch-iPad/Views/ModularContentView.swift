@@ -306,6 +306,11 @@ struct SettingsSheetView: View {
     var body: some View {
         NavigationView {
             Form {
+                Section("File handling") {
+                    AppleDoubleSelectionView(review: coordinator.appleDoubleSelection)
+                        .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
+                }
+
                 Section(GeneralSettingsPresentation.notificationsSection) {
                     Toggle(GeneralSettingsPresentation.notifyAttention, isOn: $generalSettings.notifyWhenCardNeedsAttention)
                     Toggle(GeneralSettingsPresentation.notifyFinish, isOn: $generalSettings.notifyWhenTransferOrQueueFinishes)
