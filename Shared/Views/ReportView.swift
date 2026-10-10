@@ -1,4 +1,5 @@
 import SwiftUI
+import ImageIO
 import BitMatchEngine
 
 #if os(macOS)
@@ -12,8 +13,10 @@ struct ReportView: View {
 
     let s: Summary
     let rows: [ResultRow]
+    var thumbnails = ReportThumbnails()
 
     private var duration: String {
+        guard s.hasRecordedTiming else { return "—" }
         let interval = s.finished.timeIntervalSince(s.started)
         let formatter = DateComponentsFormatter()
         formatter.allowedUnits = [.hour, .minute, .second]
@@ -35,7 +38,7 @@ struct ReportView: View {
     }
     
     private var totalDurationSeconds: TimeInterval {
-        max(0, s.finished.timeIntervalSince(s.started))
+        s.hasRecordedTiming ? max(0, s.finished.timeIntervalSince(s.started)) : 0
     }
 
     private var reportStatistics: ReportResultStatistics {
@@ -185,33 +188,40 @@ struct ReportView: View {
         }
 
         append(headerSection, separated: false)
-        append(summarySection)
-        if let notes = s.notes, !notes.isEmpty { append(notesSection(notes)) }
+        append(pdfOutcomeSection)
+        append(pdfSummarySection)
+        if let notes = s.notes, !notes.isEmpty {
+            append(VStack(alignment: .leading, spacing: 5) {
+                Text("Notes").font(.system(size: 12, weight: .semibold))
+                Text(notes).font(.system(size: 10)).fixedSize(horizontal: false, vertical: true)
+            })
+        }
         if s.photographyJob != nil { append(photographyJobSection) }
-        append(metricsSection)
-        append(environmentSection)
-        append(technicalSection)
-        append(statisticsSection)
-        if !extensionBreakdown.isEmpty { append(extensionSection) }
+        append(pdfLocationsSection)
+        if thumbnails.requestedCount > 0 {
+            append(Text(thumbnails.notice).font(.system(size: 9)).foregroundColor(.secondary))
+        }
         if rows.isEmpty {
             append(VStack(alignment: .leading, spacing: 10) {
-                Text("Complete Result Manifest").font(.system(size: 14, weight: .semibold))
+                Text("File results").font(.system(size: 14, weight: .semibold))
                 Text("No result rows were recorded in this run.")
                     .font(.system(size: 10)).foregroundColor(.secondary)
             })
         } else {
             // The first row carries its header so the header cannot be stranded.
+            var previewed: Set<String> = []
             for (index, row) in rows.enumerated() {
+                let showPreview = previewed.insert(row.path).inserted
                 append(VStack(alignment: .leading, spacing: 0) {
                     if index == 0 {
-                        Text("Complete Result Manifest")
+                        Text("File results")
                             .font(.system(size: 14, weight: .semibold))
                             .padding(.bottom, 10)
                     }
                     VStack(spacing: 0) {
-                        if index == 0 { manifestHeaderRow(compact: true) }
+                        if index == 0 { pdfManifestHeader }
                         Divider()
-                        manifestDataRow(for: row, compact: true)
+                        pdfManifestRow(row, showPreview: showPreview)
                     }.padding(.horizontal, 8)
                 }, separated: index == 0, manifest: index > 0)
             }
@@ -230,9 +240,80 @@ struct ReportView: View {
                 }
             }
         }
-        append(outcomeSection.padding(.top, 20), separated: false)
         append(footerSection)
         return blocks
+    }
+
+    private var pdfLocationsSection: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text("Locations").font(.system(size: 12, weight: .semibold))
+            Text("Source: \(s.source)")
+                .font(.system(size: 9, design: .monospaced)).fixedSize(horizontal: false, vertical: true)
+            ForEach(Array(s.destinations.enumerated()), id: \.offset) { index, path in
+                Text("Backup \(index + 1): \(path)")
+                    .font(.system(size: 9, design: .monospaced)).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func pdfDestination(for row: ResultRow) -> String {
+        if let path = row.destinationPath {
+            let comparable = ResultPathMatch.comparablePath(path)
+            let matches = s.destinations.enumerated().filter { _, root in
+                let root = ResultPathMatch.comparablePath(root)
+                return comparable == root || comparable.hasPrefix(root + "/")
+            }
+            if let match = matches.max(by: { $0.element.count < $1.element.count }) {
+                return "Backup \(match.offset + 1)"
+            }
+        }
+        return row.destination ?? "—"
+    }
+
+    private var pdfManifestHeader: some View {
+        HStack(spacing: 8) {
+            Text("").frame(width: 18)
+            Text("File").frame(width: 250, alignment: .leading)
+            Text("Destination").frame(width: 150, alignment: .leading)
+            Text("Size").frame(width: 70, alignment: .trailing)
+        }.font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary).padding(.vertical, 6)
+    }
+
+    private func pdfManifestRow(_ row: ResultRow, showPreview: Bool) -> some View {
+        let status = ResultStatusPresentation.make(status: row.status)
+        let source = ResultPathMatch.comparablePath(s.source)
+        let path = ResultPathMatch.comparablePath(row.path)
+        let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
+        return HStack(spacing: 8) {
+            Image(systemName: status.symbol).foregroundColor(status.color)
+                .font(.system(size: 10)).frame(width: 18, alignment: .leading)
+            HStack(spacing: 8) {
+                if showPreview, let data = thumbnails.images[row.path],
+                   let source = CGImageSourceCreateWithData(data as CFData, nil),
+                   let image = CGImageSourceCreateImageAtIndex(source, 0, nil) {
+                    Image(decorative: image, scale: 1).resizable().scaledToFit().frame(width: 56, height: 32)
+                }
+                Text(display).font(.system(size: 10, weight: .medium)).lineLimit(2).truncationMode(.middle)
+            }.frame(width: 250, alignment: .leading)
+            Text(pdfDestination(for: row)).font(.system(size: 9)).foregroundColor(.secondary)
+                .lineLimit(2).truncationMode(.middle).frame(width: 150, alignment: .leading)
+            Text(ByteCountPresentation.fileSize(row.size)).font(.system(size: 10)).frame(width: 70, alignment: .trailing)
+        }.padding(.vertical, 5)
+    }
+
+    private var pdfOutcomeSection: some View {
+        let safe = Self.shouldShowSuccessBadge(safetyState: s.safetyState, photographyJob: s.photographyJob)
+        return HStack(alignment: .top, spacing: 8) {
+            Image(systemName: safe ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            VStack(alignment: .leading, spacing: 3) {
+                Text(safe ? "VERIFICATION SUCCESSFUL" : "NOT SAFE TO ERASE").font(.system(size: 12, weight: .semibold))
+                Text(safe ? "All required copies passed verification." : Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob))
+                    .font(.system(size: 10))
+            }
+            Spacer(minLength: 0)
+        }.foregroundColor(safe ? .green : .orange).padding(10)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background((safe ? Color.green : Color.orange).opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
     }
 
     func pdfContinuationHeader(manifest: Bool) -> some View {
@@ -240,7 +321,7 @@ struct ReportView: View {
             Text("BitMatch Verification Report - continued")
                 .font(.system(size: 9, weight: .medium))
                 .foregroundColor(.secondary)
-            if manifest { manifestHeaderRow(compact: true).padding(.horizontal, 8) }
+            if manifest { pdfManifestHeader.padding(.horizontal, 8) }
         }
     }
 
@@ -316,6 +397,25 @@ struct ReportView: View {
         }
     }
     
+    private var pdfSummarySection: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("\(s.mode == .copyAndVerify ? "Copy & Verify" : "Check") · \(s.verificationMethod)")
+                .font(.system(size: 12, weight: .semibold))
+            Text("\(s.totalFiles) \(s.totalFiles == 1 ? "file" : "files") · \(verifiedFileCount) verified \(verifiedFileCount == 1 ? "copy" : "copies") · \(issueCount) file \(issueCount == 1 ? "issue" : "issues") · \(totalSizeFormatted)")
+                .font(.system(size: 10))
+            if rows.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
+                Text("\(rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count) intentionally excluded results").font(.system(size: 10))
+            }
+            if s.hasRecordedTiming {
+                Text("Elapsed: \(duration)" + (s.averageSpeed > 0 ? " · \(throughput)" : ""))
+                    .font(.system(size: 10)).foregroundColor(.secondary)
+            }
+            if let phaseDuration {
+                Text(phaseDuration).font(.system(size: 10)).foregroundColor(.secondary)
+            }
+        }.frame(maxWidth: .infinity, alignment: .leading)
+    }
+
     @ViewBuilder
     private var summarySection: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -349,7 +449,7 @@ struct ReportView: View {
                         .font(.system(size: 11, weight: .medium))
                     
                     Text("Workers:").foregroundColor(.secondary).font(.system(size: 11))
-                    Text("\(s.workers) parallel")
+                    Text(s.workers.map { "\($0) parallel" } ?? "—")
                         .font(.system(size: 11, weight: .medium))
                 }
 
@@ -498,7 +598,7 @@ struct ReportView: View {
                 }
                 GridRow {
                     environmentLabel("Verification", value: s.verificationMethod)
-                    environmentLabel("Workers", value: "\(s.workers) parallel")
+                    environmentLabel("Workers", value: s.workers.map { "\($0) parallel" } ?? "—")
                 }
             }
         }
@@ -742,7 +842,7 @@ struct ReportView: View {
                     .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.green)
                 
-                Text("All files verified with 100% accuracy")
+                Text("All required copies passed verification.")
                     .font(.system(size: 11))
                     .foregroundColor(.secondary)
             }
@@ -874,8 +974,10 @@ struct ReportView: View {
                 Text("Job ID: \(s.jobID.uuidString)")
                     .font(.system(size: 8, design: .monospaced))
                 
-                Text("BitMatch v\(s.appVersion) • \(s.osVersion)")
-                    .font(.system(size: 8))
+                if !s.appVersion.isEmpty {
+                    Text("BitMatch v\(s.appVersion) • \(s.osVersion)")
+                        .font(.system(size: 8))
+                }
             }
             .foregroundColor(.secondary)
             

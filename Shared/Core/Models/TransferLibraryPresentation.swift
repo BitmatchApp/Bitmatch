@@ -19,10 +19,12 @@ enum TransferLibraryPresentation {
         private enum DestinationState: Int {
             case verified
             case notVerified
+            case excluded
             case failed
 
             init(_ row: ResultRow) {
-                if !row.isSuccessStatus { self = .failed }
+                if ResultOutcome(statusText: row.status) == .excludedAppleDouble { self = .excluded }
+                else if !row.isSuccessStatus { self = .failed }
                 else if row.isVerifiedStatus { self = .verified }
                 else { self = .notVerified }
             }
@@ -96,6 +98,7 @@ enum TransferLibraryPresentation {
                 case .verified: destination
                 case .notVerified: "\(destination) (not verified)"
                 case .failed: "\(destination) (failed)"
+                case .excluded: "\(destination) (intentionally excluded)"
                 }
             }
             let destinationText = Self.naturalList(destinations)

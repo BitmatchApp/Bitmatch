@@ -7,6 +7,8 @@ struct TransferLibraryView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject var journal: LocalTransferJournal
     @State private var search = ""
+    @State private var pdfTask: Task<Void, Never>?
+    @State private var preparingPDF = false
     @State private var errorMessage: String?
     @State private var exportDocument: TransferHistoryDocument?
     @State private var showExport = false
@@ -69,6 +71,7 @@ struct TransferLibraryView: View {
             .onReceive(journal.$records) { records in
                 searchIndex = TransferLibraryPresentation.SearchIndex(records: records)
             }
+            .onDisappear { pdfTask?.cancel() }
             .sheet(item: $reauthorizeRecord) { record in
                 ReauthorizeLocationsView(coordinator: coordinator, journal: journal, recordID: record.id)
             }
@@ -226,6 +229,8 @@ struct TransferLibraryView: View {
         }
         if actions.export {
             Menu("Export report") {
+                Button(preparingPDF ? "Preparing PDF…" : "PDF report") { exportPDF(record, previews: false) }.disabled(preparingPDF)
+                Button("PDF with clip previews") { exportPDF(record, previews: true) }.disabled(preparingPDF)
                 Button("JSON report") { export(record, asCSV: false) }
                 Button("CSV results") { export(record, asCSV: true) }
             }
@@ -257,6 +262,11 @@ struct TransferLibraryView: View {
                 Text("Review this card in its project before preparing another ingest.")
                     .foregroundStyle(.secondary)
             }
+            ForEach(TransferHistoryMetrics.make(record)) { metric in
+                Text("\(metric.title): \(metric.value)").textSelection(.enabled)
+            }
+            Text("Counts describe saved result rows, including exclusions. Missing measurements are shown as —.")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text("Source: \(record.source.url.path)").textSelection(.enabled)
             ForEach(record.destinations.indices, id: \.self) { index in
                 Text("Destination: \(record.destinations[index].url.path)").textSelection(.enabled)
@@ -282,6 +292,23 @@ struct TransferLibraryView: View {
         .font(.caption)
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.top, 4)
+    }
+
+    private func exportPDF(_ record: LocalTransferRecord, previews: Bool) {
+        pdfTask?.cancel()
+        preparingPDF = true
+        pdfTask = Task {
+            defer { preparingPDF = false }
+            do {
+                let work = Task.detached { try await ReportExporter.historyPDF(record: record, includeThumbnails: previews) }
+                let data = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                try Task.checkCancellation()
+                exportDocument = TransferHistoryDocument(data: data)
+                exportType = .pdf
+                showExport = true
+            } catch is CancellationError { }
+            catch { errorMessage = "PDF could not be exported. \(error.localizedDescription)" }
+        }
     }
 
     private func export(_ record: LocalTransferRecord, asCSV: Bool) {
