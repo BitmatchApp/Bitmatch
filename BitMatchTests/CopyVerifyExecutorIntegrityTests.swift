@@ -755,7 +755,9 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
                             let indices = count == 1 ? [di] : [di, (di + 1) % names.count]
                             let destinations = indices.map { root.appendingPathComponent("destination-" + names[$0]).appendingPathComponent(key) }
                             for destination in destinations { try fm.createDirectory(at: destination, withIntermediateDirectories: true) }
-                            let defaults = UserDefaults(suiteName: "BitMatchFeatureMatrix-" + UUID().uuidString)!
+                            let suite = "BitMatchFeatureMatrix-" + UUID().uuidString
+                            let defaults = UserDefaults(suiteName: suite)!
+                            defer { defaults.removePersistentDomain(forName: suite) }
                             let store = InMemoryPhotographerJobStore()
                             let project = PhotographerJobViewModel(store: store, workflowDefaults: defaults)
                             project.selectWorkflow(workflow)
@@ -778,7 +780,9 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
                             let harness = ExecutorHarness(returnedResults: [], emittedResults: [],
                                 lifecycleCompletion: finalizer,
                                 sourceURL: source, destinationURLs: destinations, verificationMode: mode,
-                                generateASCMHL: true, makeReport: true, cameraSettings: settings,
+                                generateASCMHL: true, makeReport: true,
+                                reportPrefs: ReportPrefs(notes: "Card 01 · 日本語 & <notes>", operatorName: "Alex & Sam"),
+                                cameraSettings: settings,
                                 realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
                                 estimatedFiles: entries.count, estimatedBytes: entries.reduce(0) { $0 + $1.size })
                             let executed = try await harness.execute()
@@ -800,6 +804,11 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
                             let document = try XCTUnwrap(PDFDocument(url: pdf), key)
                             XCTAssertGreaterThan(document.pageCount, 0)
                             XCTAssertTrue(document.string?.contains("BitMatch") == true, key)
+                            XCTAssertTrue(document.string?.contains("Operator: Alex & Sam") == true, key)
+                            let detailJSONURL = try XCTUnwrap(files.first { $0.pathExtension == "json" }, key)
+                            let detailJSON = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: detailJSONURL)) as? [String: Any], key)
+                            XCTAssertEqual(detailJSON["operatorName"] as? String, "Alex & Sam", key)
+                            XCTAssertTrue((detailJSON["notes"] as? String)?.contains("Card 01 · 日本語 & <notes>") == true, key)
                             XCTAssertTrue(files.contains { $0.pathExtension == "csv" }, key)
                             let scan = await ReportScanner.scanReports(at: destinations[0])
                             XCTAssertTrue(scan.skipped.isEmpty, key)
@@ -977,6 +986,7 @@ private final class ExecutorHarness {
         verificationMode: VerificationMode = .standard,
         generateASCMHL: Bool = false,
         makeReport: Bool = false,
+        reportPrefs: ReportPrefs? = nil,
         cameraSettings: CameraLabelSettings = CameraLabelSettings(),
         thrownError: Error? = nil,
         realFileOperations: FileOperationsService? = nil,
@@ -1007,7 +1017,7 @@ private final class ExecutorHarness {
             destinationURLs: destinationURLs,
             verificationMode: verificationMode,
             cameraLabelSettings: cameraSettings,
-            reportSettings: ReportPrefs(makeReport: makeReport),
+            reportSettings: reportPrefs ?? ReportPrefs(makeReport: makeReport),
             estimatedFiles: estimatedFiles ?? returnedResults.count,
             estimatedBytes: estimatedBytes ?? returnedResults.reduce(0) { $0 + $1.fileSize },
             currentMode: .copyAndVerify,

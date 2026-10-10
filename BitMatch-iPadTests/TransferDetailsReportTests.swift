@@ -40,6 +40,28 @@ struct TransferDetailsReportTests {
         #expect(record.state == .issues)
     }
 
+    @Test func excludedMetadataIsDisclosedWithoutInventingFileErrors() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("excluded-report-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: root),
+            destinations: [try LocalTransferResource(url: root)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .issues; record.summary = "Selected files verified"
+        record.results = [ResultRow(path: "/card/clip.mov", status: ResultOutcome.verified.statusText,
+                                   size: 5, checksum: "fixture", destination: "Backup"),
+                          ResultRow(path: "/card/._clip.mov", status: ResultOutcome.excludedAppleDouble.statusText,
+                                   size: 42, checksum: nil, destination: "Backup")]
+        let document = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, includeThumbnails: false)))
+        let text = try #require(document.string)
+        #expect(text.contains("0 file issues"))
+        #expect(!text.contains("Issues Detail"))
+        #expect(text.contains("1 intentionally excluded result"))
+        #expect(text.contains("AppleDouble metadata was intentionally excluded"))
+        #expect(text.contains("NOT SAFE TO ERASE"))
+        #expect(!text.contains("VERIFICATION SUCCESSFUL"))
+    }
+
     @Test func csvDetailsCannotBecomeSpreadsheetFormulas() throws {
         let root = FileManager.default.temporaryDirectory
         let record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: root),

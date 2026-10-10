@@ -34,3 +34,27 @@ Logs, result summaries, xcresults and layout images are retained under `dist/val
 - Settings render capture: **1 passed**, producing 320/500/820-point mobile layouts; all three inspected without clipping. Mac Settings section was also rendered and inspected.
 - Final resumed Mac and iPhone/iPad Release builds: **both BUILD SUCCEEDED**, zero compiler errors.
 - Final engine rerun after app builds completed: **XCTest 123 cases, 15 skipped, zero failures; Swift Testing 134 tests passed, zero failures**. The earlier timing failures and isolated runs remain documented above; the final full package gate is green. Real exFAT destination publication/transfer tests passed in this run.
+
+### Release-readiness expansion (October 10)
+
+All fixtures are generated and disposable. The broad matrix ran before the two presentation-only PDF corrections below; the final app suites and codec export checks ran afterward. Receipts are in `dist/validation/release19`, with generated codec PDFs in `dist/validation/report-codecs-*`. Xcode prunes old result bundles, so complete text logs and extracted summaries are retained.
+
+- Full mounted-filesystem matrix: **800 combinations, 1,600 initial/repeat transfers**, zero case errors. APFS, HFS+, exFAT, case-sensitive APFS and FAT32 sources/destinations, all four verification modes, one/two backups, reports and MHL on/off. Includes 48 expected Quick/MHL refusals; those are asserted safety behavior, not failed tests.
+- Project/import/label/report matrix: **270 cases passed**, including optional operator/notes in PDF/JSON and Master reports.
+- Renaming: **320 cases passed** across filesystems, rename positions, separators, grouping and modes. Case-collision matrix: **20 cases passed**.
+- FAT32 limit: **4,294,967,297 bytes**, expected POSIX **EFBIG (27)**; good APFS backup remains independently verified, failed FAT32 backup stays failed, overall verdict stays unsafe. Test passed.
+- Verification memory stress: **3 tests passed**, including two overlapping 45,000,000,000-byte sparse-file readbacks. Both reached the overlap barrier; peak physical footprint was 20 MiB (16 MiB baseline). This checks read-buffer retention, not real camera footage, dock behavior or physical-drive throughput.
+- New combined transfer regression: **8 real transfers × two backups**, all modes with AppleDouble exclusion both ways. Independent hashes, source preservation, selected/excluded rows, report details, MHL comments and preview behavior are checked. Reports are intentionally written once at the primary backup and describe both destinations; MHL exists per backup. The first test version wrongly expected duplicate Reports folders and failed; that test assumption was corrected.
+- Generated H.264/HEVC/ProRes clips exercise MOV/MP4/M4V thumbnail extraction. Corrupt and unsupported clips stay listed; unavailable previews cannot upgrade an unsafe verdict. Codec fixture rows are seeded as verified for report-decoration coverage; actual transfer verification is exercised separately above.
+- Visual PDF review exposed two real presentation defects: exclusions counted as file errors, and oversized multiline notes wasting the first page. Added regressions reproduced both failures; localized report fixes passed both tests. Whole-card safety rules and transfer verification were not changed.
+- Full engine rerun: **123 XCTest cases, 15 optional skips, zero failures; 134 Swift tests passed**. Full iPad Air M4 and iPhone 17 Pro simulator suites: **64 passed, 6 optional captures skipped, zero failures each**.
+
+Physical mobile picker/keyboard/share workflows and real USB/dock disconnects remain outside this synthetic run.
+
+- Final Mac app suite after PDF fixes: **1,090 passed, 11 optional skips, zero failures** (1,101 total). The generated-codec case is opt-in and passed in the separate codec script: **16 passed, zero skips/failures**. PDF correction run: **19 passed, one optional codec skip, zero failures**.
+- Final Mac and iPhone/iPad Release builds: **both BUILD SUCCEEDED**.
+- Final PDFs inspected: codec preview first/last pages, combined transfer first/last pages, long notes first/continuation pages and final manifest page. All 75 manifest names occur exactly once and all 180 tagged notes survive.
+
+- Fault matrix: **55 tests passed** (11 per filesystem) across APFS/HFS+/exFAT/case-sensitive APFS/FAT32. Injected write/flush/close/publication/read errors, replacement/removal, cancellation and existing/incomplete MHL preservation remain fail-closed. All mounts detached and owned images removed.
+- Seeded Standard soak: **200 iterations**, eight generated files to two backups each, independent digest comparison for every output; passed in **54.213 seconds**, seed **20261010**.
+- Existing `Scripts/release_mac.sh pr19-validation` with `SKIP_NOTARIZE=1`: universal signed archive and DMG built successfully. Deep/strict app signature and DMG signature verification passed. Bundle remains **0.2.6**; the artifact name identifies a local candidate, not a new public release. No signing credentials changed; no notarization submitted.

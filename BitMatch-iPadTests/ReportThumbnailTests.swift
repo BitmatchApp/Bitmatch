@@ -173,7 +173,7 @@ struct ReportThumbnailTests {
 
     @Test func automaticExporterHonorsPreferenceWithoutPuttingImagesInJSON() async throws {
         let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
-        var prefs = ReportPrefs(makeReport: true)
+        var prefs = ReportPrefs(notes: "Card 01 · keep until reviewed", makeReport: true, operatorName: "Alex & Sam")
         prefs.includeThumbnails = true
         prefs.verificationMode = .standard
         try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: Date(), finished: Date(),
@@ -184,6 +184,8 @@ struct ReportThumbnailTests {
         let pdf = try #require(files.first { $0.pathExtension == "pdf" })
         let text = try #require(PDFDocument(url: pdf)?.string)
         #expect(text.contains("Clip previews: 1/1"))
+        #expect(text.contains("Operator: Alex & Sam"))
+        #expect(text.contains(prefs.notes))
         #expect(text.contains("VERIFICATION SUCCESSFUL"))
         let json = files.filter { $0.pathExtension == "json" }
         #expect(!json.isEmpty)
@@ -191,6 +193,8 @@ struct ReportThumbnailTests {
             let value = try String(contentsOf: url, encoding: .utf8)
             #expect(!value.contains("images"))
             #expect(!value.contains("base64"))
+            #expect(value.contains("Alex & Sam"))
+            #expect(value.contains(prefs.notes))
         }
         #expect(!text.contains("Performance Metrics"))
         #expect(!text.contains("Top File Types"))
@@ -226,11 +230,16 @@ struct ReportThumbnailTests {
             source: "/card", destinations: [root.path], totalFiles: rows.count, matched: rows.count, issues: 0,
             workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: row.size * Int64(rows.count), averageSpeed: 0,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, operatorName: "Alex & Sam · " + String(repeating: "Long operator name ", count: 12),
+            notes: (0..<180).map { "NOTE-\($0)-END · retained handoff notes" }.joined(separator: "\n"),
+            safetyState: .safeToErase)
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: previews)))
         #expect(document.pageCount > 1)
+        #expect(try #require(document.page(at: 0)?.string).contains("NOTE-0-END"))
         let text = try #require(document.string)
         for index in 0..<75 { #expect(text.components(separatedBy: "clip-\(index).mp4").count == 2) }
+        for index in 0..<180 { #expect(text.contains("NOTE-\(index)-END")) }
+        #expect(text.contains("Operator: Alex & Sam"))
         if let directory = (ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] ?? ProcessInfo.processInfo.environment["TEST_RUNNER_BITMATCH_PREVIEW_PDF_OUTPUT"]),
            let data = document.dataRepresentation() {
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("preview-pagination.pdf"))

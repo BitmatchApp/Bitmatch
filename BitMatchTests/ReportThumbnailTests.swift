@@ -1,5 +1,6 @@
 import Foundation
 import PDFKit
+import CryptoKit
 import Testing
 @testable import BitMatch
 import BitMatchEngine
@@ -173,7 +174,7 @@ struct ReportThumbnailTests {
 
     @Test func automaticExporterHonorsPreferenceWithoutPuttingImagesInJSON() async throws {
         let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
-        var prefs = ReportPrefs(makeReport: true)
+        var prefs = ReportPrefs(notes: "Card 01 · keep until reviewed", makeReport: true, operatorName: "Alex & Sam")
         prefs.includeThumbnails = true
         prefs.verificationMode = .standard
         try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: Date(), finished: Date(),
@@ -184,6 +185,8 @@ struct ReportThumbnailTests {
         let pdf = try #require(files.first { $0.pathExtension == "pdf" })
         let text = try #require(PDFDocument(url: pdf)?.string)
         #expect(text.contains("Clip previews: 1/1"))
+        #expect(text.contains("Operator: Alex & Sam"))
+        #expect(text.contains(prefs.notes))
         #expect(text.contains("VERIFICATION SUCCESSFUL"))
         let json = files.filter { $0.pathExtension == "json" }
         #expect(!json.isEmpty)
@@ -191,10 +194,129 @@ struct ReportThumbnailTests {
             let value = try String(contentsOf: url, encoding: .utf8)
             #expect(!value.contains("images"))
             #expect(!value.contains("base64"))
+            #expect(value.contains("Alex & Sam"))
+            #expect(value.contains(prefs.notes))
         }
         #expect(!text.contains("Performance Metrics"))
         #expect(!text.contains("Top File Types"))
         #expect(!text.contains("Workers:"))
+    }
+
+    /// Real copy/readback/handoff/report matrix, rather than seeded success rows.
+    @Test func transferDetailsPreviewsAndSelectionStayConsistentAcrossModes() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fm = FileManager.default
+            for mode in VerificationMode.allCases {
+                for exclude in [false, true] {
+                    let root = fm.temporaryDirectory.appendingPathComponent("bitmatch-combined-\(UUID())")
+                    try fm.createDirectory(at: root, withIntermediateDirectories: true)
+                    defer { try? fm.removeItem(at: root) }
+                    let source = root.appendingPathComponent("Card")
+                    let destinations = [root.appendingPathComponent("Backup A"), root.appendingPathComponent("Backup B")]
+                    for folder in [source] + destinations { try fm.createDirectory(at: folder, withIntermediateDirectories: true) }
+                    var companion = [UInt8](repeating: 0, count: 42)
+                    func put(_ value: UInt32, _ offset: Int) {
+                        for index in 0..<4 { companion[offset + index] = UInt8(truncatingIfNeeded: value >> (24 - 8 * index)) }
+                    }
+                    put(0x00051607, 0); put(0x00020000, 4); companion[25] = 1
+                    put(2, 26); put(38, 30); put(4, 34)
+                    let originals = ["preview.mp4": try #require(Data(base64Encoded: previewFixture)),
+                                     "unsupported.braw": Data("synthetic proprietary placeholder".utf8),
+                                     "._notes.txt": Data("legitimate sidecar".utf8), "._preview.mp4": Data(companion)]
+                    for (name, data) in originals { try data.write(to: source.appendingPathComponent(name)) }
+                    var settings = CameraLabelSettings()
+                    if exclude { settings.excludedAppleDoublePaths = try AppleDoubleSelection.review(source: source) }
+                    let prefs = ReportPrefs(verificationMode: mode, includeThumbnails: true,
+                        notes: "Card 01 · 日本語 & <notes>", operatorName: "Alex & Sam")
+                    let executor = CopyVerifyExecutor(platformManager: MacOSPlatformManager.shared,
+                        timingService: OperationTimingService(), errorService: ErrorReportingService(),
+                        stateService: OperationStateService(), backgroundTaskService: IOSBackgroundTaskService.shared)
+                    var terminal: OperationCompletionInfo?
+                    let operation = try #require(try await executor.execute(config: CopyVerifyConfig(operationId: UUID(),
+                        sourceURL: source, destinationURLs: destinations, verificationMode: mode,
+                        cameraLabelSettings: settings, reportSettings: prefs, estimatedFiles: originals.count,
+                        estimatedBytes: 0, currentMode: .copyAndVerify, generateASCMHL: mode != .quick),
+                        callbacks: CopyVerifyCallbacks(onProgress: { _ in }, onResult: { _ in },
+                        onStateChange: { if case .completed(let info) = $0 { terminal = info } }, onAuthoritativeResults: { _ in })))
+                    #expect(operation.results.count == originals.count * destinations.count)
+                    #expect(operation.results.filter(\.excludedAppleDouble).count == (exclude ? 2 : 0))
+                    #expect(terminal?.success == (mode != .quick && !exclude))
+                    for (name, data) in originals {
+                        #expect(try Data(contentsOf: source.appendingPathComponent(name)) == data)
+                        for destination in destinations {
+                            let copied = destination.appendingPathComponent("Card").appendingPathComponent(name)
+                            if exclude && name == "._preview.mp4" { #expect(!fm.fileExists(atPath: copied.path)) }
+                            else { #expect(SHA256.hash(data: try Data(contentsOf: copied)) == SHA256.hash(data: data)) }
+                        }
+                    }
+                    for destination in destinations {
+                        if destination == destinations[0] {
+                            let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+                            let pdf = try #require(reports.first { $0.pathExtension == "pdf" })
+                            let text = try #require(PDFDocument(url: pdf)?.string)
+                            #expect(text.contains("Operator: Alex & Sam"))
+                            #expect(text.contains("preview.mp4"))
+                            #expect(text.contains("unsupported.braw"))
+                            let previewCount = exclude ? "Clip previews: 1/1" : "Clip previews: 1/2"
+                            #expect(text.contains(previewCount) == (mode != .quick))
+                            let jsonURL = try #require(reports.first { $0.pathExtension == "json" })
+                            let json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+                            #expect(json["operatorName"] as? String == prefs.operatorName)
+                            #expect((json["notes"] as? String)?.contains(prefs.notes) == true)
+                            #expect(json["safeToErase"] as? Bool == (mode != .quick && !exclude))
+                            #expect(json["images"] == nil)
+                            #expect((json["destinations"] as? [[String: Any]])?.count == destinations.count)
+                            #expect((json["results"] as? [[String: Any]])?.count == operation.results.count)
+                            if mode == .standard && exclude,
+                               let output = ProcessInfo.processInfo.environment["TEST_RUNNER_BITMATCH_PREVIEW_PDF_OUTPUT"] ?? ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] {
+                                try Data(contentsOf: pdf).write(to: URL(fileURLWithPath: output).appendingPathComponent("combined-transfer.pdf"))
+                            }
+                        }
+                        if mode != .quick {
+                            let mhlFiles = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Card/ascmhl"), includingPropertiesForKeys: nil)
+                            let mhl = try String(contentsOf: #require(mhlFiles.first { $0.pathExtension == "mhl" }), encoding: .utf8)
+                            #expect(mhl.contains("Operator: Alex &amp; Sam"))
+                            #expect(mhl.contains("&lt;notes&gt;"))
+                            #expect(mhl.contains("._preview.mp4") == !exclude)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BITMATCH_CODEC_FIXTURE_ROOT"] != nil))
+    func generatedCodecPreviewsRetainAllRowsAndUnsafeVerdict() async throws {
+        let root = URL(fileURLWithPath: try #require(ProcessInfo.processInfo.environment["BITMATCH_CODEC_FIXTURE_ROOT"]))
+        try #require(FileManager.default.fileExists(atPath: root.appendingPathComponent(".bitmatch-codec-owned").path))
+        let names = ["h264.mp4", "hevc.MOV", "prores.mov", "h264.m4v", "broken.mov", "unsupported.braw"]
+        let rows = try names.map { name in
+            let file = root.appendingPathComponent(name)
+            let size = try #require(FileManager.default.attributesOfItem(atPath: file.path)[.size] as? NSNumber).int64Value
+            return ResultRow(path: "/synthetic-card/\(name)", status: ResultOutcome.verified.statusText,
+                size: size, checksum: "seeded-preview-fixture", destination: root.path, destinationPath: file.path)
+        }
+        let previews = try await ReportThumbnailService.collect(results: rows, enabled: true)
+        #expect(previews.images.count == 4)
+        #expect(previews.requestedCount == 5)
+        for row in rows.prefix(4) { #expect(previews.images[row.path]?.isEmpty == false) }
+        #expect(previews.images[rows[4].path] == nil)
+        let prefs = ReportPrefs(verificationMode: .standard, includeThumbnails: true,
+            notes: "Synthetic codec check", operatorName: "Alex & Sam")
+        let reportFolder = root.appendingPathComponent("Reports")
+        let existingReports = Set(((try? FileManager.default.contentsOfDirectory(at: reportFolder, includingPropertiesForKeys: nil)) ?? []).map(\.path))
+        try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: Date(), finished: Date(),
+            sourceURL: nil, destinationURLs: [root], results: rows, fileCount: rows.count, matchCount: rows.count,
+            prefs: prefs, workers: 1, totalBytesProcessed: rows.reduce(0) { $0 + $1.size }, safetyState: .needsAttention)
+        let reports = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let pdf = try #require(reports.first { $0.pathExtension == "pdf" && !existingReports.contains($0.path) })
+        let text = try #require(PDFDocument(url: pdf)?.string)
+        #expect(text.contains("Clip previews: 4/5"))
+        #expect(text.contains("NOT SAFE TO ERASE"))
+        for name in names { #expect(text.contains(name)) }
+        if let output = ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] {
+            try Data(contentsOf: pdf).write(to: URL(fileURLWithPath: output).appendingPathComponent("codec-previews.pdf"))
+        }
     }
 
     @Test func cancellationDuringCollectionDoesNotStartAnotherClip() async throws {
@@ -226,11 +348,16 @@ struct ReportThumbnailTests {
             source: "/card", destinations: [root.path], totalFiles: rows.count, matched: rows.count, issues: 0,
             workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: row.size * Int64(rows.count), averageSpeed: 0,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, operatorName: "Alex & Sam · " + String(repeating: "Long operator name ", count: 12),
+            notes: (0..<180).map { "NOTE-\($0)-END · retained handoff notes" }.joined(separator: "\n"),
+            safetyState: .safeToErase)
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: previews)))
         #expect(document.pageCount > 1)
+        #expect(try #require(document.page(at: 0)?.string).contains("NOTE-0-END"))
         let text = try #require(document.string)
         for index in 0..<75 { #expect(text.components(separatedBy: "clip-\(index).mp4").count == 2) }
+        for index in 0..<180 { #expect(text.contains("NOTE-\(index)-END")) }
+        #expect(text.contains("Operator: Alex & Sam"))
         if let directory = (ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] ?? ProcessInfo.processInfo.environment["TEST_RUNNER_BITMATCH_PREVIEW_PDF_OUTPUT"]),
            let data = document.dataRepresentation() {
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("preview-pagination.pdf"))
