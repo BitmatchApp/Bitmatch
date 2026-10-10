@@ -25,9 +25,9 @@ PDF, CSV, JSON and ASC MHL describe the recorded work. They don't perform anothe
 
 ## AppleDouble Companions
 
-BitMatch preserves files by default, including hidden `._` companions that macOS uses for metadata on drives such as exFAT. Those can contain resource forks and Finder metadata; they're not always disposable.
+BitMatch ignores recognized AppleDouble `._` metadata companions by default. These can contain resource forks and Finder metadata, so turn off **Settings → File handling → Ignore AppleDouble metadata files** if you need to preserve them. An explicit saved choice is kept across launches.
 
-If you need a copy without them, open **Advanced → Exclude AppleDouble companion files**. BitMatch checks the file structure, shows the count, and lets you review the list before starting. A `._` filename alone isn't enough: unrecognized files and camera sidecars stay in the copy. If that list changes before Start, the transfer refuses to run until you review the source again.
+BitMatch checks the file structure, shows a quiet exclusion count, and keeps the excluded-file list in Settings and reports. A `._` filename alone isn't enough: unrecognized files and camera sidecars stay in the copy. If that list changes before Start, the transfer refuses to run until the source is reviewed again.
 
 The option follows the transfer into the queue and history. Reports list the exclusions, and ASC MHL describes the selected destination files. **Keep the source:** “selected files verified” does not mean the whole card is backed up or safe to erase. Existing destination metadata is left alone, including companions macOS creates itself. This option doesn't repair conflicting files or filter an existing checksum inventory during Check.
 
@@ -42,6 +42,8 @@ The differences export includes filenames and paths. For a bug report without th
 ## Reports
 
 Transfer reports record the results for each destination. PDF, CSV, and JSON exports are available on Mac, iPad, and iPhone. **Master Report** scans a selected folder or drive for saved transfer reports for a chosen day and combines them into a PDF and JSON summary. It summarizes those records; it does not re-verify the media. Use **Check** for that.
+
+**Advanced → Transfer details** has optional operator and notes fields. They're remembered for the next card; use **Clear details** when the job changes. Each queued card keeps the details it had when you added it. PDF, CSV, JSON and ASC MHL carry those saved details, including exports from History. They stay out of diagnostic logs.
 
 ## ASC MHL
 

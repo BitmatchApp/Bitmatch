@@ -24,9 +24,16 @@ struct TransferHistoryDocument: FileDocument {
                  record.reportSettings.clientName].map(quote).joined(separator: ",")
             }
             func pair(_ key: String, _ value: String) -> String { quote(key) + "," + quote(value) }
+            func detail(_ value: String) -> String {
+                guard let first = value.unicodeScalars.first(where: { !CharacterSet.whitespacesAndNewlines.contains($0) }),
+                      ["=", "+", "-", "@"].contains(String(first)) else { return value }
+                return "'" + value
+            }
             let telemetry = record.performanceTelemetry
             let timingSummary = [
                 "\n# Summary",
+                pair("operatorName", detail(record.reportSettings.operatorName)),
+                pair("notes", detail(record.reportSettings.notes)),
                 pair("copyDurationSeconds", record.copyDurationSeconds.map { String($0) } ?? ""),
                 pair("verifyDurationSeconds", record.verifyDurationSeconds.map { String($0) } ?? ""),
                 pair("overlapDurationSeconds", telemetry?.overlapDurationSeconds.map { String($0) } ?? ""),
@@ -50,6 +57,8 @@ struct TransferHistoryDocument: FileDocument {
                 let verificationMode: VerificationMode
                 let projectName: String
                 let clientName: String
+                let operatorName: String?
+                let notes: String?
                 let ascMHLRequested: Bool
                 let copyDurationSeconds: TimeInterval?
                 let verifyDurationSeconds: TimeInterval?
@@ -63,6 +72,8 @@ struct TransferHistoryDocument: FileDocument {
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
+                operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName),
+                notes: EvidenceWriter.normalizedNotes(record.reportSettings.notes),
                 ascMHLRequested: record.generateASCMHL,
                 copyDurationSeconds: record.copyDurationSeconds,
                 verifyDurationSeconds: record.verifyDurationSeconds,

@@ -75,6 +75,7 @@ enum ReportExporter {
             clientLogoData: nil,
             companyLogoData: nil,
             photographyJob: photographerPayload,
+            operatorName: EvidenceWriter.normalizedNotes(prefs.operatorName),
             notes: EvidenceWriter.normalizedNotes(reportPrefs.notes),
             safetyState: safetyState
         )
@@ -165,7 +166,7 @@ enum ReportExporter {
             verificationMethod: record.verificationMode.rawValue, verificationMode: record.verificationMode,
             totalBytesProcessed: recordedBytes, averageSpeed: 0,
             copyDurationSeconds: record.copyDurationSeconds, verifyDurationSeconds: record.verifyDurationSeconds,
-            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, notes: notes,
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName), notes: notes,
             safetyState: TransferLibraryPresentation.safetyState(for: record),
             hasRecordedTiming: record.startedAt != nil && record.endedAt != nil)
         try Task.checkCancellation()

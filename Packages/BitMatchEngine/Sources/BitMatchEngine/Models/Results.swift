@@ -122,6 +122,7 @@ public struct ReportPrefs: Codable, Sendable {
     public var projectName: String = ""
     public var production: String = ""
     public var company: String = ""
+    public var operatorName: String = ""
     public var notes: String = ""
     public var makeReport: Bool = true
     public var verifyWithChecksum: Bool = true
@@ -130,13 +131,14 @@ public struct ReportPrefs: Codable, Sendable {
     public var showCameraDetectionNotifications: Bool = true
     public var checksumAlgorithm: ChecksumAlgorithm = .sha256
 
-    public init(verificationMode: VerificationMode? = nil, includeThumbnails: Bool = false, clientName: String = "", projectName: String = "", production: String = "", company: String = "", notes: String = "", makeReport: Bool = true, verifyWithChecksum: Bool = true, enableAutoCameraDetection: Bool = true, autoPopulateSource: Bool = true, showCameraDetectionNotifications: Bool = true, checksumAlgorithm: ChecksumAlgorithm = .sha256) {
+    public init(verificationMode: VerificationMode? = nil, includeThumbnails: Bool = false, clientName: String = "", projectName: String = "", production: String = "", company: String = "", notes: String = "", makeReport: Bool = true, verifyWithChecksum: Bool = true, enableAutoCameraDetection: Bool = true, autoPopulateSource: Bool = true, showCameraDetectionNotifications: Bool = true, checksumAlgorithm: ChecksumAlgorithm = .sha256, operatorName: String = "") {
         self.verificationMode = verificationMode
         self.includeThumbnails = includeThumbnails
         self.clientName = clientName
         self.projectName = projectName
         self.production = production
         self.company = company
+        self.operatorName = operatorName
         self.notes = notes
         self.makeReport = makeReport
         self.verifyWithChecksum = verifyWithChecksum
@@ -144,6 +146,33 @@ public struct ReportPrefs: Codable, Sendable {
         self.autoPopulateSource = autoPopulateSource
         self.showCameraDetectionNotifications = showCameraDetectionNotifications
         self.checksumAlgorithm = checksumAlgorithm
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case verificationMode, includeThumbnails, clientName, projectName, production, company
+        case operatorName, notes, makeReport, verifyWithChecksum, enableAutoCameraDetection
+        case autoPopulateSource, showCameraDetectionNotifications, checksumAlgorithm
+    }
+
+    /// New optional fields must not discard settings or queued records from older builds.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.init(
+            verificationMode: try c.decodeIfPresent(VerificationMode.self, forKey: .verificationMode),
+            includeThumbnails: try c.decodeIfPresent(Bool.self, forKey: .includeThumbnails) ?? false,
+            clientName: try c.decodeIfPresent(String.self, forKey: .clientName) ?? "",
+            projectName: try c.decodeIfPresent(String.self, forKey: .projectName) ?? "",
+            production: try c.decodeIfPresent(String.self, forKey: .production) ?? "",
+            company: try c.decodeIfPresent(String.self, forKey: .company) ?? "",
+            notes: try c.decodeIfPresent(String.self, forKey: .notes) ?? "",
+            makeReport: try c.decodeIfPresent(Bool.self, forKey: .makeReport) ?? true,
+            verifyWithChecksum: try c.decodeIfPresent(Bool.self, forKey: .verifyWithChecksum) ?? true,
+            enableAutoCameraDetection: try c.decodeIfPresent(Bool.self, forKey: .enableAutoCameraDetection) ?? true,
+            autoPopulateSource: try c.decodeIfPresent(Bool.self, forKey: .autoPopulateSource) ?? true,
+            showCameraDetectionNotifications: try c.decodeIfPresent(Bool.self, forKey: .showCameraDetectionNotifications) ?? true,
+            checksumAlgorithm: try c.decodeIfPresent(ChecksumAlgorithm.self, forKey: .checksumAlgorithm) ?? .sha256,
+            operatorName: try c.decodeIfPresent(String.self, forKey: .operatorName) ?? ""
+        )
     }
 }
 

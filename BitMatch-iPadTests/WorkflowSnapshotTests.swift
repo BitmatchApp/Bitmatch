@@ -142,6 +142,28 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    func testCaptureAppleDoubleSettings() throws {
+        try requireCaptureConfiguration()
+        let suite = "AppleDoubleCapture-\(UUID().uuidString)"
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let review = AppleDoubleReviewModel(defaults: defaults)
+        XCTAssertTrue(review.enabled)
+        for width in [320.0, 500.0, 820.0] {
+            try capture(Form { Section("File handling") { AppleDoubleSelectionView(review: review) } },
+                        size: CGSize(width: width, height: 300), name: "mobile-appledouble-settings-\(Int(width))")
+        }
+    }
+
+    func testCaptureTransferDetails() throws {
+        try requireCaptureConfiguration()
+        let prefs = ReportPrefs(notes: "Card 01 · backups to Alex.\nKeep the source until both drives are checked.", operatorName: "Alex Morgan")
+        for width in [320.0, 500.0, 820.0] {
+            try capture(TransferDetailsSection(prefs: .constant(prefs), isExpanded: true).padding(),
+                        size: CGSize(width: width, height: 400), name: "mobile-transfer-details-\(Int(width))")
+        }
+    }
+
     private func requireCaptureConfiguration() throws {
         let environment = ProcessInfo.processInfo.environment
         let enabled = environment["BITMATCH_CAPTURE_WORKFLOW_SNAPSHOTS"] == "1"

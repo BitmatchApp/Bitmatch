@@ -62,7 +62,14 @@ final class WorkflowSnapshotTests: XCTestCase {
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
         while review.paths == nil && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(review.paths, ["._Camera clip.bin"])
-        try capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 580, height: 600), name: "mac-appledouble-selection")
+        try capture(Form { Section("File handling") { AppleDoubleSelectionView(review: review) } }.formStyle(.grouped), size: CGSize(width: 580, height: 260), name: "mac-appledouble-settings")
+    }
+
+    func testCaptureTransferDetails() throws {
+        try requireCaptureConfiguration()
+        let prefs = ReportPrefs(notes: "Card 01 · backups to Alex.\nKeep the source until both drives are checked.", operatorName: "Alex Morgan")
+        try capture(TransferDetailsSection(prefs: .constant(prefs), isExpanded: true).padding(),
+                    size: CGSize(width: 580, height: 340), name: "mac-transfer-details")
     }
 
     private func settle() async {

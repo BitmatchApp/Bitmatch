@@ -22,14 +22,17 @@ final class AppleDoubleReviewModel: ObservableObject {
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
-        enabled = defaults.bool(forKey: "BitMatchExcludeAppleDouble")
+        enabled = defaults.object(forKey: "BitMatchExcludeAppleDouble") == nil
+            ? true : defaults.bool(forKey: "BitMatchExcludeAppleDouble")
     }
     deinit { task?.cancel() }
 
     var summaryLine: String? {
         guard enabled, let paths else { return nil }
-        return paths.isEmpty ? "No AppleDouble companions will be excluded" : "\(paths.count) AppleDouble source \(paths.count == 1 ? "file" : "files") will be excluded. Keep the source."
+        return paths.isEmpty ? nil : "\(paths.count) AppleDouble metadata \(paths.count == 1 ? "file" : "files") excluded"
     }
+
+    var isReviewing: Bool { enabled && source != nil && paths == nil && error == nil }
 
     var readinessIssue: String? {
         guard enabled, source != nil else { return nil }

@@ -253,6 +253,12 @@ struct TransferLibraryView: View {
         let safetyState = TransferLibraryPresentation.safetyState(for: record)
         VStack(alignment: .leading, spacing: 8) {
             Text(record.summary).fixedSize(horizontal: false, vertical: true)
+            if let operatorName = EvidenceWriter.normalizedNotes(record.reportSettings.operatorName) {
+                Text("Operator: \(operatorName)").font(.caption).textSelection(.enabled)
+            }
+            if let notes = EvidenceWriter.normalizedNotes(record.reportSettings.notes) {
+                Text(notes).font(.caption).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+            }
             if let warning = safetyState.eraseWarning {
                 Label(warning, systemImage: safetyState.symbol)
                     .font(.caption.weight(.semibold))

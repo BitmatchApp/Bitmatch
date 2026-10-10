@@ -4,7 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Moved AppleDouble handling to Settings → File handling. Recognized metadata companions are ignored by default for unset preferences; saved choices and queued transfers keep their policy. Other hidden files and camera sidecars are preserved.
+- Added optional operator and notes under Advanced → Transfer details. Remembered between cards, saved separately for each queued transfer, and included in reports and ASC MHL.
 - Added optional clip previews to PDFs, off by default. Supported videos use a small frame from a verified backup; unavailable clips stay listed. A preview is not a new verification.
+- PDF reports separate intentional metadata exclusions from file errors, retain the whole-card safety warning, and fit long multiline notes across pages without wasting the first page.
 - Simplified PDF reports: a compact verdict, transfer summary and file list, with previews beside filenames. Removed repeated statistics and empty technical fields.
 - History can export a PDF with or without previews, without reconnecting the original card. Expanded rows show recorded dates, sizes, copy/verify times and measured average speed; missing measurements stay blank.
 - Added a plain-language verification guide and expanded source-preservation tests to include filesystem metadata and extended attributes.

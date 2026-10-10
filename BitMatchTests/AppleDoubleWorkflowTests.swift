@@ -106,6 +106,7 @@ final class AppleDoubleWorkflowTests: XCTestCase {
             let journal = LocalTransferJournal(fileURL: folders.journalURL)
             let id = try journal.enqueue(sourceURL: folders.source, destinationURLs: [folders.primary, folders.secondary],
                 verificationMode: .standard, cameraSettings: settings, reportSettings: reports, generateASCMHL: false)
+            folders.defaults.set(false, forKey: "BitMatchExcludeAppleDouble")
             let coordinator = SharedAppCoordinator(platformManager: MacOSPlatformManager.shared,
                 transferJournal: journal, defaults: folders.defaults)
             XCTAssertFalse(coordinator.appleDoubleSelection.enabled)
@@ -122,6 +123,33 @@ final class AppleDoubleWorkflowTests: XCTestCase {
             XCTAssertEqual(record.cameraSettings.excludedAppleDoublePaths, ["._A.ARW"])
             XCTAssertFalse(coordinator.appleDoubleSelection.enabled)
             XCTAssertFalse(folders.defaults.bool(forKey: "BitMatchExcludeAppleDouble"))
+        }
+    }
+
+    func testQueuedPreservePolicySurvivesNewIgnoreDefault() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let folders = try CoordinatorFolders(); defer { folders.cleanup() }
+            try seed(folders.source)
+            var reports = ReportPrefs(); reports.makeReport = false
+            let journal = LocalTransferJournal(fileURL: folders.journalURL)
+            let id = try journal.enqueue(sourceURL: folders.source, destinationURLs: [folders.primary],
+                verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: reports,
+                generateASCMHL: false)
+            let coordinator = SharedAppCoordinator(platformManager: MacOSPlatformManager.shared,
+                transferJournal: journal, defaults: folders.defaults)
+            XCTAssertTrue(coordinator.appleDoubleSelection.enabled)
+            coordinator.startQueue()
+            let finished = await waitUntil(timeout: .seconds(10)) {
+                journal.records.first(where: { $0.id == id })?.state == .completed && !coordinator.isOperationInProgress
+            }
+            if !finished { coordinator.cancelOperation() }
+            XCTAssertTrue(finished, coordinator.queueMessage ?? "Queue did not finish")
+            let record = try XCTUnwrap(journal.records.first { $0.id == id })
+            XCTAssertNil(record.cameraSettings.excludedAppleDoublePaths)
+            XCTAssertEqual(record.results.count, 3)
+            XCTAssertTrue(record.results.allSatisfy(\.isVerifiedStatus))
+            XCTAssertTrue(coordinator.appleDoubleSelection.enabled)
+            XCTAssertNil(folders.defaults.object(forKey: "BitMatchExcludeAppleDouble"))
         }
     }
 
@@ -165,15 +193,18 @@ final class AppleDoubleWorkflowTests: XCTestCase {
         let folders = try CoordinatorFolders(); defer { folders.cleanup() }
         try seed(folders.source)
         let review = AppleDoubleReviewModel(defaults: folders.defaults)
-        XCTAssertFalse(review.enabled)
+        XCTAssertTrue(review.enabled)
+        XCTAssertNil(folders.defaults.object(forKey: "BitMatchExcludeAppleDouble"))
         review.refresh(source: folders.source)
-        review.enabled = true
         XCTAssertNotNil(review.readinessIssue)
         let ready = await waitUntil { review.paths != nil }
         XCTAssertTrue(ready)
         XCTAssertEqual(review.paths, ["._A.ARW"])
         XCTAssertTrue(try XCTUnwrap(review.summaryLine).contains("1 AppleDouble"))
         XCTAssertTrue(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
+        review.enabled = false
+        XCTAssertFalse(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
+        review.enabled = true
         review.refresh(source: nil)
         XCTAssertNil(review.paths)
         XCTAssertNil(review.readinessIssue)

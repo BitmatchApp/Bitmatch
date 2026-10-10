@@ -70,16 +70,30 @@ struct ReportView: View {
         rows
     }
 
-    private var integritySummary: ResultIntegritySummary {
-        ResultIntegritySummary(rows: rows)
-    }
-    
     private var verifiedFileCount: Int {
         rows.filter(TransferOutcomePresentation.isVerified).count
     }
     
     private var issueCount: Int {
-        integritySummary.issueRows.count
+        reportIssueRows.count
+    }
+
+    private var reportIssueRows: [ResultRow] {
+        rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+    }
+
+    private var excludedResultCount: Int {
+        rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count
+    }
+
+    private var reportUnsafeReason: String {
+        let selected = rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        if s.safetyState == .needsAttention, s.photographyJob == nil,
+           excludedResultCount > 0, reportIssueRows.isEmpty, !selected.isEmpty,
+           selected.allSatisfy(TransferOutcomePresentation.isVerified) {
+            return "Selected files verified. AppleDouble metadata was intentionally excluded; the whole card is not backed up."
+        }
+        return Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob)
     }
 
     private var isFullyVerified: Bool { s.safetyState == .safeToErase }
@@ -191,10 +205,16 @@ struct ReportView: View {
         append(pdfOutcomeSection)
         append(pdfSummarySection)
         if let notes = s.notes, !notes.isEmpty {
-            append(VStack(alignment: .leading, spacing: 5) {
-                Text("Notes").font(.system(size: 12, weight: .semibold))
-                Text(notes).font(.system(size: 10)).fixedSize(horizontal: false, vertical: true)
-            })
+            let lines = notes.replacingOccurrences(of: "\r\n", with: "\n")
+                .replacingOccurrences(of: "\r", with: "\n")
+                .components(separatedBy: "\n")
+            for (index, line) in lines.enumerated() {
+                append(VStack(alignment: .leading, spacing: 5) {
+                    if index == 0 { Text("Notes").font(.system(size: 12, weight: .semibold)) }
+                    Text(line.isEmpty ? " " : line).font(.system(size: 10))
+                        .fixedSize(horizontal: false, vertical: true)
+                }, separated: index == 0)
+            }
         }
         if s.photographyJob != nil { append(photographyJobSection) }
         append(pdfLocationsSection)
@@ -228,7 +248,7 @@ struct ReportView: View {
         }
         if issueCount > 0 {
             append(Text("Issues Detail (\(issueCount))").font(.system(size: 14, weight: .semibold)))
-            for group in ResultPresentation.issueGroups(rows) {
+            for group in ResultPresentation.issueGroups(reportIssueRows) {
                 for (index, row) in group.rows.prefix(10).enumerated() {
                     append(VStack(alignment: .leading, spacing: 4) {
                         if index == 0 { issueGroupHeader(group) }
@@ -307,7 +327,7 @@ struct ReportView: View {
             Image(systemName: safe ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
             VStack(alignment: .leading, spacing: 3) {
                 Text(safe ? "VERIFICATION SUCCESSFUL" : "NOT SAFE TO ERASE").font(.system(size: 12, weight: .semibold))
-                Text(safe ? "All required copies passed verification." : Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob))
+                Text(safe ? "All required copies passed verification." : reportUnsafeReason)
                     .font(.system(size: 10))
             }
             Spacer(minLength: 0)
@@ -404,7 +424,7 @@ struct ReportView: View {
             Text("\(s.totalFiles) \(s.totalFiles == 1 ? "file" : "files") · \(verifiedFileCount) verified \(verifiedFileCount == 1 ? "copy" : "copies") · \(issueCount) file \(issueCount == 1 ? "issue" : "issues") · \(totalSizeFormatted)")
                 .font(.system(size: 10))
             if rows.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
-                Text("\(rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count) intentionally excluded results").font(.system(size: 10))
+                Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
             }
             if s.hasRecordedTiming {
                 Text("Elapsed: \(duration)" + (s.averageSpeed > 0 ? " · \(throughput)" : ""))
@@ -412,6 +432,9 @@ struct ReportView: View {
             }
             if let phaseDuration {
                 Text(phaseDuration).font(.system(size: 10)).foregroundColor(.secondary)
+            }
+            if let operatorName = s.operatorName, !operatorName.isEmpty {
+                Text("Operator: \(operatorName)").font(.system(size: 10)).fixedSize(horizontal: false, vertical: true)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -422,6 +445,9 @@ struct ReportView: View {
             Text("Verification Summary")
                 .font(.system(size: 14, weight: .semibold))
             
+            if let operatorName = s.operatorName, !operatorName.isEmpty {
+                Text("Operator: \(operatorName)").font(.system(size: 11))
+            }
             Grid(horizontalSpacing: 24, verticalSpacing: 8) {
                 GridRow {
                     Text("Mode:").foregroundColor(.secondary).font(.system(size: 11))
@@ -763,7 +789,7 @@ struct ReportView: View {
             Text("Issues Detail (\(issueCount))")
                 .font(.system(size: 14, weight: .semibold))
             
-            let groups = ResultPresentation.issueGroups(rows)
+            let groups = ResultPresentation.issueGroups(reportIssueRows)
             
             VStack(alignment: .leading, spacing: 12) {
                 ForEach(groups) { group in
@@ -929,7 +955,7 @@ struct ReportView: View {
                 Text("NOT SAFE TO ERASE")
                     .font(.system(size: 14, weight: .bold))
                     .foregroundColor(s.safetyState == .failed ? .red : .orange)
-                Text(Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob))
+                Text(reportUnsafeReason)
                     .font(.system(size: 11, weight: .medium))
                 if issueCount > 0 {
                     Text("Review the \(issueCount) file \(issueCount == 1 ? "issue" : "issues") in this report before trying again.")
@@ -1002,7 +1028,7 @@ struct ReportView: View {
     
     @ViewBuilder
     private var summaryTableContent: some View {
-        let groups = ResultPresentation.issueGroups(rows)
+        let groups = ResultPresentation.issueGroups(reportIssueRows)
         
         VStack(spacing: 2) {
             ForEach(groups) { group in

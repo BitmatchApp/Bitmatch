@@ -5,6 +5,7 @@
 // measured, and that estimate used to reach the report.
 import Foundation
 import XCTest
+import PDFKit
 @testable import BitMatch
 import BitMatchEngine
 
@@ -47,10 +48,11 @@ final class ReportEvidenceBytesTests: XCTestCase {
                 destinationURLs: fixture.destinations,
                 verificationMode: .standard,
                 cameraLabelSettings: CameraLabelSettings(),
-                reportSettings: ReportPrefs(makeReport: true),
+                reportSettings: ReportPrefs(notes: "Card 01 handoff", makeReport: true, operatorName: "Alex & Sam"),
                 estimatedFiles: fixture.manifest.count,
                 estimatedBytes: 1_000_000_000,
-                currentMode: .copyAndVerify
+                currentMode: .copyAndVerify,
+                generateASCMHL: true
             )
             _ = try await executor.execute(
                 config: config,
@@ -68,6 +70,25 @@ final class ReportEvidenceBytesTests: XCTestCase {
                 .filter { $0.pathExtension == "json" }
             let jsonURL = try XCTUnwrap(jsonFiles.first, "no JSON report in \(reports.path)")
             let object = try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL))
+            let report = try XCTUnwrap(object as? [String: Any])
+            XCTAssertEqual(report["operatorName"] as? String, "Alex & Sam")
+            XCTAssertTrue((report["notes"] as? String)?.contains("Card 01 handoff") == true)
+            let enumerator = try XCTUnwrap(FileManager.default.enumerator(at: fixture.destinations[0], includingPropertiesForKeys: nil))
+            let manifests = enumerator.compactMap { $0 as? URL }.filter { $0.pathExtension == "mhl" }
+            XCTAssertFalse(manifests.isEmpty)
+            for url in manifests {
+                let xml = try String(contentsOf: url, encoding: .utf8)
+                XCTAssertTrue(xml.contains("Operator: Alex &amp; Sam"))
+                XCTAssertTrue(xml.contains("Notes: Card 01 handoff"))
+            }
+            let csvURL = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil).first { $0.pathExtension == "csv" })
+            let csv = try String(contentsOf: csvURL, encoding: .utf8)
+            XCTAssertTrue(csv.contains("Operator,Alex & Sam"))
+            XCTAssertTrue(csv.contains("Card 01 handoff"))
+            let pdfURL = try XCTUnwrap(FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil).first { $0.pathExtension == "pdf" })
+            let pdfText = try XCTUnwrap(PDFDocument(url: pdfURL)?.string)
+            XCTAssertTrue(pdfText.contains("Operator: Alex & Sam"))
+            XCTAssertTrue(pdfText.contains("Card 01 handoff"))
             let statistics = try XCTUnwrap((object as? [String: Any])?["statistics"] as? [String: Any])
             let averageFileSize = try XCTUnwrap((statistics["averageFileSize"] as? NSNumber)?.int64Value)
 

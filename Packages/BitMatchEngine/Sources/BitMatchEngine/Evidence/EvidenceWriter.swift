@@ -70,6 +70,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
     public let verification: Verification
     public let results: [JSONReportItem]
     public let photographyJob: Project?
+    public var operatorName: String? = nil
     public var notes: String? = nil
     public let safeToErase: Bool?
     public let pdfEvidence: ReportPDFEvidence?
@@ -228,7 +229,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         }
     }
 
-    public init(reportVersion: String, timestamp: Date, jobId: UUID, mode: String, source: SourceInfo, destinations: [DestinationInfo], statistics: Statistics, extensions: [String: Int], performance: Performance, verification: Verification, results: [JSONReportItem], photographyJob: Project?, notes: String? = nil, safeToErase: Bool? = nil, pdfEvidence: ReportPDFEvidence? = nil) {
+    public init(reportVersion: String, timestamp: Date, jobId: UUID, mode: String, source: SourceInfo, destinations: [DestinationInfo], statistics: Statistics, extensions: [String: Int], performance: Performance, verification: Verification, results: [JSONReportItem], photographyJob: Project?, notes: String? = nil, safeToErase: Bool? = nil, pdfEvidence: ReportPDFEvidence? = nil, operatorName: String? = nil) {
         self.reportVersion = reportVersion
         self.timestamp = timestamp
         self.jobId = jobId
@@ -241,6 +242,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         self.verification = verification
         self.results = results
         self.photographyJob = photographyJob
+        self.operatorName = operatorName
         self.notes = notes
         self.safeToErase = safeToErase
         self.pdfEvidence = pdfEvidence
@@ -566,6 +568,9 @@ public enum EvidenceWriter: Sendable {
         
         if let prefs {
             csvContent += csvRow(["Verification", verificationDescription(for: prefs).label])
+            if let operatorName = normalizedNotes(prefs.operatorName) {
+                csvContent += csvRow(["Operator", operatorName])
+            }
             if let notes = normalizedNotes(prefs.notes) {
                 csvContent += csvRow(["Notes", notes])
             }
@@ -808,7 +813,7 @@ public enum EvidenceWriter: Sendable {
             results: results.map { JSONReportItem(from: $0) },
             photographyJob: project,
             notes: normalizedNotes(prefs.notes),
-            safeToErase: safeToErase, pdfEvidence: pdfEvidence
+            safeToErase: safeToErase, pdfEvidence: pdfEvidence, operatorName: normalizedNotes(prefs.operatorName)
         )
         if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
             report.selection = TransferSelectionEvidence(results: results)
