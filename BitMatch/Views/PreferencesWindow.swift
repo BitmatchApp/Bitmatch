@@ -258,11 +258,11 @@ struct PreferencesWindow: View {
                 }
 
                 Section {
-                    Toggle("Include thumbnails", isOn: $coordinator.reportSettings.includeThumbnails)
+                    Toggle("Include clip thumbnails in PDFs", isOn: $coordinator.reportSettings.includeThumbnails)
                 } header: {
                     Text("Contents")
                 } footer: {
-                    Text("Adds one small preview for each file.")
+                    Text("Adds a small frame from supported verified backup clips. Previews are private report content, not verification evidence. Unavailable clips stay listed.")
                 }
 
             }

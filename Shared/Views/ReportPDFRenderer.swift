@@ -34,8 +34,8 @@ enum ReportPDFRenderer {
     }
 
     @MainActor
-    static func renderPDF(summary: ReportSummary, results: [ResultRow]) -> Data {
-        let report = ReportView(s: summary, rows: results)
+    static func renderPDF(summary: ReportSummary, results: [ResultRow], thumbnails: ReportThumbnails = ReportThumbnails()) -> Data {
+        let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
         let blocks = report.pdfBlocks
         let heights = blockHeights(blocks)
         let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: contentHeight)
@@ -63,6 +63,8 @@ enum ReportPDFRenderer {
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(page.blocks, id: \.self) { index in
                             blocks[index].view
+                                .frame(width: pageWidth - 2 * horizontalMargin, alignment: .leading)
+                                .fixedSize(horizontal: false, vertical: true)
                                 .frame(height: heights[index], alignment: .topLeading)
                         }
                     }

@@ -34,6 +34,19 @@ public struct LocalTransferResource: Codable, Sendable {
         #endif
     }
 
+    /// Read access for optional history previews; requires the original destination identity.
+    public func beginReadAccess() throws -> LocalTransferReadAccess {
+        let resolved = try resolve()
+        let scoped = resolved.startAccessingSecurityScopedResource()
+        do {
+            try validate(resolved)
+            return LocalTransferReadAccess(url: resolved, scoped: scoped)
+        } catch {
+            if scoped { resolved.stopAccessingSecurityScopedResource() }
+            throw error
+        }
+    }
+
     fileprivate func resolve() throws -> URL {
         var stale = false
         #if os(macOS)
@@ -66,6 +79,17 @@ public struct LocalTransferResource: Codable, Sendable {
             throw LocalTransferJournalError.unavailable(url.lastPathComponent)
         }
     }
+}
+
+public final class LocalTransferReadAccess: Sendable {
+    public let url: URL
+    private let scoped: Mutex<Bool>
+    fileprivate init(url: URL, scoped: Bool) { self.url = url; self.scoped = Mutex(scoped) }
+    public func release() {
+        let wasScoped = scoped.withLock { scoped in defer { scoped = false }; return scoped }
+        if wasScoped { url.stopAccessingSecurityScopedResource() }
+    }
+    deinit { release() }
 }
 
 public struct LocalTransferRecord: Identifiable, Codable, Sendable {

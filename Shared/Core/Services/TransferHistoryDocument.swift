@@ -1,14 +1,15 @@
-// TransferHistoryDocument.swift - One transfer's history, exported as JSON or CSV
+// TransferHistoryDocument.swift - One transfer's history, exported as PDF, JSON or CSV
 import SwiftUI
 import UniformTypeIdentifiers
 import BitMatchEngine
 
 /// The file `TransferLibraryView` exports for one journal record. It holds
-/// the paths, results and verdict only: no security-scoped bookmarks or
+/// report data (and optional PDF previews): no security-scoped bookmarks or
 /// credentials leave the journal.
 struct TransferHistoryDocument: FileDocument {
-    static var readableContentTypes: [UTType] { [.json, .commaSeparatedText] }
+    static var readableContentTypes: [UTType] { [.json, .commaSeparatedText, .pdf] }
     let data: Data
+    init(data: Data) { self.data = data }
     init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 

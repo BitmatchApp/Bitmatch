@@ -128,6 +128,20 @@ final class WorkflowSnapshotTests: XCTestCase {
         try capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 820, height: 650), name: "ipad-appledouble-selection")
     }
 
+    func testCaptureExpandedHistoryMetrics() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        try fixture.seedInterruptedTransfer()
+        let record = try XCTUnwrap(fixture.journal.records.first)
+        for width in [320.0, 500.0, 820.0] {
+            await settle()
+            try capture(TransferLibraryView(coordinator: fixture.coordinator, journal: fixture.journal,
+                                            initialRecordID: record.id),
+                        size: CGSize(width: width, height: 1400), name: "history-metrics-\(Int(width))")
+        }
+    }
+
     private func requireCaptureConfiguration() throws {
         let environment = ProcessInfo.processInfo.environment
         let enabled = environment["BITMATCH_CAPTURE_WORKFLOW_SNAPSHOTS"] == "1"

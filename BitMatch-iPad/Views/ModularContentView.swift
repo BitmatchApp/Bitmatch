@@ -358,6 +358,9 @@ struct SettingsSheetView: View {
 
                 Section {
                     Toggle(TransferOptionsPresentation.reportToggleTitle(), isOn: $coordinator.reportSettings.makeReport)
+                    Toggle("Include clip thumbnails in PDFs", isOn: $coordinator.reportSettings.includeThumbnails)
+                        .disabled(!coordinator.reportSettings.makeReport)
+                    Text("Small frames from supported verified backup clips. Previews are private report content, not verification evidence.").font(.footnote).foregroundStyle(.secondary)
                     Button(role: .destructive) {
                         clearReportInfo()
                     } label: {

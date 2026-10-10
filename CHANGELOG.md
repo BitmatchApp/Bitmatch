@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Added optional clip previews to PDFs, off by default. Supported videos use a small frame from a verified backup; unavailable clips stay listed. A preview is not a new verification.
+- Simplified PDF reports: a compact verdict, transfer summary and file list, with previews beside filenames. Removed repeated statistics and empty technical fields.
+- History can export a PDF with or without previews, without reconnecting the original card. Expanded rows show recorded dates, sizes, copy/verify times and measured average speed; missing measurements stay blank.
+- Added a plain-language verification guide and expanded source-preservation tests to include filesystem metadata and extended attributes.
+
 ## [0.2.6] - 2026-10-10
 
 An optional way to leave recognized Mac metadata companions out of a transfer.

@@ -8,6 +8,21 @@ On iPhone and iPad, keep BitMatch open while it works. iOS can interrupt a trans
 
 Notifications say when a card is safe to erase, when something needs you, and when the queue is done. Change them in Settings.
 
+## How Verification Works
+
+Copying a file and checking it are separate jobs. BitMatch reads the card, writes each backup, then reads the destination bytes back. A matching checksum is evidence that those bytes matched when they were checked; a copy finishing or a filename appearing isn't enough.
+
+- **Quick** copies and checks sizes. It doesn't verify contents and never marks the card safe to erase.
+- **Standard** hashes the source while copying and reads every backup back with SHA-256.
+- **Thorough** also reads the source again, using SHA-256 and MD5 to check for changes during the transfer.
+- **Paranoid** adds a byte-by-byte comparison with the source as well as SHA-256.
+
+An existing file is reused only after the selected verification checks establish that it matches. Conflicting files are never overwritten. A failed, cancelled or interrupted attempt keeps its partial results and stays unsafe. A retry is a new attempt, not permission to trust the old one.
+
+“Safe to erase” requires complete verified coverage on every required backup, plus any requested handoff/report steps. Two folders on the same physical drive aren't independent backups. Quick, missing files and intentional AppleDouble exclusions cannot earn a whole-card safe verdict. Keep the source until you've reviewed the results; a successful check doesn't promise that a drive can never fail later.
+
+PDF, CSV, JSON and ASC MHL describe the recorded work. They don't perform another verification just because you export them. Master Report summarizes saved records; **Check** reads the media again. Clip previews are optional report decoration and never proof of integrity.
+
 ## AppleDouble Companions
 
 BitMatch preserves files by default, including hidden `._` companions that macOS uses for metadata on drives such as exFAT. Those can contain resource forks and Finder metadata; they're not always disposable.
@@ -123,3 +138,11 @@ Run the relevant tests locally before submitting changes. Shared-code changes ne
 **Why open source?** So you can trust it. The code is here. Read it before you trust your footage to it.
 
 See the [MIT license](../LICENSE).
+
+## PDF clip previews and History
+
+Turn on **Settings → Reports → Include clip thumbnails in PDFs** to add small previews to new PDF reports. It starts off. Previews come from verified backup files after transfer verification; Quick copies do not supply verified previews. MOV, MP4 and M4V are supported when Apple's decoder can read them. Proprietary or unreadable clips remain in the file list without an image.
+
+In **History**, expand a transfer and choose **Export report → PDF report** or **PDF with clip previews**. The original card does not need to be connected. Previews need an accessible original backup location whose saved folder identity still matches. Missing or changed-size backup files are skipped. The report retains the saved outcome and says that no new verification was performed; an image shows backup contents at report time, not proof that the backup is still unchanged.
+
+Preview generation is sequential, limited to 200 clips and a 30-second collection budget, with a two-second wait per clip. Images are at most 256 × 144 pixels and 64 KB each. There is no persistent preview cache, and images are never added to diagnostic exports. Cancellation stops the report request; unavailable previews do not change verification or card safety.

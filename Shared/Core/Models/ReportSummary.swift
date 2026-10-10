@@ -14,7 +14,7 @@ struct ReportSummary {
     let totalFiles: Int
     let matched: Int
     let issues: Int
-    let workers: Int
+    let workers: Int?
     let appVersion: String
     let osVersion: String
     let client: String
@@ -33,4 +33,5 @@ struct ReportSummary {
     /// The same fail-safe card verdict shown by the outcome screen. Report
     /// rendering must never infer safety from an empty issue list alone.
     var safetyState: CardSafetyState = .needsAttention
+    var hasRecordedTiming: Bool = true
 }
