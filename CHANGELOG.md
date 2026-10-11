@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-10-10
+
 - Fixed saved-checksum checks for nested card folders, leading/trailing filename spaces and namespace-prefixed ASC MHL files.
 - Damaged or unsupported checksum records now get a clear explanation instead of silently checking only the readable part. Unknown report algorithms no longer count as verified. ASC results state that file contents were checked, not history chains or directory structure.
 - Added permanent synthetic report/MHL compatibility fixtures, checked with the official ASC tools, and repaired the independent reference-validation script.
