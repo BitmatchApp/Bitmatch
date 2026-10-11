@@ -77,6 +77,9 @@ struct LocalTransferJournalTests {
             verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
         )
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        var oldSource = try #require(object["source"] as? [String: Any])
+        oldSource.removeValue(forKey: "creationDate")
+        object["source"] = oldSource
         object.removeValue(forKey: "sourceFingerprint")
         object.removeValue(forKey: "independentDestinationCount")
 
@@ -84,8 +87,31 @@ struct LocalTransferJournalTests {
             LocalTransferRecord.self,
             from: JSONSerialization.data(withJSONObject: object)
         )
+        #expect(decoded.source.creationDate == nil)
+        #expect(decoded.retryOf == nil)
+        #expect(decoded.plannedFileCounts == nil)
         #expect(decoded.sourceFingerprint == nil)
         #expect(decoded.independentDestinationCount == nil)
+    }
+
+    @Test func recoveryExportsKeepLineageAndCountsWithoutAccessTokens() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: f.source),
+            destinations: [try LocalTransferResource(url: f.destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), retryOf: UUID())
+        record.plannedFileCounts = [2]
+        record.results = [ResultRow(path: "a.mov", status: ResultOutcome.verified.statusText, size: 1,
+                                   checksum: "abc", destination: "Backup", wasReused: true)]
+        let json = try TransferHistoryDocument(record: record, asCSV: false)
+        let payload = try #require(JSONSerialization.jsonObject(with: json.data) as? [String: Any])
+        #expect(payload["retryOf"] as? String == record.retryOf?.uuidString)
+        #expect(payload["plannedFileCounts"] as? [Int] == [2])
+        #expect(!String(decoding: json.data, as: UTF8.self).contains(record.source.bookmark.base64EncodedString()))
+        let csv = String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self)
+        #expect(csv.contains("client,reused"))
+        #expect(csv.contains("\"retryOf\",\"\(try #require(record.retryOf).uuidString)\""))
+        #expect(csv.contains("\"plannedFileCounts\",\"2\""))
     }
 
     @Test func runningAttemptPersistsIndependentDestinationCount() throws {

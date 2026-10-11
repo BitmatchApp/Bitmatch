@@ -219,6 +219,34 @@ final class WorkflowSnapshotTests: XCTestCase {
         try? data.write(to: directory.appendingPathComponent("\(name).png"), options: .atomic)
     }
 
+    func testCaptureRecoveryDetails() throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        var previous = LocalTransferRecord(id: UUID(), createdAt: Date(timeIntervalSince1970: 1791600000),
+            source: try LocalTransferResource(url: fixture.source),
+            destinations: try [fixture.backup, fixture.secondBackup].map(LocalTransferResource.init(url:)),
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        previous.state = .interrupted
+        var retry = LocalTransferRecord(id: UUID(), createdAt: Date(), source: previous.source,
+            destinations: previous.destinations, verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), retryOf: previous.id)
+        retry.state = .interrupted
+        retry.plannedFileCounts = [5, 5]
+        retry.results = [ResultRow(path: "a.mov", status: ResultOutcome.verified.statusText, size: 1,
+            checksum: "abc", destination: fixture.backup.lastPathComponent,
+            destinationPath: fixture.backup.appendingPathComponent("a.mov").path, wasReused: true),
+            ResultRow(path: "b.mov", status: ResultOutcome.failed.statusText, size: 1, checksum: nil,
+            destination: fixture.secondBackup.lastPathComponent,
+            destinationPath: fixture.secondBackup.appendingPathComponent("b.mov").path)]
+        try capture(TransferRecoveryDetails(record: retry, history: [retry, previous])
+            .padding().frame(maxWidth: .infinity, alignment: .leading),
+            size: CGSize(width: 393, height: 480), name: "iphone-recovery-details")
+        try capture(TransferRecoveryDetails(record: retry, history: [retry, previous])
+            .padding().frame(maxWidth: .infinity, alignment: .leading),
+            size: CGSize(width: 820, height: 600), name: "ipad-recovery-details")
+    }
+
     private func settle() async {
         for _ in 0..<8 { await Task.yield() }
         try? await Task.sleep(nanoseconds: 100_000_000)

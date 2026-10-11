@@ -1,6 +1,6 @@
 # To do
 
-The working list for BitMatch, reviewed against `main` at `964d094b` on October 10, 2026. These are roadmap candidates, not instructions to implement every feature or a promised release scope. The first quick-win batch is implemented on `feature/todo-reports` for review; see [validation](TODO_REPORTS_VALIDATION.md). When something ships, record it in the [changelog](../CHANGELOG.md) and remove the finished task here.
+The working list for BitMatch, updated after 0.2.7 on October 10, 2026. These are roadmap candidates, not instructions to implement every feature or a promised release scope. The report and transfer-details batch shipped in 0.2.7; see [validation](TODO_REPORTS_VALIDATION.md). When something ships, record it in the [changelog](../CHANGELOG.md) and remove the finished task here.
 
 **Source media → trustworthy copies → independent verification → accurate evidence → safe-to-erase decision.**
 
@@ -20,15 +20,17 @@ Investigate #16 first. Then follow evidence and actual user reports. Preserve so
 
 ## P1 — Reliability and recovery
 
+The queue/recovery items marked complete below are implemented on `feature/queue-recovery`, pending merge; see [validation and limits](QUEUE_RECOVERY_VALIDATION.md).
+
 - [ ] **Storage-aware verification scheduling.** Replace the CPU-derived default with scheduling informed by physical storage identity and measured behavior. Avoid competing large sequential reads on one HDD; permit useful concurrency across independent SSD/NVMe devices. Account for shared devices and buses only where reliably identifiable. Preserve diagnostic worker-count overrides and benchmark actual throughput and memory use on physical hardware, including the two-drive test below. **Acceptance:** independent destination readback remains complete, cancellation still stops the run, and unknown topology gets a conservative policy rather than invented independence.
 
 - [ ] **Bounded source-read retries and “Don't format the card” warnings.** Cover both source changes and read instability, separately from destination failures. Retry transient source I/O failures a small, bounded number of times and record each attempt and reason. Separate verified backup contents from source-media health: a recovered read must still warn against formatting or reusing an unstable card until investigated. Distinguish that from a failed backup. Explore chunk retries only with proven hash continuity and source identity checks. **Acceptance:** injected recoverable and persistent faults produce accurate counts, evidence and warnings; retries never hide changed data or turn exhaustion into success.
 
-- [ ] **Explicit interrupted-transfer recovery.** Build on existing journal retries, identity checks and independent verification before whole-file reuse. Show reused, recopied, failed and pending files per destination; retain the old attempt. **Acceptance:** no unproven existing file is overwritten, original volume/folder identity remains required, and the original attempt remains interrupted/unsafe; only a fully verified new attempt can earn a safe verdict. Describe complete-file recovery honestly; do not claim byte-offset resume.
+- [x] **Explicit interrupted-transfer recovery.** Build on existing journal retries, identity checks and independent verification before whole-file reuse. Show reused, recopied, failed and pending files per destination; retain the old attempt. **Acceptance:** no unproven existing file is overwritten, original volume/folder identity remains required, and the original attempt remains interrupted/unsafe; only a fully verified new attempt can earn a safe verdict. Describe complete-file recovery honestly; do not claim byte-offset resume.
 
 - [ ] **Repair a failed destination from a verified sibling.** After recovery provenance is defined, investigate SSD A → failed HDD B repair without rereading the original card unnecessarily. Require authoritative file evidence, revalidate A, independently verify B, and record the original source, repair source and new attempt in reports/history. **Acceptance:** stale or changed sibling evidence cannot authorize a repair; existing unverified files are never overwritten; copies on the same physical device never count as independent backups.
 
-- [ ] **Check everything again at Start.** Existing engine preflight checks output roots, overlaps and access; journal preparation checks stored identities. Audit remaining gaps between selection, queueing and execution. Cover card/drive disconnect or replacement and two queued cards resolving to the same output folder (for example two “NO NAME” cards without a card number in the naming pattern). **Acceptance:** refuse unsafe starts before copying, explain why nothing was copied, and retain regressions for each gap found.
+- [x] **Check everything again at Start.** Existing engine preflight checks output roots, overlaps and access; journal preparation checks stored identities. Audit remaining gaps between selection, queueing and execution. Cover card/drive disconnect or replacement and two queued cards resolving to the same output folder (for example two “NO NAME” cards without a card number in the naming pattern). **Acceptance:** refuse unsafe starts before copying, explain why nothing was copied, and retain regressions for each gap found.
 
 - [x] **Finish the card-untouched regression.** `SourceTreeUnchangedTests` already compares paths, contents, sizes, modification dates and permissions through the app executor in every verification mode, with reports and MHL enabled. The quick-win batch adds creation dates, ownership and extended attributes, plus cancellation-after-readback and report-publication-failure tests; coordinate with #16's real companion fixtures. **Acceptance:** the full source snapshot is unchanged after success, cancellation and failure; unsupported metadata checks are reported as such, not counted as passes.
 
@@ -90,7 +92,7 @@ These remain ongoing gates, not optional competitor features. Use disposable dat
 
 - [ ] **Tests without permission prompts.** Investigate drive-access prompts that stall Mac tests; prefer owned temporary fixtures and scoped test configuration without weakening release entitlements. The documented DerivedData-outside-Desktop workaround addresses a separate loader stall.
 - [ ] **Buffer benchmark first run.** Avoid measuring freshly written files still in cache; evict/rewrite before timing or discard a warm-up run, and verify that the measured read actually reaches storage.
-- [ ] **Reverse flight on Edit.** Loading a queued card back into setup should carry it up the same way Start carries it down.
+- [x] **Reverse flight on Edit.** Mac Edit carries the queued card back to setup, respecting Reduce Motion. Compact mobile Edit dismisses the queue sheet. Settings, operator and notes remain snapshotted.
 
 ## Out of scope
 

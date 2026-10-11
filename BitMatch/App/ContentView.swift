@@ -252,7 +252,13 @@ struct MacMainView: View {
             .environment(\.hiddenQueueRowID, queueFlight?.rowID)
             .overlay(alignment: .topLeading) { queueFlightCard }
             .onPreferenceChange(ComposerFrameKey.self) { frame in
-                if let frame { composerFrame = frame }
+                if let frame {
+                    composerFrame = frame
+                    if queueFlight?.returnsToComposer == true, frame != flightTarget {
+                        flightTarget = frame
+                        withAnimation(.spring(duration: 0.45, bounce: 0.1)) { queueFlight?.frame = frame }
+                    }
+                }
             }
             .onPreferenceChange(QueueRowFramesKey.self) { frames in
                 queueRowFramesChanged(frames)
@@ -271,6 +277,7 @@ struct MacMainView: View {
         let rowID: UUID
         let text: String
         var frame: CGRect
+        var returnsToComposer = false
     }
 
     @ViewBuilder
@@ -318,7 +325,7 @@ struct MacMainView: View {
         queueRowFrames = frames
         // The new row is still sliding into place while the card flies; keep
         // aiming at where it actually is.
-        if let flight = queueFlight, let target = frames[flight.rowID], target != flightTarget {
+        if let flight = queueFlight, !flight.returnsToComposer, let target = frames[flight.rowID], target != flightTarget {
             flightTarget = target
             withAnimation(.spring(duration: 0.45, bounce: 0.1)) { queueFlight?.frame = target }
         }
@@ -546,6 +553,7 @@ struct MacMainView: View {
     ) {
         queueTransitionClearTask?.cancel()
         var committedID: UUID?
+        let previousEditingID = coordinator.editingSetupTransferID
         let animation: Animation = reduceMotion
             ? .easeInOut(duration: 0.18)
             : .spring(duration: 0.4, bounce: 0.18)
@@ -553,6 +561,22 @@ struct MacMainView: View {
         // shared matched-text transition stays off here.
         withAnimation(animation) {
             committedID = operation()
+        }
+        if !reduceMotion, previousEditingID == nil,
+           let id = coordinator.editingSetupTransferID,
+           let from = queueRowFrames[id], let to = composerFrame,
+           let source = coordinator.sourceURL {
+            clearedComposer = nil
+            pendingFlightRow = nil
+            flightEndTask?.cancel()
+            flightTarget = to
+            queueFlight = QueueFlight(rowID: id, text: composerSummary(for: source), frame: from, returnsToComposer: true)
+            withAnimation(.spring(duration: 0.55, bounce: 0.12)) { queueFlight?.frame = to }
+            flightEndTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(700))
+                guard !Task.isCancelled else { return }
+                withAnimation(.easeOut(duration: 0.12)) { queueFlight = nil }
+            }
         }
         guard committedID != nil else { return }
         queueTransitionClearTask = Task {

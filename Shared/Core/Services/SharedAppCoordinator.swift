@@ -74,6 +74,7 @@ struct TransferRunContext {
 @MainActor
 private final class TransferRunResults {
     private(set) var rows: [ResultRow] = []
+    var attemptedPlanSave = false
 
     func upsert(_ row: ResultRow) {
         if let index = rows.firstIndex(where: {
@@ -193,6 +194,8 @@ class SharedAppCoordinator: ObservableObject {
     @Published var demoQueueAutoOpen = false
     private var isClearingSnapshottedComposerSource = false
     private struct SetupComposerSnapshot {
+        let sourceIdentity: LocalTransferResource?
+        let destinationIdentities: [URL: LocalTransferResource]
         let source: URL?
         let destinations: [URL]
         let verificationMode: VerificationMode
@@ -201,6 +204,7 @@ class SharedAppCoordinator: ObservableObject {
         let generateASCMHL: Bool
     }
     private var composerBeforeEditing: SetupComposerSnapshot?
+    private var editingOriginalAccess: LocalTransferAccess?
     private struct ReviewedSelectionSnapshot {
         let destinations: [URL]
         let verificationMode: VerificationMode
@@ -295,13 +299,34 @@ class SharedAppCoordinator: ObservableObject {
     }
     
     // MARK: - File Selection State
-    @Published var sourceURL: URL?
+    private var selectedSourceIdentity: LocalTransferResource?
+    private var selectedDestinationIdentities: [URL: LocalTransferResource] = [:]
+    @Published var sourceURL: URL? {
+        didSet { selectedSourceIdentity = sourceURL.flatMap { try? LocalTransferResource(url: $0) } }
+    }
     @Published var destinationURLs: [URL] = [] {
         didSet {
+            // Retain the identity of unchanged picks when another backup is added.
+            selectedDestinationIdentities = destinationURLs.reduce(into: [:]) { identities, url in
+                identities[url] = selectedDestinationIdentities[url] ?? (try? LocalTransferResource(url: url))
+            }
             destinationVolumeNames = destinationURLs.map(DestinationVolumeLabel.resolve)
             scheduleDestinationIndependenceAssessment()
         }
     }
+    private func validateComposerSelection(source: URL, destinations: [URL]) throws {
+        let scoped = ([source] + destinations).filter { $0.startAccessingSecurityScopedResource() }
+        defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+        guard let selectedSourceIdentity else { throw LocalTransferJournalError.unavailable(source.lastPathComponent) }
+        try selectedSourceIdentity.validateIdentity(at: source)
+        for destination in destinations {
+            guard let identity = selectedDestinationIdentities[destination] else {
+                throw LocalTransferJournalError.unavailable(destination.lastPathComponent)
+            }
+            try identity.validateIdentity(at: destination)
+        }
+    }
+
     /// Resolved once per selection change, never once per progress tick.
     private(set) var destinationVolumeNames: [String] = []
     /// Resolved off the main actor when selection changes and confirmed when
@@ -1018,8 +1043,18 @@ class SharedAppCoordinator: ObservableObject {
         guard canEnqueueSelection, let sourceURL else {
             throw FileOperationError.unsafeOperation("Choose a source and destinations for a one-time transfer first.")
         }
+        try validateComposerSelection(source: sourceURL, destinations: destinationURLs)
         let committedID: UUID
         if let id = editingSetupTransferID {
+            if let access = editingOriginalAccess,
+               let original = transferJournal.records.first(where: { $0.id == id }) {
+                if sourceURL == access.sourceURL { try original.source.validateIdentity(at: sourceURL) }
+                for url in destinationURLs {
+                    if let index = access.destinationURLs.firstIndex(of: url) {
+                        try original.destinations[index].validateIdentity(at: url)
+                    }
+                }
+            }
             let scopedURLs = ([sourceURL] + destinationURLs).filter { $0.startAccessingSecurityScopedResource() }
             defer { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
             if let refusal = destinationURLs.lazy.compactMap({
@@ -1044,6 +1079,7 @@ class SharedAppCoordinator: ObservableObject {
             )
             editingSetupTransferID = nil
             composerBeforeEditing = nil
+            editingOriginalAccess = nil
             committedID = id
         } else {
             if let running = runningOneTimeTransfer {
@@ -1065,6 +1101,10 @@ class SharedAppCoordinator: ObservableObject {
               let record = stagedSetupTransfers.first(where: { $0.id == id }) else {
             throw FileOperationError.unsafeOperation("Only a waiting setup transfer can be edited.")
         }
+        // Resolve before changing the composer. A new drive at the saved path
+        // must never be silently adopted by Edit.
+        let access = try transferJournal.prepareToRun(id: id)
+        editingOriginalAccess = access
         // A stopped queue may still be showing the preceding card's outcome.
         // Return to Setup before loading the waiting snapshot into its composer.
         if queueSessionEnded && showsOutcomeSummary {
@@ -1072,6 +1112,8 @@ class SharedAppCoordinator: ObservableObject {
             sourceURL = nil
         }
         composerBeforeEditing = SetupComposerSnapshot(
+            sourceIdentity: selectedSourceIdentity,
+            destinationIdentities: selectedDestinationIdentities,
             source: sourceURL,
             destinations: destinationURLs,
             verificationMode: verificationMode,
@@ -1082,9 +1124,9 @@ class SharedAppCoordinator: ObservableObject {
         editingSetupTransferID = id
         cameraLabels.clearDetectionPreservingSettings()
         isReplayingQueuedTransfer = true
-        sourceURL = record.source.url
+        sourceURL = access.sourceURL
         isReplayingQueuedTransfer = false
-        destinationURLs = record.destinations.map(\.url)
+        destinationURLs = access.destinationURLs
         verificationMode = record.verificationMode
         cameraLabelSettings = record.cameraSettings
         reportSettings = record.reportSettings
@@ -1098,12 +1140,15 @@ class SharedAppCoordinator: ObservableObject {
         sourceURL = snapshot.source
         isReplayingQueuedTransfer = false
         destinationURLs = snapshot.destinations
+        selectedSourceIdentity = snapshot.sourceIdentity
+        selectedDestinationIdentities = snapshot.destinationIdentities
         verificationMode = snapshot.verificationMode
         cameraLabelSettings = snapshot.cameraSettings
         reportSettings = snapshot.reportSettings
         generateASCMHL = snapshot.generateASCMHL
         editingSetupTransferID = nil
         composerBeforeEditing = nil
+        editingOriginalAccess = nil
     }
 
     /// Starts the cards assembled on Setup. If more than one card is ready,
@@ -1697,6 +1742,14 @@ class SharedAppCoordinator: ObservableObject {
         guard self.sourceURL == sourceURL,
               destinationURLs == selectedDestinations,
               verificationMode == selectedVerificationMode else { return }
+        do { try validateComposerSelection(source: sourceURL, destinations: selectedDestinations) }
+        catch {
+            operationState = .failed
+            queueMessage = error.localizedDescription
+            updateProjectLifecycle(for: .failed, projectIdentity: projectIdentity)
+            await platformManager.presentError(error)
+            return
+        }
         destinationIndependence = independence
         let sourceInfo = self.sourceFolderInfo.flatMap {
             $0.url.standardizedFileURL == sourceURL.standardizedFileURL ? $0 : nil
@@ -1794,7 +1847,10 @@ class SharedAppCoordinator: ObservableObject {
             )
             try transferJournal.markRunning(
                 id: recordID,
-                independentDestinationCount: initialContext.independentDestinationCount
+                independentDestinationCount: initialContext.independentDestinationCount,
+                sourceURL: initialContext.sourceURL,
+                destinationURLs: initialContext.destinationURLs,
+                sessionRecordIDs: Set(queueSessionRecordIDs)
             )
             context = initialContext.recording(in: recordID)
             activeJournalRecordID = recordID
@@ -1917,6 +1973,11 @@ class SharedAppCoordinator: ObservableObject {
                       self.activeStartID == startID,
                       !self.startCancellationRequested else { return }
                 self.progress = progressUpdate
+                if !runResults.attemptedPlanSave, let counts = progressUpdate.perDestinationTotals {
+                    runResults.attemptedPlanSave = true
+                    do { try self.transferJournal.recordPlan(id: recordID, fileCounts: counts) }
+                    catch { SharedLogger.warning("Could not save transfer plan: \(error)", category: .transfer) }
+                }
                 if let projectIdentity {
                     self.photographerJobViewModel.updateProgressStage(
                         progressUpdate.currentStage,

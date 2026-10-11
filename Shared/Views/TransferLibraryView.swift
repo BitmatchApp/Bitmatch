@@ -273,6 +273,7 @@ struct TransferLibraryView: View {
             }
             Text("Counts describe saved result rows, including exclusions. Missing measurements are shown as —.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
             Text("Source: \(record.source.url.path)").textSelection(.enabled)
             ForEach(record.destinations.indices, id: \.self) { index in
                 Text("Destination: \(record.destinations[index].url.path)").textSelection(.enabled)
@@ -510,5 +511,52 @@ private struct TransferDiagnosticsDocument: FileDocument {
     }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
         FileWrapper(regularFileWithContents: data)
+    }
+}
+
+/// Kept inside expanded transfer details on every platform.
+struct TransferRecoveryDetails: View {
+    let record: LocalTransferRecord
+    let history: [LocalTransferRecord]
+
+    private var summaries: [TransferRecoverySummary] { TransferRecoverySummary.make(record) }
+    private var isRecovery: Bool {
+        record.retryOf != nil || record.results.contains(where: \.wasReused)
+            || [.interrupted, .cancelled, .failed, .issues].contains(record.state)
+    }
+
+    var body: some View {
+        if isRecovery {
+            VStack(alignment: .leading, spacing: 8) {
+                if let previousID = record.retryOf {
+                    if let previous = history.first(where: { $0.id == previousID }) {
+                        Text("Retry of \(previous.createdAt.formatted(date: .abbreviated, time: .shortened))")
+                            .font(.caption).foregroundStyle(.secondary)
+                    } else {
+                        Text("Retry · previous attempt no longer in history")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                ForEach(summaries) { summary in
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(summary.title).font(.caption.weight(.semibold))
+                        Text("Verified: \(summary.reused) reused · \(summary.copied) copied")
+                        if summary.unverified > 0 { Text("\(summary.unverified) copied, unverified") }
+                        Text("\(summary.failed) failed · \(summary.pending.map(String.init) ?? "—") pending")
+                        if summary.excluded > 0 { Text("\(summary.excluded) excluded") }
+                    }
+                    .font(.caption)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityElement(children: .combine)
+                }
+                if summaries.contains(where: { $0.pending == nil || ($0.pending ?? 0) > 0 }) {
+                    Text(summaries.contains(where: { $0.pending == nil })
+                         ? "Pending: no saved result. — means the file count wasn’t recorded."
+                         : "Pending files have no saved result.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
     }
 }
