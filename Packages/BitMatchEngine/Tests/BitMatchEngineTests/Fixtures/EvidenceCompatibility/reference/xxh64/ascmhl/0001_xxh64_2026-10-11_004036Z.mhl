@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-10T20:40:36-04:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <xxh64 hashdate="2026-10-10T20:40:36.687228-04:00">074a8b1a7cb8f8e1</xxh64>
+      </content>
+      <structure>
+        <xxh64 hashdate="2026-10-10T20:40:36.687228-04:00">5cbf3435625d3122</xxh64>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="36" lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A/ padded name.txt </path>
+      <xxh64 action="original" hashdate="2026-10-10T20:40:36.687082-04:00">86ce606b80b78a3a</xxh64>
+    </hash>
+    <hash>
+      <path size="32" lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A/clip &amp; café.txt</path>
+      <xxh64 action="original" hashdate="2026-10-10T20:40:36.687147-04:00">e5fb6c10739e0c93</xxh64>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A</path>
+      <content>
+        <xxh64 hashdate="2026-10-10T20:40:36.687166-04:00">45dba1371b4bd5dd</xxh64>
+      </content>
+      <structure>
+        <xxh64 hashdate="2026-10-10T20:40:36.687166-04:00">06670c636f944d65</xxh64>
+      </structure>
+    </directoryhash>
+    <hash>
+      <path lastmodificationdate="2026-10-10T20:40:36-04:00">empty.bin</path>
+      <xxh64 action="original" hashdate="2026-10-10T20:40:36.687212-04:00">ef46db3751d8e999</xxh64>
+    </hash>
+  </hashes>
+</hashlist>

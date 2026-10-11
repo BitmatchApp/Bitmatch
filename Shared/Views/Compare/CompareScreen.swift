@@ -173,6 +173,14 @@ struct CompareScreen: View {
                 .foregroundStyle(.secondary)
             case .found:
                 checkAgainstPicker
+            case .unreadable(let message):
+                VStack(alignment: .leading, spacing: 6) {
+                    LabeledContent("Check against", value: CheckAgainstChoice.anotherFolder.rawValue)
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .font(.callout)
+                        .foregroundStyle(ResultStatusTone.warning.color)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             case .notFound:
                 VStack(alignment: .leading, spacing: 6) {
                     LabeledContent("Check against", value: CheckAgainstChoice.anotherFolder.rawValue)

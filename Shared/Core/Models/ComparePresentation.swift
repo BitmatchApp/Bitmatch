@@ -21,6 +21,7 @@ enum SavedChecksumAvailability: Equatable, Sendable {
     case checking
     case found(fileCount: Int)
     case notFound
+    case unreadable(message: String)
 
     var hasRecords: Bool {
         if case .found = self { return true }
@@ -143,7 +144,7 @@ enum CompareReadiness: Equatable, Sendable {
             switch savedAvailability {
             case .checking: return .checkingRecords
             case .found: return .ready
-            case .notFound: return .needsRight
+            case .notFound, .unreadable: return .needsRight
             }
         }
         guard let rightURL = right.url else { return .needsRight }
@@ -286,6 +287,9 @@ struct CompareVerdictPresentation: Equatable, Sendable {
         )
         let fileWord = result.recordedFileCount == 1 ? "file" : "files"
         let reports = result.records.map { $0.url.lastPathComponent }.joined(separator: ", ")
+        let scope = result.records.contains { $0.kind == .ascMHL }
+            ? " File contents checked; MHL history and directory structure were not verified."
+            : ""
         if result.isIntact {
             let age = SavedChecksumCheck.agePhrase(since: result.newestRecordDate, now: now, calendar: calendar)
             let newFiles = result.newPaths.isEmpty
@@ -293,7 +297,7 @@ struct CompareVerdictPresentation: Equatable, Sendable {
                 : " \(result.newPaths.count) new \(result.newPaths.count == 1 ? "file is" : "files are") not in the record."
             return Self(
                 title: "\(result.root.lastPathComponent) still matches: \(fileCount) \(fileWord) intact, \(age)",
-                detail: "Used \(reports).\(newFiles)",
+                detail: "Used \(reports).\(newFiles)\(scope)",
                 symbol: "checkmark.seal.fill",
                 tone: .verified
             )
@@ -305,7 +309,7 @@ struct CompareVerdictPresentation: Equatable, Sendable {
         if !result.newPaths.isEmpty { parts.append("\(result.newPaths.count) new files not in the record") }
         return Self(
             title: "Saved checksum check found differences",
-            detail: parts.joined(separator: ", ") + ". Used \(reports).",
+            detail: parts.joined(separator: ", ") + ". Used \(reports)." + scope,
             symbol: "xmark.octagon.fill",
             tone: .differ
         )

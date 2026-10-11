@@ -2,7 +2,7 @@
 
 BitMatch creates **initial ASC MHL 2.0 destination inventories**. This is a deliberately limited first implementation, not full chain-of-custody management.
 
-Each inventoried destination file is streamed again and checked against the SHA-256 recorded by the successful copy operation. The same read produces an MD5 digest for the ASC record. SHA-256 is not an ASC MHL 2.0 hash field and is never relabeled as one. These new destination records use `in-place` and `original`: they do not claim an inherited source-side MD5 verification history. The manifest lives in `ascmhl/` with a C4-protected `ascmhl_chain.xml`.
+Each inventoried destination file must match the SHA-256 recorded by the successful copy operation. On supported filesystems, unchanged pinned readback evidence can supply the SHA-256 and MD5; otherwise the destination is streamed again. exFAT deliberately takes the fresh-read path. SHA-256 is not an ASC MHL 2.0 hash field and is never relabeled as one. These new destination records use `in-place` and `original`: they do not claim an inherited source-side MD5 verification history. The manifest lives in `ascmhl/` with a C4-protected `ascmhl_chain.xml`.
 
 Only the listed verified files are covered. No directory or root completeness hashes are claimed. Existing destination files or reports outside the transfer inventory remain outside this record; the reference tool's whole-folder `diff` will identify such additional files. The executor refuses to generate a destination record when its results contain failed or missing files; it does not shorten the inventory to successful rows. A fully verified destination may receive its record even if another destination failed. Cancellation is propagated rather than reported as successful record generation. Record-generation issues are shown separately from the unchanged copy results.
 
@@ -10,13 +10,13 @@ Existing, nested, and ancestor ASC histories are refused and preserved, includin
 
 When the caller supplies its source URL, source and destination descriptors are pinned and checked for equal, ancestor, or descendant relationships before reads, staging writes, and publication. Descriptor-resolved paths catch ancestor symlinks that lead into the source.
 
-Publication uses a pinned destination directory descriptor, no-follow file opens, exclusive staging writes, and an exclusive directory rename. Missing, changed, duplicate, unsafe-path and symbolic-link entries are rejected before publication. Cancellation is checked during reads and before publication. Generating the record adds a full destination read, so this work can materially extend completion time on slow storage. Paranoid transfers no longer automatically emit the old proprietary MHL companions; optional handoff records are generated centrally through this ASC implementation.
+Publication uses a pinned destination directory descriptor, no-follow file opens, exclusive staging writes and no-replace directory publication. On exFAT, an exclusively claimed empty directory permits publication without replacing an existing nonempty history. Missing, changed, duplicate, unsafe-path and symbolic-link entries are rejected before publication. Cancellation is checked during reads and before publication. When fresh readback is needed, generating the record adds a full destination read, so this work can materially extend completion time on slow storage. Paranoid transfers no longer automatically emit the old proprietary MHL companions; optional handoff records are generated centrally through this ASC implementation.
 
 ## Independent validation
 
 Validated 2026-09-08 against the official [ASC reference implementation](https://github.com/ascmitc/mhl) at commit `0fb61f1e4c7c1c3ff422449aa6f091ce0d3b7687`, using its published schemas. The specification is maintained in [ascmitc/mhl-specification](https://github.com/ascmitc/mhl-specification).
 
-The repeatable harness compiles the actual shared Swift generator, creates real nested media with an ampersand and accented filename, and checks:
+The repeatable harness builds a Swift package executable linked to the actual engine generator, creates real nested media with an ampersand and accented filename, and checks:
 
 - Manifest and chain against the official XSDs.
 - File bytes with `ascmhl-debug verify`; inventory with `ascmhl diff`.
@@ -31,3 +31,9 @@ Scripts/ascmhl/validate_reference.sh /path/to/ascmitc/mhl /path/to/venv/bin
 ```
 
 [Recorded output](reference-validation.txt) includes the expected corruption error followed by the passing negative-control assertion. This is synthetic interoperability evidence, not validation against other offload and DIT tools, a DIT's production media, or physical iOS storage. Those acceptance checks remain outstanding.
+
+## October 2026 compatibility corpus
+
+The reference checks were rerun on October 10, 2026 at the same pinned reference revision. A permanent corpus now covers official-tool MD5/XXH64 records, two generations, C4-only unsupported evidence, nested inventories and unusual filenames, plus saved-report compatibility and damaged-input regressions. [Findings and current validation](../../EVIDENCE_COMPATIBILITY_VALIDATION.md).
+
+Check verifies recorded file contents. It now says explicitly that it has not verified the ASC history chain or directory structure. Unreadable or unsupported file evidence blocks a saved-checksum verdict rather than silently shortening the check. This does not add classic-MHL discovery, chain verification or history extension.

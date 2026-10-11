@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
+  <hashlist sequencenr="1">
+    <path>0001_md5_2026-10-11_004036Z.mhl</path>
+    <c4>c423BY6Xq1hyNHyH4xQE8ywuHQ3yzwuGS5rrfCWFw6kF9j2dmyeXTF2Q21CYMvHyeoXyGEHpRCfB9U8u3kECn4Pf3k</c4>
+  </hashlist>
+  <hashlist sequencenr="2">
+    <path>0002_md5_2026-10-11_004036Z.mhl</path>
+    <c4>c4664yScCJQsMfRj9XtE6UAwFdquTtrkSKFBKkW85TzEqWouHsbzfGQ5bJBend2k9ZTaQDAEKLncSTBP1uMJxcD6ty</c4>
+  </hashlist>
+</ascmhldirectory>

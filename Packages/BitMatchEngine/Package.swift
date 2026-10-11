@@ -20,7 +20,13 @@ let package = Package(
         ),
         .testTarget(
             name: "BitMatchEngineTests",
-            dependencies: ["BitMatchEngine"]
+            dependencies: ["BitMatchEngine"],
+            resources: [.copy("Fixtures")]
+        ),
+        .executableTarget(
+            name: "ASCMHLFixture",
+            dependencies: ["BitMatchEngine"],
+            path: "Tools/ASCMHLFixture"
         ),
     ],
     swiftLanguageModes: [.v6]

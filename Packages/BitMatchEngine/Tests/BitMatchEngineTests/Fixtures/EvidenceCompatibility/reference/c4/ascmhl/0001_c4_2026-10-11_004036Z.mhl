@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-10T20:40:36-04:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <c4 hashdate="2026-10-10T20:40:36.689793-04:00">c43voxiUZHEENhE6i7ZbgaBA8cAoUBB9zx4gGMi649ahw7zTajsxootM1WtJEaWWZi6DnaUurQo8YDBE6te8W8sQpJ</c4>
+      </content>
+      <structure>
+        <c4 hashdate="2026-10-10T20:40:36.689793-04:00">c44cnWeuK9tS6uaSF1moyvai757bg3D9wpWWxiFwbYPm21putd6FBHaQEMV6DyHCxLNd9w4E8mqgJDfoamXSUZnHz5</c4>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="36" lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A/ padded name.txt </path>
+      <c4 action="original" hashdate="2026-10-10T20:40:36.689317-04:00">c42PMRHDgQMeXBdKhmYyYLDXrqVYhjuurzLA5LouyG1CUiCqSodxcg3tutn9XsxsUn8zXJsgKipJJt16ZrSyj4kS8v</c4>
+    </hash>
+    <hash>
+      <path size="32" lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A/clip &amp; café.txt</path>
+      <c4 action="original" hashdate="2026-10-10T20:40:36.689432-04:00">c421nsyRYqXU1YR8Z8tEx3S1wNJWabrsXoUW2E7kACoR5kL1udSynUkiR3b4LyDaUy7W64WmacfSzH5DtY9vMXrXVw</c4>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A</path>
+      <content>
+        <c4 hashdate="2026-10-10T20:40:36.689568-04:00">c42x5psHLcmAC7K2LVhhpR9kxFYdEGV3ogXjqQrtk5wws1mHPFCy4L8TAyUbDvkoekYE5WAc9UHgoY6dQTdmcdTWwj</c4>
+      </content>
+      <structure>
+        <c4 hashdate="2026-10-10T20:40:36.689568-04:00">c44zy1rrVMZeusyf8qFJDGySA1Y6Mp1KgDe8E6Eoowu7WAyhBCt9PgD5yRE1aAzcL4qg8qvSfdm4RTaxsPFjM2V8G8</c4>
+      </structure>
+    </directoryhash>
+    <hash>
+      <path lastmodificationdate="2026-10-10T20:40:36-04:00">empty.bin</path>
+      <c4 action="original" hashdate="2026-10-10T20:40:36.689666-04:00">c459dsjfscH38cYeXXYogktxf4Cd9ibshE3BHUo6a58hBXmRQdZrAkZzsWcbWtDg5oQstpDuni4Hirj75GEmTc1sFT</c4>
+    </hash>
+  </hashes>
+</hashlist>
