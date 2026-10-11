@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-10T20:40:36-04:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <md5 hashdate="2026-10-10T20:40:36.684256-04:00">4a1dc05692ea0b166ec6b7d55872e3d0</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-10T20:40:36.684256-04:00">97dc1fa6e65963466dd86c2df3bfb089</md5>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="36" lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A/ padded name.txt </path>
+      <md5 action="verified" hashdate="2026-10-10T20:40:36.684006-04:00">da15b5ad8a08c7f570728598f5657909</md5>
+    </hash>
+    <hash>
+      <path size="32" lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A/clip &amp; café.txt</path>
+      <md5 action="verified" hashdate="2026-10-10T20:40:36.684092-04:00">0aabfb59f1df1f0ba91437d0439130bc</md5>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-10T20:40:36-04:00">Camera A</path>
+      <content>
+        <md5 hashdate="2026-10-10T20:40:36.684117-04:00">c582ec76500eca08bf3839841ce6d696</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-10T20:40:36.684117-04:00">101ff38ec025e83329b55a10d91f67b9</md5>
+      </structure>
+    </directoryhash>
+    <hash>
+      <path size="31" lastmodificationdate="2026-10-10T20:40:36-04:00">added.txt</path>
+      <md5 action="original" hashdate="2026-10-10T20:40:36.684184-04:00">57fd601d9b5697eeb95d204baeed32c4</md5>
+    </hash>
+    <hash>
+      <path lastmodificationdate="2026-10-10T20:40:36-04:00">empty.bin</path>
+      <md5 action="verified" hashdate="2026-10-10T20:40:36.684237-04:00">d41d8cd98f00b204e9800998ecf8427e</md5>
+    </hash>
+  </hashes>
+</hashlist>

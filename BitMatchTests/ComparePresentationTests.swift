@@ -64,6 +64,42 @@ struct ComparePresentationTests {
         #expect(verdict.tone == .verified)
     }
 
+    /// Plant: report failed discovery as .notFound in SharedAppCoordinator.
+    @Test func unreadableSavedEvidenceIsExplainedInCheck() async throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let reports = folders.primary.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        try Data("{truncated".utf8).write(to: reports.appendingPathComponent("BitMatch_Report_bad.json"))
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
+            projectStore: InMemoryPhotographerJobStore(), defaults: folders.defaults)
+        coordinator.leftURL = folders.primary
+        let deadline = ContinuousClock.now.advanced(by: .seconds(10))
+        while coordinator.savedChecksumAvailability == .checking, ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        guard case .unreadable(let message) = coordinator.savedChecksumAvailability else {
+            Issue.record("Unreadable evidence must not be reported as absent or ready")
+            return
+        }
+        #expect(message == SavedChecksumCheck.CheckError.unreadableEvidence.localizedDescription)
+        #expect(coordinator.checkAgainst == .anotherFolder)
+        #expect(!CompareReadiness.resolve(left: Self.loaded(Self.card), right: Self.emptySlot,
+            choice: .savedChecksums, savedAvailability: coordinator.savedChecksumAvailability, isRunning: false).canStart)
+    }
+
+    /// Plant: remove the file-content scope from makeSaved's ASC verdict.
+    @Test func ascResultDoesNotClaimChainOrDirectoryVerification() {
+        let result = SavedChecksumCheck.Result(root: Self.card, matchingPaths: ["a.mov"], changedPaths: [],
+            missingPaths: [], newPaths: [], records: [.init(url: Self.card.appendingPathComponent("ascmhl/one.mhl"),
+                date: Date(), kind: .ascMHL)])
+        let verdict = CompareVerdictPresentation.makeSaved(result)
+        #expect(verdict.tone == .verified)
+        #expect(verdict.detail.contains("File contents checked; MHL history and directory structure were not verified."))
+    }
+
     @Test func zeroByteFolderUsesEmptyWording() {
         let slot = CompareFolderSlot.make(
             url: Self.card, infoURL: Self.card, fileCount: 1, totalSize: 0, isFetching: false

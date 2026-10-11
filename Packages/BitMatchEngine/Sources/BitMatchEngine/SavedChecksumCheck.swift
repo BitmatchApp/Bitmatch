@@ -93,10 +93,14 @@ public struct SavedChecksumCheck: Sendable {
 
     public enum CheckError: LocalizedError, Equatable, Sendable {
         case notFound
+        case unreadableEvidence
+        case unsupportedEvidence
 
         public var errorDescription: String? {
             switch self {
             case .notFound: "No saved checksums found here."
+            case .unreadableEvidence: "Some saved checksums are damaged or inconsistent. Compare with another folder instead."
+            case .unsupportedEvidence: "These saved checksums include a format or algorithm BitMatch cannot fully read yet. Compare with another folder instead."
             }
         }
     }
@@ -121,9 +125,7 @@ public struct SavedChecksumCheck: Sendable {
         var reportEntries: [ExpectedFile] = []
         for reportURL in reports {
             try Task.checkCancellation()
-            if let entries = try? Self.readReport(reportURL, root: canonicalRoot), !entries.isEmpty {
-                reportEntries.append(contentsOf: entries)
-            }
+            reportEntries.append(contentsOf: try Self.readReport(reportURL, root: canonicalRoot))
         }
         if !reportEntries.isEmpty {
             return Self.makeDiscovery(root: canonicalRoot, entries: reportEntries)
@@ -133,9 +135,7 @@ public struct SavedChecksumCheck: Sendable {
         var mhlEntries: [ExpectedFile] = []
         for historyURL in histories {
             try Task.checkCancellation()
-            if let entries = try? Self.readMHL(historyURL, root: canonicalRoot), !entries.isEmpty {
-                mhlEntries.append(contentsOf: entries)
-            }
+            mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot))
         }
         guard !mhlEntries.isEmpty else { throw CheckError.notFound }
         return Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries)
@@ -239,28 +239,50 @@ public struct SavedChecksumCheck: Sendable {
     private static func readReport(_ url: URL, root: URL) throws -> [ExpectedFile] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        let payload = try decoder.decode(ReportPayload.self, from: Data(contentsOf: url))
+        guard let payload = try? decoder.decode(ReportPayload.self, from: boundedEvidenceData(url)) else {
+            throw CheckError.unreadableEvidence
+        }
         guard payload.mode == nil || payload.mode == "copy-and-verify" else { return [] }
         let algorithm = reportAlgorithm(payload.verification?.algorithm)
         let record = Record(url: url, date: payload.timestamp, kind: .bitMatchReport)
         let manifest = readAdjacentManifest(for: url, root: root)
-        return payload.results.compactMap { item in
+        var paths = Set<String>()
+        return try payload.results.compactMap { item in
             guard ResultRow.isVerifiedStatus(item.status), let target = item.target,
                   let relative = relativePath(target, root: root) else { return nil }
             let manifestValue = manifest[relative]
             let value = manifestValue?.checksum ?? item.checksum
             let selectedAlgorithm = manifestValue?.algorithm ?? algorithm
-            guard let value, let selectedAlgorithm, isValid(value, for: selectedAlgorithm) else { return nil }
+            guard let selectedAlgorithm else { throw CheckError.unsupportedEvidence }
+            guard let value, isValid(value, for: selectedAlgorithm), paths.insert(relative).inserted else {
+                throw CheckError.unreadableEvidence
+            }
             return ExpectedFile(relativePath: relative, checksum: value.lowercased(), algorithm: selectedAlgorithm, record: record)
         }
     }
 
     private static func reportAlgorithm(_ text: String?) -> Algorithm? {
-        guard let value = text?.lowercased() else { return nil }
-        if value.contains("sha-256") || value.contains("sha256") { return .sha256 }
-        if value.contains("md5") { return .md5 }
-        if value.contains("xxh64") || value.contains("xxhash64") { return .xxh64 }
-        return nil
+        guard let text else { return nil }
+        let names = text.lowercased().split(separator: ",", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        let algorithms = names.compactMap { name -> Algorithm? in
+            switch name {
+            case "sha-256", "sha256": .sha256
+            case "md5": .md5
+            case "xxh64", "xxhash64": .xxh64
+            default: nil
+            }
+        }
+        guard !algorithms.isEmpty, algorithms.count == names.count else { return nil }
+        return algorithms.contains(.sha256) ? .sha256 : algorithms.first
+    }
+
+    private static func boundedEvidenceData(_ url: URL) throws -> Data {
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        guard let size, size <= EvidenceReader.maxReportBytes else { throw CheckError.unreadableEvidence }
+        let data = try Data(contentsOf: url)
+        guard data.count <= EvidenceReader.maxReportBytes else { throw CheckError.unreadableEvidence }
+        return data
     }
 
     private static func readAdjacentManifest(for report: URL, root: URL) -> [String: (checksum: String, algorithm: Algorithm)] {
@@ -326,20 +348,31 @@ public struct SavedChecksumCheck: Sendable {
     }
 
     private static func readMHL(_ url: URL, root: URL) throws -> [ExpectedFile] {
-        let parser = XMLParser(data: try Data(contentsOf: url))
+        let parser = XMLParser(data: try boundedEvidenceData(url))
         let delegate = MHLParser()
+        parser.shouldProcessNamespaces = true
+        parser.shouldResolveExternalEntities = false
         parser.delegate = delegate
-        guard parser.parse() else { throw parser.parserError ?? CheckError.notFound }
+        let parsed = parser.parse()
+        if let failure = delegate.failure { throw failure }
+        guard parsed else { throw CheckError.unreadableEvidence }
         let fallbackDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
         let record = Record(url: url, date: delegate.creationDate ?? fallbackDate, kind: .ascMHL)
-        return delegate.items.compactMap { item in
-            guard let relative = safeRecordedPath(item.path, root: root) else { return nil }
+        // ASC paths belong to the folder containing ascmhl/, not whichever
+        // ancestor the user selected in Check.
+        let historyRoot = url.deletingLastPathComponent().deletingLastPathComponent()
+        var paths = Set<String>()
+        return try delegate.items.map { item in
+            guard let path = safeRecordedPath(item.path),
+                  let relative = relativePath(historyRoot.appendingPathComponent(path).path, root: root),
+                  paths.insert(relative).inserted else { throw CheckError.unreadableEvidence }
             let selected: (Algorithm, String)?
             if let hash = item.sha256 { selected = (.sha256, hash) }
             else if let hash = item.md5 { selected = (.md5, hash) }
             else if let hash = item.xxh64 { selected = (.xxh64, hash) }
             else { selected = nil }
-            guard let (algorithm, value) = selected, isValid(value, for: algorithm) else { return nil }
+            guard let (algorithm, value) = selected else { throw CheckError.unsupportedEvidence }
+            guard isValid(value, for: algorithm) else { throw CheckError.unreadableEvidence }
             return ExpectedFile(relativePath: relative, checksum: value.lowercased(), algorithm: algorithm, record: record)
         }
     }
@@ -353,35 +386,72 @@ public struct SavedChecksumCheck: Sendable {
         }
         var items: [Item] = []
         var creationDate: Date?
+        var failure: CheckError?
         private var item: Item?
-        private var element = ""
+        private var stack: [String] = []
         private var text = ""
+        private var fields = Set<String>()
+        private let namespace = "urn:ASC:MHL:v2.0"
+
+        private func reject(_ parser: XMLParser, _ error: CheckError) {
+            failure = error
+            parser.abortParsing()
+        }
 
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
-            element = elementName.lowercased()
+            let name = elementName.lowercased()
+            if stack.isEmpty && (name != "hashlist" || namespaceURI != namespace || attributeDict["version"] != "2.0") {
+                reject(parser, .unsupportedEvidence)
+                return
+            }
+            stack.append(name)
             text = ""
-            if element == "hash" { item = Item() }
+            if stack == ["hashlist", "hashes", "hash"] {
+                guard namespaceURI == namespace else { reject(parser, .unsupportedEvidence); return }
+                item = Item()
+                fields.removeAll()
+            } else if item != nil, stack.count == 4 {
+                guard namespaceURI == namespace else { reject(parser, .unsupportedEvidence); return }
+                guard fields.insert(name).inserted else { reject(parser, .unreadableEvidence); return }
+                if name != "path", name != "metadata", name != "previouspath",
+                   let action = attributeDict["action"], !["original", "verified"].contains(action) {
+                    reject(parser, .unsupportedEvidence)
+                }
+            } else if item != nil, stack.count > 4, stack[3] != "metadata" {
+                reject(parser, .unreadableEvidence)
+            }
         }
 
         func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
+        func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+            guard let value = String(data: CDATABlock, encoding: .utf8) else { reject(parser, .unreadableEvidence); return }
+            text += value
+        }
+        func parser(_ parser: XMLParser, foundInternalEntityDeclarationWithName name: String, value: String?) {
+            reject(parser, .unsupportedEvidence)
+        }
+        func parser(_ parser: XMLParser, foundExternalEntityDeclarationWithName name: String, publicID: String?, systemID: String?) {
+            reject(parser, .unsupportedEvidence)
+        }
 
         func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+            defer { if !stack.isEmpty { stack.removeLast() }; text = "" }
             let name = elementName.lowercased()
             let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            if item != nil {
+            if item != nil, stack.count == 4 {
                 switch name {
-                case "path": item?.path = value
+                case "path": item?.path = text // Filename whitespace is data.
                 case "sha256", "sha-256": item?.sha256 = value
                 case "md5": item?.md5 = value
                 case "xxh64", "xxhash64": item?.xxh64 = value
-                case "hash": if let item { items.append(item) }; item = nil
                 default: break
                 }
-            } else if name == "creationdate" {
+            } else if stack == ["hashlist", "hashes", "hash"] {
+                if let item { items.append(item) }
+                item = nil
+            } else if stack == ["hashlist", "creatorinfo", "creationdate"] {
                 creationDate = ISO8601DateFormatter().date(from: value)
             }
-            element = ""
-            text = ""
         }
     }
 
@@ -433,8 +503,8 @@ public struct SavedChecksumCheck: Sendable {
         return try? RelativePathResolver(base: root).resolve(url)
     }
 
-    private static func safeRecordedPath(_ path: String, root: URL) -> String? {
-        if path.hasPrefix("/") { return relativePath(path, root: root) }
+    private static func safeRecordedPath(_ path: String) -> String? {
+        guard !path.hasPrefix("/"), !path.contains("\0") else { return nil }
         let parts = path.split(separator: "/", omittingEmptySubsequences: false)
         guard !path.isEmpty, parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }) else { return nil }
         return path

@@ -35,6 +35,8 @@ The option follows the transfer into the queue and history. Reports list the exc
 
 Choose **Check**, then pick the folder or drive you want to check. Use **Its saved checksums** when BitMatch finds supported records, such as a BitMatch JSON report or an ASC MHL inventory. It reads the files again and compares them with those records; the original card does not need to be connected.
 
+For ASC MHL, this checks recorded file contents, including inventories inside card subfolders. It does not verify the history chain or directory hashes. If a record is damaged or includes file checksums BitMatch cannot read, Check says so instead of silently checking only part of it. Standalone classic MHL and C4-only file checksums aren't supported yet.
+
 Use **Another folder** to compare two copies instead. Standard compares contents with SHA-256; Quick checks sizes only. The results separate changed files from files missing or extra in the other folder. An extra file alone does not mean the matching files are damaged. Check does not copy, delete, or repair anything.
 
 The differences export includes filenames and paths. For a bug report without those details, use **History → Export diagnostics…** instead.

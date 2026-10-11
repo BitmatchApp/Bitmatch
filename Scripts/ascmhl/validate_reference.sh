@@ -7,8 +7,7 @@ cli="${2:?Pass the directory containing ascmhl and ascmhl-debug}"
 project="$(cd "$(dirname "$0")/../.." && pwd)"
 workspace="$(mktemp -d "${TMPDIR:-/tmp}/bitmatch-ascmhl-check.XXXXXX")"
 trap 'rm -rf "$workspace"' EXIT
-swiftc "$project/Shared/Core/Services/ASCMHLGenerator.swift" "$project/Scripts/ascmhl/GenerateFixture.swift" -o "$workspace/generate"
-"$workspace/generate" "$workspace/media"
+swift run --package-path "$project/Packages/BitMatchEngine" --build-system native --jobs 4 ASCMHLFixture "$workspace/media"
 "$cli/ascmhl-debug" xsd-schema-check -xsd "$reference/xsd/ASCMHL.xsd" "$workspace/media/ascmhl/"*.mhl
 "$cli/ascmhl-debug" xsd-schema-check -df -xsd "$reference/xsd/ASCMHLDirectory__combined.xsd" "$workspace/media/ascmhl/ascmhl_chain.xml"
 "$cli/ascmhl-debug" verify -v "$workspace/media"
@@ -32,6 +31,19 @@ for entry in entries:
     assert hasher.string_digest() == entry.findtext('m:c4', namespaces=ns)
 print('PASS: official schemas, byte verification, chain C4, and next-generation interoperability')
 PY
+# Permanent external-tool fixtures: validate without rewriting their histories.
+corpus="$project/Packages/BitMatchEngine/Tests/BitMatchEngineTests/Fixtures/EvidenceCompatibility/reference"
+for algorithm in md5 xxh64 c4; do
+    fixture="$corpus/$algorithm"
+    for manifest in "$fixture/ascmhl/"*.mhl; do
+        "$cli/ascmhl-debug" xsd-schema-check -xsd "$reference/xsd/ASCMHL.xsd" "$manifest"
+    done
+    "$cli/ascmhl-debug" xsd-schema-check -df -xsd "$reference/xsd/ASCMHLDirectory__combined.xsd" "$fixture/ascmhl/ascmhl_chain.xml"
+    "$cli/ascmhl-debug" verify -v "$fixture"
+    "$cli/ascmhl" diff "$fixture"
+done
+echo 'PASS: permanent MD5, XXH64 and C4 corpus validated independently'
+
 # Corruption must be detected by the independent reference verifier.
 printf 'corrupted' > "$workspace/media/Camera A/clip & café.txt"
 if "$cli/ascmhl-debug" verify "$workspace/media"; then

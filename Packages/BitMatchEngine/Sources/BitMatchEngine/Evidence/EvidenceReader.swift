@@ -151,7 +151,11 @@ public enum EvidenceReader: Sendable {
         switch method.lowercased() {
         case "size-only", "quick": return .quick
         case "checksum":
-            return algorithm?.lowercased().contains("md5") == true ? .thorough : .standard
+            guard let algorithm else { return nil }
+            let names = algorithm.lowercased().split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard !names.isEmpty, names.allSatisfy({ ["sha-256", "sha256", "md5", "xxh64", "xxhash64"].contains($0) }) else { return nil }
+            return names.contains("md5") ? .thorough : .standard
         case "standard": return .standard
         case "thorough": return .thorough
         case "checksum-and-byte-compare", "paranoid",

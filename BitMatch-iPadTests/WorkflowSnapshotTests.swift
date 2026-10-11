@@ -155,6 +155,22 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    func testCaptureUnreadableSavedEvidence() throws {
+        try requireCaptureConfiguration()
+        let url = URL(fileURLWithPath: "/fixture/Shuttle")
+        let left = CompareFolderSlot.make(url: url, infoURL: url, fileCount: 3, totalSize: 1024, isFetching: false)
+        let right = CompareFolderSlot.make(url: nil, infoURL: nil, fileCount: nil, totalSize: nil, isFetching: false)
+        let presentation = ComparePresentation.make(left: left, right: right,
+            savedAvailability: .unreadable(message: SavedChecksumCheck.CheckError.unsupportedEvidence.localizedDescription),
+            mode: .standard, isRunning: false, progress: nil, stats: nil, end: nil)
+        for width in [320.0, 500.0, 820.0] {
+            try capture(CompareScreen(presentation: presentation, checkAgainst: .constant(.anotherFolder),
+                verificationMode: .constant(.standard), advancedExpanded: .constant(false),
+                actions: CompareActions(pickLeft: {}, pickRight: {}, clearLeft: {}, clearRight: {}, compare: {}, cancel: {})).padding(),
+                size: CGSize(width: width, height: 1000), name: "mobile-unreadable-evidence-\(Int(width))")
+        }
+    }
+
     func testCaptureTransferDetails() throws {
         try requireCaptureConfiguration()
         let prefs = ReportPrefs(notes: "Card 01 · backups to Alex.\nKeep the source until both drives are checked.", operatorName: "Alex Morgan")

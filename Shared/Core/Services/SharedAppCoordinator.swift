@@ -423,13 +423,15 @@ class SharedAppCoordinator: ObservableObject {
             } catch is CancellationError {
                 return
             } catch SavedChecksumCheck.CheckError.notFound {
-                guard leftURL == url else { return }
+                guard !Task.isCancelled, leftURL == url else { return }
                 savedChecksumAvailability = .notFound
                 checkAgainst = .defaultChoice(for: savedChecksumAvailability)
             } catch {
-                guard leftURL == url else { return }
+                guard !Task.isCancelled, leftURL == url else { return }
                 SharedLogger.warning("Could not read saved checksums at \(url.path): \(error)", category: .transfer)
-                savedChecksumAvailability = .notFound
+                savedChecksumAvailability = .unreadable(message: error is SavedChecksumCheck.CheckError
+                    ? error.localizedDescription
+                    : "Saved checksums could not be read. Compare with another folder instead.")
                 checkAgainst = .defaultChoice(for: savedChecksumAvailability)
             }
         }

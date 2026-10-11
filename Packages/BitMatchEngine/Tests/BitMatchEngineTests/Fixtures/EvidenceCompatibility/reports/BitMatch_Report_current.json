@@ -1,0 +1,27 @@
+{
+  "timestamp": "2026-10-01T12:00:00Z",
+  "source": {
+    "path": "/fixture/Card",
+    "name": "Card",
+    "totalSize": 12,
+    "fileCount": 2
+  },
+  "destinations": [
+    {
+      "path": "/fixture/Backup"
+    }
+  ],
+  "statistics": {
+    "matches": 2,
+    "issues": 0,
+    "totalFiles": 2
+  },
+  "performance": {
+    "totalDuration": 3
+  },
+  "verification": {
+    "method": "checksum",
+    "algorithm": "SHA-256"
+  },
+  "safeToErase": true
+}
