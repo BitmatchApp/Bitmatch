@@ -16,12 +16,12 @@ struct TransferHistoryDocument: FileDocument {
     init(record: LocalTransferRecord, asCSV: Bool) throws {
         if asCSV {
             func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client\n"
+            let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused\n"
             let rows = record.results.map { row in
                 [row.path, row.destinationPath ?? row.destination ?? "", row.status, String(row.size), row.checksum ?? "",
                  record.verificationMode.rawValue, record.state.rawValue, record.summary,
                  record.reportSettings.projectName, record.generateASCMHL ? "requested" : "not requested",
-                 record.reportSettings.clientName].map(quote).joined(separator: ",")
+                 record.reportSettings.clientName, row.wasReused ? "true" : "false"].map(quote).joined(separator: ",")
             }
             func pair(_ key: String, _ value: String) -> String { quote(key) + "," + quote(value) }
             func detail(_ value: String) -> String {
@@ -32,6 +32,8 @@ struct TransferHistoryDocument: FileDocument {
             let telemetry = record.performanceTelemetry
             let timingSummary = [
                 "\n# Summary",
+                pair("retryOf", record.retryOf?.uuidString ?? ""),
+                pair("plannedFileCounts", record.plannedFileCounts?.map(String.init).joined(separator: ";") ?? ""),
                 pair("operatorName", detail(record.reportSettings.operatorName)),
                 pair("notes", detail(record.reportSettings.notes)),
                 pair("copyDurationSeconds", record.copyDurationSeconds.map { String($0) } ?? ""),
@@ -49,6 +51,8 @@ struct TransferHistoryDocument: FileDocument {
             // Do not export security-scoped bookmarks or credentials from the journal.
             struct Report: Encodable {
                 let id: UUID
+                let retryOf: UUID?
+                let plannedFileCounts: [Int]?
                 let source: String
                 let destinations: [String]
                 let state: LocalTransferState
@@ -68,7 +72,7 @@ struct TransferHistoryDocument: FileDocument {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            data = try encoder.encode(Report(id: record.id, source: record.source.url.path,
+            data = try encoder.encode(Report(id: record.id, retryOf: record.retryOf, plannedFileCounts: record.plannedFileCounts, source: record.source.url.path,
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,

@@ -88,6 +88,9 @@ struct CompactQueuePresentation<Content: View>: View {
                 value: accessory.isVisible
             )
             .sensoryFeedback(.success, trigger: state.successFeedbackCount)
+            .onChange(of: coordinator.editingSetupTransferID) { _, id in
+                if id != nil { state.showingQueue = false }
+            }
             .onChange(of: coordinator.queuePresentation.rows) { oldRows, newRows in
                 state.update(previousRows: oldRows, currentRows: newRows)
             }

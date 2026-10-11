@@ -59,6 +59,7 @@ struct MainScreenQueueTests {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
+        #expect(await waitUntil { coordinator.canEnqueueSelection })
         try coordinator.enqueueSelection()
         let id = try #require(coordinator.transferJournal.records.first?.id)
         try coordinator.transferJournal.markRunning(id: id)
@@ -247,6 +248,8 @@ struct MainScreenQueueTests {
         let coordinator = fixture.coordinator
         coordinator.verificationMode = .standard
         coordinator.cameraLabelSettings.label = "Original label"
+        coordinator.reportSettings.operatorName = "Alex"
+        coordinator.reportSettings.notes = "Keep original notes"
         try coordinator.enqueueSelection()
         let id = try #require(coordinator.stagedSetupTransfers.first?.id)
         let originalDestinations = coordinator.destinationURLs
@@ -261,11 +264,13 @@ struct MainScreenQueueTests {
         try coordinator.editSetupTransfer(id)
         coordinator.destinationURLs = [fixture.folders.primary]
         coordinator.verificationMode = .paranoid
+        coordinator.reportSettings.notes = "Discarded edit"
         coordinator.cancelSetupTransferEdit()
         #expect(coordinator.editingSetupTransferID == nil)
         #expect(coordinator.sourceURL == nil)
         #expect(coordinator.destinationURLs == originalDestinations)
         #expect(coordinator.verificationMode == .standard)
+        #expect(coordinator.reportSettings.notes == "Keep original notes")
 
         let replacementSource = fixture.folders.root.appendingPathComponent("replacement-card", isDirectory: true)
         try FileManager.default.createDirectory(at: replacementSource, withIntermediateDirectories: true)
@@ -291,7 +296,62 @@ struct MainScreenQueueTests {
         #expect(!updated.generateASCMHL)
         #expect(updated.cameraSettings.label == "Camera C")
         #expect(!updated.reportSettings.makeReport)
+        #expect(updated.reportSettings.operatorName == "Alex")
+        #expect(updated.reportSettings.notes == "Keep original notes")
         #expect(coordinator.sourceURL == nil)
+    }
+
+    @Test(arguments: [true, false])
+    func replacedSetupSelectionCannotBeQueued(replaceSource: Bool) async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let selected = replaceSource ? fixture.folders.source : fixture.folders.primary
+        try FileManager.default.moveItem(at: selected, to: fixture.folders.root.appendingPathComponent("original-moved"))
+        try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
+        try Data("replacement".utf8).write(to: selected.appendingPathComponent("replacement.bin"))
+        #expect(throws: (any Error).self) { try fixture.coordinator.enqueueSelection() }
+        #expect(fixture.coordinator.transferJournal.records.isEmpty)
+        await fixture.coordinator.startOperation()
+        #expect(await fixture.operations.starts.isEmpty)
+        #expect(fixture.coordinator.operationState == .failed)
+    }
+
+    @Test func editingNeverAdoptsAReplacementAtTheSavedPath() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        try coordinator.enqueueSelection()
+        let id = try #require(coordinator.stagedSetupTransfers.first?.id)
+        let source = fixture.folders.source
+        try FileManager.default.moveItem(at: source, to: fixture.folders.root.appendingPathComponent("original-moved"))
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try Data("replacement".utf8).write(to: source.appendingPathComponent("replacement.mov"))
+        do {
+            try coordinator.editSetupTransfer(id)
+            let loaded = try #require(coordinator.sourceURL)
+            #expect(loaded != source)
+        } catch {
+            #expect(coordinator.editingSetupTransferID == nil)
+            #expect(coordinator.sourceURL == nil)
+        }
+        coordinator.cancelSetupTransferEdit()
+    }
+
+    @Test func replacementWhileEditingCannotBeSavedAsTheOriginalSelection() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        try coordinator.enqueueSelection()
+        let id = try #require(coordinator.stagedSetupTransfers.first?.id)
+        try coordinator.editSetupTransfer(id)
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+        let original = try #require(coordinator.transferJournal.records.first { $0.id == id })
+        try FileManager.default.moveItem(at: fixture.folders.primary, to: fixture.folders.root.appendingPathComponent("old-backup"))
+        try FileManager.default.createDirectory(at: fixture.folders.primary, withIntermediateDirectories: true)
+        #expect(throws: (any Error).self) { try coordinator.enqueueSelection() }
+        #expect(coordinator.editingSetupTransferID == id)
+        #expect(coordinator.transferJournal.records.first { $0.id == id }?.destinations.first?.resourceID == original.destinations.first?.resourceID)
+        coordinator.cancelSetupTransferEdit()
     }
 
     /// Plant: restore the `!isOperationInProgress` guard in
@@ -313,7 +373,7 @@ struct MainScreenQueueTests {
         try coordinator.editSetupTransfer(waitingID)
 
         #expect(coordinator.editingSetupTransferID == waitingID)
-        #expect(coordinator.sourceURL == fixture.folders.source)
+        #expect(coordinator.sourceURL?.resolvingSymlinksInPath() == fixture.folders.source.resolvingSymlinksInPath())
         coordinator.cancelOperation()
         await fixture.operations.release()
         _ = await run.value

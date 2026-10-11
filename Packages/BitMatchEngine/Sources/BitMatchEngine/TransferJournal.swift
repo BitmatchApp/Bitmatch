@@ -18,15 +18,19 @@ public struct LocalTransferResource: Codable, Sendable {
     public let bookmark: Data
     public let volumeID: String?
     public let resourceID: String?
+    public let creationDate: Date?
 
     public init(url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        let values = try url.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey])
+        var current = url
+        current.removeAllCachedResourceValues()
+        let values = try current.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
         guard values.isDirectory == true else { throw LocalTransferJournalError.unavailable(url.lastPathComponent) }
         self.url = url
         volumeID = values.volumeUUIDString
         resourceID = values.fileResourceIdentifier.map { String(describing: $0) }
+        creationDate = values.creationDate
         #if os(macOS)
         bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
         #else
@@ -39,7 +43,7 @@ public struct LocalTransferResource: Codable, Sendable {
         let resolved = try resolve()
         let scoped = resolved.startAccessingSecurityScopedResource()
         do {
-            try validate(resolved)
+            try validateIdentity(at: resolved)
             return LocalTransferReadAccess(url: resolved, scoped: scoped)
         } catch {
             if scoped { resolved.stopAccessingSecurityScopedResource() }
@@ -58,8 +62,11 @@ public struct LocalTransferResource: Codable, Sendable {
         return resolved
     }
 
-    fileprivate func validate(_ resolved: URL) throws {
-        let values = try resolved.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey])
+    /// Validate the URL about to be used, rather than following a bookmark elsewhere.
+    public func validateIdentity(at resolved: URL) throws {
+        var current = resolved
+        current.removeAllCachedResourceValues()
+        let values = try current.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
         // A bookmark keeps the selected URL reachable, but it is not enough to
         // prove that a path still names the original folder. Require both
         // identity components before using a persisted location. Treating a
@@ -75,6 +82,7 @@ public struct LocalTransferResource: Codable, Sendable {
               values.isDirectory == true,
               resolvedVolumeID == volumeID,
               String(describing: resolvedResourceID) == resourceID,
+              creationDate == nil || values.creationDate == creationDate,
               FileManager.default.isReadableFile(atPath: resolved.path) else {
             throw LocalTransferJournalError.unavailable(url.lastPathComponent)
         }
@@ -115,6 +123,10 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public var results: [ResultRow] = []
     /// Added after launch; nil decodes records written by older versions.
     public var sourceFingerprint: String?
+    /// A retry is a separate attempt; its predecessor remains immutable.
+    public let retryOf: UUID?
+    /// Selected files per destination, from the engine manifest (exclusions omitted).
+    public var plannedFileCounts: [Int]?
     /// Physical drives represented by `destinations`. Nil for older records
     /// whose disk independence was never assessed.
     public var independentDestinationCount: Int?
@@ -125,7 +137,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public init(id: UUID, createdAt: Date, source: LocalTransferResource, destinations: [LocalTransferResource],
          verificationMode: VerificationMode, cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs,
          generateASCMHL: Bool = true, projectID: UUID? = nil, projectCardID: UUID? = nil,
-         independentDestinationCount: Int? = nil) {
+         independentDestinationCount: Int? = nil, retryOf: UUID? = nil) {
         self.id = id
         self.createdAt = createdAt
         self.source = source
@@ -137,13 +149,14 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         self.projectID = projectID
         self.projectCardID = projectCardID
         self.independentDestinationCount = independentDestinationCount
+        self.retryOf = retryOf
     }
 
     private enum CodingKeys: String, CodingKey {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
-        case independentDestinationCount
+        case independentDestinationCount, retryOf, plannedFileCounts
     }
 
     public init(from decoder: Decoder) throws {
@@ -174,6 +187,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         results = try c.decode([ResultRow].self, forKey: .results)
         sourceFingerprint = try c.decodeIfPresent(String.self, forKey: .sourceFingerprint)
         independentDestinationCount = try c.decodeIfPresent(Int.self, forKey: .independentDestinationCount)
+        retryOf = try c.decodeIfPresent(UUID.self, forKey: .retryOf)
+        plannedFileCounts = try c.decodeIfPresent([Int].self, forKey: .plannedFileCounts)
     }
     public var issueCount: Int { results.filter { !$0.isSuccessStatus }.count }
 }
@@ -303,7 +318,7 @@ public final class TransferJournal: Sendable {
                                         destinations: original.destinations, verificationMode: original.verificationMode,
                                         cameraSettings: original.cameraSettings, reportSettings: original.reportSettings,
                                         generateASCMHL: generateASCMHL ?? original.generateASCMHL,
-                                        projectID: original.projectID, projectCardID: original.projectCardID)
+                                        projectID: original.projectID, projectCardID: original.projectCardID, retryOf: original.id)
         try commit { [retry] + $0 }
         return retry.id
     }
@@ -319,7 +334,7 @@ public final class TransferJournal: Sendable {
             for resource in resources {
                 let resolved = try resource.resolve()
                 if resolved.startAccessingSecurityScopedResource() { scopedURLs.append(resolved) }
-                try resource.validate(resolved)
+                try resource.validateIdentity(at: resolved)
                 resolvedURLs.append(resolved)
             }
             return LocalTransferAccess(sourceURL: resolvedURLs[0], destinationURLs: Array(resolvedURLs.dropFirst()), scopedURLs: scopedURLs)
@@ -340,7 +355,7 @@ public final class TransferJournal: Sendable {
         do {
             let resolved = try record.source.resolve()
             if resolved.startAccessingSecurityScopedResource() { scopedURLs.append(resolved) }
-            try record.source.validate(resolved)
+            try record.source.validateIdentity(at: resolved)
             return LocalTransferAccess(sourceURL: resolved, destinationURLs: [], scopedURLs: scopedURLs)
         } catch {
             scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() }
@@ -360,7 +375,7 @@ public final class TransferJournal: Sendable {
                 let resolved = try resource.resolve()
                 let scoped = resolved.startAccessingSecurityScopedResource()
                 defer { if scoped { resolved.stopAccessingSecurityScopedResource() } }
-                try resource.validate(resolved)
+                try resource.validateIdentity(at: resolved)
             } catch {
                 stale.append(index)
             }
@@ -411,7 +426,7 @@ public final class TransferJournal: Sendable {
         // Keep a readable, directory-only replacement in the journal. Without
         // this check a matching but inaccessible picker result would look
         // connected until the next queue attempt.
-        try refreshed.validate(refreshedURL)
+        try refreshed.validateIdentity(at: refreshedURL)
         // File identifiers may be reused once a folder is deleted, so a recreated
         // folder at the same path can present matching identifiers. The original
         // folder necessarily predates the transfer record; anything younger is a
@@ -422,16 +437,76 @@ public final class TransferJournal: Sendable {
         }
     }
 
-    public func markRunning(id: UUID, independentDestinationCount: Int? = nil) throws {
+    public func markRunning(id: UUID, independentDestinationCount: Int? = nil,
+                            sourceURL: URL? = nil, destinationURLs: [URL]? = nil,
+                            sessionRecordIDs: Set<UUID> = []) throws {
         try commit { records in
             guard !records.contains(where: { $0.state == .running }) else { throw LocalTransferJournalError.invalidState }
             return try Self.updated(records, id: id) { record in
                 guard record.state == .queued || record.canRetry else { throw LocalTransferJournalError.invalidState }
+                // Repeat identity checks after asynchronous preflight, against the exact
+                // paths the executor will open. A bookmark may now point elsewhere.
+                let source = sourceURL ?? record.source.url
+                let destinations = destinationURLs ?? record.destinations.map(\.url)
+                guard destinations.count == record.destinations.count else {
+                    throw LocalTransferJournalError.invalidState
+                }
+                try record.source.validateIdentity(at: source)
+                for (resource, url) in zip(record.destinations, destinations) {
+                    try resource.validateIdentity(at: url)
+                }
+                try Self.validateQueueOutputs(record: record, source: source, destinations: destinations, records: records, sessionRecordIDs: sessionRecordIDs)
                 record.state = .running
                 record.startedAt = Date()
                 record.endedAt = nil
                 record.summary = "Copying and verifying"
                 record.independentDestinationCount = independentDestinationCount
+            }
+        }
+    }
+
+    /// Save once, before results settle. Unknown counts in older records stay unknown.
+    public func recordPlan(id: UUID, fileCounts: [Int]) throws {
+        try update(id: id) { record in
+            guard record.state == .running, fileCounts.count == record.destinations.count,
+                  fileCounts.allSatisfy({ $0 >= 0 }),
+                  record.plannedFileCounts == nil || record.plannedFileCounts == fileCounts else {
+                throw LocalTransferJournalError.invalidState
+            }
+            record.plannedFileCounts = fileCounts
+        }
+    }
+
+    private static func validateQueueOutputs(record: LocalTransferRecord, source: URL,
+                                             destinations: [URL], records: [LocalTransferRecord],
+                                             sessionRecordIDs: Set<UUID>) throws {
+        func roots(source: URL, destinations: [URL], settings: CameraLabelSettings) throws -> [String] {
+            try destinations.map {
+                let root = try SafetyValidator.resolvedDestinationRootChecked(source: source, destination: $0, settings: settings)
+                // Portable names: also catch case-only collisions on exFAT/HFS+.
+                return PathContainment.comparablePath(root.resolvingSymlinksInPath().path)
+                    .precomposedStringWithCanonicalMapping.lowercased()
+            }
+        }
+        let outputs = try roots(source: source, destinations: destinations, settings: record.cameraSettings)
+        for other in records where other.id != record.id && (other.state == .queued || other.state == .running
+            || (sessionRecordIDs.contains(other.id) && other.startedAt != nil)) {
+            // Rechecking the same original card is an intentional supported operation.
+            if record.source.volumeID != nil, record.source.resourceID != nil,
+               record.source.volumeID == other.source.volumeID,
+               record.source.resourceID == other.source.resourceID,
+               record.source.creationDate == other.source.creationDate { continue }
+            let resources = [other.source] + other.destinations
+            let urls = resources.map { (try? $0.resolve()) ?? $0.url }
+            let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
+            defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
+            let otherOutputs = try roots(source: urls[0], destinations: Array(urls.dropFirst()), settings: other.cameraSettings)
+            if outputs.contains(where: { a in otherOutputs.contains { b in
+                PathContainment.isWithin(a, root: b) || PathContainment.isWithin(b, root: a)
+            } }) {
+                throw FileOperationError.unsafeOperation(
+                    "Two cards in this queue use the same or nested output folders. Change a card’s folder name or backup location before starting. Nothing was copied for this attempt."
+                )
             }
         }
     }
@@ -486,7 +561,10 @@ public final class TransferJournal: Sendable {
                     verificationMode: verificationMode,
                     cameraSettings: cameraSettings,
                     reportSettings: reportSettings,
-                    generateASCMHL: generateASCMHL
+                    generateASCMHL: generateASCMHL,
+                    retryOf: source.volumeID == record.source.volumeID
+                        && source.resourceID == record.source.resourceID
+                        && source.creationDate == record.source.creationDate ? record.retryOf : nil
                 )
             }
         }

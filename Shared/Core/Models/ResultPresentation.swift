@@ -438,3 +438,45 @@ struct DestinationResultSummary: Identifiable {
         return summaries
     }
 }
+
+/// Describes saved attempt evidence; never participates in the safety verdict.
+struct TransferRecoverySummary: Identifiable {
+    let id: String
+    let title: String
+    let reused: Int
+    let copied: Int
+    let unverified: Int
+    let failed: Int
+    let excluded: Int
+    let pending: Int?
+
+    static func make(_ record: LocalTransferRecord) -> [Self] {
+        let groups = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
+        let hasUnassigned = groups.count > record.destinations.count
+        return groups.enumerated().map { index, group in
+            // Duplicate/conflicting evidence must not inflate success or hide an issue.
+            let files = Dictionary(grouping: group.rows, by: \.path).values
+            var reused = 0, copied = 0, unverified = 0, failed = 0, excluded = 0
+            for rows in files {
+                if rows.allSatisfy({ ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
+                    excluded += 1
+                } else if !rows.allSatisfy(\.isSuccessStatus) {
+                    failed += 1
+                } else if !rows.allSatisfy(\.isVerifiedStatus) {
+                    unverified += 1
+                } else if rows.allSatisfy(\.wasReused) {
+                    reused += 1
+                } else {
+                    copied += 1
+                }
+            }
+            let settled = reused + copied + unverified + failed
+            let plan = record.plannedFileCounts
+            let expected = !hasUnassigned && plan?.count == record.destinations.count && index < record.destinations.count
+                ? plan?[index] : nil
+            return Self(id: group.id, title: group.title, reused: reused, copied: copied,
+                        unverified: unverified, failed: failed, excluded: excluded,
+                        pending: expected.flatMap { $0 >= settled ? $0 - settled : nil })
+        }
+    }
+}

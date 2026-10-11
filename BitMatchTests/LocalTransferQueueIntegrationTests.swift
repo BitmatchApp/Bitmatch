@@ -61,6 +61,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         for record in [first, second] {
             let row = try XCTUnwrap(record.results.first)
             XCTAssertTrue(row.isSuccessStatus)
+            XCTAssertEqual(record.plannedFileCounts, [1])
             let sourceData = try Data(contentsOf: URL(fileURLWithPath: row.path))
             let copiedData = try Data(contentsOf: URL(fileURLWithPath: XCTUnwrap(row.destinationPath)))
             XCTAssertEqual(sourceData, copiedData)
@@ -70,6 +71,55 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let onDisk = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
         XCTAssertEqual(onDisk.count, 2)
         XCTAssertTrue(onDisk.allSatisfy { $0.state == .completed && $0.results.count == 1 })
+    }
+
+    func testRealRecoveryMatrixRetainsConflictsAndCountsReusedAndNewCopies() async throws {
+        for mode in [VerificationMode.standard, .thorough, .paranoid] {
+            let f = try QueueFixture()
+            defer { f.cleanup() }
+            let secondBackup = f.root.appendingPathComponent("Backup B")
+            let output = f.destination.appendingPathComponent(f.source.lastPathComponent)
+            for url in [secondBackup, output] { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
+            let existing = try Data(contentsOf: f.source.appendingPathComponent("clip.mov"))
+            try existing.write(to: output.appendingPathComponent("clip.mov"))
+            try Data("new file".utf8).write(to: f.source.appendingPathComponent("new.bin"))
+            try Data("original source contents".utf8).write(to: f.source.appendingPathComponent("conflict.bin"))
+            let conflict = Data("pre-existing contents must survive".utf8)
+            try conflict.write(to: output.appendingPathComponent("conflict.bin"))
+            let journal = LocalTransferJournal(fileURL: f.journalURL)
+            let original = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination, secondBackup],
+                verificationMode: mode, cameraSettings: CameraLabelSettings(),
+                reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+            try journal.markRunning(id: original)
+            try journal.recordPlan(id: original, fileCounts: [3, 3])
+            try journal.interrupt(id: original, summary: "Previous interrupted attempt", results: [])
+            let retry = try journal.requeue(id: original)
+            let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+            let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+                transferJournal: journal, defaults: f.defaults)
+            coordinator.startQueue()
+            let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+                journal.records.first { $0.id == retry }?.state == .issues && !coordinator.isOperationInProgress
+            }
+            XCTAssertTrue(ended, coordinator.queueMessage ?? "Recovery did not settle")
+            let record = try XCTUnwrap(journal.records.first { $0.id == retry })
+            XCTAssertEqual(record.retryOf, original)
+            XCTAssertEqual(record.plannedFileCounts, [3, 3])
+            let counts = TransferRecoverySummary.make(record)
+            XCTAssertEqual(counts.count, 2)
+            XCTAssertEqual(counts[0].reused, 1)
+            XCTAssertEqual(counts[0].copied, 1)
+            XCTAssertEqual(counts[0].failed, 1)
+            XCTAssertEqual(counts[0].pending, 0)
+            XCTAssertEqual(counts[1].copied, 3)
+            XCTAssertEqual(counts[1].failed, 0)
+            XCTAssertEqual(counts[1].pending, 0)
+            XCTAssertEqual(try Data(contentsOf: output.appendingPathComponent("conflict.bin")), conflict)
+            XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("clip.mov")), existing)
+            XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("conflict.bin")), Data("original source contents".utf8))
+            XCTAssertEqual(journal.records.first { $0.id == original }?.state, .interrupted)
+            XCTAssertTrue(journal.records.first { $0.id == original }?.results.isEmpty == true)
+        }
     }
 
     func testQueuedEmptySourceIsRejectedAndNeverLooksComplete() async throws {
@@ -966,6 +1016,32 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             seenVolumeIDs: relaunched.autoQueueSeenVolumeIDs,
             activeDestinationVolumeIDs: []
         ).isEmpty)
+    }
+
+    func testReplacementAfterPreflightNeverReachesTheCopyExecutor() async throws {
+        for replaceSource in [true, false] {
+            let f = try QueueFixture()
+            defer { f.cleanup() }
+            let selected = replaceSource ? f.source : f.destination
+            let journal = LocalTransferJournal(fileURL: f.journalURL) { _ in
+                try FileManager.default.moveItem(at: selected, to: f.root.appendingPathComponent("original-moved"))
+                try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
+                try Data("replacement".utf8).write(to: selected.appendingPathComponent("different.mov"))
+            }
+            let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+                verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+            let operations = QueueRecordingOperations()
+            let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+                transferJournal: journal, defaults: f.defaults)
+            coordinator.startQueue()
+            let paused = await waitUntil { @MainActor in coordinator.queuePausedRecordID == id }
+            XCTAssertTrue(paused)
+            let starts = await operations.starts
+            XCTAssertTrue(starts.isEmpty)
+            XCTAssertEqual(journal.records.first?.state, .failed)
+            XCTAssertNil(journal.records.first?.startedAt)
+            XCTAssertTrue(journal.records.first?.results.isEmpty == true)
+        }
     }
 
     func testMarkRunningFailureIsJournaledAsSkippableFailureBeforePause() async throws {

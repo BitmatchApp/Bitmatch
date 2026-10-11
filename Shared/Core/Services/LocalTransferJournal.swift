@@ -102,10 +102,18 @@ final class LocalTransferJournal: ObservableObject {
         try store.reauthorize(id: id, resourceIndex: resourceIndex, newURL: newURL)
     }
 
-    func markRunning(id: UUID, independentDestinationCount: Int? = nil) throws {
+    func markRunning(id: UUID, independentDestinationCount: Int? = nil,
+                     sourceURL: URL? = nil, destinationURLs: [URL]? = nil,
+                     sessionRecordIDs: Set<UUID> = []) throws {
         defer { refresh() }
         try beforeMarkRunning?(id)
-        try store.markRunning(id: id, independentDestinationCount: independentDestinationCount)
+        try store.markRunning(id: id, independentDestinationCount: independentDestinationCount,
+                              sourceURL: sourceURL, destinationURLs: destinationURLs, sessionRecordIDs: sessionRecordIDs)
+    }
+
+    func recordPlan(id: UUID, fileCounts: [Int]) throws {
+        defer { refresh() }
+        try store.recordPlan(id: id, fileCounts: fileCounts)
     }
 
     func fail(id: UUID, summary: String) throws {
