@@ -216,6 +216,38 @@ struct EvidenceCompatibilityTests {
         #expect(result.skipped.first?.reason == .unreadable)
     }
 
+    /// Plant: parse metadata companions as MHL, or skip every ._ filename without validation.
+    @Test(arguments: ["metadata", "lookalike", "orphan", "data-fork", "legitimate-record"])
+    func mhlMetadataCompanionsAreNotEvidence(kind: String) async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        try write(xml(), path: "ascmhl/0001.mhl", root: root)
+        var bytes = [UInt8](repeating: 0, count: 42)
+        func put(_ value: UInt32, _ offset: Int) {
+            for index in 0..<4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (24 - 8 * index)) }
+        }
+        put(0x00051607, 0); put(0x00020000, 4); bytes[25] = 1
+        put(kind == "data-fork" ? 1 : 2, 26); put(38, 30); put(4, 34)
+        let name = kind == "orphan" ? "._missing.mhl" : "._0001.mhl"
+        let companion = root.appendingPathComponent("ascmhl/" + name)
+        if kind == "lookalike" { try Data("damaged MHL".utf8).write(to: companion) }
+        else if kind == "legitimate-record" {
+            try write("A", path: "b.txt", root: root)
+            try Data(xml().replacingOccurrences(of: "a.txt", with: "b.txt").utf8).write(to: companion)
+        }
+        else { try Data(bytes).write(to: companion) }
+        let before = try Data(contentsOf: companion)
+        if kind == "metadata" || kind == "legitimate-record" {
+            let result = try await run(root)
+            #expect(result.isIntact)
+            #expect(result.records.count == (kind == "metadata" ? 1 : 2))
+        } else {
+            await #expect(throws: (any Error).self) { _ = try await checker.discover(under: root) }
+        }
+        #expect(try Data(contentsOf: companion) == before)
+    }
+
     /// Plant: treat any algorithm paired with "checksum" as Standard.
     @Test(arguments: ["BLAKE3", "future-SHA-256-ish", "", "SHA-256, UNKNOWN"])
     func unknownReportAlgorithmsAreNotVerified(algorithm: String) {
