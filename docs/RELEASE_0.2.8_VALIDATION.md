@@ -30,3 +30,9 @@ The final universal Developer ID archive and DMG were notarized, stapled and acc
 Release artifact SHA-256: `5250931258024b99bf2ca89e2e762dfe2b7e0fc64a6c62e31bc5edb1fd2e3b81`.
 
 Logs, test summaries and small report/MHL evidence are retained locally in `dist/validation/release-0.2.8/`. These are synthetic mounted volumes, not a physical-drive or dock certification.
+
+## Publication and cleanup
+
+[0.2.8 is published as the latest release](https://github.com/BitmatchApp/Bitmatch/releases/tag/v0.2.8), tagged at `8ee0cbd2` (documentation-only changes after the archive source). The downloaded DMG and published checksum match the artifact above. The Homebrew cask points to that file and its full online audit passed. The public Sparkle feed serves version 0.2.8, build 18; its signature was independently verified against the archived app's public key.
+
+The three disposable disk images were detached and removed. The two merged worktrees and this batch's temporary build caches/results were removed after preserving logs and summaries, reclaiming approximately 3.79 GiB. The signed archive, DMG, checksum and small validation evidence remain. Unrelated worktrees were preserved.
