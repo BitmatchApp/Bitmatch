@@ -42,4 +42,23 @@ Failed intermediate runs are retained too. The first Mac run caught an assertion
 
 These are local filesystem, mounted disk-image, model and simulator tests. They do not establish real reader/cable/dock reliability. The admission check narrows the selection-to-execution gap; descriptor-pinned engine protections remain necessary during a run. Recovery rechecks whole files, not byte offsets. Pending counts describe saved evidence, not a claim that an unrecorded file was never written. An attempt removed from History no longer supplies a visible predecessor date, but its retry ID remains saved.
 
-A signed release walkthrough and physical iPhone/iPad access/background testing remain release checks. No release was published by this change.
+## Signed Mac walkthrough
+
+The walkthrough began with a local universal Release archive built by `Scripts/release_mac.sh` with `SKIP_NOTARIZE=1`, using the existing Developer ID and sandbox entitlements. It was launched from its archive; nothing was installed over the released app, notarized, tagged or published. The only production follow-up was left-aligning recovery counts inside the expanded queue row. A fresh final archive used the same Release configuration and signing sequence; strict deep signature verification passed.
+
+Disposable mounted volumes provided an APFS source and APFS/exFAT backups. The production UI and native folder pickers exercised:
+
+- Queue → Edit → Cancel, then Edit → Update: both backups, Standard verification, ASC MHL, reports, operator and notes were retained. Cancel restored the previous notes; Update reached the generated report.
+- A four-file transfer including a hidden sidecar and an empty folder: both backups matched the source, ASC MHL was published on both, and PDF/CSV/JSON reports were saved. The app showed a verified completion.
+- A three-file recovery case: APFS began with a matching file and a conflicting file; exFAT began empty. APFS showed **1 reused, 1 copied, 1 failed, 0 pending**; exFAT showed **0 reused, 3 copied, 0 failed, 0 pending**. The conflict was byte-for-byte unchanged, and the overall result needed attention.
+- After moving only the disposable conflict aside, Retry showed **2 reused + 1 copied** on APFS and **3 reused** on exFAT. All media verified, but the existing ASC MHL history correctly kept the handoff outcome unsafe. The explicit **Retry without ASC MHL** then reverified all six copies and completed successfully. History retained the earlier failed attempts and retry links.
+- Replacing the selected source folder before Start: the app refused it with “Its original folder could not be confirmed.” Neither backup gained an output folder for the replacement.
+- The final signed archive retained the retry evidence after relaunch, displayed the corrected left alignment and ejected the verified disposable source through the app. Setup preferences and selections were restored afterward.
+
+Independent file checks confirmed source hashes, sizes, modification times and permissions were unchanged. Four JSON reports preserved the operator and edited notes and recorded the expected safety sequence: success, conflict/unsafe, existing-history/unsafe, success without new MHL. Failure reports append issue details to the operator's notes; the initial probe incorrectly expected exact note equality and was corrected to check the preserved first line plus the failure verdict.
+
+One native folder-picker attempt left Choose Source disabled after Go to Folder. Cancelling, reopening and navigating into the same folder enabled it. This was a transient UI observation, not a reproduced BitMatch code defect.
+
+Raw signed-build logs, sample reports/MHL and independent file-check results are in the local validation directory. All three disposable images were detached and removed after retaining the small evidence files. Physical iPhone/iPad access/background testing remains outside this Mac and simulator coverage. A future published release still needs notarization and distribution checks.
+
+After the alignment fix, the full Mac suite passed again: **1,097 passed, 12 skipped, zero failures**. `mac-closeout-summary.json` and `mac-closeout.log` retain that result. The simulator test counts above precede the alignment-only follow-up. A fresh shared iPhone/iPad Release simulator build (arm64 and x86_64) then succeeded; its log is `ios-closeout-build.log`. The signed Release build still reports existing warnings about the updater conformance, a trailing closure, unused animation results, AppIntents metadata and the app category; this is not a warning-free build claim.

@@ -556,6 +556,7 @@ struct TransferRecoveryDetails: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
