@@ -121,6 +121,32 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         }
     }
 
+    /// Plant: include a recognized ._manifest.mhl metadata companion in the XML inputs.
+    func testSavedCheckIgnoresRealExFATMHLMetadataCompanion() async throws {
+        let destination = mount.appendingPathComponent("Metadata", isDirectory: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let data = Data("synthetic media".utf8)
+        try data.write(to: destination.appendingPathComponent("clip.bin"))
+        let digest = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(destinationURL: destination,
+            files: [.init(relativePath: "clip.bin", size: Int64(data.count), expectedSHA256: digest)],
+            startTime: Date(), toolVersion: "metadata-probe")
+        let attribute = Data("synthetic attribute".utf8)
+        let status = attribute.withUnsafeBytes {
+            setxattr(manifest.path, "com.bitmatch.fixture", $0.baseAddress, $0.count, 0, 0)
+        }
+        XCTAssertEqual(status, 0)
+        let companion = manifest.deletingLastPathComponent().appendingPathComponent("._" + manifest.lastPathComponent)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: companion.path), "Must exercise a real macOS-generated companion")
+        let before = try Data(contentsOf: companion)
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let result = try await checker.check(checker.discover(under: destination)) { _ in }
+        XCTAssertTrue(result.isIntact)
+        XCTAssertEqual(result.recordedFileCount, 1)
+        XCTAssertEqual(result.records.count, 1)
+        XCTAssertEqual(try Data(contentsOf: companion), before)
+    }
+
     /// Extends the existing real-exFAT copy test through the handoff step
     /// performed by CopyVerifyExecutor AFTER TransferPipeline has returned.
     func testStandardCopyThenMHLOnRealExFAT() async throws {

@@ -45,3 +45,11 @@ After merging #20 into this branch, the full Mac run passed: 1099 passed, 13 ski
 ## Limits
 
 This is file-content interoperability coverage, not certification against every offload tool. BitMatch still does not discover standalone classic MHL, verify ASC directory/root hashes or chains, interpret rename history, or extend existing histories. Those roadmap items remain open. Supported BitMatch reports still take precedence over ASC inventories for Check. The saved-report scanner summarizes past evidence; it does not freshly verify media. Synthetic fixtures do not establish physical cable, dock or drive reliability.
+
+## Signed-walkthrough follow-up
+
+The first signed 0.2.8 candidate completed a four-file Standard transfer to APFS and exFAT, with matching source/destination hashes, MHL on both backups and reports. Check then refused the valid exFAT history because macOS had created `._<manifest>.mhl` for its extended attributes. The stricter reader was treating that metadata container as an XML document. This was reproduced in the signed UI before publication.
+
+Discovery now excludes an MHL input only when the existing bounded AppleDouble validator proves it is a metadata-only container with a real companion. This does not remove any file or change transfer filtering. A real mounted-exFAT regression uses `setxattr` to make macOS create the companion. A five-case synthetic test covers recognized metadata, a damaged lookalike, an orphan, an AppleDouble data-fork record and legitimate XML with a `._` name. Both metadata regressions failed before the fix and passed afterward; the other four controls remain correct. The first test draft incorrectly expected two records for duplicate file evidence; it was corrected to use distinct files before the retained red run.
+
+The official verifier initially rejected the signed exFAT folder for newly generated metadata files absent from the MHL. It verified all four recorded media files when run with its explicit `._*` ignore pattern. That reference invocation checks this known synthetic media set; BitMatch's production record filter is narrower and validates the container and companion.

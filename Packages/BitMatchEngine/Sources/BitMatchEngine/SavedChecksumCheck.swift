@@ -135,6 +135,9 @@ public struct SavedChecksumCheck: Sendable {
         var mhlEntries: [ExpectedFile] = []
         for historyURL in histories {
             try Task.checkCancellation()
+            // macOS may materialize extended attributes as ._manifest.mhl on
+            // exFAT. Prove it is metadata; a ._ name alone is not enough.
+            if try Self.isMHLMetadataCompanion(historyURL) { continue }
             mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot))
         }
         guard !mhlEntries.isEmpty else { throw CheckError.notFound }
@@ -345,6 +348,15 @@ public struct SavedChecksumCheck: Sendable {
         guard url.pathExtension.caseInsensitiveCompare("mhl") == .orderedSame,
               let relative = try? RelativePathResolver(base: root).resolve(url) else { return false }
         return relative.split(separator: "/").contains { $0.caseInsensitiveCompare("ascmhl") == .orderedSame }
+    }
+
+    private static func isMHLMetadataCompanion(_ url: URL) throws -> Bool {
+        guard url.lastPathComponent.hasPrefix("._") else { return false }
+        guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
+            throw CheckError.unreadableEvidence
+        }
+        let entry = FileEntry(url: url, relativePath: url.lastPathComponent, size: Int64(size))
+        return try !AppleDoubleSelection.companions(in: [entry]).isEmpty
     }
 
     private static func readMHL(_ url: URL, root: URL) throws -> [ExpectedFile] {
