@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Recheck the original source and backup folders when editing or starting a transfer. Replaced or disconnected folders are refused before copying, even when the path looks unchanged.
+- Catch queued cards that would share or nest their output folders, including two cards named “NO NAME.”
+- Expanded queue and History details show reused, newly copied, failed and pending files for each backup. Retries link to the previous attempt, which stays in History; unknown older counts stay unknown. JSON and CSV history exports retain the recovery details.
+- Editing a queued card brings it back up into Setup on Mac and closes the queue sheet on iPhone. Notes, operator and saved transfer settings stay with the card.
+
 ## [0.2.7] - 2026-10-10
 
 - Moved AppleDouble handling to Settings → File handling. Recognized metadata companions are ignored by default for unset preferences; saved choices and queued transfers keep their policy. Other hidden files and camera sidecars are preserved.

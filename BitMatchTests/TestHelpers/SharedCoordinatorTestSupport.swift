@@ -217,6 +217,7 @@ final class SharedProjectFixture {
         await waitUntil(timeout: .seconds(5)) {
             coordinator.sourceFolderInfo?.url == folders.source
                 && !coordinator.isFolderInfoLoading(for: folders.source)
+                && !coordinator.appleDoubleSelection.isReviewing
         }
     }
 

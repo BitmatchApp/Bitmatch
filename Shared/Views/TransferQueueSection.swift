@@ -596,6 +596,9 @@ struct TransferQueueSection: View {
         } else if let outcome = row.outcome {
             finishedDetails(row, outcome: outcome)
         }
+        if row.isFinished, let record = coordinator.transferJournal.records.first(where: { $0.id == row.id }) {
+            TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
+        }
     }
 
     private var liveProgressPresentation: TransferProgressPresentation {
