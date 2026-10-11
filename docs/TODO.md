@@ -1,6 +1,6 @@
 # To do
 
-The working list for BitMatch, updated after 0.2.7 on October 10, 2026. These are roadmap candidates, not instructions to implement every feature or a promised release scope. The report and transfer-details batch shipped in 0.2.7; see [validation](TODO_REPORTS_VALIDATION.md). When something ships, record it in the [changelog](../CHANGELOG.md) and remove the finished task here.
+The working list for BitMatch, updated for 0.2.8 on October 10, 2026. These are roadmap candidates, not instructions to implement every feature or a promised release scope. The report and transfer-details batch shipped in 0.2.7; see [validation](TODO_REPORTS_VALIDATION.md). When something ships, record it in the [changelog](../CHANGELOG.md) and remove the finished task here.
 
 **Source media → trustworthy copies → independent verification → accurate evidence → safe-to-erase decision.**
 
@@ -20,7 +20,7 @@ Investigate #16 first. Then follow evidence and actual user reports. Preserve so
 
 ## P1 — Reliability and recovery
 
-The queue/recovery items marked complete below are implemented on `feature/queue-recovery`, pending merge; see [validation and limits](QUEUE_RECOVERY_VALIDATION.md).
+The queue/recovery items marked complete below were merged in #20 for 0.2.8; see [validation and limits](QUEUE_RECOVERY_VALIDATION.md).
 
 - [ ] **Storage-aware verification scheduling.** Replace the CPU-derived default with scheduling informed by physical storage identity and measured behavior. Avoid competing large sequential reads on one HDD; permit useful concurrency across independent SSD/NVMe devices. Account for shared devices and buses only where reliably identifiable. Preserve diagnostic worker-count overrides and benchmark actual throughput and memory use on physical hardware, including the two-drive test below. **Acceptance:** independent destination readback remains complete, cancellation still stops the run, and unknown topology gets a conservative policy rather than invented independence.
 
