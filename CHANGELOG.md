@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Fixed saved-checksum checks for nested card folders, leading/trailing filename spaces and namespace-prefixed ASC MHL files.
+- Damaged or unsupported checksum records now get a clear explanation instead of silently checking only the readable part. Unknown report algorithms no longer count as verified. ASC results state that file contents were checked, not history chains or directory structure.
+- Added permanent synthetic report/MHL compatibility fixtures, checked with the official ASC tools, and repaired the independent reference-validation script.
 - Recheck the original source and backup folders when editing or starting a transfer. Replaced or disconnected folders are refused before copying, even when the path looks unchanged.
 - Catch queued cards that would share or nest their output folders, including two cards named “NO NAME.”
 - Expanded queue and History details show reused, newly copied, failed and pending files for each backup. Retries link to the previous attempt, which stays in History; unknown older counts stay unknown. JSON and CSV history exports retain the recovery details.

@@ -34,7 +34,13 @@ The two new Mac presentation/integration tests were also mutation-checked. Repla
 
 The full Mac suite passed: 1,092 passed, 12 opt-in/hardware skips, zero failures. Both new warning captures rendered at 580 and 1,000 points. AppKit bitmap captures omit some native layers, so these are layout evidence, not a substitute for the signed-app walkthrough.
 
+The iPhone 17 Pro simulator passed all 71 tests on the compatibility branch. After merging #20 into that branch, the iPad Air 11-inch (M4) simulator passed all 72 tests. Both runs included opt-in workflow renders. The new warning was inspected at 320 and 820 points; text and actions remained readable. These are simulated/seeded views, not physical-device file-provider testing.
+
 The initial reference environment used the shell's Python 3.9 and failed the tool's Python 3.11+ requirement. The successful reference run uses a separate Python 3.12 environment. That setup failure is retained with the test logs under `dist/validation/evidence-compat/`.
+
+## Combined pre-release checks
+
+After merging #20 into this branch, the full Mac run passed: 1099 passed, 13 skipped, zero failures. `test.sh engine-test` also passed: 123 XCTest cases, 15 intentional skips, zero failures; the 150-test Swift Testing run passed, with the same six opt-in skips listed above. The mounted exFAT handoff and 54-transfer filesystem matrix ran. The final repaired reference script passed its corpus, fresh output, second-generation and corruption controls.
 
 ## Limits
 
