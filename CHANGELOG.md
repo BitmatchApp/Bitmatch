@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-10-11
+
+- Fixed memory growth while creating ASC MHL checksum histories for large backups, including exFAT destinations. BitMatch still rereads the backup where needed, checks the file, and publishes the history only after it is complete.
+- Fixed similar memory growth when Check reads large files against XXH64 saved checksums.
+
 ## [0.2.8] - 2026-10-10
 
 - Check recognizes macOS metadata companions of MHL files on exFAT, so they no longer make an intact saved history look unreadable. Other `._` files are still validated normally.
