@@ -564,11 +564,18 @@ private enum XXH64 {
         #endif
         var state = State()
         var bytesRead: Int64 = 0
-        while let data = try handle.read(upToCount: 1_048_576), !data.isEmpty {
+        while true {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
-            state.update(data)
-            bytesRead += Int64(data.count)
+            // Check can hash a whole clip without a suspension. Release each
+            // Foundation read buffer before asking for the next chunk.
+            let chunkCount = try autoreleasepool { () throws -> Int in
+                let data = try handle.read(upToCount: 1_048_576) ?? Data()
+                if !data.isEmpty { state.update(data) }
+                return data.count
+            }
+            if chunkCount == 0 { break }
+            bytesRead += Int64(chunkCount)
         }
         guard bytesRead == initial.size, try snapshot(url) == initial else {
             throw NSError(

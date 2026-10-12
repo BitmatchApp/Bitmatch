@@ -201,13 +201,23 @@ public enum ASCMHLGenerator: Sendable {
                 var sha = SHA256()
                 var md5 = Insecure.MD5()
                 var count: Int64 = 0
-                while let data = try handle.read(upToCount: 4 * 1_024 * 1_024), !data.isEmpty {
+                while true {
                     try Task.checkCancellation()
-                    sha.update(data: data)
-                    md5.update(data: data)
-                    count += Int64(data.count)
-                    readHooks?.didRead?(path, data.count)
-                    processedBytes += Int64(data.count)
+                    // This is a synchronous, whole-file pass. Drain Foundation's
+                    // temporary read buffer before the next chunk; large exFAT
+                    // media cannot rely on an async suspension to release it.
+                    let chunkCount = try autoreleasepool { () throws -> Int in
+                        let data = try handle.read(upToCount: 4 * 1_024 * 1_024) ?? Data()
+                        if !data.isEmpty {
+                            sha.update(data: data)
+                            md5.update(data: data)
+                        }
+                        return data.count
+                    }
+                    if chunkCount == 0 { break }
+                    count += Int64(chunkCount)
+                    readHooks?.didRead?(path, chunkCount)
+                    processedBytes += Int64(chunkCount)
                     emit()
                 }
                 digestsAndCount = (
