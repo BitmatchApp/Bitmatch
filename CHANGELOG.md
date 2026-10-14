@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Bound saved JSON, MHL and adjacent checksum-manifest reads during loading. Damaged, oversized or conflicting adjacent checksum records are reported instead of silently falling back to partial evidence.
+- Keep a retained remote verification timestamp from claiming a photographer card is fully backed up when its local evidence is rejected. Remote status labels distinguish downloaded readback from older server-checksum evidence.
+- Expand the independent ASC MHL corpus with unsupported SHA-1/XXH128 inventories and XXH64 block-boundary vectors; add a Linux-compatible reference checker and CI job. Apple engine/app validation remains pending for this batch.
+
 ## [0.2.9] - 2026-10-11
 
 - Fixed memory growth while creating ASC MHL checksum histories for large backups, including exFAT destinations. BitMatch still rereads the backup where needed, checks the file, and publishes the history only after it is complete.

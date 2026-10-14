@@ -14,6 +14,8 @@ Follow evidence and actual user reports. The AppleDouble request [#16](https://g
 
 ## P1 — Reliability and recovery
 
+October 14 cloud progress: [the assurance audit](VERIFICATION_ASSURANCE_AUDIT.md) maps current source/destination reads, digests, evidence and wording gaps. The branch adds bounded saved-evidence reads and guards the combined photographer backup timestamp against rejected local evidence. New Swift regressions still need the [Mac validation gates](CLOUD_RELIABILITY_HANDOFF.md); neither P0 report nor the full audit acceptance below is closed.
+
 The queue/recovery items marked complete below were merged in #20 for 0.2.8; see [validation and limits](QUEUE_RECOVERY_VALIDATION.md).
 
 The priority buckets are not a strict implementation sequence: investigate P0 reports and audit assurance wording first, use physical benchmarks for default and scheduling decisions, and validate ASC MHL chains read-only before extending them. Source-read retry depends on fault classification and source identity; destination re-copy or repair additionally requires proof of output ownership. Neither retry path depends on MHL validation.
@@ -41,6 +43,8 @@ The priority buckets are not a strict implementation sequence: investigate P0 re
 - [ ] **Opt-in crash reports.** Investigate Apple's MetricKit crash/hang diagnostics, off by default, with no third-party service or automatic sending. Existing local diagnostic exports already record phases, cancellations, verification breadcrumbs and memory use; they cannot establish why a process disappeared.
 
 ## P2 — Evidence and interoperability
+
+October 14 cloud progress: the independent ASC corpus now includes SHA-1/XXH128 unsupported-format fixtures and XXH64 lane/tail boundaries. The Linux-compatible reference runner passed 68 checks, including negative controls and unchanged originals. Swift consumer tests, fresh BitMatch output and Apple integration still require validation; interoperability and structural/history work below remain open.
 
 - [ ] **Upstream MHL / source provenance.** Reuse `SavedChecksumCheck` where appropriate to offer source verification against accompanying classic MHL or ASC MHL evidence. Record “source arrived intact” separately from “BitMatch created verified backups.” Preserve original manifests. Current Check discovers ASC inventories under `ascmhl/`; standalone classic-MHL discovery and an upstream transfer verdict still need work. **Acceptance:** incomplete, mismatched, malformed and unsupported evidence gets an honest separate verdict; a failed provenance check never becomes success and never prevents preservation of damaged-but-irreplaceable media.
 
