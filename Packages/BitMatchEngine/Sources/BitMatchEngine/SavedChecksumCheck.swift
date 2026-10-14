@@ -242,13 +242,14 @@ public struct SavedChecksumCheck: Sendable {
     private static func readReport(_ url: URL, root: URL) throws -> [ExpectedFile] {
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
-        guard let payload = try? decoder.decode(ReportPayload.self, from: boundedEvidenceData(url)) else {
+        let data = try boundedEvidenceData(url)
+        guard let payload = try? decoder.decode(ReportPayload.self, from: data) else {
             throw CheckError.unreadableEvidence
         }
         guard payload.mode == nil || payload.mode == "copy-and-verify" else { return [] }
         let algorithm = reportAlgorithm(payload.verification?.algorithm)
         let record = Record(url: url, date: payload.timestamp, kind: .bitMatchReport)
-        let manifest = readAdjacentManifest(for: url, root: root)
+        let manifest = try readAdjacentManifest(for: url, root: root)
         var paths = Set<String>()
         return try payload.results.compactMap { item in
             guard ResultRow.isVerifiedStatus(item.status), let target = item.target,
@@ -281,32 +282,49 @@ public struct SavedChecksumCheck: Sendable {
     }
 
     private static func boundedEvidenceData(_ url: URL) throws -> Data {
-        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
-        guard let size, size <= EvidenceReader.maxReportBytes else { throw CheckError.unreadableEvidence }
-        let data = try Data(contentsOf: url)
-        guard data.count <= EvidenceReader.maxReportBytes else { throw CheckError.unreadableEvidence }
-        return data
+        do {
+            return try EvidenceReader.boundedData(from: url)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw CheckError.unreadableEvidence
+        }
     }
 
-    private static func readAdjacentManifest(for report: URL, root: URL) -> [String: (checksum: String, algorithm: Algorithm)] {
+    private static func readAdjacentManifest(for report: URL, root: URL) throws -> [String: (checksum: String, algorithm: Algorithm)] {
         let base = report.deletingPathExtension()
         let choices: [(String, Algorithm)] = [("sha-256.txt", .sha256), ("md5.txt", .md5), ("xxh64.txt", .xxh64)]
         for (suffix, algorithm) in choices {
             let url = base.appendingPathExtension(suffix)
-            guard let text = try? String(contentsOf: url, encoding: .utf8) else { continue }
+            let data: Data
+            do {
+                data = try EvidenceReader.boundedData(from: url)
+            } catch let error as CocoaError where error.code == .fileReadNoSuchFile || error.code == .fileNoSuchFile {
+                continue // No companion is normal; an existing damaged one is not.
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw CheckError.unreadableEvidence
+            }
+            guard let text = String(data: data, encoding: .utf8) else { throw CheckError.unreadableEvidence }
             var values: [String: (String, Algorithm)] = [:]
             for line in text.split(whereSeparator: \.isNewline) {
+                try Task.checkCancellation()
                 let raw = String(line)
                 if raw.hasPrefix("#") || raw.trimmingCharacters(in: .whitespaces).isEmpty { continue }
                 let escaped = raw.hasPrefix("\\")
                 let content = escaped ? String(raw.dropFirst()) : raw
-                guard let separator = content.range(of: "  ") else { continue }
+                guard let separator = content.range(of: "  ") else { throw CheckError.unreadableEvidence }
                 let checksum = String(content[..<separator.lowerBound])
                 var path = String(content[separator.upperBound...])
                 if escaped {
                     path = unescapeManifestPath(path)
                 }
-                if let relative = relativePath(path, root: root), isValid(checksum, for: algorithm) {
+                guard isValid(checksum, for: algorithm), !path.isEmpty else { throw CheckError.unreadableEvidence }
+                if let relative = relativePath(path, root: root) {
+                    if let previous = values[relative], previous.0 != checksum.lowercased() {
+                        throw CheckError.unreadableEvidence
+                    }
                     values[relative] = (checksum.lowercased(), algorithm)
                 }
             }

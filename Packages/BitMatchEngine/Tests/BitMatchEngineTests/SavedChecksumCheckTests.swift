@@ -4,6 +4,64 @@ import Testing
 @testable import BitMatchEngine
 
 struct SavedChecksumCheckTests {
+    /// Plant: ignore a damaged adjacent manifest and fall back to the JSON digest.
+    @Test(arguments: ["oversized", "invalid-utf8", "malformed", "invalid-digest", "conflicting-duplicate"])
+    func damagedAdjacentManifestCannotBeIgnored(kind: String) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        let report = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        let manifest = report.deletingPathExtension().appendingPathExtension("sha-256.txt")
+        let validLine = "\(sha256("original"))  \(file.path)\n"
+        var data = Data(validLine.utf8)
+        switch kind {
+        case "invalid-utf8": data.append(0xff)
+        case "malformed": data.append(Data("not a checksum record\n".utf8))
+        case "invalid-digest": data.append(Data("broken  \(file.path)\n".utf8))
+        case "conflicting-duplicate": data.append(Data("\(sha256("different"))  \(file.path)\n".utf8))
+        default: break
+        }
+        try data.write(to: manifest)
+        if kind == "oversized" {
+            let handle = try FileHandle(forWritingTo: manifest)
+            defer { try? handle.close() }
+            try handle.truncate(atOffset: UInt64(EvidenceReader.maxReportBytes) + 1)
+        }
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await makeChecker().discover(under: root)
+        }
+    }
+
+    /// Plant: reject all duplicate lines or stop decoding GNU escaped paths.
+    @Test func identicalDuplicateAndEscapedManifestPathsRemainUsable() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile(" padded\\clip\nname.mov ", text: "original", under: root)
+        let digest = sha256("original")
+        let report = try writeReport(root: root, target: file, checksum: digest, date: date(2026, 2, 1))
+        let escaped = file.path.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\n", with: "\\n")
+        let line = "\\\(digest)  \(escaped)\n"
+        try Data(("# BitMatch Checksum Manifest\n\n" + line + line).utf8)
+            .write(to: report.deletingPathExtension().appendingPathExtension("sha-256.txt"))
+        let result = try await run(root)
+        #expect(result.isIntact)
+        #expect(result.matchingPaths == [file.lastPathComponent])
+    }
+
+    /// Plant: use an unbounded read, or reject files exactly at the limit.
+    @Test(arguments: [0, 1, 7, 1_048_577])
+    func boundedEvidenceReaderHonorsExactLimit(size: Int) throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("evidence.bin")
+        let data = Data(repeating: 0x61, count: size)
+        try data.write(to: file)
+        #expect(try EvidenceReader.boundedData(from: file, maxBytes: size) == data)
+        #expect(throws: EvidenceReader.BoundedReadError.self) {
+            _ = try EvidenceReader.boundedData(from: file, maxBytes: size - 1)
+        }
+    }
+
     @Test func allRecordedFilesMatchAndReportsBeatMHL() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

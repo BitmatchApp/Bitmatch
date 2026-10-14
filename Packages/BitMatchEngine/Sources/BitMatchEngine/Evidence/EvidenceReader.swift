@@ -10,6 +10,31 @@ public enum EvidenceReader: Sendable {
     /// A JSON report lists every file, so this allows roughly 150,000 files.
     public static let maxReportBytes = 64 * 1024 * 1024
 
+    enum BoundedReadError: Error { case tooLarge }
+
+    /// Enforce the limit while reading as well as before opening. A file may
+    /// grow after its metadata was inspected; never read that growth unbounded.
+    static func boundedData(from url: URL, maxBytes: Int = maxReportBytes) throws -> Data {
+        guard maxBytes >= 0 else { throw BoundedReadError.tooLarge }
+        let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+        guard let size, size <= maxBytes else { throw BoundedReadError.tooLarge }
+        let handle = try FileHandle(forReadingFrom: url)
+        defer { try? handle.close() }
+        var data = Data()
+        while true {
+            try Task.checkCancellation()
+            let finished = try autoreleasepool {
+                // Read one byte beyond the remaining allowance to detect growth.
+                let count = min(1024 * 1024, maxBytes - data.count) + 1
+                let chunk = try handle.read(upToCount: count) ?? Data()
+                guard chunk.count <= maxBytes - data.count else { throw BoundedReadError.tooLarge }
+                data.append(chunk)
+                return chunk.isEmpty
+            }
+            if finished { return data }
+        }
+    }
+
     /// A report from the chosen day that was found but not listed, so the
     /// Master Report can say so instead of leaving it only in the log.
     public struct SkippedReport: Equatable, Identifiable, Sendable {
@@ -94,7 +119,7 @@ public enum EvidenceReader: Sendable {
                     skip(fileURL, .tooLarge)
                     continue
                 }
-                let data = try Data(contentsOf: fileURL)
+                let data = try boundedData(from: fileURL, maxBytes: maxBytes)
                 if let snapshot = snapshot(reportData: data, reportURL: fileURL) {
                     reports.append(FoundReport(url: fileURL, snapshot: snapshot))
                 } else if isBitMatchNamed(fileURL.lastPathComponent) {
@@ -102,6 +127,10 @@ public enum EvidenceReader: Sendable {
                     // report. Other apps' `*_report.json` files are ignored.
                     skip(fileURL, .unreadable)
                 }
+            } catch BoundedReadError.tooLarge {
+                skip(fileURL, .tooLarge)
+            } catch is CancellationError {
+                break
             } catch {
                 SharedLogger.error("Error reading report at \(fileURL.path): \(error)", category: .transfer)
                 skip(fileURL, .unreadable)
