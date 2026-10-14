@@ -65,7 +65,7 @@ Standard does not independently reread the source: a wrong source read can be co
 
 ## What It Does
 
-- **Multi destination copy**: the card is read once and written to every drive at the same time, then each drive is read back and checked with SHA-256. Each destination gets its own results.
+- **Multi destination copy**: the copy pass reads the card once and writes to every drive at the same time. Verification reads each drive back; Thorough and Paranoid also reread the card. Each destination gets its own results.
 - **Careful about "safe to erase"**: a card or folder that changes during the copy, online-only iCloud/Dropbox files, or two "backups" on the same physical drive never count as safe. Recognized AppleDouble `._` metadata companions are skipped by default; other hidden files and camera sidecars stay in the copy. Turn off **Ignore AppleDouble metadata files** in **Settings → File handling** to preserve them. That copy can verify the selected files, but it won't mark the whole card safe to erase.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
@@ -108,6 +108,8 @@ Build both the Mac and iPad schemes before submitting. Not a coder? Testing on y
 ## License (MIT, but read this)
 
 - **Please do** fork it, use it, improve it, credit me.
-- **Please don't** slap it on the App Store unchanged and charge for it. I can't legally stop you, but it's lazy.
+- **Please don't** change the name, put essentially the same app on the Mac or iOS App Store, and charge for it. If you ship a fork, build something of your own and give it its own name and icon.
 
-Built over a year of "I'll just add one more feature." MIT License, be a good person. See [LICENSE](LICENSE) for the legal text.
+MIT does allow independently branded forks, including App Store distribution. If you spot a listing pretending to be BitMatch, [file an issue](https://github.com/BitmatchApp/Bitmatch/issues) so I can take a look.
+
+Built over a year of "I'll just add one more feature." Be a good person. See [LICENSE](LICENSE) for the code license and [BRANDING.md](BRANDING.md) for the name and icon.
