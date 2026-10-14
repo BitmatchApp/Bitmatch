@@ -1,0 +1,62 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-14T15:34:05+00:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <xxh64 hashdate="2026-10-14T15:34:05.923806+00:00">5cc40434c793596d</xxh64>
+      </content>
+      <structure>
+        <xxh64 hashdate="2026-10-14T15:34:05.923806+00:00">85062b0476ba9401</xxh64>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0000.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923391+00:00">ef46db3751d8e999</xxh64>
+    </hash>
+    <hash>
+      <path size="1" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0001.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923458+00:00">e934a84adb052768</xxh64>
+    </hash>
+    <hash>
+      <path size="31" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0031.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923529+00:00">c346d2b59b4d8ee1</xxh64>
+    </hash>
+    <hash>
+      <path size="32" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0032.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923576+00:00">cbf59c5116ff32b4</xxh64>
+    </hash>
+    <hash>
+      <path size="33" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0033.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923651+00:00">0c535d1acafb8ead</xxh64>
+    </hash>
+    <hash>
+      <path size="255" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0255.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923685+00:00">566d96b832b967c1</xxh64>
+    </hash>
+    <hash>
+      <path size="256" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0256.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923719+00:00">f33944343ee85824</xxh64>
+    </hash>
+    <hash>
+      <path size="257" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-0257.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923750+00:00">9dd5394c26b3c4d8</xxh64>
+    </hash>
+    <hash>
+      <path size="1025" lastmodificationdate="2026-10-14T15:34:05+00:00">bytes-1025.bin</path>
+      <xxh64 action="original" hashdate="2026-10-14T15:34:05.923781+00:00">cfd73aedd2d6a39d</xxh64>
+    </hash>
+  </hashes>
+</hashlist>

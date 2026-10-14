@@ -133,11 +133,45 @@ struct EvidenceCompatibilityTests {
     }
 
     /// Plant: silently ignore C4-only records beside supported histories.
-    @Test func unsupportedReferenceAlgorithmCannotHideBesideMD5() async throws {
+    @Test(arguments: ["c4", "sha1", "xxh128"])
+    func unsupportedReferenceAlgorithmCannotHideBesideMD5(algorithm: String) async throws {
         let root = try copyReference("md5")
         defer { try? FileManager.default.removeItem(at: root) }
-        try FileManager.default.copyItem(at: fixture("reference/c4"), to: root.appendingPathComponent("unsupported"))
-        await #expect(throws: (any Error).self) { _ = try await checker.discover(under: root) }
+        try FileManager.default.copyItem(at: fixture("reference/\(algorithm)"), to: root.appendingPathComponent("unsupported"))
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) { _ = try await checker.discover(under: root) }
+    }
+
+    /// Plant: accept an unsupported-only inventory as an empty successful check.
+    @Test(arguments: ["c4", "sha1", "xxh128"])
+    func unsupportedReferenceAlgorithmIsExplicitWhenAlone(algorithm: String) async throws {
+        let root = try copyReference(algorithm)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) { _ = try await checker.discover(under: root) }
+    }
+
+    /// Plant: break XXH64's 32-byte lane loop or its 8/4/1-byte tails.
+    @Test func officialXXH64BlockAndTailBoundaries() async throws {
+        let container = try copyReference("xxh64-boundaries")
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("media")
+        let before = try contents(container)
+        let intact = try await run(root)
+        #expect(intact.isIntact)
+        #expect(intact.recordedFileCount == 9)
+        #expect(try contents(container) == before)
+        for size in [0, 1, 31, 32, 33, 255, 256, 257, 1025] {
+            let name = String(format: "bytes-%04d.bin", size)
+            let file = root.appendingPathComponent(name)
+            let original = try Data(contentsOf: file)
+            #expect(original.count == size)
+            try Data(repeating: 0xff, count: max(1, size)).write(to: file)
+            let damaged = try await run(root)
+            #expect(!damaged.isIntact)
+            #expect(damaged.changedPaths == [name])
+            #expect(damaged.matchingPaths.count == 8)
+            try original.write(to: file)
+        }
+        #expect(try contents(container) == before)
     }
 
     /// Plant: silently drop an invalid/unsupported verified report row or corrupt report.

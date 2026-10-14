@@ -31,18 +31,9 @@ for entry in entries:
     assert hasher.string_digest() == entry.findtext('m:c4', namespaces=ns)
 print('PASS: official schemas, byte verification, chain C4, and next-generation interoperability')
 PY
-# Permanent external-tool fixtures: validate without rewriting their histories.
-corpus="$project/Packages/BitMatchEngine/Tests/BitMatchEngineTests/Fixtures/EvidenceCompatibility/reference"
-for algorithm in md5 xxh64 c4; do
-    fixture="$corpus/$algorithm"
-    for manifest in "$fixture/ascmhl/"*.mhl; do
-        "$cli/ascmhl-debug" xsd-schema-check -xsd "$reference/xsd/ASCMHL.xsd" "$manifest"
-    done
-    "$cli/ascmhl-debug" xsd-schema-check -df -xsd "$reference/xsd/ASCMHLDirectory__combined.xsd" "$fixture/ascmhl/ascmhl_chain.xml"
-    "$cli/ascmhl-debug" verify -v "$fixture"
-    "$cli/ascmhl" diff "$fixture"
-done
-echo 'PASS: permanent MD5, XXH64 and C4 corpus validated independently'
+# This subset also runs on Linux without Swift. Includes unchanged originals,
+# unsupported formats, block-boundary vectors and disposable negative controls.
+"$cli/python" "$project/Scripts/ascmhl/validate_corpus.py" "$reference"
 
 # Corruption must be detected by the independent reference verifier.
 printf 'corrupted' > "$workspace/media/Camera A/clip & café.txt"

@@ -14,4 +14,16 @@ The tests copy fixtures into disposable roots. MD5/XXH64, zero-byte files, Unico
 
 `reports/` captures current, older, extended, Quick, unsafe, unknown-method, unknown-algorithm and truncated JSON. Only current and compatible extra-field snapshots may supply a verified saved-report status. These handcrafted snapshots test reader compatibility; they are not fresh verification evidence or output attributed to an external offload application.
 
+October 14 additions use the same pinned reference commit and license: `sha1/` and `xxh128/` are valid external inventories that BitMatch must explicitly reject as unsupported, both alone and beside a readable history. `xxh64-boundaries/` contains original byte sequences (`byte[index] = index % 251`) of lengths 0, 1, 31, 32, 33, 255, 256, 257 and 1025, covering XXH64's lane and tail boundaries. These fixtures passed the independent checks below; the new Swift consumer regressions still require an Apple test run.
+
+Run the corpus checks on Linux or macOS without Swift, using the reference venv:
+
+```
+python Scripts/ascmhl/validate_corpus.py /path/to/pinned/ascmitc/mhl
+```
+
+The runner requires the pinned, unmodified checkout, uses its code and schemas, suppresses the CLI's online update check, and checks inventory/chain schemas, generation counts, C4 chain digests, bytes and paths. It checks changed, missing, renamed, extra, modified-manifest and missing-manifest cases only in disposable copies, requiring specific failure codes. A rename must report both the new and missing path. SHA-1/XXH128/C4 are verified by the reference tool here, not claimed as supported by BitMatch. Originals must remain byte-for-byte unchanged. `validate_reference.sh` runs this subset as well as the Apple-only freshly generated BitMatch workflow. The corpus-only runner is also a Linux CI job.
+
+Generate just new datasets without replacing existing originals using `--datasets sha1 xxh128 xxh64-boundaries`. Default generation creates all six datasets. Generation suppresses the reference CLI's online update check as well.
+
 `classic-v1.mhl` documents the current unsupported format. BitMatch still discovers ASC inventories under `ascmhl/`; this batch does not add standalone classic-MHL discovery or claim full chain, rename or directory-hash verification. ASC checks explicitly describe their file-content scope. Histories are never rewritten by these checks.

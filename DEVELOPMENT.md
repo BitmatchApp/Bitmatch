@@ -89,6 +89,7 @@ xcrun xccov view --report --json coverage.xcresult
 - `Scripts/run_apfs_fault_tests.sh` creates and removes a marked, disposable APFS image, then checks the case in which one destination becomes inaccessible while another succeeds.
 - `Scripts/run_soak_tests.sh` runs repeatable transfer stress. Set `BITMATCH_SOAK_SEED` and `BITMATCH_SOAK_ITERATIONS` to reproduce a failure; the defaults are `20260711` and `25`. It prints validated JSON before removing its marked temporary folder.
 - `Scripts/ascmhl/validate_reference.sh` checks generated ASC MHL against the official reference tooling.
+- `python Scripts/ascmhl/validate_corpus.py /path/to/pinned/ascmitc/mhl` checks the permanent external-tool corpus on Linux or macOS without Swift. Use Python 3.11+ with the pinned reference checkout installed; see the [fixture README](Packages/BitMatchEngine/Tests/BitMatchEngineTests/Fixtures/EvidenceCompatibility/README.md). This does not run the Swift reader or validate newly generated BitMatch output.
 - For cable removal, sleep, low-power hubs, exFAT and other physical-media cases, follow [docs/HARDWARE_TESTING.md](docs/HARDWARE_TESTING.md) and record results in [docs/HARDWARE_COMPATIBILITY.md](docs/HARDWARE_COMPATIBILITY.md). The automated APFS and exFAT disk-image tests do not prove that real hardware faults are safe.
 
 ## Debug tools (Mac)

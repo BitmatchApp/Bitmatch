@@ -8,6 +8,23 @@ env:
   DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
 
 jobs:
+  evidence-corpus:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/checkout@v4
+        with:
+          repository: ascmitc/mhl
+          ref: 0fb61f1e4c7c1c3ff422449aa6f091ce0d3b7687
+          path: dist/asc-reference
+          persist-credentials: false
+      - run: python -m pip install ./dist/asc-reference
+      - run: python Scripts/ascmhl/validate_corpus.py dist/asc-reference
+
   mac-tests:
     runs-on: macos-15
     timeout-minutes: 12
