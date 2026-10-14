@@ -4,9 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Bound saved JSON, MHL and adjacent checksum-manifest reads during loading. Damaged, oversized or conflicting adjacent checksum records are reported instead of silently falling back to partial evidence.
-- Keep a retained remote verification timestamp from claiming a photographer card is fully backed up when its local evidence is rejected. Remote status labels distinguish downloaded readback from older server-checksum evidence.
-- Expand the independent ASC MHL corpus with unsupported SHA-1/XXH128 inventories and XXH64 block-boundary vectors; add a Linux-compatible reference checker and CI job. Apple engine/app validation remains pending for this batch.
+- Bound saved JSON, MHL and adjacent checksum-manifest reads during loading. Damaged, oversized, conflicting or empty adjacent records are reported instead of silently falling back to partial evidence, including when another companion looks valid.
+- Keep a retained remote verification timestamp from claiming a photographer card is fully backed up when its local evidence is rejected. Remote status labels distinguish downloaded readback from older server-checksum evidence, including backups with mixed evidence. Refreshing a saved backup no longer changes its completion time.
+- Expand the independent ASC MHL corpus with unsupported SHA-1/XXH128 inventories and XXH64 block-boundary vectors; add a Linux-compatible reference checker and CI job.
 
 ## [0.2.9] - 2026-10-11
 

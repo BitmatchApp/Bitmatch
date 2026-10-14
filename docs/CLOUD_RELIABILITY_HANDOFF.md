@@ -45,6 +45,20 @@ Then run `Scripts/ascmhl/validate_reference.sh /path/to/pinned/ascmitc/mhl /path
 
 For shared UI/report changes, run simulator tests at actual installed iPhone/iPad destinations, inspect the changed remote labels and CSV/JSON/PDF report output, and check narrow widths. Exercise the signed Mac SFTP workflow with disposable files in both modes, cancellation/interruption, missing/changed local artifacts and report regeneration. Do not substitute old baseline results for this branch's run. Release builds and signed-app walkthroughs remain required before shipping.
 
+## MacBook validation — October 14, 2026
+
+On macOS 27.0.1 with Xcode 27.0 and Swift 6.4, after reviewing the cloud branch and correcting the two evidence edge cases below:
+
+- `bash test.sh engine-test`: XCTest executed 126 tests with 17 skips and zero failures; Swift Testing passed 159 tests in 32 suites, with the opt-in memory stress cases skipped.
+- `bash test.sh mac-test`: 1,101 passed, 13 skipped, zero failed, from the Xcode result bundle.
+- `bash test.sh ipad-build`: `BUILD SUCCEEDED` for the generic iOS Simulator target.
+- `bash test.sh ipad-test`: 64 passed, 8 skipped, zero failed on an iPad Air 11-inch (M4), iOS 26.5. The same counts passed on an iPhone 17 Pro, iOS 26.5.
+- `validate_corpus.py` passed all 68 checks against the pinned ASC reference on this Mac. `validate_reference.sh` also passed fresh BitMatch-generated evidence, schema/byte/path checks, next-generation append, C4 chain checks and corruption rejection. Shell syntax, Python compilation and `git diff --check` passed.
+
+Review found two additional fail-closed gaps and fixed them before the final runs: a damaged second adjacent checksum companion or an empty companion could be ignored behind an intact report, and a mixed remote backup could inherit the first file's readback label while refreshes moved its completion time forward. Focused regressions cover these cases. Isolated mutation checks made the new companion tests fail when their guards were removed; the XXH64 boundary test failed for separate lane and tail mutations; and the remote title/local-evidence tests failed when their protections were removed. The working tree used for these negative checks was discarded without changing this branch.
+
+These are local automated checks. A signed Mac SFTP walkthrough, physical-drive testing, narrow-width visual review and release builds have not been run for this branch. No evidence here establishes #10 or #23 as fixed, and this validation is not a release sign-off.
+
 ## Still open
 
 P0 #10 and #23 need actual diagnostic/field evidence. The bounded evidence-read issue is a separately identified path, not a demonstrated cause of either report. No user issue has been closed or externally commented on.

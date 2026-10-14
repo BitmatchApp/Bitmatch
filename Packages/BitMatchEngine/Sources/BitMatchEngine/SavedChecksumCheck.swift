@@ -249,7 +249,8 @@ public struct SavedChecksumCheck: Sendable {
         guard payload.mode == nil || payload.mode == "copy-and-verify" else { return [] }
         let algorithm = reportAlgorithm(payload.verification?.algorithm)
         let record = Record(url: url, date: payload.timestamp, kind: .bitMatchReport)
-        let manifest = try readAdjacentManifest(for: url, root: root)
+        let hasVerifiedFile = payload.results.contains { ResultRow.isVerifiedStatus($0.status) }
+        let manifest = try readAdjacentManifest(for: url, root: root, hasVerifiedFile: hasVerifiedFile)
         var paths = Set<String>()
         return try payload.results.compactMap { item in
             guard ResultRow.isVerifiedStatus(item.status), let target = item.target,
@@ -291,9 +292,10 @@ public struct SavedChecksumCheck: Sendable {
         }
     }
 
-    private static func readAdjacentManifest(for report: URL, root: URL) throws -> [String: (checksum: String, algorithm: Algorithm)] {
+    private static func readAdjacentManifest(for report: URL, root: URL, hasVerifiedFile: Bool) throws -> [String: (checksum: String, algorithm: Algorithm)] {
         let base = report.deletingPathExtension()
         let choices: [(String, Algorithm)] = [("sha-256.txt", .sha256), ("md5.txt", .md5), ("xxh64.txt", .xxh64)]
+        var selected: [String: (checksum: String, algorithm: Algorithm)] = [:]
         for (suffix, algorithm) in choices {
             let url = base.appendingPathExtension(suffix)
             let data: Data
@@ -308,6 +310,7 @@ public struct SavedChecksumCheck: Sendable {
             }
             guard let text = String(data: data, encoding: .utf8) else { throw CheckError.unreadableEvidence }
             var values: [String: (String, Algorithm)] = [:]
+            var recordCount = 0
             for line in text.split(whereSeparator: \.isNewline) {
                 try Task.checkCancellation()
                 let raw = String(line)
@@ -321,6 +324,7 @@ public struct SavedChecksumCheck: Sendable {
                     path = unescapeManifestPath(path)
                 }
                 guard isValid(checksum, for: algorithm), !path.isEmpty else { throw CheckError.unreadableEvidence }
+                recordCount += 1
                 if let relative = relativePath(path, root: root) {
                     if let previous = values[relative], previous.0 != checksum.lowercased() {
                         throw CheckError.unreadableEvidence
@@ -328,9 +332,12 @@ public struct SavedChecksumCheck: Sendable {
                     values[relative] = (checksum.lowercased(), algorithm)
                 }
             }
-            if !values.isEmpty { return values }
+            // A header-only manifest is legitimate when the report has no
+            // verified files. With verified files it is incomplete evidence.
+            if hasVerifiedFile && recordCount == 0 { throw CheckError.unreadableEvidence }
+            if selected.isEmpty && !values.isEmpty { selected = values }
         }
-        return [:]
+        return selected
     }
 
     private static func unescapeManifestPath(_ path: String) -> String {

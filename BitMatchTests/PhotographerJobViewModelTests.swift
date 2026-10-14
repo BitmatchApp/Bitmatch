@@ -400,6 +400,65 @@ struct PhotographerJobViewModelTests {
         #expect(viewModel.activeJob?.id == activeJobID)
     }
 
+    @Test func verifiedRemoteSummaryKeepsCompletionTimeAndDoesNotOverstateMixedEvidence() throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let entryA = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: 10, sha256: String(repeating: "a", count: 64)
+        )
+        let entryB = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["B.mov"]),
+            byteCount: 20, sha256: String(repeating: "b", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [entryA, entryB], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var itemA = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: entryA, state: .verified, uploadedBytes: 10
+        )
+        itemA.verificationEvidence = .readBackSHA256(entryA.sha256)
+        itemA.updatedAt = eventDate.addingTimeInterval(40)
+        var itemB = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: entryB, state: .verified, uploadedBytes: 20
+        )
+        itemB.verificationEvidence = .sha256(entryB.sha256)
+        itemB.updatedAt = eventDate.addingTimeInterval(60)
+
+        let viewModel = makeViewModel(store: store)
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [itemA, itemB])
+        let mixed = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(mixed.state == .verified)
+        #expect(mixed.verificationEvidence == .sha256(entryB.sha256))
+        #expect(RemoteBackupStatusPresentation.make(summary: mixed).title == "Remote checksum verified")
+        #expect(mixed.updatedAt == itemB.updatedAt)
+
+        let reopened = PhotographerJobViewModel(
+            store: store, now: { self.now.addingTimeInterval(100) },
+            workflowDefaults: .isolatedWorkflowDefaults(remembering: .photography)
+        )
+        reopened.refreshRemoteBackupSummary(for: cardID, items: [itemA, itemB])
+        let refreshed = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(refreshed.updatedAt == itemB.updatedAt)
+
+        itemB.verificationEvidence = .readBackSHA256(entryB.sha256)
+        itemB.updatedAt = eventDate.addingTimeInterval(80)
+        reopened.refreshRemoteBackupSummary(for: cardID, items: [itemA, itemB])
+        let readBack = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(readBack.verificationEvidence == .readBackSHA256(entryA.sha256))
+        #expect(RemoteBackupStatusPresentation.make(summary: readBack).title == "Remote readback verified")
+        #expect(readBack.updatedAt == itemB.updatedAt)
+    }
+
     @Test func terminalCardsCannotBeginAgainAndRequireNextCardSetup() throws {
         let viewModel = preparedViewModel(store: InMemoryPhotographerJobStore())
         _ = viewModel.beginIngest(destinationCount: 2)

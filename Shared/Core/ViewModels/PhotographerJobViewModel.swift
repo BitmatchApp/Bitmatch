@@ -763,6 +763,19 @@ final class PhotographerJobViewModel: ObservableObject {
         else if orderedItems.contains(where: { $0.state == .retrying }) { state = .retrying }
         else if orderedItems.contains(where: { $0.state == .uploading }) { state = .uploading }
         else { state = .queued }
+        let verificationEvidence: RemoteVerificationEvidence
+        if allVerified {
+            // A card-level readback claim requires readback evidence for every
+            // file. Mixed older server checksums retain their actual evidence
+            // and the weaker label, rather than inventing a summary digest.
+            let serverChecksum = orderedItems.first {
+                if case .sha256 = $0.verificationEvidence { return true }
+                return false
+            }?.verificationEvidence
+            verificationEvidence = serverChecksum ?? orderedItems.first?.verificationEvidence ?? .none
+        } else {
+            verificationEvidence = .none
+        }
         return RemoteBackupCardSummary(
             targetID: targetID,
             state: state,
@@ -770,10 +783,12 @@ final class PhotographerJobViewModel: ObservableObject {
             uploadedFileCount: orderedItems.filter { $0.state == .uploadedUnverified || $0.state == .verified }.count,
             totalByteCount: expectedBytes,
             uploadedByteCount: totalBytes,
-            verificationEvidence: allVerified ? orderedItems[0].verificationEvidence : .none,
+            verificationEvidence: verificationEvidence,
             remotePath: orderedItems.first?.remoteRelativePath,
             errorSummary: orderedItems.compactMap(\.errorSummary).first,
-            updatedAt: now()
+            // Refreshing saved queue items (including on launch) is not a new
+            // verification event. Keep the durable item's latest event time.
+            updatedAt: orderedItems.map(\.updatedAt).max()
         )
     }
 

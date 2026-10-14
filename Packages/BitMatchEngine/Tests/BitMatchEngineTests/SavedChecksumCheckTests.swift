@@ -32,6 +32,65 @@ struct SavedChecksumCheckTests {
         }
     }
 
+    @Test(arguments: ["malformed", "oversized"])
+    func damagedSecondAdjacentManifestCannotBeIgnored(kind: String) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        let report = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        let base = report.deletingPathExtension()
+        try "\(sha256("original"))  \(file.path)\n".write(
+            to: base.appendingPathExtension("sha-256.txt"), atomically: true, encoding: .utf8
+        )
+        let second = base.appendingPathExtension("md5.txt")
+        try Data("broken manifest line\n".utf8).write(to: second)
+        if kind == "oversized" {
+            let handle = try FileHandle(forWritingTo: second)
+            defer { try? handle.close() }
+            try handle.truncate(atOffset: UInt64(EvidenceReader.maxReportBytes) + 1)
+        }
+
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await makeChecker().discover(under: root)
+        }
+    }
+
+    @Test(arguments: ["", "# BitMatch Checksum Manifest\n"])
+    func emptyAdjacentManifestCannotBeIgnored(text: String) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        let report = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        try text.write(
+            to: report.deletingPathExtension().appendingPathExtension("sha-256.txt"),
+            atomically: true, encoding: .utf8
+        )
+
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await makeChecker().discover(under: root)
+        }
+    }
+
+    @Test func headerOnlyManifestForFailedReportIsNotDamaged() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        let report = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        var object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: report)) as? [String: Any])
+        var rows = try #require(object["results"] as? [[String: Any]])
+        rows[0]["status"] = ResultOutcome.failed.statusText
+        object["results"] = rows
+        try JSONSerialization.data(withJSONObject: object).write(to: report)
+        try "# BitMatch Checksum Manifest\n".write(
+            to: report.deletingPathExtension().appendingPathExtension("sha-256.txt"),
+            atomically: true, encoding: .utf8
+        )
+
+        await #expect(throws: SavedChecksumCheck.CheckError.notFound) {
+            _ = try await makeChecker().discover(under: root)
+        }
+    }
+
     /// Plant: reject all duplicate lines or stop decoding GNU escaped paths.
     @Test func identicalDuplicateAndEscapedManifestPathsRemainUsable() async throws {
         let root = try makeRoot()
