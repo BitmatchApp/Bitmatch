@@ -427,15 +427,21 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
             requiredLocalCopyCount: context.job.requiredLocalCopyCount,
             verifiedDestinationCount: finalized.verifiedDestinationCount,
             locallySafeAt: card.locallySafeAt,
-            fullyBackedUpAt: fullyBackedUpAt(for: card),
+            fullyBackedUpAt: fullyBackedUpAt(for: card, requiredLocalCopyCount: context.job.requiredLocalCopyCount),
             remoteBackupEvidence: remoteEvidence(for: card),
             warnings: context.warnings,
             results: results.map(Result.init)
         )
     }
 
-    private static func fullyBackedUpAt(for card: CardIngest) -> Date? {
-        card.remoteBackupSummaries.values
+    private static func fullyBackedUpAt(for card: CardIngest, requiredLocalCopyCount: Int) -> Date? {
+        // Remote evidence survives a stale/failed local attempt for audit, but
+        // cannot promote that attempt to a whole-card backed-up claim.
+        guard card.localState == .locallySafe, card.locallySafeAt != nil,
+              nonblank(card.provenance.confirmedFingerprint) != nil,
+              requiredLocalCopyCount > 0,
+              card.verifiedDestinationCount >= requiredLocalCopyCount else { return nil }
+        return card.remoteBackupSummaries.values
             .filter { RemoteBackupStatusPresentation.make(summary: $0).isFullyBackedUp }
             .compactMap(\.updatedAt)
             .max()

@@ -112,7 +112,8 @@ struct PhotographerJobPresentationTests {
         #expect(row.statusSymbol == "checkmark.shield.fill")
     }
 
-    @Test func onlyVerifiedChecksumEvidenceIsPresentedAsFullyBackedUp() {
+    /// Plant: label remote evidence "Fully Backed Up", or call server evidence a readback.
+    @Test func remoteStatusNamesOnlyTheRecordedDestinationChecks() {
         let validDigest = String(repeating: "a", count: 64)
         let states: [(RemoteBackupState, RemoteVerificationEvidence, String)] = [
             (.queued, .none, "Remote Queued"),
@@ -122,8 +123,8 @@ struct PhotographerJobPresentationTests {
             (.conflict, .none, "Remote Conflict"),
             (.failed, .none, "Remote Failed"),
             (.verified, .none, "Verification Evidence Missing"),
-            (.verified, .sha256(validDigest), "Fully Backed Up"),
-            (.verified, .readBackSHA256(validDigest), "Fully Backed Up")
+            (.verified, .sha256(validDigest), "Remote checksum verified"),
+            (.verified, .readBackSHA256(validDigest), "Remote readback verified")
         ]
 
         for (state, evidence, expectedTitle) in states {

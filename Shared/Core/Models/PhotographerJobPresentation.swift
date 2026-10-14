@@ -171,7 +171,13 @@ struct RemoteBackupStatusPresentation: Equatable, Sendable {
         case .verifying:
             return Self(title: "Remote Verifying", symbol: "checkmark.shield", isFullyBackedUp: false, isWarning: false, state: state)
         case .verified where evidence.digest != nil:
-            return Self(title: "Fully Backed Up", symbol: "checkmark.icloud.fill", isFullyBackedUp: true, isWarning: false, state: state)
+            // This value describes one remote destination, not source health
+            // or a whole-card safe-to-erase verdict. Preserve older server-side
+            // evidence without claiming it was a downloaded readback.
+            let title: String
+            if case .readBackSHA256 = evidence { title = "Remote readback verified" }
+            else { title = "Remote checksum verified" }
+            return Self(title: title, symbol: "checkmark.icloud.fill", isFullyBackedUp: true, isWarning: false, state: state)
         case .verified:
             return Self(title: "Verification Evidence Missing", symbol: "exclamationmark.shield", isFullyBackedUp: false, isWarning: true, state: state)
         case .failed:

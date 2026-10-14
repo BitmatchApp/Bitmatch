@@ -17,6 +17,8 @@ Copying a file and checking it are separate jobs. BitMatch reads the card, write
 - **Thorough** also reads the source again, using SHA-256 and MD5 to check for changes during the transfer.
 - **Paranoid** adds a byte-by-byte comparison with the source as well as SHA-256.
 
+Standard verifies the backup against the bytes obtained during the copy read. If that read returns wrong bytes consistently to the copy and hash, its destination readback can still match. Thorough's separate source read and Paranoid's byte comparison can reveal differing reads; neither can prove what the camera originally wrote or rule out a fault that returns the same wrong bytes every time. A verified backup and a healthy source card are separate questions.
+
 An existing file is reused only after the selected verification checks establish that it matches. Conflicting files are never overwritten. A failed, cancelled or interrupted attempt keeps its partial results and stays unsafe. A retry is a new attempt, not permission to trust the old one.
 
 “Safe to erase” requires complete verified coverage on every required backup, plus any requested handoff/report steps. Two folders on the same physical drive aren't independent backups. Quick, missing files and intentional AppleDouble exclusions cannot earn a whole-card safe verdict. Keep the source until you've reviewed the results; a successful check doesn't promise that a drive can never fail later.
@@ -80,6 +82,7 @@ A few things to know:
 - The server needs SFTP **and SSH shell access**, with standard file utilities and hard-link support. An SFTP-only account won't do.
 - **SHA-256 read-back** downloads the remote file to check it. That costs extra bandwidth and local temporary space.
 - **Upload only** means **Uploaded · Unverified**. Getting it onto the server isn't proof that the contents match.
+- **Remote readback verified** describes the remote file matching the verified local backup. Older server-checksum evidence says **Remote checksum verified**. Neither label establishes a new source-card reread or a whole-card safe-to-erase verdict; the local transfer retains its own verification mode, coverage and outcome.
 - iPad can keep the project's remote settings, but uploads run on Mac. S3 and WebDAV aren't available yet.
 
 You can ignore SFTP entirely and keep everything local. No app analytics uploads. If you set up remote backup, your selected data goes to the server you chose.

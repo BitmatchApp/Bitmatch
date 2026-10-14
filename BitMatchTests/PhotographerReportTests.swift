@@ -291,6 +291,33 @@ struct PhotographerReportTests {
         #expect(payload.verifiedDestinationCount == 1)
     }
 
+    /// Plant: derive Fully Backed Up from remote evidence after local evidence was rejected.
+    @Test(arguments: ["valid", "missing-file", "stale-fingerprint", "cancelled"])
+    func remoteReadbackCannotPromoteRejectedLocalEvidence(kind: String) throws {
+        var rows = exactTwoDestinationResults()
+        let fingerprint = try PhotographerCardAnalyzer.confirmedFingerprint(results: Array(rows.prefix(2)).sorted { $0.path < $1.path })
+        var context = persistedSafeContext(startedAt: eventDate, safeAt: locallySafeAt, fingerprint: fingerprint)
+        var job = context.job
+        var card = job.cardIngests[0]
+        let targetID = UUID()
+        card.remoteBackupSummaries[targetID] = RemoteBackupCardSummary(
+            targetID: targetID, state: .verified, totalFileCount: 2, uploadedFileCount: 2,
+            totalByteCount: 2, uploadedByteCount: 2,
+            verificationEvidence: .readBackSHA256(String(repeating: "a", count: 64)), updatedAt: locallySafeAt)
+        if kind == "missing-file" { rows.removeLast() }
+        if kind == "stale-fingerprint" { card.provenance.confirmedFingerprint = "stale" }
+        if kind == "cancelled" { card.localState = .cancelled }
+        job.cardIngests[0] = card
+        context = PhotographerReportContext(job: job, cardIngestID: card.id, analysis: context.analysis,
+                                            verifiedDestinationCount: 2, warnings: [])
+        let payload = try PhotographerReportPayload.make(context: context, results: rows)
+        #expect(payload.isLocallySafe == (kind == "valid"))
+        #expect(payload.fullyBackedUpAt == (kind == "valid" ? locallySafeAt : nil))
+        #expect(payload.remoteBackupEvidence.first?.status == "Remote readback verified")
+        let csv = try ReportExporter.projectCSVEvidence(context: context, results: rows)
+        #expect(csv.summaryRows.contains(["Fully Backed Up", kind == "valid" ? locallySafeAt.ISO8601Format() : "—"]))
+    }
+
     @Test func unverifiedRemoteEvidenceKeepsLocalSafetyWithoutFullyBackedUpTimestamp() throws {
         let rows = exactTwoDestinationResults()
         let fingerprint = try PhotographerCardAnalyzer.confirmedFingerprint(results: Array(rows.prefix(2)).sorted { $0.path < $1.path })
