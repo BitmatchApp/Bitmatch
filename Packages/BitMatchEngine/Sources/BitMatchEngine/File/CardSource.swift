@@ -49,7 +49,11 @@ public enum SourceFingerprint: Sendable {
         let components = relativePath.split(separator: "/", omittingEmptySubsequences: true)
         guard let first = components.first, let last = components.last else { return false }
         if last == ".DS_Store" || last.hasPrefix("._") { return true }
-        return CardSource.skippedVolumeMetadataDirectories.contains(String(first))
+        // The walker skips these only when they are root directories. A
+        // regular root file with the same name is user data and affects the
+        // source identity; directory descendants are macOS volume metadata.
+        return components.count > 1
+            && CardSource.skippedVolumeMetadataDirectories.contains(String(first))
     }
 }
 
@@ -259,9 +263,22 @@ public enum CardSource: Sendable {
     }
 
 #if canImport(Darwin)
-    static func enumerateTree(directoryFD: Int32, root: URL) throws -> [TreeEntry] {
+    /// The internal hook lets tests change a root entry between readdir and
+    /// fstatat without timing a filesystem race. Production callers omit it.
+    static func enumerateTree(
+        directoryFD: Int32,
+        root: URL,
+        onRootEntryRead: ((String) throws -> Void)? = nil
+    ) throws -> [TreeEntry] {
         var entries: [TreeEntry] = []
-        try walk(directoryFD: directoryFD, root: root, relativeDirectory: "", depth: 0, entries: &entries)
+        try walk(
+            directoryFD: directoryFD,
+            root: root,
+            relativeDirectory: "",
+            depth: 0,
+            onRootEntryRead: onRootEntryRead,
+            entries: &entries
+        )
         try Task.checkCancellation()
         return entries.sorted { $0.relativePath < $1.relativePath }
     }
@@ -271,6 +288,7 @@ public enum CardSource: Sendable {
         root: URL,
         relativeDirectory: String,
         depth: Int,
+        onRootEntryRead: ((String) throws -> Void)?,
         entries: inout [TreeEntry]
     ) throws {
         let scanFD = Darwin.dup(directoryFD)
@@ -310,11 +328,20 @@ public enum CardSource: Sendable {
                 )
             }
             if name == "." || name == ".." { continue }
+            if depth == 0 { try onRootEntryRead?(name) }
 
             var info = stat()
             let status = name.withCString { fstatat(directoryFD, $0, &info, AT_SYMLINK_NOFOLLOW) }
             let inspectError = errno
             guard status == 0 else {
+                // macOS may remove a root volume-metadata directory while we
+                // enumerate it. Ordinary source items remain fail-closed.
+                if depth == 0,
+                   inspectError == ENOENT,
+                   directoryEntry.d_type == DT_DIR,
+                   skippedVolumeMetadataDirectories.contains(name) {
+                    continue
+                }
                 throw posixError("Could not inspect source item \(name)", code: inspectError)
             }
             let relativePath = relativeDirectory.isEmpty ? name : relativeDirectory + "/" + name
@@ -342,6 +369,7 @@ public enum CardSource: Sendable {
                         root: root,
                         relativeDirectory: relativePath,
                         depth: depth + 1,
+                        onRootEntryRead: onRootEntryRead,
                         entries: &entries
                     )
                     _ = Darwin.close(childFD)

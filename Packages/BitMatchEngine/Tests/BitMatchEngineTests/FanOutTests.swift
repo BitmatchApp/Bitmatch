@@ -25,6 +25,7 @@ struct FanOutTests {
                     settings: settings
                 )
                 let injected = FanOutProbe()
+                let progress = Mutex<[OperationProgress]>([])
                 let hooks = DestinationWriter.FanOutHooks(
                     beforeWrite: { destination, _, chunk in
                         let injectedChunk = currentFault == .vanished ? 1 : 0
@@ -54,9 +55,15 @@ struct FanOutTests {
                     destinationURLs: fixture.destinations,
                     verificationMode: .standard,
                     settings: settings,
-                    progressCallback: { _ in },
+                    progressCallback: { update in progress.withLock { $0.append(update) } },
                     onFileResult: nil
                 )
+
+                let updates = progress.withLock { $0 }
+                #expect(!updates.isEmpty)
+                #expect(updates.allSatisfy { $0.overallProgress < 1.0 })
+                #expect(updates.allSatisfy { ($0.stageProgress ?? 0) < 1.0 })
+                #expect(!updates.contains { $0.currentStage == .completed })
 
                 let goodOutput = SafetyValidator.resolvedDestinationRoot(
                     source: fixture.source,
@@ -107,14 +114,21 @@ struct FanOutTests {
                 let conflictingFile = conflictingRoot.appendingPathComponent("clip.bin")
                 try stale.write(to: conflictingFile)
 
+                let progress = Mutex<[OperationProgress]>([])
                 let operation = try await fixture.pipeline(hooks: .init()).performFileOperation(
                     sourceURL: fixture.source,
                     destinationURLs: fixture.destinations,
                     verificationMode: mode,
                     settings: settings,
-                    progressCallback: { _ in },
+                    progressCallback: { update in progress.withLock { $0.append(update) } },
                     onFileResult: nil
                 )
+
+                let updates = progress.withLock { $0 }
+                #expect(!updates.isEmpty)
+                #expect(updates.allSatisfy { $0.overallProgress < 1.0 })
+                #expect(updates.allSatisfy { ($0.stageProgress ?? 0) < 1.0 })
+                #expect(!updates.contains { $0.currentStage == .completed })
 
                 let goodFile = SafetyValidator.resolvedDestinationRoot(
                     source: fixture.source,
@@ -188,6 +202,7 @@ struct FanOutTests {
             let expected = Data(repeating: 0x7c, count: 8193)
             try fixture.write(expected, to: "clip.bin")
             let settings = CameraLabelSettings()
+            let progress = Mutex<[OperationProgress]>([])
             let operation = try await fixture.pipeline(hooks: .init(
                 afterPublish: { destination, root in
                     guard destination == 1 else { return }
@@ -202,9 +217,15 @@ struct FanOutTests {
                 destinationURLs: fixture.destinations,
                 verificationMode: .standard,
                 settings: settings,
-                progressCallback: { _ in },
+                progressCallback: { update in progress.withLock { $0.append(update) } },
                 onFileResult: nil
             )
+
+            let updates = progress.withLock { $0 }
+            #expect(!updates.isEmpty)
+            #expect(updates.allSatisfy { $0.overallProgress < 1.0 })
+            #expect(updates.allSatisfy { ($0.stageProgress ?? 0) < 1.0 })
+            #expect(!updates.contains { $0.currentStage == .completed })
 
             #expect(operation.results.count == fixture.destinations.count)
             #expect(operation.results.filter { $0.success }.count == 1)
@@ -521,6 +542,8 @@ struct FanOutTests {
             #expect(operation.results.allSatisfy { $0.success })
             #expect(probe.maximumProgressBytes == expectedCopiedBytes)
             #expect(probe.completedPerDestination == Array(repeating: corpus.count, count: fixture.destinations.count))
+            #expect(probe.lastProgress?.currentStage == .completed)
+            #expect(probe.lastProgress?.overallProgress == 1.0)
             for (path, _) in corpus {
                 #expect(probe.openCount(for: fixture.source.appendingPathComponent(path)) == 1)
                 let referenceFile = reference.appendingPathComponent(path)
@@ -873,6 +896,7 @@ private final class FanOutProbe: Sendable {
         var destinationOpens: [String: Int] = [:]
         var destinationBytes: [String: Int] = [:]
         var verificationSourceOpens: [String: Int] = [:]
+        var lastProgress: OperationProgress?
     }
 
     private let state = Mutex(State())
@@ -920,6 +944,7 @@ private final class FanOutProbe: Sendable {
 
     func recordProgress(_ progress: OperationProgress) {
         state.withLock {
+            $0.lastProgress = progress
             $0.maximumProgressBytes = max($0.maximumProgressBytes, progress.bytesProcessed ?? 0)
             if let completed = progress.perDestinationCompleted {
                 $0.completedPerDestination = completed
@@ -929,6 +954,7 @@ private final class FanOutProbe: Sendable {
 
     var maximumProgressBytes: Int64 { state.withLock { $0.maximumProgressBytes } }
     var completedPerDestination: [Int] { state.withLock { $0.completedPerDestination } }
+    var lastProgress: OperationProgress? { state.withLock { $0.lastProgress } }
 
     func recordNoCache(destination: Int, descriptorIsOpen: Bool) {
         state.withLock {

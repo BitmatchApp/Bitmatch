@@ -1,5 +1,8 @@
 import XCTest
 @testable import BitMatchEngine
+#if canImport(Darwin)
+import Darwin
+#endif
 
 final class CardSourceTests: XCTestCase {
     func testMissingRootThrowsInsteadOfReturningEmptyManifest() {
@@ -131,6 +134,130 @@ final class CardSourceTests: XCTestCase {
         XCTAssertEqual(entries.map(\.relativePath), [".Trashes"])
         XCTAssertNoThrow(try SafetyValidator.validateSourceTreeForCopy(source: root))
     }
+
+#if canImport(Darwin)
+    func testRootFSEventsDirectoryAppearingAndDisappearingDuringEnumeration() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("fsevents-churn-\(UUID().uuidString)", isDirectory: true)
+        let rootMetadata = root.appendingPathComponent(".fseventsd", isDirectory: true)
+        let nestedMetadata = root.appendingPathComponent("DCIM/.fseventsd", isDirectory: true)
+        try fm.createDirectory(at: nestedMetadata, withIntermediateDirectories: true)
+        try Data("clip".utf8).write(to: root.appendingPathComponent("DCIM/A.MOV"))
+        try Data("user data".utf8).write(to: nestedMetadata.appendingPathComponent("notes.txt"))
+        defer { try? fm.removeItem(at: root) }
+
+        let expected = ["DCIM/.fseventsd/notes.txt", "DCIM/A.MOV"]
+        let baseline = try CardSource.enumerateRegularFiles(base: root)
+        XCTAssertEqual(baseline.map(\.relativePath), expected)
+        let baselineFingerprint = SourceFingerprint.make(baseline)
+
+        var created = false
+        let withAppearance = try enumerateTree(base: root) { _ in
+            guard !created else { return }
+            try fm.createDirectory(at: rootMetadata, withIntermediateDirectories: true)
+            try Data("system log".utf8).write(to: rootMetadata.appendingPathComponent("00000001"))
+            created = true
+        }
+        XCTAssertTrue(created, "The metadata directory must appear after enumeration begins")
+        XCTAssertEqual(regularPaths(in: withAppearance), expected)
+        XCTAssertEqual(SourceFingerprint.make(files(in: withAppearance)), baselineFingerprint)
+
+        var removed = false
+        let withDisappearance = try enumerateTree(base: root) { name in
+            guard name == ".fseventsd" else { return }
+            try fm.removeItem(at: rootMetadata)
+            removed = true
+        }
+        XCTAssertTrue(removed, "The walker must encounter metadata before the test removes it")
+        XCTAssertEqual(regularPaths(in: withDisappearance), expected)
+        XCTAssertEqual(SourceFingerprint.make(files(in: withDisappearance)), baselineFingerprint)
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("DCIM/A.MOV")), Data("clip".utf8))
+        XCTAssertEqual(
+            try Data(contentsOf: nestedMetadata.appendingPathComponent("notes.txt")),
+            Data("user data".utf8)
+        )
+    }
+
+    func testDisappearingOrdinaryRootFileStillFailsEnumeration() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("source-file-churn-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let media = root.appendingPathComponent("A.MOV")
+        try Data("clip".utf8).write(to: media)
+        defer { try? fm.removeItem(at: root) }
+
+        var removed = false
+        XCTAssertThrowsError(try enumerateTree(base: root) { name in
+            guard name == "A.MOV" else { return }
+            try fm.removeItem(at: media)
+            removed = true
+        }) { error in
+            XCTAssertEqual((error as NSError).domain, NSPOSIXErrorDomain)
+            XCTAssertEqual((error as NSError).code, Int(ENOENT))
+        }
+        XCTAssertTrue(removed)
+    }
+
+    func testDisappearingRegularFileNamedFSEventsStillFailsEnumeration() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent("fsevents-user-file-churn-\(UUID().uuidString)", isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        let userFile = root.appendingPathComponent(".fseventsd")
+        try Data("user data".utf8).write(to: userFile)
+        defer { try? fm.removeItem(at: root) }
+
+        XCTAssertEqual(
+            try CardSource.enumerateRegularFiles(base: root).map(\.relativePath),
+            [".fseventsd"]
+        )
+
+        var removed = false
+        XCTAssertThrowsError(try enumerateTree(base: root) { name in
+            guard name == ".fseventsd" else { return }
+            try fm.removeItem(at: userFile)
+            removed = true
+        }) { error in
+            XCTAssertEqual((error as NSError).domain, NSPOSIXErrorDomain)
+            XCTAssertEqual((error as NSError).code, Int(ENOENT))
+        }
+        XCTAssertTrue(removed)
+    }
+
+    private func enumerateTree(
+        base: URL,
+        onRootEntryRead: @escaping (String) throws -> Void
+    ) throws -> [CardSource.TreeEntry] {
+        let root = base.standardizedFileURL.resolvingSymlinksKeepingCase()
+        let fd = root.path.withCString {
+            Darwin.open($0, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { _ = Darwin.close(fd) }
+        return try CardSource.enumerateTree(
+            directoryFD: fd,
+            root: root,
+            onRootEntryRead: onRootEntryRead
+        )
+    }
+
+    private func regularPaths(in tree: [CardSource.TreeEntry]) -> [String] {
+        tree.filter { $0.kind == .regularFile }.map(\.relativePath)
+    }
+
+    private func files(in tree: [CardSource.TreeEntry]) -> [FileEntry] {
+        tree.filter { $0.kind == .regularFile }.map {
+            FileEntry(
+                url: $0.url,
+                relativePath: $0.relativePath,
+                size: $0.size,
+                modificationDate: $0.modificationDate
+            )
+        }
+    }
+#endif
 
     /// An unreadable directory that is NOT known volume metadata must still fail loudly.
     func testUnreadableUserDirectoryStillThrows() throws {

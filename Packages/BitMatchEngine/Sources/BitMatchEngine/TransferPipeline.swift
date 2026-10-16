@@ -542,7 +542,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             }()
             let unitsDone = stage == .copying ? snapshot.filesCopied : snapshot.filesCopied + snapshot.filesVerified
             return OperationProgress(
-                overallProgress: Double(unitsDone) / Double(max(1, totalFiles * totalStageUnits)),
+                // Reserve 100% for the terminal event, after coverage checks
+                // and every selected row's outcome are known. A failed final
+                // verify can otherwise briefly display 100% as it finishes.
+                overallProgress: min(0.99, Double(unitsDone) / Double(max(1, totalFiles * totalStageUnits))),
                 currentFile: file,
                 filesProcessed: snapshot.filesCopied,
                 totalFiles: totalFiles,
@@ -553,7 +556,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 peakSpeed: nil,
                 bytesProcessed: snapshot.bytesCopied,
                 totalBytes: totalBytes,
-                stageProgress: stageProgress,
+                stageProgress: stageProgress.map { min(0.99, $0) },
                 reusedCopies: nil,
                 perDestinationTotals: snapshot.perDestinationTotals,
                 perDestinationCompleted: snapshot.perDestinationCompleted
@@ -1061,24 +1064,36 @@ public final class TransferPipeline: FileOperationsService, Sendable {
 
         // The executor writes optional ASC MHL handoff records after authoritative verification.
 
-        let final = await ledger.snapshot()
-        let finalProgress = makeProgress(.completed, nil, final, Date(), nil)
-        progressCallback(OperationProgress(
-            overallProgress: 1.0,
-            currentFile: nil,
-            filesProcessed: totalFiles,
-            totalFiles: totalFiles,
-            currentStage: .completed,
-            speed: nil,
-            elapsedTime: finalProgress.elapsedTime,
-            averageSpeed: nil,
-            peakSpeed: nil,
-            bytesProcessed: final.bytesCopied,
-            totalBytes: finalProgress.totalBytes,
-            stageProgress: nil
-        ))
-
         let finalResults = await ledger.results()
+        let selectedResults = finalResults.filter { !$0.excludedAppleDouble }
+        let selectedFilesSucceeded = selectedResults.count == totalFiles
+            && selectedResults.allSatisfy {
+                $0.success && (operation.verificationMode == .quick || $0.verificationResult?.isValid == true)
+            }
+        // The executor owns the final verdict, including reports and ASC MHL.
+        // Do not tell progress consumers that this pipeline completed if even
+        // one selected copy or verification row failed or is missing.
+        if selectedFilesSucceeded {
+            let final = await ledger.snapshot()
+            let finalProgress = makeProgress(.completed, nil, final, Date(), nil)
+            progressCallback(OperationProgress(
+                overallProgress: 1.0,
+                currentFile: nil,
+                filesProcessed: final.filesCopied,
+                totalFiles: totalFiles,
+                currentStage: .completed,
+                speed: nil,
+                elapsedTime: finalProgress.elapsedTime,
+                averageSpeed: nil,
+                peakSpeed: nil,
+                bytesProcessed: final.bytesCopied,
+                totalBytes: finalProgress.totalBytes,
+                stageProgress: nil,
+                perDestinationTotals: final.perDestinationTotals,
+                perDestinationCompleted: final.perDestinationCompleted
+            ))
+        }
+
         return FileOperation(
             sourceURL: operation.sourceURL,
             destinationURLs: operation.destinationURLs,

@@ -37,6 +37,16 @@ struct SourceFingerprintTests {
         #expect(SourceFingerprint.make(original) != SourceFingerprint.make(withAnotherClip))
     }
 
+    @Test func fingerprintIncludesRootRegularFileNamedLikeVolumeMetadata() {
+        let footage = [entry("DCIM/A.mov")]
+        let withUserFile = footage + [entry(".fseventsd", size: 12)]
+        #expect(SourceFingerprint.make(footage) != SourceFingerprint.make(withUserFile))
+        #expect(
+            SourceFingerprint.make(withUserFile)
+                != SourceFingerprint.make(footage + [entry(".fseventsd", size: 13)])
+        )
+    }
+
     @Test(arguments: [
         [FileEntry(url: URL(fileURLWithPath: "/card/DCIM/C.mov"), relativePath: "DCIM/C.mov", size: 10, modificationDate: Date(timeIntervalSince1970: 100))],
         [FileEntry(url: URL(fileURLWithPath: "/card/DCIM/B.mov"), relativePath: "DCIM/B.mov", size: 11, modificationDate: Date(timeIntervalSince1970: 100))],
