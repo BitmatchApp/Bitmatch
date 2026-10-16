@@ -10,10 +10,6 @@
 </p>
 
 <p align="center">
-  <i>A free, open source alternative to ShotPut Pro, Silverstack, and Hedge.</i>
-</p>
-
-<p align="center">
   <a href="https://github.com/BitmatchApp/Bitmatch/releases/latest"><img src="https://img.shields.io/github/v/release/BitmatchApp/Bitmatch?label=download&color=2ea44f" alt="Download the latest release"></a>
   <img src="https://img.shields.io/badge/macOS-15.5%2B-blue" alt="macOS 15.5 or newer">
   <img src="https://img.shields.io/badge/iPadOS%20%26%20iOS-build%20from%20source-lightgrey" alt="iPad and iPhone: build from source">
