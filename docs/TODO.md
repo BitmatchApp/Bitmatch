@@ -1,10 +1,74 @@
 # To do
 
-The working list for BitMatch, updated for 0.2.9 on October 13, 2026. These are roadmap candidates, not instructions to implement every feature or a promised release scope. The report and transfer-details batch shipped in 0.2.7; see [validation](TODO_REPORTS_VALIDATION.md). When something ships, record it in the [changelog](../CHANGELOG.md) and remove the finished task here.
+The working list for BitMatch, reprioritized on October 16, 2026 against 0.2.9. These are roadmap candidates, not instructions to implement every feature or a promised release scope. The report and transfer-details batch shipped in 0.2.7; see [validation](TODO_REPORTS_VALIDATION.md). When something ships, record it in the [changelog](../CHANGELOG.md) and remove the finished task here.
 
 **Source media → trustworthy copies → independent verification → accurate evidence → safe-to-erase decision.**
 
 Follow evidence and actual user reports. The AppleDouble request [#16](https://github.com/BitmatchApp/Bitmatch/issues/16) is closed; the [Guide](GUIDE.md) describes the current setting, and [the investigation](ISSUE16_APPLEDOUBLE.md) retains its earlier validation. Preserve source protection, no-overwrite guarantees, complete verification and honest verdicts. Core workflows apply to Mac, iPad and iPhone; keep platform limits explicit. See the [thesis](THESIS.md) and [architecture](../ARCHITECTURE.md).
+
+## Ranked work queue
+
+This is the order to **investigate or start a bounded slice**, not a promise to ship in this order. It weighs everyday usefulness and safety against implementation difficulty, the blast radius of a mistake, and whether the result can ship and be tested independently. These are judgments, not measured scores. **Quick** means a contained change with local regression coverage; **scoped** means a defined feature or audit; **long** needs design, physical tests, or multiple stages; **demand** needs stronger user evidence. Blast radius means the potential effect on transfers, evidence or platform behavior, not the number of files edited. The detailed acceptance criteria remain in the sections below.
+
+The two active reports come first as **casework**, but neither is a ready-to-ship fix: [#23](https://github.com/BitmatchApp/Bitmatch/issues/23) needs the reporter's version/phase or a reproduced memory path, and [#10](https://github.com/BitmatchApp/Bitmatch/issues/10) needs decisive diagnostics or a physical reproduction. Synthetic passes alone cannot close either report.
+
+| Rank | Build or decision work | Usefulness | Difficulty | Blast radius | Shippability |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | Terminal progress and outcome parity | High | Low–medium | Medium | Quick |
+| 2 | Verification coverage and wording audit; defer any default change until benchmarking | High | Medium | Medium | Scoped |
+| 3 | Honest claims when physical drive identity is unknown | High | Medium | Medium | Scoped |
+| 4 | Distinguish local-source, local-backup and SFTP assurance | High | Low–medium | Low–medium | Quick |
+| 5 | Expand the MHL interoperability corpus | High | Medium | Low | Scoped |
+| 6 | Reproduce missed Mac card events; add a backstop only if needed | Medium–high | Low | Low | Quick |
+| 7 | Eliminate the exFAT/FAT publication race | Very high | High | High | Long; protected safety work |
+| 8 | Mark failed readback output unmistakably on disk | High | High | High | After publication ownership |
+| 9 | Mac menu bar companion, first Remote phase | High | Medium | Medium | Scoped |
+| 10 | Per-drive copy/readback speed in expanded details | Medium–high | Medium | Low–medium | Scoped |
+| 11 | Honest byte-weighted transfer and queue progress | High | High | Medium | After terminal parity |
+| 12 | Local, opt-in crash and hang evidence | Medium–high | Medium | Low–medium | Scoped |
+| 13 | History discovered from connected authorized drives | High | High | Medium | Long |
+| 14 | Investigate a macOS 15.0 minimum | Medium | Low–medium | Medium | Scoped; older OS test |
+| 15 | Portable settings and workflow import/export | Medium | Medium | Medium | Scoped |
+| 16 | Measure before changing the transfer hash | Medium–high | Medium | Low | After physical benchmark |
+| 17 | Storage-aware verification scheduling | High | High | Medium–high | After physical benchmark |
+| 18 | Bounded source-read retry with card-health warning | High | High | High | Long; fault model first |
+| 19 | Verify upstream MHL/source provenance | Medium–high | High | Medium | Long |
+| 20 | ASC MHL structural verification | Medium–high | High | Medium | After corpus |
+| 21 | Decide when compatibility digests are computed | Medium | Medium | Medium | After measurements |
+| 22 | Read-only Remote Mac mode on iPhone/iPad | Very high | Very high | High | Long; after menu bar |
+| 23 | Finder “Offload with BitMatch” action | Medium | Medium | Medium | Scoped |
+| 24 | Organize and rename beyond current recipes | Medium | High | High | Long |
+| 25 | Re-copy an attempt-owned file after failed verification | High | High | High | After ownership design |
+| 26 | Repair a failed destination from a verified sibling | High | Very high | High | After recovery provenance |
+| 27 | Pause only an out-of-space destination | Medium | High | High | Long |
+| 28 | Extend existing MHL histories | Medium–high | Very high | High | After structural validation |
+| 29 | Remote validation and distribution gates | High | High | Medium | Alongside each Remote phase |
+| 30 | Remote setup, queue and Start | High | Very high | Very high | After read-only Remote |
+| 31 | Remote controls and outcomes | High | Very high | Very high | After remote Start |
+| 32 | Remote connectivity enhancements | Conditional | High | Medium | After core Remote works |
+| 33 | Shortcuts support | Medium | Medium–high | Medium–high | After command safety model |
+| 34 | Slow-cable hint | Low–medium | Medium | Low | If detection is reliable |
+| 35 | Time estimate before Start | Medium | Medium | Low–medium | After measured speeds |
+| 36 | Phone notification without an account | Medium | Medium | Medium | After privacy decision |
+| 37 | Persistent SFTP connection | Conditional | Medium | Medium | Demand |
+| 38 | Liquid Glass pass | Low–medium | Medium | Low | Scoped; visual review |
+| 39 | Simplified operator mode | Conditional | Medium | Medium | Demand |
+| 40 | Cloud destinations | Conditional | Very high | Very high | Demand; long |
+
+These eight supporting tasks are not competing features. Do them when their evidence or release gate is needed; in particular, the first two unblock verification-policy and scheduling decisions.
+
+| Next gate | Supporting work | Usefulness | Difficulty | Blast radius | Shippability |
+| ---: | --- | --- | --- | --- | --- |
+| 1 | Make the buffer benchmark's first read representative | High | Low | Low | Quick |
+| 2 | Run the end-to-end two-drive physical benchmark | High | Medium | Low | Hardware-dependent |
+| 3 | Remove permission prompts from automated tests | Medium–high | Medium | Low | Scoped |
+| 4 | Keep release walkthroughs and synthetic/physical results separate | High | Ongoing | Low | Every relevant release |
+| 5 | Collect physical hardware reports | High | Ongoing | Low | Field-dependent |
+| 6 | Run a VoiceOver pass on real devices | High | Medium | Low | Device-dependent |
+| 7 | Prepare iPhone/iPad TestFlight and App Store distribution | High | High | Medium | After device readiness |
+| 8 | Replace demo imagery with real, privacy-safe screenshots | Medium | Low | Low | Quick once captured |
+
+Dependencies matter more than the row number: physical measurements precede a verification-default, hash or scheduling change; publication ownership precedes marking or retrying output; the MHL corpus precedes structural verification and history extension. Keep the Mac menu bar first within Remote, and ship read-only monitoring before remote control.
 
 ## P0 — Active user-reported failures
 
@@ -94,7 +158,7 @@ Remote scope excludes screen sharing, arbitrary filesystem browsing, remote shel
 - [ ] **Simplified operator mode, only if users ask.** Investigate preconfigured destinations, naming and verification with an everyday source → start → review flow. Warnings stay visible and validation still runs; no facility administration or permission system.
 - [ ] **Organize and rename.** Extend existing project naming and folder recipes with remaining naming-pattern and organize-by-date workflows. Preserve original card contents and test destination collisions before adding new options.
 - [ ] **Honest byte-weighted progress.** The engine currently counts finished file/stage units, and the queue bar averages cards, so a tiny sidecar or small card can move the percentage as much as a huge clip or card. Track measurable copy and required readback bytes per destination, including source rereads and ASC MHL destination reads when enabled; show an explicit finishing stage where remaining report work has no reliable byte total. Keep the main UI quiet and reserve 100% for the authoritative result. **Acceptance:** synthetic tiny-plus-huge files/cards, two destinations with different speeds, reuse/retry, optional MHL, failure and cancellation show monotonic, plausible progress without an early completed state.
-- [ ] **Speed for each drive.** Show which destination is slow instead of only an average; use measurements from the storage-scheduling work. Put per-destination copy/readback progress and measured throughput in expanded details, not another default setup control; distinguish a slow write from slow verification.
+- [ ] **Speed for each drive.** Show which destination is slow instead of only an average; share measured-throughput instrumentation with the storage-scheduling work, without requiring a scheduler change to display it. Put per-destination copy/readback progress and measured throughput in expanded details, not another default setup control; distinguish a slow write from slow verification.
 - [ ] **Recover missed Mac card events.** BitMatch already has mount notifications and manual rescan, but a missed-unmount/reinsert case is worth testing. First reproduce it with deterministic event gaps and card identity changes; add a low-rate reconciliation backstop only if the current monitor misses it. **Acceptance:** a reinserted card is discoverable without a restart, a different card at the same mount path is never mistaken for the old one, transient mount flaps do not duplicate cards, and stale discovery cannot authorize or auto-start a transfer. Mac-only discovery must ignore system and unselected network volumes.
 - [ ] **Slow-cable hint.** On Mac, show a quiet hint when reliable connection information identifies a USB 2 bottleneck. Do not promise a speed multiplier without measurements.
 - [ ] **Time estimate before Start.** Use card size and recent measured speeds; keep “estimating” when evidence is insufficient.
