@@ -1,4 +1,5 @@
 // Core/Services/Camera/UnifiedMetadataDetectionService.swift
+import Darwin
 import Foundation
 
 /// Unified service for detecting cameras via video and media file metadata
@@ -107,31 +108,91 @@ final class UnifiedMetadataDetectionService: Sendable {
     // MARK: - macOS-specific Metadata Extraction
     
     #if os(macOS)
-    /// Wait for a metadata subprocess, terminating it early when the
-    /// current task is cancelled. Returns false when cancelled or when the
-    /// process could not launch; the caller's exit-status handling is
-    /// unchanged. Outside a task context this behaves like waitUntilExit().
-    private func waitForExitUnlessCancelled(_ task: Process) -> Bool {
-        // Never spawn the subprocess when already cancelled.
-        guard !Task.isCancelled else { return false }
-        let semaphore = DispatchSemaphore(value: 0)
-        task.terminationHandler = { _ in semaphore.signal() }
+    /// Camera metadata is advisory. Bound captured stdout and drain it while
+    /// the child runs: waiting for exit before reading can deadlock when the
+    /// pipe fills, and readDataToEndOfFile can retain arbitrary output.
+    static let maximumMetadataOutputBytes = 256 * 1024
+
+    /// `onStarted` is an invocation-specific test hook, nil in production.
+    func captureMetadataOutput(_ task: Process, onStarted: (() -> Void)? = nil) -> (data: Data, exitStatus: Int32)? {
+        guard !Task.isCancelled else { return nil }
+
+        let pipe = Pipe()
+        task.standardOutput = pipe
+        defer {
+            try? pipe.fileHandleForReading.close()
+            try? pipe.fileHandleForWriting.close()
+        }
+
+        let readFD = pipe.fileHandleForReading.fileDescriptor
+        let oldFlags = fcntl(readFD, F_GETFL)
+        guard oldFlags >= 0,
+              fcntl(readFD, F_SETFL, oldFlags | O_NONBLOCK) == 0 else { return nil }
+
+        let terminated = DispatchSemaphore(value: 0)
+        task.terminationHandler = { _ in terminated.signal() }
         do {
             try task.run()
         } catch {
-            return false
+            return nil
         }
-        while semaphore.wait(timeout: .now() + .milliseconds(50)) == .timedOut {
-            if Task.isCancelled {
-                task.terminate()
-                // Bounded wait after requesting termination: a wedged
-                // process must not block cancellation indefinitely. This
-                // bounds the caller's wait, not the process's exit.
-                _ = semaphore.wait(timeout: .now() + .seconds(2))
-                return false
+        try? pipe.fileHandleForWriting.close()
+        onStarted?()
+
+        func stopChild() {
+            guard task.isRunning else { return }
+            task.terminate()
+            if terminated.wait(timeout: .now() + .seconds(2)) == .timedOut,
+               task.isRunning {
+                // A metadata helper that ignores TERM must not outlive the
+                // cancelled hint. Process still owns this live child here.
+                _ = Darwin.kill(task.processIdentifier, SIGKILL)
+                _ = terminated.wait(timeout: .now() + .seconds(1))
             }
         }
-        return true
+        defer { stopChild() }
+
+        var output = Data()
+        output.reserveCapacity(Self.maximumMetadataOutputBytes)
+        var buffer = [UInt8](repeating: 0, count: 16 * 1024)
+        let bufferSize = buffer.count
+        let clock = ContinuousClock()
+        var directChildExitedAt: ContinuousClock.Instant?
+
+        while true {
+            guard !Task.isCancelled else { return nil }
+            let bytesRead = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.read(readFD, bytes.baseAddress, bufferSize)
+            }
+            if bytesRead > 0 {
+                guard output.count + bytesRead <= Self.maximumMetadataOutputBytes else {
+                    return nil
+                }
+                output.append(contentsOf: buffer[..<bytesRead])
+                continue
+            }
+            if bytesRead == 0 { break }
+            if errno == EINTR { continue }
+            guard errno == EAGAIN || errno == EWOULDBLOCK else { return nil }
+
+            if !task.isRunning {
+                if directChildExitedAt == nil { directChildExitedAt = clock.now }
+                if let directChildExitedAt,
+                   clock.now - directChildExitedAt >= .seconds(2) {
+                    // A descendant may still hold the pipe after the direct
+                    // metadata process exits. That is not usable evidence.
+                    return nil
+                }
+            }
+            _ = terminated.wait(timeout: .now() + .milliseconds(50))
+        }
+
+        while task.isRunning {
+            guard !Task.isCancelled else { return nil }
+            _ = terminated.wait(timeout: .now() + .milliseconds(50))
+        }
+        guard !Task.isCancelled else { return nil }
+        return (output, task.terminationStatus)
     }
 
     private func extractVideoMetadataWithMdls(_ videoFile: URL) -> String? {
@@ -139,11 +200,7 @@ final class UnifiedMetadataDetectionService: Sendable {
         task.launchPath = "/usr/bin/mdls"
         task.arguments = ["-name", "kMDItemAcquisitionMake", "-name", "kMDItemAcquisitionModel", videoFile.path]
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-
-        guard waitForExitUnlessCancelled(task) else { return nil }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        guard let (data, _) = captureMetadataOutput(task) else { return nil }
         let output = String(data: data, encoding: .utf8) ?? ""
 
         return parseMdlsOutput(output)
@@ -160,15 +217,11 @@ final class UnifiedMetadataDetectionService: Sendable {
             videoFile.path
         ]
 
-        let pipe = Pipe()
-        task.standardOutput = pipe
-
-        guard waitForExitUnlessCancelled(task),
-              task.terminationStatus == 0 else {
+        guard let (data, status) = captureMetadataOutput(task),
+              status == 0 else {
             // FFProbe not available or detection cancelled, continue
             return nil
         }
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
         let output = String(data: data, encoding: .utf8) ?? ""
         return parseFFProbeOutput(output)
     }
