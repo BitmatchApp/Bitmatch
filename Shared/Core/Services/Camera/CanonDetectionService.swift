@@ -23,8 +23,6 @@ final class CanonDetectionService: Sendable {
     // MARK: - Canon Metadata Detection
     
     private func checkCanonMetadata(at url: URL) -> String? {
-        let fm = FileManager.default
-        
         // Check for Canon-specific metadata files
         let canonMetadataFiles = [
             "MISC/CANON.INF",
@@ -32,16 +30,21 @@ final class CanonDetectionService: Sendable {
             "DCIM/CANONMSC/CANON.DAT"
         ]
         
+        var foundReadableSidecar = false
         for metadataFile in canonMetadataFiles {
+            guard !Task.isCancelled else { return nil }
             let metadataPath = url.appendingPathComponent(metadataFile)
             
-            if fm.fileExists(atPath: metadataPath.path) {
-                if let cameraModel = extractCanonModelFromMetadata(metadataPath) {
+            if let metadataData = AdvisoryMetadataFileReader.read(metadataPath) {
+                guard !Task.isCancelled else { return nil }
+                foundReadableSidecar = true
+                if let cameraModel = extractCanonModelFromMetadata(metadataData) {
                     return "Canon \(cameraModel)"
                 }
-                return "Canon"
             }
         }
+
+        if foundReadableSidecar { return "Canon" }
         
         // Check CR2/CR3 files for metadata
         return checkCanonRAWFiles(at: url)
@@ -68,46 +71,40 @@ final class CanonDetectionService: Sendable {
     
     // MARK: - Metadata Extraction
     
-    private func extractCanonModelFromMetadata(_ metadataPath: URL) -> String? {
-        do {
-            let metadataString = try String(contentsOf: metadataPath, encoding: .ascii)
-            
-            let canonModels = [
-                "EOS R5": "R5",
-                "EOS R6 Mark II": "R6 Mark II",
-                "EOS R6": "R6",
-                "EOS R8": "R8",
-                "EOS R": "R",
-                "EOS R10": "R10",
-                "EOS R50": "R50",
-                "5D Mark IV": "5D Mark IV",
-                "5D4": "5D Mark IV",
-                "1DX Mark III": "1DX Mark III",
-                "90D": "90D",
-                "80D": "80D",
-                "M50 Mark II": "M50 Mark II",
-                "M50": "M50",
-                // Cinema/XF series
-                "EOS C70": "C70",
-                "C70": "C70",
-                "EOS C300 Mark III": "C300 Mark III",
-                "C300 Mark III": "C300 Mark III",
-                "EOS C500 Mark II": "C500 Mark II",
-                "C500 Mark II": "C500 Mark II",
-                "XF605": "XF605",
-                "XF705": "XF705"
-            ]
-            
-            for (pattern, model) in canonModels {
-                if metadataString.contains(pattern) {
-                    return model
-                }
-            }
+    private func extractCanonModelFromMetadata(_ metadataData: Data) -> String? {
+        guard let metadataString = String(data: metadataData, encoding: .ascii) else { return nil }
+        let canonModels = [
+            "EOS R5": "R5",
+            "EOS R6 Mark II": "R6 Mark II",
+            "EOS R6": "R6",
+            "EOS R8": "R8",
+            "EOS R": "R",
+            "EOS R10": "R10",
+            "EOS R50": "R50",
+            "5D Mark IV": "5D Mark IV",
+            "5D4": "5D Mark IV",
+            "1DX Mark III": "1DX Mark III",
+            "90D": "90D",
+            "80D": "80D",
+            "M50 Mark II": "M50 Mark II",
+            "M50": "M50",
+            // Cinema/XF series
+            "EOS C70": "C70",
+            "C70": "C70",
+            "EOS C300 Mark III": "C300 Mark III",
+            "C300 Mark III": "C300 Mark III",
+            "EOS C500 Mark II": "C500 Mark II",
+            "C500 Mark II": "C500 Mark II",
+            "XF605": "XF605",
+            "XF705": "XF705"
+        ]
 
-        } catch {
-            SharedLogger.debug("Could not read Canon metadata file: \(error.localizedDescription)", category: .transfer)
+        for (pattern, model) in canonModels {
+            if metadataString.contains(pattern) {
+                return model
+            }
         }
-        
+
         return nil
     }
     

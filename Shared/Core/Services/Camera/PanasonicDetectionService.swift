@@ -23,8 +23,6 @@ final class PanasonicDetectionService: Sendable {
     // MARK: - Panasonic Metadata Detection
     
     private func checkPanasonicMetadata(at url: URL) -> String? {
-        let fm = FileManager.default
-        
         // Check for Panasonic-specific metadata files
         let panasonicMetadataFiles = [
             "PRIVATE/PANASONIC/MISC/DPOF.DAT",
@@ -32,16 +30,21 @@ final class PanasonicDetectionService: Sendable {
             "PRIVATE/MISC/INFO.DAT"
         ]
         
+        var foundReadableSidecar = false
         for metadataFile in panasonicMetadataFiles {
+            guard !Task.isCancelled else { return nil }
             let metadataPath = url.appendingPathComponent(metadataFile)
             
-            if fm.fileExists(atPath: metadataPath.path) {
-                if let cameraModel = extractPanasonicModelFromMetadata(metadataPath) {
+            if let metadataData = AdvisoryMetadataFileReader.read(metadataPath) {
+                guard !Task.isCancelled else { return nil }
+                foundReadableSidecar = true
+                if let cameraModel = extractPanasonicModelFromMetadata(metadataData) {
                     return "Panasonic \(cameraModel)"
                 }
-                return "Panasonic"
             }
         }
+
+        if foundReadableSidecar { return "Panasonic" }
         
         // Check RW2/RAF files for metadata
         return checkPanasonicRAWFiles(at: url)
@@ -68,38 +71,31 @@ final class PanasonicDetectionService: Sendable {
     
     // MARK: - Metadata Extraction
     
-    private func extractPanasonicModelFromMetadata(_ metadataPath: URL) -> String? {
-        do {
-            let metadataData = try Data(contentsOf: metadataPath)
-            guard let metadataString = String(data: metadataData, encoding: .ascii) ?? String(data: metadataData, encoding: .utf8) else { return nil }
-            
-            let panasonicModels = [
-                "DC-GH6": "GH6",
-                "DC-GH5S": "GH5S",
-                "DC-GH5": "GH5",
-                "DC-G9": "G9",
-                "DC-S1H": "S1H",
-                "DC-S1R": "S1R",
-                "DC-S1": "S1",
-                "DC-S5": "S5",
-                "DC-FZ2500": "FZ2500",
-                "DC-FZ1000": "FZ1000",
-                "DMC-GH4": "GH4",
-                "DMC-GH3": "GH3",
-                "DMC-G7": "G7",
-                "DMC-G85": "G85"
-            ]
-            
-            for (pattern, model) in panasonicModels {
-                if metadataString.contains(pattern) {
-                    return model
-                }
-            }
+    private func extractPanasonicModelFromMetadata(_ metadataData: Data) -> String? {
+        guard let metadataString = String(data: metadataData, encoding: .ascii) ?? String(data: metadataData, encoding: .utf8) else { return nil }
+        let panasonicModels = [
+            "DC-GH6": "GH6",
+            "DC-GH5S": "GH5S",
+            "DC-GH5": "GH5",
+            "DC-G9": "G9",
+            "DC-S1H": "S1H",
+            "DC-S1R": "S1R",
+            "DC-S1": "S1",
+            "DC-S5": "S5",
+            "DC-FZ2500": "FZ2500",
+            "DC-FZ1000": "FZ1000",
+            "DMC-GH4": "GH4",
+            "DMC-GH3": "GH3",
+            "DMC-G7": "G7",
+            "DMC-G85": "G85"
+        ]
 
-        } catch {
-            SharedLogger.debug("Could not read Panasonic metadata file: \(error.localizedDescription)", category: .transfer)
+        for (pattern, model) in panasonicModels {
+            if metadataString.contains(pattern) {
+                return model
+            }
         }
-        
+
         return nil
     }
     

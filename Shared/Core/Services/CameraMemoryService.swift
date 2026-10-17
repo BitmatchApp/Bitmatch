@@ -51,7 +51,7 @@ final class CameraMemoryService: @unchecked Sendable {
         let mediaProPath = url.appendingPathComponent("PRIVATE/M4ROOT/MEDIAPRO.XML")
         guard FileManager.default.fileExists(atPath: mediaProPath.path) else { return nil }
         
-        guard let xmlData = try? Data(contentsOf: mediaProPath),
+        guard let xmlData = AdvisoryMetadataFileReader.read(mediaProPath),
               let xmlString = String(data: xmlData, encoding: .utf8) else { return nil }
         
         // Extract systemId and systemKind
@@ -69,6 +69,7 @@ final class CameraMemoryService: @unchecked Sendable {
         }
         
         guard let id = systemId, let kind = systemKind else { return nil }
+        guard !Task.isCancelled else { return nil }
         
         // Create or retrieve existing fingerprint
         let uniqueID = "Sony-\(kind)-\(id)"
@@ -114,20 +115,24 @@ final class CameraMemoryService: @unchecked Sendable {
     
     /// Get or create a fingerprint for a camera at the given URL
     func getCameraFingerprint(at url: URL) -> CameraFingerprint? {
+        guard !Task.isCancelled else { return nil }
         // Try Sony systemId first (most reliable for Sony cameras)
         if let sonyFingerprint = getSonySystemFingerprint(at: url) {
             return sonyFingerprint
         }
         
         // Try multiple detection methods
+        guard !Task.isCancelled else { return nil }
         if let fingerprint = detectFromMediaFiles(at: url) {
             return fingerprint
         }
         
+        guard !Task.isCancelled else { return nil }
         if let fingerprint = detectFromSidecarFiles(at: url) {
             return fingerprint
         }
         
+        guard !Task.isCancelled else { return nil }
         if let fingerprint = detectFromFolderStructure(at: url) {
             return fingerprint
         }
@@ -217,28 +222,38 @@ final class CameraMemoryService: @unchecked Sendable {
         
         // Check for XML/metadata files
         for file in contents {
-            let name = file.lastPathComponent.uppercased()
-            
-            // Sony XML files
-            if name.contains("M01.XML") || name.contains("MEDIAPRO.XML") {
-                if let xmlContent = try? String(contentsOf: file, encoding: .utf8) {
-                    return parseSonyXML(xmlContent)
+            guard !Task.isCancelled else { return nil }
+            let fingerprint: CameraFingerprint? = autoreleasepool {
+                let name = file.lastPathComponent.uppercased()
+
+                // Sony XML files
+                if name.contains("M01.XML") || name.contains("MEDIAPRO.XML") {
+                    if let data = AdvisoryMetadataFileReader.read(file),
+                       let xmlContent = String(data: data, encoding: .utf8) {
+                        return parseSonyXML(xmlContent)
+                    }
                 }
-            }
-            
-            // Canon XMP files
-            if file.pathExtension.uppercased() == "XMP" {
-                if let xmpContent = try? String(contentsOf: file, encoding: .utf8) {
-                    return parseCanonXMP(xmpContent)
+
+                // Canon XMP files
+                if file.pathExtension.uppercased() == "XMP" {
+                    if let data = AdvisoryMetadataFileReader.read(file),
+                       let xmpContent = String(data: data, encoding: .utf8) {
+                        return parseCanonXMP(xmpContent)
+                    }
                 }
-            }
-            
-            // ARRI metadata
-            if name.contains(".ARI") || name.contains("METADATA") {
-                if let arriContent = try? String(contentsOf: file, encoding: .utf8) {
-                    return parseARRIMetadata(arriContent)
+
+                // ARRI metadata: .ARI can also be a large media file.
+                if name.contains(".ARI") || name.contains("METADATA") {
+                    if let data = AdvisoryMetadataFileReader.read(file),
+                       let arriContent = String(data: data, encoding: .utf8) {
+                        return parseARRIMetadata(arriContent)
+                    }
                 }
+
+                return nil
             }
+            guard !Task.isCancelled else { return nil }
+            if let fingerprint { return fingerprint }
         }
         
         return nil
@@ -409,7 +424,8 @@ final class CameraMemoryService: @unchecked Sendable {
     private func detectSonyFromStructure(at url: URL) -> CameraFingerprint? {
         // Check for MEDIAPRO.XML in Sony folder structure
         let mediaproURL = url.appendingPathComponent("MEDIAPRO.XML")
-        if let content = try? String(contentsOf: mediaproURL, encoding: .utf8) {
+        if let data = AdvisoryMetadataFileReader.read(mediaproURL),
+           let content = String(data: data, encoding: .utf8) {
             return parseSonyXML(content)
         }
         return nil
