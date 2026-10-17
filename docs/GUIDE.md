@@ -97,7 +97,7 @@ You can ignore SFTP entirely and keep everything local. No app analytics uploads
 
 ## Before You Trust It With Your Footage
 
-BitMatch reads the source without writing to it. It copies through temporary files and doesn't overwrite conflicting destination files. Checksum modes reuse an existing file only after verifying that it matches.
+BitMatch reads the source without writing to it. It copies through temporary files and refuses destination files it finds already in place. Checksum modes reuse an existing file only after verifying that it matches.
 
 Source scanning rejects unreadable metadata, unsafe paths, and portable filename collisions. Apart from the AppleDouble setting and designated macOS metadata folders at a volume root, hidden files and empty folders are preserved; symlink entries are skipped. Verification rejects files that change size or identity while being read. Completion screens and reports count failures and sidecars too.
 
