@@ -33,7 +33,7 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 title: safetyState.headline(cardName: cardName),
                 detail: "Copied to \(backups) and verified.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Every file on every destination was read back and matched the card."
+                sourceGuidance: "BitMatch read every file on every backup and checked it against the bytes it read from the card."
             )
         case .copiedNotVerified:
             return Self(
@@ -53,9 +53,9 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
         case .failed:
             return Self(
                 title: safetyState.headline(cardName: cardName),
-                detail: "No files were confirmed copied and verified.",
+                detail: "The transfer did not finish safely. Review any recorded results below.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Do not erase \(card). Nothing here has been confirmed safe."
+                sourceGuidance: "Do not erase \(card). The transfer did not finish safely."
             )
         case .waiting, .preparing, .copying, .verifying, .finishing, .interrupted:
             preconditionFailure("A completion verdict must produce a finish state")

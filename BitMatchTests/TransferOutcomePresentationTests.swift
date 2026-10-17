@@ -409,6 +409,7 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.verdict.detail == "1 file · 100 bytes verified on A and B · SHA-256 · 1m 15s")
         #expect(outcome.destinations.map(\.title) == ["A › Backup", "B › Backup"])
         #expect(outcome.finishTitle == "The card is safe to erase")
+        #expect(outcome.visibleVerdictText.contains("checked it against the bytes it read from the card"))
     }
 
     @Test func longBackupNamesAreMiddleTruncatedInTheFinishSubtitle() {
@@ -442,6 +443,33 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.visibleVerdictText.components(separatedBy: name).count - 1 == 1)
         #expect(outcome.finishTitle == "Transfer failed — \(name)")
         #expect(outcome.visibleVerdictText.localizedCaseInsensitiveContains("do not erase the card"))
+    }
+
+    @Test func failedFinishKeepsPartialVerifiedResultsVisibleAndCardUnsafe() {
+        let outcome = make(
+            state: .failed,
+            rows: [
+                row("A001.mov", .verified, backup: backupA),
+                row("A002.mov", .failed, backup: backupB)
+            ],
+            hasErrors: true,
+            errorCount: 1
+        )
+
+        #expect(outcome.counts.verified == 1)
+        #expect(outcome.finishTitle == "Transfer failed — The card")
+        #expect(outcome.verdict.detail.contains("Review any recorded results below"))
+        #expect(outcome.visibleVerdictText.contains("Do not erase the card"))
+        #expect(!outcome.visibleVerdictText.contains("No files were confirmed"))
+    }
+
+    @Test func failedFinishWithNoRowsDoesNotInventFileResults() {
+        let outcome = make(state: .failed, rows: [], hasErrors: true, errorCount: 1)
+
+        #expect(outcome.counts.total == 0)
+        #expect(outcome.verdict.detail.contains("Review any recorded results below"))
+        #expect(!outcome.visibleVerdictText.contains("files verified"))
+        #expect(outcome.visibleVerdictText.contains("Do not erase the card"))
     }
 
     @Test func quickAndNeedsAttentionFinishBannersNameTheCardExactlyOnce() {
