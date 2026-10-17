@@ -125,6 +125,48 @@ struct SetupPresentationTests {
         #expect(presentation.start.blocker == nil)
     }
 
+    @Test func unresolvedDriveSeparationAppearsBesideTheDestinationCountWithoutBlockingStart() {
+        let first = URL(fileURLWithPath: "/Volumes/A")
+        let second = URL(fileURLWithPath: "/Volumes/B")
+        let ready = plan(source: source, backups: [first, second])
+        let note = "Separate storage isn't confirmed."
+        let presentation = StartButtonPresentation.make(
+            plan: ready,
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 2,
+            physicalSeparationNote: note
+        )
+
+        #expect(presentation.canStart)
+        #expect(presentation.blocker == nil)
+        #expect(presentation.readyLine?.contains("to 2 destinations") == true)
+        #expect(presentation.readyLine?.hasSuffix(note) == true)
+
+        let preparedProject = StartButtonPresentation.make(
+            plan: ready,
+            usesProjectWorkflow: true,
+            hasPreparedCard: true,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 2,
+            physicalSeparationNote: note
+        )
+        #expect(preparedProject.canStart)
+        #expect(preparedProject.startsProject)
+        #expect(preparedProject.readyLine?.hasSuffix(note) == true)
+    }
+
     @MainActor
     @Test func priorBackupWordingIncludesYearForAnOlderTransfer() {
         let calendar = Calendar(identifier: .gregorian)
@@ -217,6 +259,25 @@ struct SetupPresentationTests {
     }
 
     @MainActor
+    @Test func setupCountsSelectedFoldersEvenWhenProjectPolicyCountsOneDrive() async throws {
+        let fixture = try await SharedProjectFixture.make(
+            prepareCard: false,
+            physicalDiskIdentityProvider: SamePhysicalDisk()
+        )
+        defer { fixture.folders.cleanup() }
+        let settled = await waitUntil(timeout: .seconds(5)) {
+            fixture.coordinator.destinationIndependence.independentCopyCount == 1
+        }
+        #expect(settled)
+        #expect(fixture.coordinator.destinationIndependence.selectedDestinationCount == 2)
+
+        let presentation = SetupPresentation.make(coordinator: fixture.coordinator)
+        #expect(presentation.start.canStart)
+        #expect(presentation.start.readyLine?.contains("to 2 destinations") == true)
+        #expect(presentation.start.readyLine?.contains(BackupIndependenceAssessment.unconfirmedStorageNote) == false)
+    }
+
+    @MainActor
     @Test func sameDiskPairCannotStartATwoCopyProject() async throws {
         let fixture = try await SharedProjectFixture.make(
             physicalDiskIdentityProvider: SamePhysicalDisk()
@@ -267,6 +328,26 @@ struct SetupPresentationTests {
         #expect(presentation.canStart)
         #expect(presentation.action == .addToQueue)
         #expect(presentation.title == "Add to queue")
+        #expect(presentation.readyLine == "Runs after the current card finishes.")
+    }
+
+    @Test func addToQueueCaptionDescribesOnlyTheComposerCard() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: source, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: true,
+            hasComposerCard: true,
+            stagedCardCount: 1,
+            stagedDestinationNames: [["A", "B"]],
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 1
+        )
+
+        #expect(presentation.action == .addToQueue)
         #expect(presentation.readyLine == "Runs after the current card finishes.")
     }
 
@@ -350,7 +431,51 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.title == "Start 2 transfers")
-        #expect(presentation.readyLine == "Ready to copy 2 cards to SHUTTLE A and SHUTTLE B. Source files stay in place.")
+        #expect(presentation.readyLine == "Ready to copy 2 cards to SHUTTLE A and SHUTTLE B. Source files stay in place.\n\(BackupIndependenceAssessment.unconfirmedStorageNote)")
+    }
+
+    @Test func composerUncertaintyRemainsVisibleBesideABatchStart() {
+        let first = URL(fileURLWithPath: "/Volumes/A")
+        let second = URL(fileURLWithPath: "/Volumes/B")
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: source, backups: [first, second]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            composerDestinationNames: ["A", "B"],
+            stagedCardCount: 1,
+            stagedDestinationNames: [["A"]],
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 2,
+            physicalSeparationNote: BackupIndependenceAssessment.unconfirmedStorageNote
+        )
+
+        #expect(presentation.canStart)
+        #expect(presentation.readyLine?.hasSuffix(BackupIndependenceAssessment.unconfirmedStorageNote) == true)
+    }
+
+    @Test func unusedComposerUncertaintyDoesNotDescribeASingleDestinationStagedCard() {
+        let presentation = StartButtonPresentation.make(
+            plan: plan(source: nil, backups: [backup]),
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: false,
+            stagedCardCount: 1,
+            stagedDestinationNames: [["A"]],
+            sourceFileCount: nil,
+            sourceBytes: nil,
+            destinationCount: 1,
+            physicalSeparationNote: BackupIndependenceAssessment.unconfirmedStorageNote
+        )
+
+        #expect(presentation.readyLine == "Ready to copy 1 card to A. Source files stay in place.")
     }
 
     @Test func batchCaptionCountsCardsWithDifferentDestinations() {

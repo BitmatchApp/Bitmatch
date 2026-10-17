@@ -70,7 +70,8 @@ struct StartButtonPresentation: Equatable, Sendable {
         stagedVerificationModes: [VerificationMode] = [],
         sourceFileCount: Int?,
         sourceBytes: Int64?,
-        destinationCount: Int
+        destinationCount: Int,
+        physicalSeparationNote: String? = nil
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard
         let unit = projectUnit.lowercased()
@@ -79,6 +80,12 @@ struct StartButtonPresentation: Equatable, Sendable {
         let destinationRoutes = stagedDestinationNames + (hasComposerCard ? [composerRoute] : [])
         let destinationRouteIdentities = stagedDestinationIdentities
             + (hasComposerCard ? [composerDestinationIdentities] : [])
+        // A staged card stores its destinations but has no saved physical-disk
+        // assessment until its run starts. Keep the quiet uncertainty note in
+        // the batch caption even after the composer source is cleared.
+        let separationNote = (hasComposerCard ? physicalSeparationNote : nil)
+            ?? (stagedDestinationNames.contains { $0.count > 1 }
+                ? BackupIndependenceAssessment.unconfirmedStorageNote : nil)
 
         if isOperationInProgress {
             let canAdd = !isProject && hasComposerCard && plan.canStart
@@ -90,7 +97,9 @@ struct StartButtonPresentation: Equatable, Sendable {
                 startsProject: isProject,
                 nextStep: nil,
                 blocker: canAdd ? nil : "Choose a ready source and at least one destination for the next transfer.",
-                readyLine: canAdd ? "Runs after the current card finishes." : nil,
+                readyLine: canAdd
+                    ? withSeparationNote("Runs after the current card finishes.", physicalSeparationNote)
+                    : nil,
                 accessibilityHint: canAdd
                     ? "Adds this card after the transfer already running"
                     : "Choose a ready card and destinations first"
@@ -140,11 +149,11 @@ struct StartButtonPresentation: Equatable, Sendable {
                     startsProject: false,
                     nextStep: nil,
                     blocker: nil,
-                    readyLine: readyCardsLine(
+                    readyLine: withSeparationNote(readyCardsLine(
                         cardCount: stagedCardCount,
                         destinationRoutes: destinationRoutes,
                         destinationRouteIdentities: destinationRouteIdentities
-                    ),
+                    ), separationNote),
                     accessibilityHint: "Starts each staged card in queue order and leaves every source unchanged"
                 )
             }
@@ -209,12 +218,15 @@ struct StartButtonPresentation: Equatable, Sendable {
             blocker: blocker,
             readyLine: canStart
                 ? (cardCount > 1
-                    ? readyCardsLine(
+                    ? withSeparationNote(readyCardsLine(
                         cardCount: cardCount,
                         destinationRoutes: destinationRoutes,
                         destinationRouteIdentities: destinationRouteIdentities
-                    )
-                    : readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount))
+                    ), separationNote)
+                    : withSeparationNote(
+                        readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount),
+                        separationNote
+                    ))
                 : nil,
             accessibilityHint: canStart
                 ? (cardCount > 1
@@ -226,6 +238,10 @@ struct StartButtonPresentation: Equatable, Sendable {
 
     private static func startTitle(cardCount: Int, fallback: String) -> String {
         cardCount > 1 ? "Start \(cardCount) transfers" : fallback
+    }
+
+    private static func withSeparationNote(_ line: String, _ note: String?) -> String {
+        [line, note].compactMap { $0 }.joined(separator: "\n")
     }
 
     private static func singleTransferTitle(verificationMode: VerificationMode) -> String {
@@ -330,6 +346,7 @@ struct SetupPresentation: Equatable {
         sourceBytes: Int64?,
         destinationCount: Int,
         hasProjectEvidence: Bool,
+        physicalSeparationNote: String? = nil,
         informationalLines: [String] = []
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard || isProjectRunInProgress
@@ -352,7 +369,8 @@ struct SetupPresentation: Equatable {
                 stagedVerificationModes: stagedVerificationModes,
                 sourceFileCount: sourceFileCount,
                 sourceBytes: sourceBytes,
-                destinationCount: destinationCount
+                destinationCount: destinationCount,
+                physicalSeparationNote: physicalSeparationNote
             ),
             workflow: isProject ? .project : .quick,
             isWorkflowLocked: hasPreparedCard || isProjectRunInProgress,

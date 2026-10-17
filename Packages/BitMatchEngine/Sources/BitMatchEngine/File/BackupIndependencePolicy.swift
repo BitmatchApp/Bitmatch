@@ -62,8 +62,25 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
 }
 
 public struct BackupIndependenceAssessment: Equatable, Sendable {
+    public static let unconfirmedStorageNote = "Separate storage isn't confirmed."
+
+    /// Selected folders, including folders that share a resolved identity.
+    public let selectedDestinationCount: Int
+    /// Distinct identity strings the provider could resolve. A composite or
+    /// network volume may still hide its underlying physical stores.
+    public let resolvedIdentityGroupCount: Int
+    /// Destinations whose physical storage identity could not be resolved.
+    public let unresolvedDestinationCount: Int
+    /// Current product-policy count. Unresolved destinations each count once;
+    /// this is not proof that they live on separate physical devices.
     public let independentCopyCount: Int
     public let warnings: [String]
+
+    /// A quiet setup note, separate from warnings and the safety verdict.
+    public var physicalSeparationNote: String? {
+        guard selectedDestinationCount > 1, unresolvedDestinationCount > 0 else { return nil }
+        return Self.unconfirmedStorageNote
+    }
 }
 
 public enum BackupIndependencePolicy: Sendable {
@@ -95,6 +112,9 @@ public enum BackupIndependencePolicy: Sendable {
             }
             .sorted()
         return BackupIndependenceAssessment(
+            selectedDestinationCount: destinations.count,
+            resolvedIdentityGroupCount: knownGroups.count,
+            unresolvedDestinationCount: unknownCount,
             independentCopyCount: knownGroups.count + unknownCount,
             warnings: warnings
         )

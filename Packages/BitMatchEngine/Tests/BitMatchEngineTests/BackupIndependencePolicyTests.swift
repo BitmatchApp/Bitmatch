@@ -21,6 +21,10 @@ struct BackupIndependencePolicyTests {
         )
 
         #expect(result.independentCopyCount == 1)
+        #expect(result.selectedDestinationCount == 2)
+        #expect(result.resolvedIdentityGroupCount == 1)
+        #expect(result.unresolvedDestinationCount == 0)
+        #expect(result.physicalSeparationNote == nil)
         #expect(result.warnings == ["SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"])
     }
 
@@ -35,7 +39,39 @@ struct BackupIndependencePolicyTests {
         )
 
         #expect(result.independentCopyCount == 3)
+        #expect(result.selectedDestinationCount == 3)
+        #expect(result.resolvedIdentityGroupCount == 2)
+        #expect(result.unresolvedDestinationCount == 1)
+        #expect(result.physicalSeparationNote == "Separate storage isn't confirmed.")
         #expect(result.warnings.isEmpty)
+    }
+
+    @Test func unresolvedIdentityIsEvidenceGapNotProofOfSharedStorage() {
+        let first = URL(fileURLWithPath: "/Volumes/A")
+        let second = URL(fileURLWithPath: "/Volumes/B")
+        let unknown = FakeProvider(identities: [:])
+
+        let pair = BackupIndependencePolicy.assess(
+            destinations: [first, second], provider: unknown
+        )
+        #expect(pair.independentCopyCount == 2) // Existing verdict policy is unchanged.
+        #expect(pair.resolvedIdentityGroupCount == 0)
+        #expect(pair.unresolvedDestinationCount == 2)
+        #expect(pair.warnings.isEmpty)
+        #expect(pair.physicalSeparationNote != nil)
+
+        let single = BackupIndependencePolicy.assess(destinations: [first], provider: unknown)
+        #expect(single.independentCopyCount == 1)
+        #expect(single.unresolvedDestinationCount == 1)
+        #expect(single.physicalSeparationNote == nil)
+
+        let distinct = BackupIndependencePolicy.assess(
+            destinations: [first, second],
+            provider: FakeProvider(identities: [first.path: "disk4", second.path: "disk5"])
+        )
+        #expect(distinct.resolvedIdentityGroupCount == 2)
+        #expect(distinct.unresolvedDestinationCount == 0)
+        #expect(distinct.physicalSeparationNote == nil)
     }
 
     @Test func wholeDiskNameStripsPartitionsButKeepsWholeAndUnknownNames() {

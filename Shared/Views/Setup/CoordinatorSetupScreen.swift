@@ -70,8 +70,9 @@ extension SetupPresentation {
             stagedVerificationModes: stagedVerificationModes,
             sourceFileCount: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.fileCount,
             sourceBytes: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.totalSize,
-            destinationCount: independence.independentCopyCount,
+            destinationCount: independence.selectedDestinationCount,
             hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
+            physicalSeparationNote: independence.physicalSeparationNote,
             informationalLines: [coordinator.alreadyBackedUpLine, coordinator.appleDoubleSelection.summaryLine].compactMap { $0 }
         )
     }
