@@ -1,8 +1,26 @@
+import AppKit
 import Testing
 @testable import BitMatch
 import BitMatchEngine
 
 struct MacMenuBarCompanionTests {
+    @Test @MainActor func mainWindowAccessorReportsItsHostInsteadOfAnotherWindow() {
+        let decoy = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                             styleMask: [.titled], backing: .buffered, defer: false)
+        let main = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+                            styleMask: [.titled], backing: .buffered, defer: false)
+        decoy.isReleasedWhenClosed = false
+        main.isReleasedWhenClosed = false
+        defer { decoy.close(); main.close() }
+
+        var reported: NSWindow?
+        let observer = MainWindowAccessor.WindowObserverView()
+        observer.onWindow = { reported = $0 }
+        decoy.makeKeyAndOrderFront(nil)
+        main.contentView?.addSubview(observer)
+        #expect(reported === main)
+    }
+
     @Test func destinationCopyCountNeverBecomesAVerifiedVerdict() {
         #expect(MenuBarDestinationLabel.text(for: .waiting) == "Waiting")
         #expect(MenuBarDestinationLabel.text(for: .copying) == "Copying")

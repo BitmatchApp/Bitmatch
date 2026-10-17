@@ -83,9 +83,11 @@ struct BitMatchApp: App {
                 ContentView(environment: environment).preferredColorScheme(.dark)
 #endif
             }
+            .background(MainWindowAccessor { window in
+                setupWindow(window)
+            })
             .onAppear {
                 appDelegate.coordinator = environment.coordinator
-                setupWindow()
             }
         }
         .windowToolbarStyle(.unified(showsTitle: false))
@@ -186,44 +188,71 @@ struct BitMatchApp: App {
         }
     }
     
-    private func setupWindow() {
+    private func setupWindow(_ mainWindow: NSWindow) {
         DispatchQueue.main.async {
-            if let window = AppDelegate.contentWindowCandidate() {
-                // Configure window appearance
-                window.title = "BitMatch"
-                window.titlebarAppearsTransparent = true
-                window.titleVisibility = .hidden
-                if WindowPresentationPolicy.allowsManualResizing {
-                    window.styleMask.insert(.resizable)
-                }
-                window.isMovableByWindowBackground = true
-                window.backgroundColor = .windowBackgroundColor
-                
-                // Start compact, then let the workbench grow into a proper review surface.
-                window.setContentSize(NSSize(width: WindowPresentationPolicy.initialWidth, height: WindowPresentationPolicy.initialHeight))
-                window.minSize = NSSize(width: WindowPresentationPolicy.minimumWidth, height: WindowPresentationPolicy.minimumHeight)
-                window.maxSize = NSSize(width: WindowPresentationPolicy.maximumWidth, height: WindowPresentationPolicy.maximumHeight)
-                
-                // Make window fully opaque
-                window.isOpaque = true
-                window.alphaValue = 1.0
-                window.hasShadow = true
-                
-                // Set window level
-                window.level = .normal
-                window.delegate = appDelegate
+            let window = mainWindow
+            if window.delegate === appDelegate {
                 appDelegate.registerContentWindow(window)
-                
-                let savedFrame = UserDefaults.standard.dictionary(forKey: "BitMatch.windowFrame")
-                let hasSavedPlacement = savedFrame?["x"] as? CGFloat != nil
-                    && savedFrame?["y"] as? CGFloat != nil
-                if WindowPresentationPolicy.shouldCenterWindow(
-                    hasSavedPlacement: hasSavedPlacement,
-                    isInterfaceLab: launchesInterfaceLab
-                ) {
-                    window.center()
-                }
+                return
             }
+            // The view belongs to this WindowGroup scene. A Settings window
+            // can become key before this deferred setup runs, so configure
+            // the captured scene window rather than searching all app windows.
+            window.title = "BitMatch"
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            if WindowPresentationPolicy.allowsManualResizing {
+                window.styleMask.insert(.resizable)
+            }
+            window.isMovableByWindowBackground = true
+            window.backgroundColor = .windowBackgroundColor
+
+            // Start compact, then let the workbench grow into a proper review surface.
+            window.setContentSize(NSSize(width: WindowPresentationPolicy.initialWidth, height: WindowPresentationPolicy.initialHeight))
+            window.minSize = NSSize(width: WindowPresentationPolicy.minimumWidth, height: WindowPresentationPolicy.minimumHeight)
+            window.maxSize = NSSize(width: WindowPresentationPolicy.maximumWidth, height: WindowPresentationPolicy.maximumHeight)
+
+            window.isOpaque = true
+            window.alphaValue = 1.0
+            window.hasShadow = true
+            window.level = .normal
+            window.delegate = appDelegate
+            appDelegate.registerContentWindow(window)
+
+            let savedFrame = UserDefaults.standard.dictionary(forKey: "BitMatch.windowFrame")
+            let hasSavedPlacement = savedFrame?["x"] as? CGFloat != nil
+                && savedFrame?["y"] as? CGFloat != nil
+            if WindowPresentationPolicy.shouldCenterWindow(
+                hasSavedPlacement: hasSavedPlacement,
+                isInterfaceLab: launchesInterfaceLab
+            ) {
+                window.center()
+            }
+        }
+    }
+}
+
+/// Reports the NSWindow that actually hosts the main SwiftUI scene. Looking
+/// up the key window here can select Settings or another ordinary window.
+struct MainWindowAccessor: NSViewRepresentable {
+    let onWindow: @MainActor (NSWindow) -> Void
+
+    func makeNSView(context: Context) -> WindowObserverView {
+        let view = WindowObserverView()
+        view.onWindow = onWindow
+        return view
+    }
+
+    func updateNSView(_ view: WindowObserverView, context: Context) {
+        view.onWindow = onWindow
+    }
+
+    final class WindowObserverView: NSView {
+        var onWindow: (@MainActor (NSWindow) -> Void)?
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            if let window { onWindow?(window) }
         }
     }
 }

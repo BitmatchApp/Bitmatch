@@ -144,7 +144,7 @@ struct MacMenuBarStatusLabel: View {
                 }
                 .accessibilityLabel("BitMatch, \(presentation.title), \(presentation.percentText ?? "progress not yet measured")")
             } else {
-                Image(systemName: "circle.hexagongrid.fill")
+                Image(systemName: "square.on.square")
                     .resizable()
                     .scaledToFit()
                     .accessibilityLabel("BitMatch")
