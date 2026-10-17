@@ -60,7 +60,13 @@ struct BitMatchApp: App {
 
     init() {
         SharedLogger.transferEvent(.appStarted, run: nil)
+        #if DEBUG
+        let isUnitTestHost = MacUnitTestHost.isRunning()
+        if isUnitTestHost { MacUnitTestHost.clearState() }
+        let environment = isUnitTestHost ? MacAppEnvironment.makeForUnitTestHost() : MacAppEnvironment.make()
+        #else
         let environment = MacAppEnvironment.make()
+        #endif
         _environment = StateObject(wrappedValue: environment)
         _updater = StateObject(wrappedValue: UpdaterController(coordinator: environment.coordinator))
         appDelegate.coordinator = environment.coordinator
@@ -291,6 +297,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         SharedLogger.transferEvent(.appEnded, run: nil)
+        #if DEBUG
+        if MacUnitTestHost.isRunning() { MacUnitTestHost.clearState() }
+        #endif
     }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {

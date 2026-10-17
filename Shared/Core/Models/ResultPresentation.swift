@@ -24,6 +24,9 @@ enum CardSafetyState: Equatable, Sendable {
     case preparing
     case copying(progress: Int?)
     case verifying(progress: Int?)
+    /// File work has drained, but evidence/reporting and journal settlement
+    /// are still in progress. Never a completed verdict.
+    case finishing(progress: Int?)
     case safeToErase
     case copiedNotVerified
     case needsAttention
@@ -31,7 +34,7 @@ enum CardSafetyState: Equatable, Sendable {
     case interrupted
 
     static let invariantSamples: [Self] = [
-        .waiting, .preparing, .copying(progress: 42), .verifying(progress: 31),
+        .waiting, .preparing, .copying(progress: 42), .verifying(progress: 31), .finishing(progress: 99),
         .safeToErase, .copiedNotVerified, .needsAttention, .failed, .interrupted,
     ]
 
@@ -41,6 +44,7 @@ enum CardSafetyState: Equatable, Sendable {
         case .preparing: "Preparing"
         case .copying(let progress): Self.progressTitle("Copying", progress: progress)
         case .verifying(let progress): Self.progressTitle("Verifying", progress: progress)
+        case .finishing(let progress): Self.progressTitle("Finishing", progress: progress)
         case .safeToErase: "Safe to erase"
         case .copiedNotVerified: "Copied, not verified"
         case .needsAttention: "Needs attention"
@@ -55,6 +59,7 @@ enum CardSafetyState: Equatable, Sendable {
         case .preparing: "hourglass"
         case .copying: "doc.on.doc"
         case .verifying: "checkmark.shield"
+        case .finishing: "hourglass"
         case .safeToErase: "checkmark.circle.fill"
         case .copiedNotVerified: "doc.on.doc"
         case .needsAttention: "exclamationmark.triangle.fill"
@@ -66,7 +71,7 @@ enum CardSafetyState: Equatable, Sendable {
     var tint: CardSafetyTint {
         switch self {
         case .waiting: .gray
-        case .preparing, .copying, .verifying: .blue
+        case .preparing, .copying, .verifying, .finishing: .blue
         case .safeToErase: .green
         // Amber, like a Quick compare (THESIS decision, 2026-09-25); its
         // symbol and words keep it apart from Needs attention.
@@ -86,7 +91,7 @@ enum CardSafetyState: Equatable, Sendable {
         switch self {
         case .copiedNotVerified, .needsAttention, .failed, .interrupted:
             return "Do not erase the card."
-        case .waiting, .preparing, .copying, .verifying, .safeToErase:
+        case .waiting, .preparing, .copying, .verifying, .finishing, .safeToErase:
             return nil
         }
     }
@@ -99,6 +104,7 @@ enum CardSafetyState: Equatable, Sendable {
         case .preparing: return "Preparing \(card)"
         case .copying: return "Copying \(card)"
         case .verifying: return "Verifying \(card)"
+        case .finishing: return "Finishing \(card)"
         case .safeToErase: return "\(cardStart) is safe to erase"
         case .copiedNotVerified: return "\(cardStart) copied, not verified"
         case .needsAttention: return "\(cardStart) needs attention"
@@ -108,7 +114,7 @@ enum CardSafetyState: Equatable, Sendable {
     }
 
     static func make(state: OperationState, verdict: CompletionVerdict, progress: Double? = nil) -> Self {
-        let percent = progress.map { Int((min(max($0, 0), 1) * 100).rounded(.down)) }
+        let percent = progress.map { Int((min(max($0, 0), 0.99) * 100).rounded(.down)) }
         switch state {
         case .idle, .notStarted: return .waiting
         case .inProgress, .resuming: return .preparing

@@ -45,6 +45,15 @@ final class MacCameraAutoSourceController: ObservableObject {
         guard let shared, shared.reportSettings.enableAutoCameraDetection,
               volumeAccess?.needsDriveAccess != true,
               !shared.isOperationInProgress, !shared.showsOutcomeSummary else { return }
+        // The executor can become terminal before its journal record settles.
+        // Finish is not safe to display yet, but a new card must not silently
+        // replace the source until the operator starts a new transfer.
+        if !shared.lastOperationWasCompare {
+            switch shared.operationState {
+            case .completed, .failed, .cancelled: return
+            default: break
+            }
+        }
         let shouldSelect = AutomaticSourceSelectionPolicy.shouldSelect(
             automaticSelectionEnabled: shared.reportSettings.autoPopulateSource,
             hasExistingSource: shared.sourceURL != nil,

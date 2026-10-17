@@ -181,6 +181,10 @@ final class CameraCardDetectionService: ObservableObject {
             // detection started before this mount.
             unmountedPaths.remove(event.volume.path)
             volumeGenerations[event.volume.path, default: 0] &+= 1
+            // A missed unmount event can leave the previous card at this
+            // path. Retire its row before the new detection; path-based
+            // deduplication must not keep the old camera label.
+            await removeDetectedCamera(at: event.volume)
             startDetection(for: event.volume)
 
         case .unmounted:

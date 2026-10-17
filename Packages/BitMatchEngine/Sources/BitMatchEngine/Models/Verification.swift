@@ -218,13 +218,23 @@ public enum VerificationMode: String, CaseIterable, Identifiable, Codable, Senda
     case paranoid = "Paranoid"
     
     public var id: String { self.rawValue }
+
+    /// Compact copy-mode wording for setup, where the mode name is already shown.
+    public var shortDescription: String {
+        switch self {
+        case .quick: return "File sizes only; contents not verified"
+        case .standard: return "SHA-256 backup readback; existing files recheck the source"
+        case .thorough: return "Separate card re-read; SHA-256 and MD5"
+        case .paranoid: return "Separate card re-read; byte comparison and SHA-256"
+        }
+    }
     
     public var description: String {
         switch self {
-        case .quick: return "Quick checks file sizes only; file contents are not checksum-verified."
+        case .quick: return "Quick checks file sizes, not contents. It never marks the card safe to erase."
         case .standard: return "Standard reads each backup back with SHA-256. New copies use the source hash from copying; existing files are checked against a fresh source read."
-        case .thorough: return "Thorough also re-reads the card for verification."
-        case .paranoid: return "Paranoid also compares every byte."
+        case .thorough: return "Thorough separately re-reads the card and checks SHA-256 and MD5 on every backup."
+        case .paranoid: return "Paranoid separately re-reads the card and compares every byte with each backup, plus SHA-256."
         }
     }
     

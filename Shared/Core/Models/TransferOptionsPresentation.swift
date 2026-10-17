@@ -30,6 +30,7 @@ struct TransferOptionsPresentation: Equatable, Sendable {
         makeReport: Bool?,
         cameraLabel: String?,
         includesVerificationNote: Bool = true,
+        isCompare: Bool = false,
         writesPDF: Bool = TransferOptionsPresentation.platformWritesPDF
     ) -> TransferOptionsPresentation {
         var notes: [String] = []
@@ -49,7 +50,9 @@ struct TransferOptionsPresentation: Equatable, Sendable {
         let enabled = ascMHLEnabled(for: verificationMode)
         return TransferOptionsPresentation(
             advancedNote: notes.joined(separator: " · "),
-            verificationDetail: verificationMode.description,
+            verificationDetail: isCompare
+                ? CompareCheckPlan.make(for: verificationMode).summary
+                : verificationMode.description,
             ascMHLEnabled: enabled,
             ascMHLFootnote: ascMHLFootnote(for: verificationMode),
             reportToggleTitle: reportToggleTitle(writesPDF: writesPDF)

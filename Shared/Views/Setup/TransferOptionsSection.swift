@@ -44,7 +44,8 @@ struct TransferOptionsSection<LabelContent: View>: View {
             generateASCMHL: generateASCMHL?.wrappedValue,
             makeReport: makeReport?.wrappedValue,
             cameraLabel: cameraLabel,
-            includesVerificationNote: showsVerificationPicker
+            includesVerificationNote: showsVerificationPicker,
+            isCompare: showsVerificationPicker
         )
     }
 

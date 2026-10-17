@@ -29,8 +29,8 @@ struct CardSafetyStateTests {
     }
 
     @Test func preparingAndActiveWorkStayBlue() {
-        let active: [CardSafetyState] = [.preparing, .copying(progress: nil), .verifying(progress: nil)]
+        let active: [CardSafetyState] = [.preparing, .copying(progress: nil), .verifying(progress: nil), .finishing(progress: nil)]
         #expect(active.allSatisfy { $0.tint == .blue })
-        #expect(active.map(\.title) == ["Preparing", "Copying", "Verifying"])
+        #expect(active.map(\.title) == ["Preparing", "Copying", "Verifying", "Finishing"])
     }
 }

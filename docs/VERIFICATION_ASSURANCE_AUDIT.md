@@ -42,7 +42,7 @@ The source audit found two presentation/report issues addressed in this batch:
 
 README and Guide now explain Standard's read scope and the limits of repeated source reads. This does **not** complete the TODO acceptance criterion for all surfaces. Continue on Mac with:
 
-- Setup has both `VerificationMode.description` and a separate short mode description in `SetupLocationsView`. Align them without obscuring warnings or crowding narrow screens.
+- Setup now takes its compact description from `VerificationMode`, and Mac/iPhone/iPad settings use the same full description. Compare uses its own check plan for mode details rather than copy-mode wording. The iPhone/iPad introduction no longer implies that Quick checks file contents. Review the compact wording on narrow devices during the next signed-app walkthrough.
 - Outcome and History show mode/digest labels, but do not yet communicate all mode-specific source-read limits.
 - PDF/CSV/JSON primarily record method/algorithm. Add explicit scope and limits without implying that an enabled check completed in an interrupted attempt. Preserve older evidence compatibility and selected-file exclusions.
 - `EvidenceReader.verificationMode` currently infers modes from legacy method/algorithm strings. An MD5 algorithm alone is not proof of a Thorough source reread. Plan explicit recorded-mode/scope metadata and conservative legacy presentation rather than inventing source assurance.

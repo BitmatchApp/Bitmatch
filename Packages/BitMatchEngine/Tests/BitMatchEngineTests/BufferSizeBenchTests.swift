@@ -5,6 +5,9 @@ import XCTest
 
 /// Opt-in storage benchmark. Run with:
 /// `BITMATCH_BENCH=1 swift test --filter BufferSizeBenchTests`
+/// Source writes and timed reads request F_NOCACHE, including the first run.
+/// This requests a cache bypass but cannot prove a physical-device read;
+/// confirm that separately with the selected drive's I/O counters.
 final class BufferSizeBenchTests: XCTestCase {
     private let totalBytes: Int64 = 2 * 1_024 * 1_024 * 1_024
     private let fileBytes: Int64 = 256 * 1_024 * 1_024
@@ -56,6 +59,7 @@ final class BufferSizeBenchTests: XCTestCase {
         }
 
         print("\nF_NOCACHE buffer benchmark — 2 GiB in 8 × 256 MiB files, \(runs) runs")
+        print("Cache bypass requested for source creation, hash reads, and copy I/O; physical-device reads are not independently confirmed. Check drive read counters before using these numbers for a storage decision.")
         print("Buffer | Hash MB/s median (IQR) | Copy MB/s median (IQR)")
         print("------ | ---------------------- | ----------------------")
         for row in rows {
@@ -88,6 +92,12 @@ final class BufferSizeBenchTests: XCTestCase {
             let descriptor = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL, S_IRUSR | S_IWUSR)
             try requireDescriptor(descriptor, operation: "create", path: url.path)
             defer { Darwin.close(descriptor) }
+            // fsync alone flushes the file; it does not evict the data just written.
+            // Avoid warming the source in the filesystem cache before the first
+            // timed read, just as the timed source reads avoid that cache.
+            guard Darwin.fcntl(descriptor, F_NOCACHE, 1) != -1 else {
+                throw posixError("F_NOCACHE", url.path)
+            }
             var remaining = fileBytes
             while remaining > 0 {
                 let count = min(Int64(block.count), remaining)

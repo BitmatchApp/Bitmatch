@@ -5,6 +5,7 @@ import BitMatchEngine
 
 #if os(macOS)
 import DiskArbitration
+import Darwin
 #endif
 
 /// Finds camera cards and backup drives as they mount. Published state and
@@ -30,6 +31,55 @@ final class VolumeMonitorService: ObservableObject {
     #if os(macOS)
     private var volumesDispatchSource: DispatchSourceFileSystemObject?
     #endif
+    /// A path may be reused by a different card when the unmount and mount
+    /// happen between directory notifications. Keep the mounted filesystem's
+    /// best available identity, rather than the path, beside each row.
+    private var publishedMountIdentities: [String: String] = [:]
+    private var pendingMountIdentities: [String: String] = [:]
+    private var pendingAnalysisRequests: [String: UInt64] = [:]
+    private var nextAnalysisRequest: UInt64 = 0
+
+    struct MountedVolume: Sendable {
+        let url: URL
+        let identity: String?
+
+        var path: String { url.standardizedFileURL.resolvingSymlinksInPath().path }
+    }
+
+    struct Reconciliation: Sendable {
+        let stalePaths: Set<String>
+        let toAnalyze: [MountedVolume]
+    }
+
+    /// Pure decision used by the live monitor and deterministic event-gap
+    /// tests. A pending scan does not make an old published identity current.
+    nonisolated static func reconciliation(
+        mounted: [MountedVolume], published: [String: String],
+        pending: [String: String], knownPaths: Set<String>, forceAnalysis: Bool = false
+    ) -> Reconciliation {
+        let current = Dictionary(mounted.compactMap { volume in
+            volume.identity.map { (volume.path, $0) }
+        }, uniquingKeysWith: { _, newer in newer })
+        let stale = Set(knownPaths.union(published.keys).filter { path in
+            guard let previous = published[path] else { return current[path] == nil }
+            return current[path] != previous
+        })
+        let toAnalyze = mounted.filter { volume in
+            guard let identity = volume.identity else { return false }
+            return (forceAnalysis || !knownPaths.contains(volume.path) || stale.contains(volume.path))
+                && (forceAnalysis || pending[volume.path] != identity)
+        }
+        return Reconciliation(stalePaths: stale, toAnalyze: toAnalyze)
+    }
+
+    nonisolated static func acceptsAnalysis(_ analyzed: MountedVolume, mounted: [MountedVolume]) -> Bool {
+        guard let identity = analyzed.identity else { return false }
+        return mounted.contains { $0.path == analyzed.path && $0.identity == identity }
+    }
+
+    nonisolated static func acceptsAnalysisRequest(_ request: UInt64, current: UInt64?) -> Bool {
+        current == request
+    }
 
     struct DetectedVolume: Identifiable, Equatable, Sendable {
         let id = UUID()
@@ -88,14 +138,28 @@ final class VolumeMonitorService: ObservableObject {
     // A singleton: it lives as long as the app, so it never tears monitoring
     // down, and the Disk Arbitration context below never dangles.
     private init() {
+        #if DEBUG
+        // Test models and MacSetupLocations reference this singleton even
+        // when their own monitoring is off. The app-hosted unit-test process
+        // must not enumerate real mounted media before a fixture is set up.
+        guard !MacUnitTestHost.isRunning() else { return }
+        #endif
         startMonitoring()
         // Initial scan of existing volumes
         scanExistingVolumes()
     }
+
+    #if DEBUG
+    private(set) var startedLiveMonitoring = false
+    private(set) var scannedExistingVolumes = false
+    #endif
     
     // MARK: - Volume Monitoring
     
     private func startMonitoring() {
+        #if DEBUG
+        startedLiveMonitoring = true
+        #endif
         #if os(macOS)
         startDiskArbitrationMonitoring()
         startFileSystemMonitoring()
@@ -228,26 +292,40 @@ final class VolumeMonitorService: ObservableObject {
             vlog("⏭️ Skipping system volume: \(volumePath)")
             return
         }
-        analyzeInBackground([volumePath], facts: facts)
+        analyzeInBackground(
+            [MountedVolume(url: volumePath, identity: Self.mountIdentity(for: volumePath))],
+            facts: facts, forceAnalysis: true
+        )
     }
     #endif
     
     // MARK: - Volume Analysis
     
     /// Reads each volume off the main actor and adds what it finds.
-    private func analyzeInBackground(_ volumes: [URL], facts: DiskFacts? = nil) {
+    private func analyzeInBackground(
+        _ volumes: [MountedVolume], facts: DiskFacts? = nil, forceAnalysis: Bool = false
+    ) {
         #if os(macOS)
+        let fresh = volumes.compactMap { volume -> (MountedVolume, UInt64)? in
+            guard let identity = volume.identity else { return nil }
+            guard forceAnalysis || pendingMountIdentities[volume.path] != identity else { return nil }
+            nextAnalysisRequest &+= 1
+            pendingMountIdentities[volume.path] = identity
+            pendingAnalysisRequests[volume.path] = nextAnalysisRequest
+            return (volume, nextAnalysisRequest)
+        }
         Task.detached(priority: .utility) { [weak self] in
-            for volumeURL in volumes {
+            for (volume, request) in fresh {
+                let volumeURL = volume.url
                 Self.vlog("🔬 Analyzing volume at: \(volumeURL.path)")
                 let connected = VolumeAnalysis.connectedVolume(at: volumeURL, facts: facts)
-                if let connected { await self?.updateConnectedVolume(connected) }
-                if let detected = VolumeAnalysis.analyzeVolume(at: volumeURL, facts: facts, cameraInfo: connected?.cameraName) {
+                let detected = VolumeAnalysis.analyzeVolume(at: volumeURL, facts: facts, cameraInfo: connected?.cameraName)
+                if let detected {
                     Self.vlog("✅ Volume detected as \(detected.type): \(detected.displayName)")
-                    await self?.addDetectedVolume(detected)
                 } else {
                     Self.vlog("❌ Volume not recognized as camera card or backup drive")
                 }
+                await self?.publishAnalysis(connected: connected, detected: detected, for: volume, request: request)
             }
         }
         #else
@@ -255,41 +333,75 @@ final class VolumeMonitorService: ObservableObject {
         #endif
     }
 
-    private func checkForVolumeChanges() {
+    private func checkForVolumeChanges(forceAnalysis: Bool = false) {
         vlog("🔍 Checking for volume changes...")
         guard let currentVolumes = Self.mountedVolumes() else { return }
-        let currentVolumePaths = Set(currentVolumes.map { $0.standardizedFileURL.resolvingSymlinksInPath().path })
-
-        connectedVolumes.removeAll { !currentVolumePaths.contains($0.url.path) }
-
-        // Remove cards and drives that are gone.
-        for card in availableCameraCards where !currentVolumePaths.contains(card.url.path) {
-            vlog("📤 Camera card removed: \(card.displayName)")
-            availableCameraCards.removeAll { $0.id == card.id }
-        }
-        for drive in availableBackupDrives where !currentVolumePaths.contains(drive.url.path) {
-            vlog("📤 Backup drive removed: \(drive.displayName)")
-            availableBackupDrives.removeAll { $0.id == drive.id }
-        }
-
-        // Analyze only volumes not already known (read here, on the main
-        // actor, where the lists change).
-        // A volume counts as known once either list has it, so a card the
-        // drive list hides is not analyzed again on every change.
+        let mounted = currentVolumes.map { MountedVolume(url: $0, identity: Self.mountIdentity(for: $0)) }
+        let currentIdentities = Dictionary(mounted.compactMap { volume in
+            volume.identity.map { (volume.path, $0) }
+        }, uniquingKeysWith: { _, newer in newer })
+        pendingMountIdentities = pendingMountIdentities.filter { currentIdentities[$0.key] == $0.value }
+        pendingAnalysisRequests = pendingAnalysisRequests.filter { pendingMountIdentities[$0.key] != nil }
         let knownPaths = Set(connectedVolumes.map { $0.url.path })
             .union((availableCameraCards + availableBackupDrives).map { $0.url.path })
-        let newVolumes = currentVolumes.filter { !knownPaths.contains($0.path) }
-        for volumeURL in newVolumes {
-            vlog("🔍 New volume detected: \(volumeURL.lastPathComponent)")
+        let plan = Self.reconciliation(
+            mounted: mounted, published: publishedMountIdentities,
+            pending: pendingMountIdentities, knownPaths: knownPaths,
+            forceAnalysis: forceAnalysis
+        )
+        if !plan.stalePaths.isEmpty {
+            connectedVolumes.removeAll { plan.stalePaths.contains($0.url.path) }
+            availableCameraCards.removeAll { plan.stalePaths.contains($0.url.path) }
+            availableBackupDrives.removeAll { plan.stalePaths.contains($0.url.path) }
+            for path in plan.stalePaths { publishedMountIdentities.removeValue(forKey: path) }
         }
-        analyzeInBackground(newVolumes)
+        for volume in plan.toAnalyze {
+            vlog("🔍 New or replaced volume detected: \(volume.url.lastPathComponent)")
+        }
+        analyzeInBackground(plan.toAnalyze, forceAnalysis: forceAnalysis)
     }
     
     private func scanExistingVolumes() {
+        #if DEBUG
+        scannedExistingVolumes = true
+        #endif
         vlog("🔍 Scanning existing volumes...")
-        guard let volumes = Self.mountedVolumes() else { return }
-        vlog("📂 Found \(volumes.count) volumes: \(volumes.map { $0.lastPathComponent })")
-        analyzeInBackground(volumes)
+        checkForVolumeChanges()
+    }
+
+    /// UUID plus the mounted filesystem's device number catches ordinary
+    /// replacements at the same path. The device number is only a best-effort
+    /// discovery fallback when macOS provides no UUID; it can be reused after
+    /// a fast remount and never authorizes a transfer by itself.
+    nonisolated static func mountIdentity(for url: URL) -> String? {
+        #if os(macOS)
+        var current = url
+        current.removeAllCachedResourceValues()
+        guard let mountRoot = (try? current.resourceValues(forKeys: [.volumeURLKey]))?.allValues[.volumeURLKey] as? URL,
+              mountRoot.standardizedFileURL.resolvingSymlinksInPath().path
+                == current.standardizedFileURL.resolvingSymlinksInPath().path else { return nil }
+        return filesystemIdentity(for: current)
+        #else
+        return nil
+        #endif
+    }
+
+    /// A selected source may be a folder inside a card, not the mount root.
+    nonisolated static func selectionIdentity(for url: URL) -> String? {
+        filesystemIdentity(for: url)
+    }
+
+    private nonisolated static func filesystemIdentity(for url: URL) -> String? {
+        #if os(macOS)
+        var current = url
+        current.removeAllCachedResourceValues()
+        var info = stat()
+        guard stat(current.path, &info) == 0 else { return nil }
+        let uuid = (try? current.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString ?? ""
+        return "\(UInt64(info.st_dev)):\(uuid)"
+        #else
+        return nil
+        #endif
     }
 
     private nonisolated static func mountedVolumes() -> [URL]? {
@@ -306,8 +418,32 @@ final class VolumeMonitorService: ObservableObject {
     
     // MARK: - Volume Management
     
+    private func publishAnalysis(
+        connected: ConnectedDrivesPresentation.Volume?, detected: DetectedVolume?,
+        for mount: MountedVolume, request: UInt64
+    ) {
+        defer {
+            if Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[mount.path]) {
+                pendingMountIdentities.removeValue(forKey: mount.path)
+                pendingAnalysisRequests.removeValue(forKey: mount.path)
+            }
+        }
+        guard Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[mount.path]),
+              let identity = mount.identity,
+              let live = Self.mountedVolumes()?.map({ MountedVolume(url: $0, identity: Self.mountIdentity(for: $0)) }),
+              Self.acceptsAnalysis(mount, mounted: live) else { return }
+        if publishedMountIdentities[mount.path] != nil,
+           publishedMountIdentities[mount.path] != identity {
+            connectedVolumes.removeAll { $0.url.path == mount.path }
+            availableCameraCards.removeAll { $0.url.path == mount.path }
+            availableBackupDrives.removeAll { $0.url.path == mount.path }
+        }
+        if let connected { updateConnectedVolume(connected) }
+        if let detected { addDetectedVolume(detected) }
+        if connected != nil || detected != nil { publishedMountIdentities[mount.path] = identity }
+    }
+
     private func updateConnectedVolume(_ volume: ConnectedDrivesPresentation.Volume) {
-        guard Self.mountedVolumes()?.contains(where: { $0.standardizedFileURL.resolvingSymlinksInPath() == volume.url }) == true else { return }
         if let index = connectedVolumes.firstIndex(where: { $0.url == volume.url }) {
             connectedVolumes[index] = volume
         } else {
@@ -318,12 +454,16 @@ final class VolumeMonitorService: ObservableObject {
     private func addDetectedVolume(_ volume: DetectedVolume) {
         switch volume.type {
         case .cameraCard:
-            if !availableCameraCards.contains(where: { $0.devicePath == volume.devicePath }) {
+            if let index = availableCameraCards.firstIndex(where: { $0.url.path == volume.url.path }) {
+                availableCameraCards[index] = volume
+            } else if !availableCameraCards.contains(where: { $0.devicePath == volume.devicePath }) {
                 availableCameraCards.append(volume)
                 vlog("📷 Camera card detected: \(volume.displayName) (\(volume.capacityFormatted))")
             }
         case .backupDrive:
-            if !availableBackupDrives.contains(where: { $0.devicePath == volume.devicePath }) {
+            if let index = availableBackupDrives.firstIndex(where: { $0.url.path == volume.url.path }) {
+                availableBackupDrives[index] = volume
+            } else if !availableBackupDrives.contains(where: { $0.devicePath == volume.devicePath }) {
                 availableBackupDrives.append(volume)
                 vlog("💾 Backup drive detected: \(volume.displayName) (\(volume.capacityFormatted))")
             }
@@ -339,12 +479,30 @@ final class VolumeMonitorService: ObservableObject {
     // MARK: - Public Methods
     
     func refreshVolumes() {
-        scanExistingVolumes()
+        // The user just granted/recovered access or asked to rescan. A known
+        // mount may have been classified only partially while access was
+        // missing, so re-analyze even when its identity did not change.
+        checkForVolumeChanges(forceAnalysis: true)
     }
     
     func forceAnalyzeVolume(at url: URL) {
         vlog("🔧 Force analyzing volume: \(url)")
-        analyzeInBackground([url])
+        analyzeInBackground(
+            [MountedVolume(url: url, identity: Self.mountIdentity(for: url))], forceAnalysis: true
+        )
+    }
+
+    /// Auto-queue may only act on a row while its published mount is still
+    /// the mounted filesystem, even if a change notification is in flight.
+    func isCurrentDiscoveredVolume(_ row: ConnectedDrivesPresentation.Row) -> Bool {
+        var current = row.url
+        current.removeAllCachedResourceValues()
+        let path = current.standardizedFileURL.resolvingSymlinksInPath().path
+        guard let published = publishedMountIdentities[path], let rowID = row.volumeID,
+              let liveID = (try? current.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString else {
+            return false
+        }
+        return rowID == liveID && Self.mountIdentity(for: current) == published
     }
 }
 

@@ -57,7 +57,7 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 symbol: safetyState.symbol,
                 sourceGuidance: "Do not erase \(card). Nothing here has been confirmed safe."
             )
-        case .waiting, .preparing, .copying, .verifying, .interrupted:
+        case .waiting, .preparing, .copying, .verifying, .finishing, .interrupted:
             preconditionFailure("A completion verdict must produce a finish state")
         }
     }

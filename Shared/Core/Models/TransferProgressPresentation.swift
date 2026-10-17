@@ -117,9 +117,9 @@ struct TransferProgressPresentation: Equatable, Sendable {
     /// "A001 to 2 backups", or why the run is paused.
     let detail: String?
     let tone: ProgressTone
-    /// One definition everywhere: the engine's (copied + verified) /
-    /// (files × stages). Nil before the engine reports, so the bar is
-    /// indeterminate rather than a false 0%.
+    /// The engine's (copied + verified) / (files × stages), capped below 100%
+    /// while the journal still owns an active attempt. Nil before the engine
+    /// reports, so the bar is indeterminate rather than a false 0%.
     let fraction: Double?
     let percentText: String?
     /// "120 of 400" (file copies across all backups). The phase and heading
@@ -188,7 +188,9 @@ struct TransferProgressPresentation: Equatable, Sendable {
     ) -> Self {
         let phase = Self.phase(state: state, stage: progress?.currentStage)
         let isPaused = phase == .paused
-        let fraction = progress.map { min(1, max(0, $0.overallProgress)) }
+        // The engine can finish file work before ASC MHL, report writing and
+        // the saved verdict settle. A running transfer must never show 100%.
+        let fraction = progress.map { min(isRunning ? 0.99 : 1, max(0, $0.overallProgress)) }
         let controls = ProgressControls(
             canPause: state.canPause,
             canResume: state.canResume,

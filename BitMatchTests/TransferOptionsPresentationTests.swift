@@ -70,13 +70,17 @@ struct TransferOptionsPresentationTests {
     @Test
     func compareSubsetNotesOnlyTheMode() {
         let standard = TransferOptionsPresentation.make(
-            verificationMode: .standard, generateASCMHL: nil, makeReport: nil, cameraLabel: nil
+            verificationMode: .standard, generateASCMHL: nil, makeReport: nil, cameraLabel: nil,
+            isCompare: true
         )
         #expect(standard.advancedNote.isEmpty)
+        #expect(standard.verificationDetail == CompareCheckPlan.make(for: .standard).summary)
         let paranoid = TransferOptionsPresentation.make(
-            verificationMode: .paranoid, generateASCMHL: nil, makeReport: nil, cameraLabel: nil
+            verificationMode: .paranoid, generateASCMHL: nil, makeReport: nil, cameraLabel: nil,
+            isCompare: true
         )
         #expect(paranoid.advancedNote == "Paranoid mode")
+        #expect(paranoid.verificationDetail == CompareCheckPlan.make(for: .paranoid).summary)
     }
 
     // Every platform now writes a PDF (`ReportPDFRenderer`), so the label names it everywhere.

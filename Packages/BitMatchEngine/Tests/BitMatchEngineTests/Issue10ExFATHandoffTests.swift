@@ -66,8 +66,13 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         // File output avoids pipe-buffer deadlocks while waiting for hdiutil.
         process.standardOutput = handle
         process.standardError = handle
+        let action = arguments.first ?? "unknown"
+        let started = ProcessInfo.processInfo.systemUptime
+        FileHandle.standardError.write(Data("Issue10 exFAT fixture: hdiutil \(action) started (\(scratch.lastPathComponent))\n".utf8))
         try process.run()
         process.waitUntilExit()
+        let elapsed = ProcessInfo.processInfo.systemUptime - started
+        FileHandle.standardError.write(Data("Issue10 exFAT fixture: hdiutil \(action) exited \(process.terminationStatus) after \(String(format: "%.1f", elapsed))s\n".utf8))
         guard process.terminationStatus == 0 else {
             let detail = (try? String(contentsOf: log, encoding: .utf8)) ?? "No output"
             throw NSError(domain: "Issue10Probe.hdiutil", code: Int(process.terminationStatus),

@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Testing
 @testable import BitMatch
@@ -167,6 +168,30 @@ struct SFTPRemoteBackupProviderContractTests {
         #expect(capabilities.missingRequirements(for: .sha256) == [.verificationEvidence])
     }
 
+    @Test func sha256ModeDownloadsAndHashesRemoteBytesWithoutReadingTheCard() async throws {
+        #if os(macOS)
+        let bytes = Data("remote clip bytes".utf8)
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+        let download = SFTPDownloadRecorder(bytes: bytes)
+        let provider = SFTPRemoteBackupProvider(
+            profile: try fixtureProfile(), credential: .sshAgent,
+            run: { command in try await download.run(command) }
+        )
+        let remoteFile = try RemoteRelativePath(components: ["Jobs", "clip.mov"])
+
+        let evidence = try await provider.verificationEvidence(for: remoteFile, expectedSHA256: digest)
+        #expect(evidence == .readBackSHA256(digest))
+        #expect(await download.commands().count == 1)
+        #expect(await download.downloadedPath().map { !FileManager.default.fileExists(atPath: $0) } == true)
+
+        await #expect(throws: RemoteBackupError.verificationFailed) {
+            try await provider.verificationEvidence(for: remoteFile, expectedSHA256: String(repeating: "0", count: 64))
+        }
+        #expect(await download.commands().count == 2)
+        #expect(await download.downloadedPath().map { !FileManager.default.fileExists(atPath: $0) } == true)
+        #endif
+    }
+
     @Test func uploadOnlyStillRequiresNoReplacePromotion() async throws {
         let capabilities = RemoteProviderCapabilities(
             supportsNoReplacePromotion: false,
@@ -290,5 +315,31 @@ private actor OpenSSHCommandRecorder {
     }
 
     func commands() -> [OpenSSHCommand] { recorded }
+}
+
+private actor SFTPDownloadRecorder {
+    private let bytes: Data
+    private var recorded: [OpenSSHCommand] = []
+    private var path: String?
+
+    init(bytes: Data) { self.bytes = bytes }
+
+    func run(_ command: OpenSSHCommand) throws -> OpenSSHCommandResult {
+        recorded.append(command)
+        guard command.executable == "/usr/bin/sftp",
+              let batch = command.standardInput.flatMap({ String(data: $0, encoding: .utf8) }) else {
+            throw RemoteBackupError.providerUnavailable
+        }
+        let fields = batch.components(separatedBy: "\"")
+        guard fields.count >= 4, fields[0] == "get ", fields[1] == "Backups/Jobs/clip.mov" else {
+            throw RemoteBackupError.providerUnavailable
+        }
+        path = fields[3]
+        try bytes.write(to: URL(fileURLWithPath: fields[3]))
+        return .init(status: 0, stdout: Data(), stderr: Data())
+    }
+
+    func commands() -> [OpenSSHCommand] { recorded }
+    func downloadedPath() -> String? { path }
 }
 #endif
