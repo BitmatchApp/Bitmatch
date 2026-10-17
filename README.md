@@ -61,7 +61,7 @@ For new copies, Standard does not independently reread the source: a wrong sourc
 
 ## What It Does
 
-- **Multi destination copy**: the copy pass reads the card once and writes to every drive at the same time. Verification reads each drive back; Thorough and Paranoid also reread the card. Each destination gets its own results.
+- **Multi destination copy**: for new files, the copy pass reads the card once and writes to every drive at the same time. Verification reads each drive back; reused files get a fresh source read, and Thorough and Paranoid reread the card too. Each destination gets its own results.
 - **Careful about "safe to erase"**: a card or folder that changes during the copy, or online-only iCloud/Dropbox files, won't earn a safe verdict. Two folders on the same physical drive count as one backup, not two independent ones. Recognized AppleDouble `._` metadata companions are skipped by default; other hidden files and camera sidecars stay in the copy. Turn off **Ignore AppleDouble metadata files** in **Settings → File handling** to preserve them. That copy can verify the selected files, but it won't mark the whole card safe to erase.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
@@ -77,7 +77,7 @@ For new copies, Standard does not independently reread the source: a wrong sourc
 | Mode | What it checks |
 | --- | --- |
 | Quick | Copies and checks file sizes only; no checksum verification |
-| Standard — default | New copies: reads the card once, then reads each backup back and checks SHA-256 |
+| Standard — default | New copies: reads the card while copying, then reads each backup back with SHA-256. Reused files get a fresh source read |
 | Thorough | Also re-reads the card; SHA-256 and MD5 |
 | Paranoid | Also re-reads the card and compares every byte, plus SHA-256 |
 
