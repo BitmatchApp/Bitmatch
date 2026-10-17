@@ -55,17 +55,22 @@ struct MacCameraAutoSourceTests {
         #expect(shared.sourceURL == nil)
     }
 
-    /// Plant: remove the `showsOutcomeSummary` guard in `cardDetected`; a
-    /// newly inserted card replaces the finished run while Finish is shown.
-    @Test func finishScreenLocksAutomaticSourceSelection() throws {
+    /// The executor can become terminal before the journal outcome is ready
+    /// for Finish. A newly inserted card must wait for New transfer.
+    @Test func terminalOperationLocksAutomaticSourceBeforeJournalSettles() throws {
         let (controller, shared, folders) = try makeController()
         defer { folders.cleanup() }
         shared.reportSettings.enableAutoCameraDetection = true
         shared.reportSettings.autoPopulateSource = true
         shared.operationState = .completed(.init(success: true, message: "Verified"))
+        #expect(!shared.showsOutcomeSummary)
 
         controller.cardDetected(at: folders.source)
 
         #expect(shared.sourceURL == nil)
+
+        shared.resetForNewOperation()
+        controller.cardDetected(at: folders.source)
+        #expect(shared.sourceURL == folders.source)
     }
 }

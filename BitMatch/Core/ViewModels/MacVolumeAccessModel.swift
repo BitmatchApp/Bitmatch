@@ -63,6 +63,10 @@ final class MacVolumeAccessModel: ObservableObject {
     /// it, so rediscovery never undoes a deliberate removal.
     private var dismissedDestinationPaths = Set<String>()
     private var autoQueuedVolumeIDs = Set<String>()
+    private var selectedSourceMountIdentity: String?
+    /// Tests replace this with deterministic mount identities; the app reads
+    /// the mounted filesystem, not just the path under /Volumes.
+    var sourceMountIdentity: (URL) -> String? = VolumeMonitorService.selectionIdentity
     /// Volume facts for `BackupTargetPolicy`. Tests supply their own, since
     /// their drives are not mounted.
     var volumeFacts: (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
@@ -107,6 +111,12 @@ final class MacVolumeAccessModel: ObservableObject {
     /// Last-used backups follow the shared selection. `$destinationURLs`
     /// publishes the new value before it is stored, so the sink uses it.
     private func observeSelection(of shared: SharedAppCoordinator) {
+        shared.$sourceURL
+            .sink { [weak self] url in
+                guard let self else { return }
+                self.selectedSourceMountIdentity = url.flatMap { self.sourceMountIdentity($0) }
+            }
+            .store(in: &cancellables)
         shared.$destinationURLs.dropFirst()
             .sink { [weak self] urls in
                 guard self?.shared?.isReplayingQueuedTransfer != true else { return }
@@ -167,11 +177,30 @@ final class MacVolumeAccessModel: ObservableObject {
 
         volumeMonitor.$connectedVolumes
             .receive(on: DispatchQueue.main)
-            .sink { [weak self] volumes in self?.autoQueueNewCards(from: volumes) }
+            .sink { [weak self] volumes in self?.handleConnectedVolumesUpdate(volumes) }
             .store(in: &cancellables)
+    }
+
+    /// A card at the same mount path is not necessarily the selected card.
+    /// Clear the selection if its mounted filesystem changed while discovery
+    /// was catching up; a transfer must never silently switch sources.
+    private func invalidateReplacedSource() {
+        guard let sourceURL, let selectedSourceMountIdentity else { return }
+        guard sourceMountIdentity(sourceURL) == selectedSourceMountIdentity else {
+            SharedLogger.warning("Selected source volume changed while mounted; clearing selection", category: .transfer)
+            shared?.sourceURL = nil
+            return
+        }
+    }
+
+    /// Internal so a missed event gap can be driven without a real mount.
+    func handleConnectedVolumesUpdate(_ volumes: [ConnectedDrivesPresentation.Volume]) {
+        invalidateReplacedSource()
+        autoQueueNewCards(from: volumes)
     }
     
     private func handleCameraCardsUpdate(_ cards: [VolumeMonitorService.DetectedVolume]) {
+        invalidateReplacedSource()
         // Check if current source is still available
         if let sourceURL = sourceURL {
             let sourceStillExists = cards.contains { $0.url.path == sourceURL.path }
@@ -198,6 +227,7 @@ final class MacVolumeAccessModel: ObservableObject {
         )
         for row in candidates {
             guard let volumeID = row.volumeID else { continue }
+            guard volumeMonitor.isCurrentDiscoveredVolume(row) else { continue }
             do {
                 try shared.enqueueAutomaticallyDetectedCard(source: row.url)
                 autoQueuedVolumeIDs.insert(volumeID)

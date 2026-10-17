@@ -22,6 +22,7 @@ struct TransferLibraryPresentationTests {
     @Test func completedQuickTransferIsNotGreen() {
         var record = PresentationTestSupport.record(state: .completed, verificationMode: .quick)
         record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
+        record.quickOnlyUnverified = true
         let label = TransferLibraryPresentation.stateLabel(for: record)
         #expect(label.tint != .green)
         #expect(label.title == "Copied, not verified")
@@ -30,11 +31,27 @@ struct TransferLibraryPresentationTests {
     @Test func journalQuickResultUsesCopiedNotVerifiedWords() {
         var record = PresentationTestSupport.record(state: .issues, verificationMode: .quick)
         record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
+        record.quickOnlyUnverified = true
 
         let label = TransferLibraryPresentation.stateLabel(for: record)
         #expect(label.title == "Copied, not verified")
         #expect(label.tint != .green)
         #expect(label.accessibilityLabel == "Copied, not verified: size check only")
+    }
+
+    @Test func quickReportFailureDoesNotLookLikeAnOrdinarySizeOnlyCopy() {
+        var record = PresentationTestSupport.record(state: .issues, verificationMode: .quick)
+        record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
+        record.summary = "The report could not be saved."
+        record.quickOnlyUnverified = false
+
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record).title == "Needs attention")
+
+        // A pre-upgrade Quick record has no reliable distinction between a
+        // clean size-only copy and another failed step, so remain conservative.
+        record.quickOnlyUnverified = nil
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
     }
 
     @Test func quickRecordCannotBeSafeEvenWhenRowsClaimVerified() {
@@ -65,6 +82,61 @@ struct TransferLibraryPresentationTests {
         let label = TransferLibraryPresentation.stateLabel(for: record)
         #expect(label.title == "Needs attention")
         #expect(label.tint != .green)
+    }
+
+    @Test func completedRecordWithMissingPlannedResultIsNotSafe() {
+        var record = PresentationTestSupport.record(state: .completed)
+        record.plannedFileCounts = [2]
+        record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
+
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
+
+        // Old journals have no recorded plan; preserve their existing rule.
+        record.plannedFileCounts = nil
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .safeToErase)
+    }
+
+    @Test func duplicateVerifiedPathCannotHideMissingPlannedFile() {
+        var record = PresentationTestSupport.record(state: .completed)
+        record.plannedFileCounts = [2]
+        let row = PresentationTestSupport.row(.verified, destination: record.destinations[0].url)
+        record.results = [row, row]
+
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+    }
+
+    @Test @MainActor func savedInterruptionKeepsItsHistoryWordingOnFinish() throws {
+        var record = PresentationTestSupport.record(state: .interrupted)
+        record.summary = "Transfer interrupted unexpectedly; partial results retained."
+        let state = try #require(TransferOutcomePresentation.recordedState(for: record))
+        let finish = TransferOutcomePresentation.make(
+            state: state, rows: [], destinations: record.destinations.map(\.url),
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: nil, verificationMode: record.verificationMode,
+            canRetry: true, canExport: true, sourceName: record.title,
+            completionReason: record.summary
+        )
+
+        #expect(finish.safetyState == TransferLibraryPresentation.safetyState(for: record))
+        #expect(finish.finishTitle.contains("Transfer interrupted"))
+        #expect(finish.visibleVerdictText.contains("interrupted unexpectedly"))
+        #expect(finish.visibleVerdictText.contains("Do not erase"))
+
+        record.state = .cancelled
+        record.summary = "Cancelled by user."
+        #expect(TransferOutcomePresentation.recordedState(for: record) == .cancelled)
+        let cancelled = TransferOutcomePresentation.make(
+            state: try #require(TransferOutcomePresentation.recordedState(for: record)),
+            rows: [], destinations: record.destinations.map(\.url),
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: nil, verificationMode: record.verificationMode,
+            canRetry: true, canExport: true, sourceName: record.title,
+            completionReason: record.summary
+        )
+        #expect(cancelled.visibleVerdictText.contains("Cancelled by user"))
+        record.state = .failed
+        #expect(TransferOutcomePresentation.recordedState(for: record) == .failed)
     }
 
     @Test func completedHistoryRequiresEveryPlannedSelectedFileOncePerDestination() {

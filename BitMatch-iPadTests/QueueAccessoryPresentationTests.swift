@@ -96,12 +96,13 @@ struct QueueAccessoryPresentationTests {
         #expect(afterRun.tone == .warning)
     }
 
-    @Test func progressAboveOneIsClamped() {
+    @Test func runningProgressAboveOneCannotClaimACompleteQueue() {
         let result = QueueAccessoryPresentation.make(queue: queue([
             row("A001", state: .copying(progress: 140), progress: 1.4)
         ]))
-        #expect(result.detail == "1 of 1 · 100%")
-        #expect(result.progressFraction == 1)
+        #expect(result.detail == "1 of 1 · 99%")
+        #expect(result.progressFraction == 0.99)
+        #expect(result.tone == .progress)
     }
 
     @Test func sameRecordRealarmsAfterLeavingAndReenteringAProblemState() {

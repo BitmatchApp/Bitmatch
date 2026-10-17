@@ -143,6 +143,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         case .preparing: "is preparing"
         case .copying: "is copying"
         case .verifying: "is verifying"
+        case .finishing: "is finishing"
         }
     }
 
@@ -383,7 +384,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         case .safeToErase, .copiedNotVerified, .needsAttention:
             if case .completed = state { return "Completed in \(text)" }
             return "Ended after \(text)"
-        case .waiting, .preparing, .copying, .verifying:
+        case .waiting, .preparing, .copying, .verifying, .finishing:
             return "Elapsed \(text)"
         }
     }
@@ -519,6 +520,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             if warningCount > 0 { return warningCount == 1 ? "1 warning" : "\(warningCount) warnings" }
             return completionDetail
         case .failed: return recordedReason?.isEmpty == false ? recordedReason : completionDetail
+        case .interrupted: return recordedReason?.isEmpty == false ? recordedReason : nil
         default: return nil
         }
     }
@@ -542,6 +544,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         case .preparing: verdict = "preparing"
         case .copying: verdict = "copying"
         case .verifying: verdict = "verifying"
+        case .finishing: verdict = "finishing"
         case .safeToErase: verdict = "safe to erase"
         case .copiedNotVerified: verdict = "copied, not verified (size check only)"
         case .needsAttention: verdict = reason.map { "needs attention: \($0)" } ?? "needs attention"
@@ -591,10 +594,13 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             let separator = failure.last.map { ".!?".contains($0) } == true ? " " : ". "
             return "\(failure)\(separator)Do not erase the card."
         case .interrupted:
-            // The interrupted headline carries the card warning itself, since
-            // `bannerGuidance` is suppressed for this state (no duplication).
-            return "The transfer stopped before every destination was verified. Do not erase the card."
-        case .waiting, .preparing, .copying, .verifying:
+            // Saved history distinguishes an explicit cancel from an
+            // unexpected interruption. Carry that reason into Finish too.
+            let interruption = reason ?? "The transfer stopped before every destination was verified."
+            if interruption.localizedCaseInsensitiveContains("do not erase") { return interruption }
+            let separator = interruption.last.map { ".!?".contains($0) } == true ? " " : ". "
+            return "\(interruption)\(separator)Do not erase the card."
+        case .waiting, .preparing, .copying, .verifying, .finishing:
             return fallback
         }
     }

@@ -10,7 +10,14 @@ import BitMatchEngine
 @MainActor
 struct CancelledOutcomeTests {
     private func makeCoordinator() -> SharedAppCoordinator {
-        SharedAppCoordinator(platformManager: MacOSPlatformManager.shared, defaults: .isolatedWorkflowDefaults())
+        // These presentation tests cancel a coordinator without starting a transfer.
+        // Give each one private file operations so it cannot cancel another test's
+        // active run on MacOSPlatformManager.shared's process-wide pipeline.
+        let operations = RecordingFileOperations()
+        return SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: operations),
+            defaults: .isolatedWorkflowDefaults()
+        )
     }
 
     private func makeRow(path: String) -> ResultRow {
@@ -70,9 +77,7 @@ struct CancelledOutcomeTests {
     @Test func masterReportIsNotCoveredByPreviousTransferOutcome() {
         #if os(macOS)
         let coordinator = makeCoordinator()
-        coordinator.operationState = .completed(
-            OperationCompletionInfo(success: false, message: "Not verified")
-        )
+        coordinator.operationState = .failed
 
         #expect(coordinator.showsOutcomeSummary)
         #expect(coordinator.currentMode == .copyAndVerify)
@@ -82,15 +87,41 @@ struct CancelledOutcomeTests {
         #expect(coordinator.showsOutcomeSummary)
         #expect(coordinator.currentMode == .masterReport)
         #expect(!(coordinator.currentMode == .copyAndVerify && coordinator.showsOutcomeSummary))
-        #expect(coordinator.operationState == .completed(
-            OperationCompletionInfo(success: false, message: "Not verified")
-        ))
+        #expect(coordinator.operationState == .failed)
 
         coordinator.switchMode(to: .copyAndVerify)
         #expect(coordinator.currentMode == .copyAndVerify && coordinator.showsOutcomeSummary)
         #else
         #expect(true)
         #endif
+    }
+
+    @Test func terminalScreenWaitsForDurableJournalSettlement() {
+        let completed = OperationState.completed(.init(success: true, message: "Verified"))
+        let shows = { (state: OperationState, recordState: LocalTransferState?, running: Bool) in
+            SharedAppCoordinator.shouldShowOutcomeSummary(
+                state: state, recordState: recordState,
+                isOperationInProgress: running, hasJournalPersistenceError: false,
+                lastOperationWasCompare: false
+            )
+        }
+
+        #expect(!shows(completed, .running, true))
+        #expect(!shows(completed, nil, false))
+        #expect(shows(completed, .completed, true))
+        #expect(shows(completed, .issues, false))
+        #expect(!shows(.failed, .running, true))
+        #expect(!shows(.failed, .running, false))
+        #expect(!shows(.cancelled, .running, false))
+        #expect(SharedAppCoordinator.shouldShowOutcomeSummary(
+            state: .failed, recordState: .running, isOperationInProgress: false,
+            hasJournalPersistenceError: true, lastOperationWasCompare: false
+        ))
+        #expect(!SharedAppCoordinator.shouldShowOutcomeSummary(
+            state: completed, recordState: .completed,
+            isOperationInProgress: false, hasJournalPersistenceError: false,
+            lastOperationWasCompare: true
+        ))
     }
 
 }

@@ -47,7 +47,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     func oneLineStatus(timeRemaining: String? = nil) -> String {
         let prefix = compactWaitingText
         if isRunning {
-            let progress = progressFraction.map { " \(Int((min(max($0, 0), 1) * 100).rounded(.down)))%" } ?? ""
+            let progress = progressFraction.map { " \(Int((min(max($0, 0), 0.99) * 100).rounded(.down)))%" } ?? ""
             let measuredTime = timeRemaining == TransferProgressPresentation.estimatingTimeLeft
                 ? nil
                 : timeRemaining
@@ -56,6 +56,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
             switch safetyState {
             case .copying: phase = "Copying"
             case .verifying: phase = "Verifying"
+            case .finishing: phase = "Finishing"
             case .preparing: phase = "Preparing"
             default: phase = safetyState.title
             }
@@ -149,7 +150,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             case .failed: tally.failed += 1
             case .interrupted: tally.interrupted += 1
             case .waiting: tally.notStarted += 1
-            case .preparing, .copying, .verifying: break
+            case .preparing, .copying, .verifying, .finishing: break
             }
         }
         let running = rows.first { $0.safetyState.isActiveQueueState }
@@ -213,10 +214,16 @@ struct QueueSessionPresentation: Equatable, Sendable {
     ) -> QueueSessionRow {
         let state: CardSafetyState
         if record.state == .running {
-            let percent = progress.map { Int((min(max($0.stageProgress ?? $0.overallProgress, 0), 1) * 100).rounded(.down)) }
+            // A completed file-work stage is not a finished transfer. MHL,
+            // report writing and journal settlement can still fail or stop.
+            let activeFraction = progress.map {
+                min(max($0.stageProgress ?? $0.overallProgress, 0), 0.99)
+            }
+            let percent = activeFraction.map { Int(($0 * 100).rounded(.down)) }
             switch progress?.currentStage {
             case .copying: state = .copying(progress: percent)
-            case .verifying, .generating, .completed: state = .verifying(progress: percent)
+            case .verifying: state = .verifying(progress: percent)
+            case .generating, .completed: state = .finishing(progress: percent)
             default: state = .preparing
             }
         } else {
@@ -253,7 +260,9 @@ struct QueueSessionPresentation: Equatable, Sendable {
             evidence: evidence,
             destinations: destinationSummary(destinationNames),
             safetyState: state,
-            progressFraction: record.state == .running ? progress?.stageProgress ?? progress?.overallProgress : nil,
+            progressFraction: record.state == .running ? progress.map {
+                min(max($0.stageProgress ?? $0.overallProgress, 0), 0.99)
+            } : nil,
             action: action,
             cause: cause,
             copySummary: TransferOutcomePresentation.makeCopySummary(
@@ -288,7 +297,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             operationState = .failed
         case .interrupted:
             operationState = .cancelled
-        case .waiting, .preparing, .copying, .verifying:
+        case .waiting, .preparing, .copying, .verifying, .finishing:
             return nil
         }
         let uniqueFiles = Dictionary(grouping: record.results, by: \.path).values.compactMap(\.first)
@@ -366,7 +375,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
 extension CardSafetyState {
     var isActiveQueueState: Bool {
         switch self {
-        case .preparing, .copying, .verifying: true
+        case .preparing, .copying, .verifying, .finishing: true
         default: false
         }
     }

@@ -271,6 +271,39 @@ final class CameraDetectionRaceTests: XCTestCase {
         XCTAssertEqual(cards.first?.model, "M2")
     }
 
+    /// If the unmount notification is missed but a new mount arrives at the
+    /// same path, the published camera must be replaced, not path-deduped.
+    func testMountReplacementWithoutUnmountEventUpdatesCard() async throws {
+        let gate = Gate()
+        let vol = URL(fileURLWithPath: "/Volumes/RACE-MISSED-UNMOUNT")
+        let service = await makeService(gate: gate, volumes: [])
+        defer {
+            gate.resumeAll(returning: nil)
+            Task { @MainActor [service] in service.stopMonitoring() }
+        }
+        await MainActor.run { service.startMonitoring() }
+
+        await mount(service, volume: vol)
+        let firstStarted = await waitUntil(timeout: .seconds(5)) { gate.callCount == 1 }
+        XCTAssertTrue(firstStarted)
+        gate.resumeNext(returning: Self.card(for: vol, model: "Old"))
+        let firstSettled = await waitUntil(timeout: .seconds(5)) { gate.settledCount == 1 }
+        XCTAssertTrue(firstSettled)
+        let first = await cardInfo(of: service)
+        XCTAssertEqual(first.first?.model, "Old")
+
+        // There is no unmount event here: only a new mount at the same URL.
+        await mount(service, volume: vol)
+        let nextStarted = await waitUntil(timeout: .seconds(5)) { gate.callCount == 2 }
+        XCTAssertTrue(nextStarted)
+        gate.resumeNext(returning: Self.card(for: vol, model: "New"))
+        let nextSettled = await waitUntil(timeout: .seconds(5)) { gate.settledCount == 2 }
+        XCTAssertTrue(nextSettled)
+        let replacement = await cardInfo(of: service)
+        XCTAssertEqual(replacement.count, 1)
+        XCTAssertEqual(replacement.first?.model, "New")
+    }
+
     /// A rescan while monitoring is stopped must not spawn a scan at all:
     /// no detection starts and no card publishes.
     func testRescanWhileStoppedDoesNothing() async throws {

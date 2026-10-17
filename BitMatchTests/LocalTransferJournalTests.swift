@@ -67,6 +67,134 @@ struct LocalTransferJournalTests {
         #expect(journal.matchingVerifiedRecord(sourceFingerprint: "incomplete") == nil)
     }
 
+    @Test func fingerprintMatchRejectsIncompleteRecordedPlan() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [2])
+        try journal.finish(
+            id: id,
+            results: [ResultRow(
+                path: "clip.mov", status: ResultOutcome.verified.statusText, size: 1,
+                checksum: "abc", destination: "Backup",
+                destinationPath: f.destination.appendingPathComponent("clip.mov").path
+            )],
+            summary: "Done", hadIssues: false, sourceFingerprint: "short-plan"
+        )
+
+        #expect(journal.records.first?.state == .issues)
+        #expect(journal.records.first?.summary == "Transfer results are incomplete. Do not erase the card.")
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "short-plan") == nil)
+
+        let duplicateID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: duplicateID)
+        try journal.recordPlan(id: duplicateID, fileCounts: [2])
+        let row = ResultRow(
+            path: "clip.mov", status: ResultOutcome.verified.statusText, size: 1,
+            checksum: "abc", destination: "Backup",
+            destinationPath: f.destination.appendingPathComponent("clip.mov").path
+        )
+        try journal.finish(
+            id: duplicateID, results: [row, row], summary: "Done",
+            hadIssues: false, sourceFingerprint: "duplicate-plan"
+        )
+        #expect(journal.records.first?.state == .issues)
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "duplicate-plan") == nil)
+    }
+
+    @Test func reviewedExclusionDoesNotBecomeAnIncompletePlanAlarm() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
+        let selected = ResultRow(
+            path: "clip.mov", status: ResultOutcome.verified.statusText, size: 1,
+            checksum: "abc", destination: "Backup",
+            destinationPath: f.destination.appendingPathComponent("clip.mov").path
+        )
+        let excluded = ResultRow(
+            path: "._clip.mov", status: ResultOutcome.excludedAppleDouble.statusText, size: 1,
+            checksum: nil, destination: "Backup"
+        )
+        try journal.finish(
+            id: id, results: [selected, excluded],
+            summary: "Selected files verified; AppleDouble excluded.", hadIssues: true
+        )
+
+        #expect(journal.records.first?.state == .issues)
+        #expect(journal.records.first?.summary == "Selected files verified; AppleDouble excluded.")
+    }
+
+    @Test func standardTransferCannotFinishWithCopiedButUnverifiedResults() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
+        try journal.finish(
+            id: id,
+            results: [ResultRow(
+                path: "clip.mov", status: ResultOutcome.copiedUnverified.statusText, size: 1,
+                checksum: nil, destination: "Backup",
+                destinationPath: f.destination.appendingPathComponent("clip.mov").path
+            )],
+            summary: "All files verified.", hadIssues: false
+        )
+
+        #expect(journal.records.first?.state == .issues)
+        #expect(journal.records.first?.summary == "Some selected files were not verified. Do not erase the card.")
+    }
+
+    @Test func quickReportFailureRemainsAnIssueAfterReload() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journal)
+            let id = try journal.enqueue(
+                sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .quick,
+                cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+            )
+            try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
+            try journal.finish(
+                id: id,
+                results: [ResultRow(
+                    path: "clip.mov", status: ResultOutcome.copiedUnverified.statusText, size: 1,
+                    checksum: nil, destination: "Backup",
+                    destinationPath: f.destination.appendingPathComponent("clip.mov").path
+                )],
+                summary: "All selected files copied, but the report could not be saved.",
+                hadIssues: true, quickOnlyUnverified: false
+            )
+
+            let saved = try #require(journal.records.first)
+            #expect(saved.state == .issues)
+            #expect(saved.quickOnlyUnverified == false)
+            #expect(TransferLibraryPresentation.safetyState(for: saved) == .needsAttention)
+        }
+
+        let restored = try #require(LocalTransferJournal(fileURL: f.journal).records.first)
+        #expect(restored.quickOnlyUnverified == false)
+        #expect(TransferLibraryPresentation.safetyState(for: restored) == .needsAttention)
+    }
+
     @Test func oldHistoryJSONDecodesWithoutNewSourceAndDiskFields() throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
@@ -82,6 +210,7 @@ struct LocalTransferJournalTests {
         object["source"] = oldSource
         object.removeValue(forKey: "sourceFingerprint")
         object.removeValue(forKey: "independentDestinationCount")
+        object.removeValue(forKey: "quickOnlyUnverified")
 
         let decoded = try JSONDecoder().decode(
             LocalTransferRecord.self,
@@ -92,6 +221,7 @@ struct LocalTransferJournalTests {
         #expect(decoded.plannedFileCounts == nil)
         #expect(decoded.sourceFingerprint == nil)
         #expect(decoded.independentDestinationCount == nil)
+        #expect(decoded.quickOnlyUnverified == nil)
     }
 
     @Test func recoveryExportsKeepLineageAndCountsWithoutAccessTokens() throws {
