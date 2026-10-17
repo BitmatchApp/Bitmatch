@@ -311,6 +311,10 @@ struct SettingsSheetView: View {
                         .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
                 }
 
+                Section("Diagnostics") {
+                    LocalCrashEvidenceSettingView(settings: generalSettings)
+                }
+
                 Section(GeneralSettingsPresentation.notificationsSection) {
                     Toggle(GeneralSettingsPresentation.notifyAttention, isOn: $generalSettings.notifyWhenCardNeedsAttention)
                     Toggle(GeneralSettingsPresentation.notifyFinish, isOn: $generalSettings.notifyWhenTransferOrQueueFinishes)

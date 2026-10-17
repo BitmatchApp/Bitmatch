@@ -145,7 +145,7 @@ struct TransferLibraryView: View {
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.primary)
-                Text("Recent transfer phases and errors. No footage names or paths. Nothing is sent automatically.")
+                Text("Recent transfer phases and errors, plus Apple crash/hang summaries if enabled in Settings and available. No footage names or paths. Nothing is sent automatically.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
