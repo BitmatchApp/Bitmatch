@@ -35,6 +35,61 @@ struct RemoteBackupQueueTests {
         #expect(await provider.promoteCallCount == 1)
     }
 
+    @Test func staleLocalArtifactAfterPromotionParksWithoutClaimingRemoteVerification() async throws {
+        let fixture = try QueueFixture(verificationMode: .sha256)
+        let provider = FakeRemoteBackupProvider(verificationErrors: [.networkUnavailable])
+        let firstQueue = fixture.makeQueue(provider: provider)
+        try await firstQueue.enqueue(fixture.item)
+        await firstQueue.run(fixture.item.id)
+
+        #expect(await firstQueue.item(id: fixture.item.id)?.state == .verifying)
+        #expect(await provider.promoteCallCount == 1)
+
+        let staleQueue = fixture.makeQueue(
+            provider: provider,
+            resolver: { _ in throw RemoteBackupError.localArtifactNotVerified },
+            now: Date(timeIntervalSince1970: 200)
+        )
+        try await staleQueue.restore()
+        await staleQueue.run(fixture.item.id)
+
+        let parked = try #require(await staleQueue.item(id: fixture.item.id))
+        #expect(parked.state == .paused)
+        #expect(parked.promotionIntent)
+        #expect(parked.verificationEvidence == .none)
+        #expect(parked.errorSummary == RemoteBackupError.localArtifactNotVerified.errorDescription)
+        #expect(await staleQueue.runnableIDs().isEmpty)
+        #expect(await fixture.persistence.queueItem(id: fixture.item.id)?.state == .paused)
+        #expect(await provider.uploadCallCount == 1)
+        #expect(await provider.promoteCallCount == 1)
+
+        let recoveredQueue = fixture.makeQueue(provider: provider, now: Date(timeIntervalSince1970: 300))
+        try await recoveredQueue.restore()
+        try await recoveredQueue.retry(fixture.item.id)
+        await recoveredQueue.run(fixture.item.id)
+        #expect(await recoveredQueue.item(id: fixture.item.id)?.state == .verified)
+        #expect(await provider.uploadCallCount == 1)
+        #expect(await provider.promoteCallCount == 1)
+    }
+
+    @Test func localArtifactChangingAfterPreflightStopsBeforeUpload() async throws {
+        let fixture = try QueueFixture(verificationMode: .sha256)
+        let provider = FakeRemoteBackupProvider()
+        let resolver = StaleAfterPreflightResolver()
+        let queue = fixture.makeQueue(provider: provider, resolver: { item in
+            try await resolver.resolve(item)
+        })
+        try await queue.enqueue(fixture.item)
+
+        await queue.run(fixture.item.id)
+
+        #expect(await resolver.callCount == 2)
+        #expect(await provider.preflightCallCount == 1)
+        #expect(await provider.uploadCallCount == 0)
+        #expect(await queue.item(id: fixture.item.id)?.state == .paused)
+        #expect(await fixture.persistence.queueItem(id: fixture.item.id)?.verificationEvidence == RemoteVerificationEvidence.none)
+    }
+
     @Test func interruptedUploadResumesOnlyWhenStoredAndServerOffsetsMatch() async throws {
         let fixture = try QueueFixture(uploadedByteCount: 4)
         let provider = FakeRemoteBackupProvider(objects: [fixture.item.temporaryRemoteRelativePath: .init(byteCount: 4)])
@@ -450,6 +505,46 @@ struct RemoteBackupQueueTests {
         #expect(await provider.promoteCallCount == 0)
     }
 
+    @Test func interruptedRunnerCannotPromoteOrRecordRemoteSuccess() async throws {
+        let fixture = try QueueFixture(verificationMode: .sha256)
+        let provider = FakeRemoteBackupProvider(blockUpload: true)
+        let queue = fixture.makeQueue(provider: provider)
+        try await queue.enqueue(fixture.item)
+
+        let running = Task { await queue.run(fixture.item.id) }
+        await provider.waitForUploadStart()
+        running.cancel()
+        // Model a provider operation that finishes despite task cancellation.
+        await provider.resumeUpload()
+        await running.value
+
+        #expect(await provider.promoteCallCount == 0)
+        let saved = try #require(await fixture.persistence.queueItem(id: fixture.item.id))
+        #expect(saved.state == .paused)
+        #expect(saved.verificationEvidence == .none)
+        #expect(saved.errorSummary == RemoteBackupError.interrupted.errorDescription)
+        #expect(RemoteBackupStatusPresentation.make(state: saved.state, evidence: saved.verificationEvidence).isFullyBackedUp == false)
+    }
+
+    @Test func concreteProviderFailureWinsWhenWorkerIsAlsoCancelled() async throws {
+        let fixture = try QueueFixture(verificationMode: .sha256)
+        let provider = FakeRemoteBackupProvider(uploadError: .verificationFailed, blockUpload: true)
+        let queue = fixture.makeQueue(provider: provider)
+        try await queue.enqueue(fixture.item)
+
+        let running = Task { await queue.run(fixture.item.id) }
+        await provider.waitForUploadStart()
+        running.cancel()
+        await provider.resumeUpload()
+        await running.value
+
+        let saved = try #require(await fixture.persistence.queueItem(id: fixture.item.id))
+        #expect(saved.state == .failed)
+        #expect(saved.errorSummary == RemoteBackupError.verificationFailed.errorDescription)
+        #expect(saved.verificationEvidence == .none)
+        #expect(await provider.promoteCallCount == 0)
+    }
+
     @Test func pausingDuringPromotionRetainsIntentForSafeRetry() async throws {
         let fixture = try QueueFixture(verificationMode: .sha256)
         let provider = FakeRemoteBackupProvider(blockPromotion: true)
@@ -596,6 +691,17 @@ private final class QueueFactoryCallCounter: @unchecked Sendable {
     private var value = 0
     var count: Int { lock.withLock { value } }
     func record() { lock.withLock { value += 1 } }
+}
+
+private actor StaleAfterPreflightResolver {
+    private var calls = 0
+    var callCount: Int { calls }
+
+    func resolve(_: RemoteQueueItem) throws -> RemoteBackupArtifactLease {
+        calls += 1
+        guard calls == 1 else { throw RemoteBackupError.localArtifactNotVerified }
+        return RemoteBackupArtifactLease(url: URL(fileURLWithPath: "/tmp/Card-001.mov"), releaseAccess: {})
+    }
 }
 
 private struct QueueFixture {

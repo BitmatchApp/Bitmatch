@@ -63,6 +63,38 @@ struct RemoteBackupCoordinatorTests {
         }
     }
 
+    @Test func sameSizeLocalFileChangeInvalidatesSavedRemoteManifest() async throws {
+        let package = FileManager.default.temporaryDirectory.appendingPathComponent("remote-stale-\(UUID())")
+        let file = package.appendingPathComponent("DCIM/A.ARW")
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: package) }
+        try Data("ONE".utf8).write(to: file)
+        let originalDigest = try await ChecksumEngine.shared.generateChecksum(for: file, type: .sha256)
+        let fixture = try CoordinatorFixture(
+            checksum: originalDigest,
+            fileSize: { url in
+                let values = try url.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey])
+                guard values.isRegularFile == true, let size = values.fileSize else {
+                    throw RemoteBackupError.localArtifactNotVerified
+                }
+                return Int64(size)
+            },
+            sha256: { url in try await ChecksumEngine.shared.generateChecksum(for: url, type: .sha256) }
+        )
+        let item = try #require(try fixture.coordinator.queueRemoteBackup(
+            for: fixture.card.id, in: fixture.job.id, results: fixture.rows
+        ).first)
+        try fixture.bookmarks.save(Data(package.path.utf8), for: item.localArtifactBookmarkReference)
+
+        let validLease = try await fixture.coordinator.resolveLocalArtifact(for: item)
+        validLease.release()
+        try Data("TWO".utf8).write(to: file)
+        #expect(try Data(contentsOf: file).count == 3)
+        await #expect(throws: RemoteBackupError.localArtifactNotVerified) {
+            _ = try await fixture.coordinator.resolveLocalArtifact(for: item)
+        }
+    }
+
     @Test func resolverScopesAccessUntilItsLeaseIsReleased() async throws {
         let fixture = try CoordinatorFixture()
         let item = try #require(try fixture.coordinator.queueRemoteBackup(for: fixture.card.id, in: fixture.job.id, results: fixture.rows).first)
@@ -177,7 +209,9 @@ private final class CoordinatorFixture {
     init(
         localState: PhotographerLocalState = .locallySafe,
         checksum: String = String(repeating: "a", count: 64),
-        fileCount: Int = 1
+        fileCount: Int = 1,
+        fileSize: RemoteBackupCoordinator.FileSize? = nil,
+        sha256: RemoteBackupCoordinator.SHA256? = nil
     ) throws {
         let sourceCard = URL(fileURLWithPath: "/Volumes/CARD")
         let destinationPackage = URL(fileURLWithPath: "/Volumes/Archive/Job/Card-001")
@@ -227,8 +261,8 @@ private final class CoordinatorFixture {
             bookmarkStore: bookmarks,
             makeBookmark: { Data($0.path.utf8) },
             resolveBookmark: { URL(fileURLWithPath: String(decoding: $0, as: UTF8.self)) },
-            fileSize: { _ in 3 },
-            sha256: { _ in checksumBox.value },
+            fileSize: fileSize ?? { _ in 3 },
+            sha256: sha256 ?? { _ in checksumBox.value },
             startSecurityScope: { [scopeCounter] _ in scopeCounter.recordStart() },
             stopSecurityScope: { [scopeCounter] _ in scopeCounter.recordStop() },
             now: { Date(timeIntervalSince1970: 3) }

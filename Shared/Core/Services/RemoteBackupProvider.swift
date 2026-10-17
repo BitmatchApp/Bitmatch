@@ -58,6 +58,7 @@ enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
     case resumeOffsetMismatch(local: Int64, remote: Int64)
     case temporaryCleanupFailed
     case verificationFailed
+    case interrupted
     case cancelled
 
     var isTransientNetworkFault: Bool {
@@ -113,6 +114,8 @@ enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
             return "The remote temporary upload could not be safely discarded; retry when the destination is reachable."
         case .verificationFailed:
             return "Remote backup verification did not produce matching SHA-256 evidence."
+        case .interrupted:
+            return "The off-site backup was interrupted before it finished. Retry to continue."
         case .cancelled:
             return "The remote backup was cancelled."
         }
