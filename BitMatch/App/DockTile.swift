@@ -59,6 +59,15 @@ enum DockTileState: Equatable {
             return .needsReview
         }
     }
+
+    @MainActor
+    static func makeTransfer(coordinator: SharedAppCoordinator) -> DockTileState {
+        makeTransfer(
+            state: coordinator.operationState,
+            record: coordinator.outcomeRecord,
+            fraction: coordinator.liveProgress.progress?.overallProgress
+        )
+    }
 }
 
 /// Keeps `NSApp.dockTile` in step with the coordinator.
@@ -89,10 +98,7 @@ final class DockTileController {
         let state = coordinator.operationState
         let fraction = coordinator.liveProgress.progress?.overallProgress
         if coordinator.currentMode == .copyAndVerify {
-            let record = coordinator.activeRunContext?.journalRecordID.flatMap { id in
-                coordinator.transferJournal.records.first(where: { $0.id == id })
-            }
-            show(DockTileState.makeTransfer(state: state, record: record, fraction: fraction))
+            show(DockTileState.makeTransfer(coordinator: coordinator))
         } else {
             show(DockTileState.make(state: state, fraction: fraction))
         }

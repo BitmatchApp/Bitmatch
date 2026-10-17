@@ -25,7 +25,16 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             destination: f.destination.lastPathComponent,
             destinationPath: f.destination.appendingPathComponent("clip.mov").path
         )]
-        try JSONEncoder().encode([oldRecord]).write(to: f.journalURL)
+        var plannedRecord = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: oldRecord.source,
+            destinations: oldRecord.destinations, verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(makeReport: false)
+        )
+        plannedRecord.state = .completed
+        plannedRecord.summary = "Selected files verified"
+        plannedRecord.results = oldRecord.results
+        plannedRecord.plannedFileCounts = [1]
+        try JSONEncoder().encode([oldRecord, plannedRecord]).write(to: f.journalURL)
         let journal = LocalTransferJournal(fileURL: f.journalURL)
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
@@ -41,6 +50,12 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(info.message.contains("Original selected-file plan was not saved"))
         XCTAssertFalse(info.message.contains("Selected files verified"))
         XCTAssertEqual(coordinator.outcomeRecord?.summary, "Selected files verified")
+        XCTAssertEqual(DockTileState.makeTransfer(coordinator: coordinator), .needsReview)
+
+        coordinator.reviewQueuedTransfer(plannedRecord.id)
+        XCTAssertNil(coordinator.activeRunContext)
+        XCTAssertEqual(coordinator.outcomeRecord?.id, plannedRecord.id)
+        XCTAssertEqual(DockTileState.makeTransfer(coordinator: coordinator), .verified)
     }
 
     func testFailedPlanWriteBlocksAutomaticReportHandoff() async throws {
