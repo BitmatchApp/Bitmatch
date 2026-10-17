@@ -10,7 +10,7 @@ Notifications say when a card is safe to erase, when something needs you, and wh
 
 ## How Verification Works
 
-Copying a file and checking it are separate jobs. BitMatch reads the card, writes each backup, then reads the destination bytes back. A matching checksum is evidence that those bytes matched when they were checked; a copy finishing or a filename appearing isn't enough.
+Copying a file and checking it are separate jobs. In the verified modes, BitMatch reads the card, writes each backup, then reads the destination bytes back. A matching checksum is evidence that those bytes matched when they were checked; a copy finishing or a filename appearing isn't enough.
 
 - **Quick** copies and checks sizes. It doesn't verify contents and never marks the card safe to erase.
 - **Standard** hashes the source while copying and reads every backup back with SHA-256.

@@ -438,6 +438,9 @@ public final class DestinationWriter {
         public var destinationDidRead: (@Sendable (Int, String, Int) -> Void)?
         public var verificationSourceDidOpen: (@Sendable (String) -> Void)?
         public var verificationSourceDidRead: (@Sendable (String, Int) -> Void)?
+        /// Test hook for a repeatably wrong source read on later verification
+        /// passes. Production never supplies this; it does not write the card.
+        public var transformVerificationSourceRead: (@Sendable (String, Data) throws -> Data)?
 
         public init(
             beforeSourceOpen: (@Sendable (URL) throws -> Void)? = nil,
@@ -454,7 +457,8 @@ public final class DestinationWriter {
             destinationDidOpenForRead: (@Sendable (Int, String) -> Void)? = nil,
             destinationDidRead: (@Sendable (Int, String, Int) -> Void)? = nil,
             verificationSourceDidOpen: (@Sendable (String) -> Void)? = nil,
-            verificationSourceDidRead: (@Sendable (String, Int) -> Void)? = nil
+            verificationSourceDidRead: (@Sendable (String, Int) -> Void)? = nil,
+            transformVerificationSourceRead: (@Sendable (String, Data) throws -> Data)? = nil
         ) {
             self.beforeSourceOpen = beforeSourceOpen
             self.sourceDidOpen = sourceDidOpen
@@ -471,6 +475,7 @@ public final class DestinationWriter {
             self.destinationDidRead = destinationDidRead
             self.verificationSourceDidOpen = verificationSourceDidOpen
             self.verificationSourceDidRead = verificationSourceDidRead
+            self.transformVerificationSourceRead = transformVerificationSourceRead
         }
     }
 
@@ -1456,7 +1461,9 @@ public final class DestinationWriter {
             let requested = min(4 * 1024 * 1024, Int(Int64(initial.st_size) - bytesRead))
             // Drain each chunk's buffer; see readPinnedDestination.
             let count = try autoreleasepool { () throws -> Int in
-                let data = try handle.read(upToCount: requested) ?? Data()
+                let read = try handle.read(upToCount: requested) ?? Data()
+                let data = try hooks?.transformVerificationSourceRead?(relativePath, read) ?? read
+                guard data.count == read.count else { throw sourceChangedError() }
                 if !data.isEmpty { hasher.update(data) }
                 return data.count
             }
@@ -1560,7 +1567,9 @@ public final class DestinationWriter {
             try await PauseGate.waitIfCurrentIsPaused()
             // Drain each chunk's buffers; see readPinnedDestination.
             let (sourceCount, destinationCount, same) = try autoreleasepool { () throws -> (Int, Int, Bool) in
-                let sourceData = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                let sourceRead = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                let sourceData = try hooks?.transformVerificationSourceRead?(relativePath, sourceRead) ?? sourceRead
+                guard sourceData.count == sourceRead.count else { throw sourceChangedError() }
                 let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
                 return (sourceData.count, destinationData.count, sourceData == destinationData)
             }

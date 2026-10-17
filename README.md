@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Free, open-source camera card offloading for Mac.</b><br>
-  Copy to several drives, verify every file with SHA-256, and know exactly when the card is safe to erase.
+  Copy to several drives, verify the files you chose, and know when it’s safe to erase the card.
 </p>
 
 <p align="center">
@@ -76,8 +76,8 @@ Standard does not independently reread the source: a wrong source read can be co
 
 | Mode | What it checks |
 | --- | --- |
-| Quick | Copy only; no checksum verification |
-| Standard — default | Reads the card once; reads every drive back and checks SHA-256 |
+| Quick | Copies and checks file sizes only; no checksum verification |
+| Standard — default | New copies: reads the card once, then reads each backup back and checks SHA-256 |
 | Thorough | Also re-reads the card; SHA-256 and MD5 |
 | Paranoid | Also re-reads the card and compares every byte, plus SHA-256 |
 
