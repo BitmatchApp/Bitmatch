@@ -148,6 +148,10 @@ struct PreferencesWindow: View {
                     .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
             }
 
+            Section("Diagnostics") {
+                LocalCrashEvidenceSettingView(settings: generalSettings)
+            }
+
             Section("Updates") {
                 Toggle(
                     "Check for updates automatically",

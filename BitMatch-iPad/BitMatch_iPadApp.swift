@@ -12,6 +12,8 @@ struct BitMatch_iPadApp: App {
     
     init() {
         SharedLogger.transferEvent(.appStarted, run: nil)
+        MetricKitCrashEvidenceCollector.shared.configure(
+            enabled: UserDefaults.standard.bool(forKey: LocalCrashEvidenceStore.consentKey))
         UNUserNotificationCenter.current().delegate = notifDelegate
         // Register background task handler (Info.plist contains permitted identifier)
         registerBackgroundTasks()

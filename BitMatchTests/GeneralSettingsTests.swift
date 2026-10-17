@@ -46,6 +46,7 @@ struct GeneralSettingsTests {
         #expect(!settings.queueNewCardsAutomatically)
         #expect(!settings.autoEjectWhenSafe)
         #expect(!settings.playSounds)
+        #expect(!settings.collectLocalCrashEvidence)
         #expect(!settings.notificationPromptWasAnswered)
     }
 
@@ -64,6 +65,7 @@ struct GeneralSettingsTests {
         migrated.queueNewCardsAutomatically = true
         migrated.autoEjectWhenSafe = true
         migrated.playSounds = true
+        migrated.collectLocalCrashEvidence = true
         migrated.markNotificationPromptAnswered()
 
         let restored = GeneralSettings(defaults: box.defaults)
@@ -73,6 +75,7 @@ struct GeneralSettingsTests {
         #expect(restored.queueNewCardsAutomatically)
         #expect(restored.autoEjectWhenSafe)
         #expect(restored.playSounds)
+        #expect(restored.collectLocalCrashEvidence)
         #expect(restored.notificationPromptWasAnswered)
     }
 

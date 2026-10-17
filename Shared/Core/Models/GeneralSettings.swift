@@ -1,6 +1,7 @@
 import Foundation
 import Combine
 import UserNotifications
+import BitMatchEngine
 
 /// Settings that shape the everyday transfer workflow on every platform.
 /// UserDefaults is injected so the defaults and migration stay testable.
@@ -14,6 +15,7 @@ final class GeneralSettings: ObservableObject {
     static let playSoundsKey = "BitMatchPlaySounds"
     static let notificationPromptAskedKey = "BitMatchNotificationPromptAsked"
     static let legacyNotifyFinishKey = "BitMatchNotifyWhenTransferEnds"
+    static let localCrashEvidenceKey = LocalCrashEvidenceStore.consentKey
 
     private let defaults: UserDefaults
 
@@ -34,6 +36,9 @@ final class GeneralSettings: ObservableObject {
     }
     @Published var playSounds: Bool {
         didSet { defaults.set(playSounds, forKey: Self.playSoundsKey) }
+    }
+    @Published var collectLocalCrashEvidence: Bool {
+        didSet { defaults.set(collectLocalCrashEvidence, forKey: Self.localCrashEvidenceKey) }
     }
     @Published private(set) var notificationPromptWasAnswered: Bool {
         didSet { defaults.set(notificationPromptWasAnswered, forKey: Self.notificationPromptAskedKey) }
@@ -59,6 +64,7 @@ final class GeneralSettings: ObservableObject {
         queueNewCardsAutomatically = Self.bool(defaults, key: Self.queueCardsAutomaticallyKey, default: false)
         autoEjectWhenSafe = Self.bool(defaults, key: Self.autoEjectKey, default: false)
         playSounds = Self.bool(defaults, key: Self.playSoundsKey, default: false)
+        collectLocalCrashEvidence = Self.bool(defaults, key: Self.localCrashEvidenceKey, default: false)
         notificationPromptWasAnswered = Self.bool(defaults, key: Self.notificationPromptAskedKey, default: false)
     }
 

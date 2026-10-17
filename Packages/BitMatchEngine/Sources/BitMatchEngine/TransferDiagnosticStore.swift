@@ -50,6 +50,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         var footprintMB: Int?
     }
     private let directory: URL
+    private let systemEvidenceStore: LocalCrashEvidenceStore
     private let limit: Int
     private let session = UUID()
     private let lock = NSLock()
@@ -57,9 +58,11 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     private var current: URL { directory.appendingPathComponent("current.jsonl") }
     private var previous: URL { directory.appendingPathComponent("previous.jsonl") }
 
-    init(directory: URL, limit: Int = 256 * 1024) {
+    init(directory: URL, limit: Int = 256 * 1024,
+         systemEvidenceStore: LocalCrashEvidenceStore = .shared) {
         self.directory = directory
         self.limit = limit
+        self.systemEvidenceStore = systemEvidenceStore
     }
 
     func record(_ event: SharedLogger.TransferEvent, run: UUID?, configure: (inout Event) -> Void = { _ in }) {
@@ -138,7 +141,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             }
         }
         struct Export: Encodable {
-            let formatVersion = 1
+            let formatVersion = 2
             let exportedAt: Date
             let operatingSystem: String
             let appVersion: String
@@ -146,7 +149,13 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             let recordingHadErrors: Bool
             let incompleteRecords: Int
             let events: [Event]
+            let systemEvidenceEnabled: Bool
+            let systemEvidenceRecordingHadErrors: Bool
+            let systemEvidenceDeletionHadErrors: Bool
+            let systemEvidenceNote: String
+            let systemEvidence: [LocalCrashEvidence]
         }
+        let systemEvidence = systemEvidenceStore.snapshot()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
@@ -154,6 +163,11 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-            recordingHadErrors: writeFailed, incompleteRecords: incompleteRecords, events: events))
+            recordingHadErrors: writeFailed, incompleteRecords: incompleteRecords, events: events,
+            systemEvidenceEnabled: systemEvidence.enabled,
+            systemEvidenceRecordingHadErrors: systemEvidence.recordingHadErrors,
+            systemEvidenceDeletionHadErrors: systemEvidence.deletionHadErrors,
+            systemEvidenceNote: "Apple MetricKit may deliver crash or main-thread hang reports later, or not at all. Absence does not rule out a crash, memory kill, force quit, or background stall. Reports are not tied to a transfer by this export.",
+            systemEvidence: systemEvidence.records))
     }
 }

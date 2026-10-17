@@ -67,6 +67,15 @@ struct BitMatchApp: App {
         #else
         let environment = MacAppEnvironment.make()
         #endif
+        #if DEBUG
+        if !MacUnitTestHost.isRunning() {
+            MetricKitCrashEvidenceCollector.shared.configure(
+                enabled: UserDefaults.standard.bool(forKey: LocalCrashEvidenceStore.consentKey))
+        }
+        #else
+        MetricKitCrashEvidenceCollector.shared.configure(
+            enabled: UserDefaults.standard.bool(forKey: LocalCrashEvidenceStore.consentKey))
+        #endif
         _environment = StateObject(wrappedValue: environment)
         _updater = StateObject(wrappedValue: UpdaterController(coordinator: environment.coordinator))
         appDelegate.coordinator = environment.coordinator
