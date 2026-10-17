@@ -285,14 +285,15 @@ struct QueueSessionPresentation: Equatable, Sendable {
         state: CardSafetyState
     ) -> TransferOutcomePresentation? {
         guard record.state != .queued, record.state != .running else { return nil }
+        let displayedReason = TransferOutcomePresentation.recordedCompletionReason(for: record)
         let operationState: OperationState
         switch state {
         case .safeToErase:
-            operationState = .completed(.init(success: true, message: record.summary))
+            operationState = .completed(.init(success: true, message: displayedReason))
         case .copiedNotVerified:
-            operationState = .completed(.init(success: false, message: record.summary, copiedNotVerified: true))
+            operationState = .completed(.init(success: false, message: displayedReason, copiedNotVerified: true))
         case .needsAttention:
-            operationState = .completed(.init(success: false, message: record.summary))
+            operationState = .completed(.init(success: false, message: displayedReason))
         case .failed:
             operationState = .failed
         case .interrupted:
@@ -323,7 +324,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             ),
             canExport: true,
             sourceName: record.title,
-            completionReason: record.summary,
+            completionReason: displayedReason,
             independentDestinationCount: record.independentDestinationCount
         )
     }
@@ -344,7 +345,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 return "\(files) on \(drive)"
             }
         }
-        let summary = record.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let summary = TransferOutcomePresentation.recordedCompletionReason(for: record)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         return summary.isEmpty ? nil : summary
     }
 

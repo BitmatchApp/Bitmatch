@@ -195,6 +195,7 @@ struct SetupPresentationTests {
             generateASCMHL: false
         )
         try journal.markRunning(id: recordID)
+        try journal.recordPlan(id: recordID, fileCounts: [1])
         try journal.finish(
             id: recordID,
             results: [ResultRow(

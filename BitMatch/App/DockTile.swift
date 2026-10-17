@@ -39,6 +39,26 @@ enum DockTileState: Equatable {
             return .needsReview
         }
     }
+
+    /// A live executor can finish before its journal does. Use the saved
+    /// attempt before lighting the Dock green for a transfer.
+    static func makeTransfer(
+        state: OperationState,
+        record: LocalTransferRecord?,
+        fraction: Double?
+    ) -> DockTileState {
+        guard case .completed = state else { return make(state: state, fraction: fraction) }
+        guard let record else { return .needsReview }
+        switch TransferLibraryPresentation.safetyState(for: record) {
+        case .safeToErase: return .verified
+        case .failed: return .failed
+        case .waiting, .preparing, .copying, .verifying, .finishing:
+            let percent = Int((min(max(fraction ?? 0, 0), 0.99) * 100).rounded(.down))
+            return .running(percent: percent)
+        case .copiedNotVerified, .needsAttention, .interrupted:
+            return .needsReview
+        }
+    }
 }
 
 /// Keeps `NSApp.dockTile` in step with the coordinator.
@@ -53,16 +73,29 @@ final class DockTileController {
         coordinator.operationStatePublisher
             .combineLatest(coordinator.liveProgress.$progress)
             .throttle(for: .milliseconds(500), scheduler: RunLoop.main, latest: true)
-            .sink { [weak self] state, progress in
-                self?.show(DockTileState.make(state: state, fraction: progress?.overallProgress))
+            .sink { [weak self] _, _ in
+                self?.refresh()
             }
             .store(in: &cancellables)
         coordinator.objectWillChange
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
-                DispatchQueue.main.async { self?.updateAttentionBadge() }
+                DispatchQueue.main.async { self?.refresh() }
             }
             .store(in: &cancellables)
+    }
+
+    private func refresh() {
+        let state = coordinator.operationState
+        let fraction = coordinator.liveProgress.progress?.overallProgress
+        if coordinator.currentMode == .copyAndVerify {
+            let record = coordinator.activeRunContext?.journalRecordID.flatMap { id in
+                coordinator.transferJournal.records.first(where: { $0.id == id })
+            }
+            show(DockTileState.makeTransfer(state: state, record: record, fraction: fraction))
+        } else {
+            show(DockTileState.make(state: state, fraction: fraction))
+        }
     }
 
     private func show(_ state: DockTileState) {

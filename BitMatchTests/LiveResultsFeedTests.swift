@@ -215,6 +215,7 @@ private final class StreamingFileOperations: FileOperationsService, @unchecked S
         progressCallback: @escaping ProgressCallback,
         onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
+        progressCallback(testPlannedProgress(filesPerDestination: files, destinationCount: destinationURLs.count))
         func result(_ index: Int, _ destination: URL, success: Bool) -> FileOperationResult {
             FileOperationResult(
                 sourceURL: sourceURL.appendingPathComponent("\(index).ARW"),

@@ -9,6 +9,50 @@ import BitMatchEngine
 struct TransferLibraryPresentationTests {
     private let allStates: [LocalTransferState] = [.queued, .running, .interrupted, .completed, .issues, .failed, .cancelled]
 
+    @Test func authoritativeHandoffRequiresTheSavedSelectedFilePlan() throws {
+        var record = PresentationTestSupport.record(state: .running)
+        record.plannedFileCounts = nil
+        let row = PresentationTestSupport.row(.verified, destination: record.destinations[0].url)
+        #expect(throws: TransferPlanPersistenceError.self) {
+            try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+                authoritativeRows: [row], priorWriteError: nil)
+        }
+        record.plannedFileCounts = [1]
+        try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+            authoritativeRows: [row], priorWriteError: nil)
+        let excluded = PresentationTestSupport.row(.excludedAppleDouble, destination: record.destinations[0].url)
+        try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+            authoritativeRows: [row, excluded], priorWriteError: nil)
+        record.plannedFileCounts = [2]
+        #expect(throws: TransferPlanPersistenceError.self) {
+            try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+                authoritativeRows: [row], priorWriteError: nil)
+        }
+        record.plannedFileCounts = [1]
+        #expect(throws: TransferPlanPersistenceError.self) {
+            try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+                authoritativeRows: [row],
+                priorWriteError: CocoaError(.fileWriteNoPermission))
+        }
+    }
+
+    @Test func liveExecutorSuccessIsReconciledToTheSavedTerminalVerdict() {
+        var record = PresentationTestSupport.record(state: .completed)
+        record.plannedFileCounts = nil
+        record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
+        let settled = TransferOutcomePresentation.settledLiveState(for: record)
+        guard case .completed(let info) = settled else {
+            Issue.record("Expected a completed-but-unsafe live verdict")
+            return
+        }
+        #expect(info.success == false)
+
+        record.state = .interrupted
+        #expect(TransferOutcomePresentation.settledLiveState(for: record) == .failed)
+        record.state = .cancelled
+        #expect(TransferOutcomePresentation.settledLiveState(for: record) == .cancelled)
+    }
+
     // MARK: - State labels
 
     /// Plant: in `TransferLibraryPresentation.stateLabel`, change the
@@ -161,6 +205,12 @@ struct TransferLibraryPresentationTests {
 
         let reason = TransferOutcomePresentation.recordedCompletionReason(for: record)
         let state = try #require(TransferOutcomePresentation.recordedState(for: record))
+        if case .completed(let info) = state {
+            #expect(info.message == reason)
+            #expect(!info.message.contains("Selected files verified"))
+        } else {
+            Issue.record("Expected a completed review state for legacy History")
+        }
         let finish = TransferOutcomePresentation.make(
             state: state, rows: record.results, destinations: record.destinations.map(\.url),
             hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,

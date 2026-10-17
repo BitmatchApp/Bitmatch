@@ -431,6 +431,7 @@ final class StressTests: XCTestCase {
                     generateASCMHL: false
                 )
                 try journal.markRunning(id: id)
+                try journal.recordPlan(id: id, fileCounts: [12])
                 let service = makePipeline(pipelined: false)
                 let cancellation = CancellationPoint(target: 1 + Int(rng.next() % 12))
                 let captured = StressResults()
@@ -460,6 +461,7 @@ final class StressTests: XCTestCase {
 
                 let retryID = try journal.requeue(id: id)
                 try journal.markRunning(id: retryID)
+                try journal.recordPlan(id: retryID, fileCounts: [12])
                 let retry = try await stressRun(source: fixture.source, destinations: [destination], mode: .standard)
                 let retryVerdict = verdict(for: retry)
                 XCTAssertTrue(retryVerdict.success, "iteration \(iteration): \(describe(retry))")

@@ -122,7 +122,67 @@ struct QueueAdmissionTests {
         try complete(plan: [2], results: [row("a.mov"), row("b.mov")], fingerprint: "complete")
         #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "complete") != nil)
         try complete(plan: nil, results: [row("a.mov")], fingerprint: "legacy")
-        #expect(f.journal.records.first(where: { $0.sourceFingerprint == "legacy" })?.state == .completed)
+        #expect(f.journal.records.first(where: { $0.sourceFingerprint == "legacy" })?.state == .issues)
         #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "legacy") == nil)
+    }
+
+    @Test func failedPlanWriteCannotFinishAsACompleteVerifiedTransfer() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = try f.journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.backup], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try f.journal.markRunning(id: id)
+
+        // Put a directory at the journal file path for one write, then
+        // restore the original file. This reproduces a failed plan save
+        // followed by a successful terminal write without changing the card.
+        let journalURL = f.root.appendingPathComponent("journal.json")
+        let savedURL = f.root.appendingPathComponent("journal-saved.json")
+        try FileManager.default.moveItem(at: journalURL, to: savedURL)
+        try FileManager.default.createDirectory(at: journalURL, withIntermediateDirectories: true)
+        #expect(throws: (any Error).self) {
+            try f.journal.recordPlan(id: id, fileCounts: [1])
+        }
+        #expect(f.journal.records.first?.plannedFileCounts == nil)
+        try FileManager.default.removeItem(at: journalURL)
+        try FileManager.default.moveItem(at: savedURL, to: journalURL)
+
+        let row = ResultRow(
+            path: f.source.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 24, checksum: "fixture",
+            destination: f.backup.lastPathComponent,
+            destinationPath: f.backup.appendingPathComponent("clip.mov").path
+        )
+        try f.journal.finish(
+            id: id, results: [row], summary: "Selected files verified",
+            hadIssues: false, sourceFingerprint: "card"
+        )
+        let finished = try #require(f.journal.records.first)
+        #expect(finished.state == .issues)
+        #expect(finished.summary.contains("Transfer results are incomplete"))
+        #expect(finished.summary.contains("Do not erase"))
+        #expect(finished.results.count == 1)
+        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "card") == nil)
+        #expect(try String(contentsOf: f.source.appendingPathComponent("clip.mov"), encoding: .utf8) == "source remains untouched")
+    }
+
+    @Test func directRetryCannotReuseAnEarlierSelectedFilePlan() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let id = try f.journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.backup], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
+        )
+        try f.journal.markRunning(id: id)
+        try f.journal.recordPlan(id: id, fileCounts: [1])
+        try f.journal.interrupt(id: id, summary: "Interrupted", results: [])
+
+        try f.journal.markRunning(id: id)
+        #expect(f.journal.records.first?.plannedFileCounts == nil)
+        #expect(f.journal.records.first?.quickOnlyUnverified == nil)
+        try f.journal.recordPlan(id: id, fileCounts: [2])
+        #expect(f.journal.records.first?.plannedFileCounts == [2])
     }
 }

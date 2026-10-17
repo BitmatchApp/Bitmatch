@@ -466,6 +466,10 @@ public final class TransferJournal: Sendable {
                 record.endedAt = nil
                 record.summary = "Copying and verifying"
                 record.independentDestinationCount = independentDestinationCount
+                // A direct retry may reuse this record. Its earlier selected
+                // plan is not evidence for the new attempt.
+                record.plannedFileCounts = nil
+                record.quickOnlyUnverified = nil
             }
         }
     }
@@ -637,9 +641,9 @@ public final class TransferJournal: Sendable {
             record.quickOnlyUnverified = record.verificationMode == .quick ? quickOnlyUnverified : nil
             // A current transfer records the selected manifest size before
             // copying. A shorter or duplicated result set is incomplete even
-            // if every retained row says it verified. Legacy nil-plan records
-            // keep their saved state for provenance; History and prior-backup
-            // hints cannot infer whole-card coverage from them.
+            // if every retained row says it verified. A newly finishing attempt
+            // without a saved plan is incomplete too; older decoded records
+            // keep their historical state for provenance in History.
             let incompletePlan = !Self.hasCompletePlannedResults(record)
             // A complete plan can still contain copied-but-unverified rows.
             // Only Quick mode intentionally accepts that outcome.
@@ -708,7 +712,7 @@ public final class TransferJournal: Sendable {
     /// AppleDouble exclusions are retained as evidence but are not selected
     /// files, so they do not make a complete selected-file plan look short.
     private static func hasCompletePlannedResults(_ record: LocalTransferRecord) -> Bool {
-        guard let plan = record.plannedFileCounts else { return true }
+        guard let plan = record.plannedFileCounts else { return false }
         guard plan.count == record.destinations.count else { return false }
         let selected = record.results.filter {
             ResultOutcome(statusText: $0.status) != .excludedAppleDouble

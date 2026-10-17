@@ -23,11 +23,15 @@ final class LocalTransferJournal: ObservableObject {
     let queueSessionFileURL: URL
     private let beforeMarkRunning: ((UUID) throws -> Void)?
     private let beforeCancel: ((UUID) throws -> Void)?
+    private let beforeRecordPlan: ((UUID) throws -> Void)?
+    private let beforeFinish: ((UUID) throws -> Void)?
 
     init(
         fileURL: URL? = nil,
         beforeMarkRunning: ((UUID) throws -> Void)? = nil,
-        beforeCancel: ((UUID) throws -> Void)? = nil
+        beforeCancel: ((UUID) throws -> Void)? = nil,
+        beforeRecordPlan: ((UUID) throws -> Void)? = nil,
+        beforeFinish: ((UUID) throws -> Void)? = nil
     ) {
         let selectedURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
@@ -36,6 +40,8 @@ final class LocalTransferJournal: ObservableObject {
             .appendingPathComponent("transfer-queue-session.json")
         self.beforeMarkRunning = beforeMarkRunning
         self.beforeCancel = beforeCancel
+        self.beforeRecordPlan = beforeRecordPlan
+        self.beforeFinish = beforeFinish
         store = TransferJournal(fileURL: selectedURL)
         refresh()
     }
@@ -113,6 +119,7 @@ final class LocalTransferJournal: ObservableObject {
 
     func recordPlan(id: UUID, fileCounts: [Int]) throws {
         defer { refresh() }
+        try beforeRecordPlan?(id)
         try store.recordPlan(id: id, fileCounts: fileCounts)
     }
 
@@ -169,6 +176,7 @@ final class LocalTransferJournal: ObservableObject {
         sourceFingerprint: String? = nil
     ) throws {
         defer { refresh() }
+        try beforeFinish?(id)
         try store.finish(
             id: id,
             results: results,

@@ -353,9 +353,12 @@ final class CopyVerifyExecutor {
         let allResults = TransferCompletion.rows(from: operation)
         SharedLogger.info("Mapped \(allResults.count) authoritative operation results for report", category: .transfer)
 
+        // The journal's selected-file plan is authoritative for this run.
+        // Its failure must escape before MHL, project finalization or reports;
+        // only a project finalizer error is recoverable as an amber outcome.
+        try callbacks.onAuthoritativeResults(allResults)
         let photographerLifecycle = try Self.photographerLifecycleAfterAuthoritativeCompletion(
             completion: {
-                try callbacks.onAuthoritativeResults(allResults)
                 guard let finalizer = config.photographerReportFinalizer else { return nil }
                 return try finalizer(allResults)
             }

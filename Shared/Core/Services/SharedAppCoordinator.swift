@@ -75,6 +75,7 @@ struct TransferRunContext {
 private final class TransferRunResults {
     private(set) var rows: [ResultRow] = []
     var attemptedPlanSave = false
+    var planSaveError: Error?
 
     func upsert(_ row: ResultRow) {
         if let index = rows.firstIndex(where: {
@@ -88,6 +89,46 @@ private final class TransferRunResults {
 
     func replace(with rows: [ResultRow]) {
         self.rows = rows
+    }
+}
+
+/// A report or project finalization must not claim complete selected-file
+/// coverage when the plan for this attempt was never saved.
+enum TransferPlanPersistenceError: LocalizedError {
+    case missingSavedPlan
+
+    var errorDescription: String? {
+        "BitMatch could not save the selected-file plan. Keep the source and review the partial results."
+    }
+}
+
+enum SavedTransferPlanGate {
+    static func requireSavedPlan(
+        _ record: LocalTransferRecord?,
+        destinationCount: Int,
+        authoritativeRows: [ResultRow],
+        priorWriteError: Error?
+    ) throws {
+        guard priorWriteError == nil,
+              let record,
+              record.state == .running,
+              let plan = record.plannedFileCounts,
+              plan.count == destinationCount else {
+            throw TransferPlanPersistenceError.missingSavedPlan
+        }
+        let selectedRows = authoritativeRows.filter {
+            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+        }
+        let groups = DestinationResultSummary.make(
+            rows: selectedRows, destinations: record.destinations.map(\.url)
+        )
+        guard groups.count == destinationCount,
+              zip(plan, groups).allSatisfy({ expected, group in
+                  expected == group.rows.count
+                      && Set(group.rows.map(\.path)).count == expected
+              }) else {
+            throw TransferPlanPersistenceError.missingSavedPlan
+        }
     }
 }
 
@@ -701,9 +742,10 @@ class SharedAppCoordinator: ObservableObject {
 
     // MARK: - Finish notification
 
-    private func notifyIfTransferEnded(_ state: OperationState) {
+    private func notifyIfTransferEnded(record: LocalTransferRecord) {
         guard currentMode == .copyAndVerify else { return }
-        let issueCount = results.filter { !$0.isSuccessStatus }.count
+        guard let state = TransferOutcomePresentation.recordedState(for: record) else { return }
+        let issueCount = record.results.filter { !$0.isSuccessStatus }.count
         guard let kind = TransferNotificationDecision.kind(
             state: state,
             issueCount: issueCount,
@@ -713,14 +755,7 @@ class SharedAppCoordinator: ObservableObject {
             notifyFinish: generalSettings.notifyWhenTransferOrQueueFinishes,
             notifyEachQueuedCard: generalSettings.notifyForEachCardInQueue
         ) else { return }
-        let finishedRecord = outcomeRecord
-        guard let finishedRecord,
-              let notice = TransferFinishNotice.make(
-            state: state,
-            record: finishedRecord,
-            issueCount: issueCount,
-            kind: kind
-        ) else { return }
+        guard let notice = TransferFinishNotice.make(record: record, kind: kind) else { return }
         transferNotifier.post(notice)
     }
 
@@ -751,10 +786,6 @@ class SharedAppCoordinator: ObservableObject {
     /// Feeds `progressPresentation`: engine progress at most every 120 ms,
     /// and the smoothing timer while an operation runs.
     private func setupProgressPresentation() {
-        operationStatePublisher
-            .removeDuplicates()
-            .sink { [weak self] state in self?.notifyIfTransferEnded(state) }
-            .store(in: &cancellables)
         IOSBackgroundTaskService.shared.secondsRemainingProvider = { [weak self] in
             self?.progressPresentation.measuredSecondsRemaining
         }
@@ -1491,17 +1522,8 @@ class SharedAppCoordinator: ObservableObject {
 
     func reviewQueuedTransfer(_ id: UUID) {
         guard !isOperationInProgress,
-              let record = transferJournal.records.first(where: { $0.id == id }) else { return }
-        let safety = TransferLibraryPresentation.safetyState(for: record)
-        let state: OperationState
-        switch safety {
-        case .safeToErase: state = .completed(.init(success: true, message: record.summary))
-        case .copiedNotVerified: state = .completed(.init(success: false, message: record.summary, copiedNotVerified: true))
-        case .needsAttention: state = .completed(.init(success: false, message: record.summary))
-        case .failed: state = .failed
-        case .interrupted: state = record.state == .cancelled ? .cancelled : .failed
-        default: return
-        }
+              let record = transferJournal.records.first(where: { $0.id == id }),
+              let state = TransferOutcomePresentation.settledLiveState(for: record) else { return }
         reviewedQueueAttentionIDs.insert(id)
         standaloneAttentionRecordIDsSinceLaunch.remove(id)
         reviewedQueueRecordID = id
@@ -2011,7 +2033,10 @@ class SharedAppCoordinator: ObservableObject {
                 if !runResults.attemptedPlanSave, let counts = progressUpdate.perDestinationTotals {
                     runResults.attemptedPlanSave = true
                     do { try self.transferJournal.recordPlan(id: recordID, fileCounts: counts) }
-                    catch { SharedLogger.warning("Could not save transfer plan: \(error)", category: .transfer) }
+                    catch {
+                        runResults.planSaveError = error
+                        SharedLogger.warning("Could not save transfer plan: \(error)", category: .transfer)
+                    }
                 }
                 if let projectIdentity {
                     self.photographerJobViewModel.updateProgressStage(
@@ -2048,6 +2073,20 @@ class SharedAppCoordinator: ObservableObject {
                     SharedLogger.transferEvent(.authoritativeRefused, run: startID, code: 3, explicit: true)
                     throw CancellationError()
                 }
+                // This callback runs before MHL, the project finalizer, and
+                // automatic reports. A failed plan write must stop all three
+                // from presenting incomplete selected-file evidence as safe.
+                do {
+                    try SavedTransferPlanGate.requireSavedPlan(
+                        self.transferJournal.records.first(where: { $0.id == recordID }),
+                        destinationCount: context.destinationURLs.count,
+                        authoritativeRows: allResults,
+                        priorWriteError: runResults.planSaveError
+                    )
+                } catch {
+                    SharedLogger.transferEvent(.authoritativeRefused, run: startID, code: 4)
+                    throw error
+                }
                 SharedLogger.transferEvent(.authoritativeAccepted, run: startID)
                 runResults.replace(with: allResults)
                 self.results = allResults
@@ -2080,6 +2119,9 @@ class SharedAppCoordinator: ObservableObject {
                 SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else if case .completed(let info) = operationState {
+                // The report and a project card's independent evidence may
+                // already have been saved. If this final journal write fails,
+                // preserve those artifacts but never emit a settled success.
                 let durations = copyVerifyExecutor.completedPhaseDurations
                 try transferJournal.finish(
                     id: recordID,
@@ -2192,6 +2234,11 @@ class SharedAppCoordinator: ObservableObject {
 
     private func handleAttemptTerminal(recordID: UUID, belongsToQueueSession: Bool? = nil) {
         guard let record = transferJournal.records.first(where: { $0.id == recordID }) else { return }
+        if let settled = TransferOutcomePresentation.settledLiveState(for: record),
+           operationState != settled {
+            operationState = settled
+        }
+        notifyIfTransferEnded(record: record)
         let safety = TransferLibraryPresentation.safetyState(for: record)
         let belongs = belongsToQueueSession
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
