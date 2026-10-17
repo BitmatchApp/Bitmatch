@@ -144,13 +144,47 @@ struct MacMenuBarStatusLabel: View {
                 }
                 .accessibilityLabel("BitMatch, \(presentation.title), \(presentation.percentText ?? "progress not yet measured")")
             } else {
-                Image(systemName: "square.on.square")
-                    .resizable()
-                    .scaledToFit()
+                MenuBarBrandMark()
+                    .stroke(Color.primary, style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
                     .accessibilityLabel("BitMatch")
             }
         }
         .frame(width: 18, height: 18)
+    }
+}
+
+/// Two copies and a check, drawn as a single-color menu bar template. The
+/// normal app icon loses its fine segmented ring at this size.
+private struct MenuBarBrandMark: Shape {
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let origin = CGPoint(x: rect.midX - side / 2, y: rect.midY - side / 2)
+        let unit = side / 18
+        func point(_ x: CGFloat, _ y: CGFloat) -> CGPoint {
+            CGPoint(x: origin.x + x * unit, y: origin.y + y * unit)
+        }
+
+        var mark = Path()
+        // Only the exposed edges of the rear copy are drawn; lines do not show
+        // through the foreground copy when macOS changes the menu bar color.
+        mark.move(to: point(4.9, 13.1))
+        mark.addLine(to: point(3.7, 13.1))
+        mark.addQuadCurve(to: point(2.5, 11.9), control: point(2.5, 13.1))
+        mark.addLine(to: point(2.5, 3.8))
+        mark.addQuadCurve(to: point(3.8, 2.5), control: point(2.5, 2.5))
+        mark.addLine(to: point(11.8, 2.5))
+        mark.addQuadCurve(to: point(13.1, 3.8), control: point(13.1, 2.5))
+        mark.addLine(to: point(13.1, 4.8))
+
+        mark.addRoundedRect(
+            in: CGRect(x: origin.x + 5 * unit, y: origin.y + 5 * unit,
+                       width: 10.5 * unit, height: 10.5 * unit),
+            cornerSize: CGSize(width: 1.35 * unit, height: 1.35 * unit)
+        )
+        mark.move(to: point(7.4, 10.2))
+        mark.addLine(to: point(9.4, 12.2))
+        mark.addLine(to: point(13.1, 8.45))
+        return mark
     }
 }
 
