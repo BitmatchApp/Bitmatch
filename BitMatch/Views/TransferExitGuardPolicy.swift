@@ -10,9 +10,23 @@ enum TransferExitGuardPolicy {
         isCopyAndVerifyMode: Bool,
         lastOperationWasCompare: Bool
     ) -> Bool {
-        (isOperationInProgress || queueIsRunning)
+        // A queue can be preparing its next card while a prior Compare is
+        // still the last recorded operation. It still requires settlement.
+        queueIsRunning || (isOperationInProgress
             && isCopyAndVerifyMode
             && !lastOperationWasCompare
+        )
+    }
+}
+
+/// A running transfer belongs to the app, not to the main window's view.
+/// Closing that window keeps its SwiftUI tree and the shared coordinator alive;
+/// Quit still goes through `TransferExitGuardPolicy` and journal settlement.
+enum MacMainWindowClosePolicy {
+    enum Action: Equatable { case close, hideAndContinue }
+
+    static func action(transferRequiresSettlement: Bool) -> Action {
+        transferRequiresSettlement ? .hideAndContinue : .close
     }
 }
 

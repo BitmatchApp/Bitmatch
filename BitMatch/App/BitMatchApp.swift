@@ -74,7 +74,7 @@ struct BitMatchApp: App {
     }
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: "main") {
             Group {
 #if DEBUG
                 if launchesInterfaceLab { InterfaceLabView() }
@@ -164,6 +164,16 @@ struct BitMatchApp: App {
             }
             #endif
         }
+
+        MenuBarExtra {
+            MacMenuBarCompanion(
+                coordinator: environment.coordinator,
+                appDelegate: appDelegate
+            )
+        } label: {
+            MacMenuBarStatusLabel(coordinator: environment.coordinator)
+        }
+        .menuBarExtraStyle(.window)
 
         Settings {
             PreferencesWindow(
@@ -281,7 +291,8 @@ extension FocusedValues {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     var coordinator: SharedAppCoordinator?
     private weak var contentWindow: NSWindow?
-    private weak var windowAllowedToClose: NSWindow?
+    /// Keep the actual SwiftUI window mounted while a transfer runs out of sight.
+    private var hiddenTransferWindow: NSWindow?
     private var exitGuard = TransferExitGuardStateMachine()
     private var exitGuardAlert: NSAlert?
 
@@ -317,21 +328,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     func windowShouldClose(_ sender: NSWindow) -> Bool {
-        if windowAllowedToClose === sender {
-            windowAllowedToClose = nil
+        switch MacMainWindowClosePolicy.action(transferRequiresSettlement: shouldAskToStopTransfer) {
+        case .close:
             return true
-        }
-        switch exitGuard.request(needsGuard: shouldAskToStopTransfer) {
-        case .allowNow:
-            return true
-        case .presentPrompt:
-            presentExitGuard(for: .close(sender))
-            return false
-        case .keepWaiting:
-            NSSound.beep()
-            exitGuardAlert?.window.makeKeyAndOrderFront(nil)
+        case .hideAndContinue:
+            hiddenTransferWindow = sender
+            sender.orderOut(nil)
             return false
         }
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        guard let window = notification.object as? NSWindow else { return }
+        if contentWindow === window { contentWindow = nil }
+        if hiddenTransferWindow === window { hiddenTransferWindow = nil }
+    }
+
+    /// Used by the menu bar and Dock. Focus the mounted view (whether visible
+    /// or hidden) instead of asking WindowGroup to create another one.
+    @discardableResult
+    func focusExistingContentWindow() -> Bool {
+        guard let window = hiddenTransferWindow ?? contentWindow else { return false }
+        hiddenTransferWindow = nil
+        if window.isMiniaturized { window.deminiaturize(nil) }
+        window.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        return true
+    }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows: Bool) -> Bool {
+        // We handled an existing window ourselves. Otherwise let AppKit and
+        // WindowGroup create the main window after an ordinary idle close.
+        return !focusExistingContentWindow()
     }
 
     private var shouldAskToStopTransfer: Bool {
@@ -348,7 +376,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
     }
 
     private enum ExitAction {
-        case close(NSWindow)
         case quit(NSApplication)
     }
 
@@ -366,16 +393,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             self.exitGuardAlert = nil
             let choice: TransferExitGuardStateMachine.Choice = response == .alertSecondButtonReturn
                 ? .stopTransfer : .keepCopying
-            let actionKind: TransferExitGuardStateMachine.Action
-            switch action {
-            case .quit: actionKind = .quit
-            case .close: actionKind = .closeWindow
-            }
-            switch self.exitGuard.resolve(choice, for: actionKind) {
+            switch self.exitGuard.resolve(choice, for: .quit) {
             case .denyExit:
-                if case .quit(let application) = action {
-                    application.reply(toApplicationShouldTerminate: false)
-                }
+                if case .quit(let application) = action { application.reply(toApplicationShouldTerminate: false) }
             case .allowExit:
                 self.finish(action: action, allowExit: true)
             case .requestCancellation:
@@ -383,6 +403,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
             }
         }
 
+        // Quit can come from the menu bar while the transfer window is hidden.
+        // Bring it back before attaching the settlement sheet.
+        _ = focusExistingContentWindow()
         let window = contentWindow ?? Self.contentWindowCandidate()
         if let window {
             alert.beginSheetModal(for: window, completionHandler: finish)
@@ -398,9 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
                 guard let coordinator else {
                     throw SharedAppCoordinator.CancellationSettlementError.journalRecordMissing
                 }
-                let origin: TransferCancelOrigin
-                switch action { case .quit: origin = .appQuit; case .close: origin = .windowClose }
-                try await coordinator.cancelOperationAndWaitForSettlement(origin: origin)
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: .appQuit)
                 _ = exitGuard.settlementFinished(success: true)
                 finish(action: action, allowExit: true)
             } catch {
@@ -415,24 +436,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         switch action {
         case .quit(let application):
             application.reply(toApplicationShouldTerminate: allowExit)
-        case .close(let window):
-            guard allowExit else { return }
-            close(window)
-        }
-    }
-
-    private func close(_ window: NSWindow) {
-        windowAllowedToClose = window
-        window.performClose(nil)
-        // `performClose` normally re-enters `windowShouldClose` synchronously.
-        // Clear defensively if AppKit declines before asking the delegate.
-        DispatchQueue.main.async { [weak self, weak window] in
-            guard let self, let window, self.windowAllowedToClose === window else { return }
-            self.windowAllowedToClose = nil
         }
     }
 
     private func presentSettlementError(_ message: String) {
+        _ = focusExistingContentWindow()
         let alert = NSAlert()
         alert.messageText = "Could Not Save the Interrupted Transfer"
         alert.informativeText = message
