@@ -1,6 +1,8 @@
+import AppKit
 import Foundation
 import XCTest
 import CryptoKit
+import Testing
 @testable import BitMatch
 import BitMatchEngine
 
@@ -1556,6 +1558,74 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
     }
 }
 
+@MainActor
+struct HiddenTransferMenuBarTests {
+    @Test func hiddenWindowKeepsRealTransferRunningAndReopensItsResult() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(makeReport: false),
+            generateASCMHL: false
+        )
+        let pipeline = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let operations = GatedRealQueueOperations(pipeline: pipeline)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults
+        )
+        let delegate = AppDelegate()
+        delegate.coordinator = coordinator
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        window.delegate = delegate
+        delegate.registerContentWindow(window)
+        window.makeKeyAndOrderFront(nil)
+        defer {
+            window.delegate = nil
+            window.close()
+        }
+
+        coordinator.startQueue()
+        let started = await waitUntil(timeout: .seconds(15)) {
+            await operations.starts.count == 1 && coordinator.isOperationInProgress
+        }
+        #expect(started)
+        #expect(window.isVisible)
+        window.performClose(nil)
+        #expect(!window.isVisible)
+        #expect(coordinator.queueIsRunning)
+        #expect(coordinator.isOperationInProgress)
+
+        await operations.release()
+        let finished = await waitUntil(timeout: .seconds(15)) {
+            journal.records.first(where: { $0.id == id })?.state == .completed
+                && !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+        }
+        #expect(finished)
+        let record = try #require(journal.records.first(where: { $0.id == id }))
+        #expect(record.state == .completed)
+        #expect(record.results.count == 1)
+        let row = try #require(record.results.first)
+        #expect(row.isSuccessStatus)
+        let destinationPath = try #require(row.destinationPath)
+        let copied = try Data(contentsOf: URL(fileURLWithPath: destinationPath))
+        let original = try Data(contentsOf: f.source.appendingPathComponent("clip.mov"))
+        #expect(copied == original)
+        let persisted = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
+        #expect(persisted.first?.state == .completed)
+
+        #expect(delegate.focusExistingContentWindow())
+        #expect(window.isVisible)
+        #expect(delegate.coordinator === coordinator)
+        #expect(journal.records.first(where: { $0.id == id })?.state == .completed)
+    }
+}
+
 private final class QuickQueueRecordingOperations: FileOperationsService, @unchecked Sendable {
     func performFileOperation(
         sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
@@ -1742,6 +1812,31 @@ private final class QueueRecordingOperations: FileOperationsService, @unchecked 
     func cancelOperation() {}
     func pauseOperation() async {}
     func resumeOperation() async {}
+}
+
+private final class GatedRealQueueOperations: FileOperationsService, @unchecked Sendable {
+    private let gate = QueueGate(blocked: true)
+    private let pipeline: TransferPipeline
+
+    init(pipeline: TransferPipeline) { self.pipeline = pipeline }
+    var starts: [QueueStartSnapshot] { get async { await gate.starts } }
+    func release() async { await gate.release() }
+
+    func performFileOperation(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
+                              settings: CameraLabelSettings, estimatedTotalBytes: Int64?,
+                              progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?) async throws -> FileOperation {
+        await gate.record(QueueStartSnapshot(source: sourceURL, destinations: destinationURLs,
+                                             label: settings.label, mode: verificationMode))
+        return try await pipeline.performFileOperation(
+            sourceURL: sourceURL, destinationURLs: destinationURLs, verificationMode: verificationMode,
+            settings: settings, estimatedTotalBytes: estimatedTotalBytes,
+            progressCallback: progressCallback, onFileResult: onFileResult
+        )
+    }
+
+    func cancelOperation() { pipeline.cancelOperation() }
+    func pauseOperation() async { await pipeline.pauseOperation() }
+    func resumeOperation() async { await pipeline.resumeOperation() }
 }
 
 private final class QueuePlatformManager: PlatformManager {

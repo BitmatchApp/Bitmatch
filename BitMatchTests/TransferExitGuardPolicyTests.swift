@@ -1,3 +1,5 @@
+import AppKit
+import Foundation
 import Testing
 @testable import BitMatch
 
@@ -34,6 +36,13 @@ struct TransferExitGuardPolicyTests {
             isCopyAndVerifyMode: true,
             lastOperationWasCompare: false
         ))
+        // The last Compare marker can remain during queue preflight.
+        #expect(TransferExitGuardPolicy.shouldAsk(
+            isOperationInProgress: false,
+            queueIsRunning: true,
+            isCopyAndVerifyMode: false,
+            lastOperationWasCompare: true
+        ))
     }
 
     @Test func repeatedQuitKeepsOnePromptAndOneSettlement() {
@@ -47,25 +56,59 @@ struct TransferExitGuardPolicyTests {
         #expect(state.request(needsGuard: true) == .presentPrompt)
     }
 
-    @Test func keepCopyingCancelsQuitAndWindowClose() {
+    @Test func closingActiveTransferHidesWhileQuitStillPrompts() {
+        #expect(MacMainWindowClosePolicy.action(transferRequiresSettlement: true) == .hideAndContinue)
+        #expect(MacMainWindowClosePolicy.action(transferRequiresSettlement: false) == .close)
+
         var quit = TransferExitGuardStateMachine()
         #expect(quit.request(needsGuard: true) == .presentPrompt)
         #expect(quit.resolve(.keepCopying, for: .quit) == .denyExit)
         #expect(quit.state == .idle)
-
-        var close = TransferExitGuardStateMachine()
-        #expect(close.request(needsGuard: true) == .presentPrompt)
-        #expect(close.resolve(.keepCopying, for: .closeWindow) == .denyExit)
-        #expect(close.state == .idle)
-        // The window may now be gone, but Cmd-Q still uses coordinator state.
-        #expect(close.request(needsGuard: true) == .presentPrompt)
+        #expect(quit.request(needsGuard: true) == .presentPrompt)
     }
 
     @Test func failedPersistenceDeniesExitAndRearmsTheGuard() {
         var state = TransferExitGuardStateMachine()
         #expect(state.request(needsGuard: true) == .presentPrompt)
-        #expect(state.resolve(.stopTransfer, for: .closeWindow) == .requestCancellation)
+        #expect(state.resolve(.stopTransfer, for: .quit) == .requestCancellation)
         #expect(state.settlementFinished(success: false) == .denyExit)
         #expect(state.request(needsGuard: true) == .presentPrompt)
+    }
+
+    @Test @MainActor func activeWindowClosesToHideAndReopensWithSameCoordinator() {
+        let coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            defaults: .isolatedWorkflowDefaults()
+        )
+        coordinator.isOperationInProgress = true
+        let delegate = AppDelegate()
+        delegate.coordinator = coordinator
+        let window = NSWindow(
+            contentRect: NSRect(x: 100, y: 100, width: 400, height: 300),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.delegate = delegate
+        delegate.registerContentWindow(window)
+        window.makeKeyAndOrderFront(nil)
+        #expect(delegate.focusExistingContentWindow())
+        #expect(window.isVisible)
+        window.performClose(nil)
+
+        #expect(!window.isVisible)
+        #expect(coordinator.isOperationInProgress)
+        #expect(delegate.focusExistingContentWindow())
+        #expect(window.isVisible)
+        #expect(delegate.coordinator === coordinator)
+
+        window.performClose(nil)
+        #expect(!delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false))
+        #expect(window.isVisible)
+
+        coordinator.isOperationInProgress = false
+        window.performClose(nil)
+        #expect(!delegate.focusExistingContentWindow())
+        #expect(delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false))
     }
 }
