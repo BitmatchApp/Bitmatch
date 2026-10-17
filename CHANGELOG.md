@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Mac: The menu bar shows the current transfer and its destinations, or the most recent result when idle. Closing the main window during a transfer hides it while the work continues; Open BitMatch brings the same window back. Quit still asks before stopping active work.
+- Mac: The menu bar shows the current transfer and its destinations, or the most recent result when idle. The idle icon is a small copy-and-check mark. Closing the main window during a transfer hides it while the work continues; Open BitMatch brings the same window back. Quit still asks before stopping active work.
 - Expanded transfer details show bytes written and read back for each destination, with separate live rates. These are measurements of active file I/O, not a drive-health or verification verdict.
 - Optional local Apple crash and hang summaries can be added to a diagnostics export. This is off by default, never uploaded by BitMatch, and Apple may not deliver a report.
 - Keep copy and verification failures below 100% in live progress; the engine emits “Complete” only when all selected files pass the chosen mode. The final safety verdict still includes later ASC MHL and report steps.
