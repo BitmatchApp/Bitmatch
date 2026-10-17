@@ -206,6 +206,18 @@ final class ReportEvidenceBytesTests: XCTestCase {
         XCTAssertTrue(csv.contains("Source Rereads Avoided,0"), csv)
     }
 
+    func testCSVDoesNotCallAnUnverifiedCopyVerifiedBecauseItHasAHash() throws {
+        let row = ResultRow(path: "/card/clip.mov", status: ResultOutcome.copiedUnverified.statusText,
+                            size: 10, checksum: "source-only-hash", destination: "Backup")
+        let csv = try ReportExporter.makeEnhancedCSV(
+            results: [row], started: Date(), duration: 1, filesPerSecond: 1,
+            photographerContext: nil, prefs: ReportPrefs(verificationMode: .standard)
+        )
+        let dataRow = try XCTUnwrap(csv.components(separatedBy: "\n").dropFirst().first)
+        XCTAssertTrue(dataRow.contains("✅ Copied"), dataRow)
+        XCTAssertFalse(dataRow.contains("Verified"), dataRow)
+    }
+
     func testJSONUsesPhaseDurationSecondKeysAndQuickOmitsVerify() throws {
         var prefs = ReportPrefs()
         prefs.verificationMode = .quick

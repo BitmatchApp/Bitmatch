@@ -353,17 +353,6 @@ struct TransferLibraryView: View {
     }
 }
 
-/// History keeps the original row status in exports, but Quick's older
-/// "Match" wording must not be presented as content verification on screen.
-enum TransferHistoryResultPresentation {
-    static func statusText(for row: ResultRow, mode: VerificationMode) -> String {
-        if mode == .quick && row.isSuccessStatus {
-            return "Copied · contents not verified"
-        }
-        return row.status
-    }
-}
-
 /// Attaches `.searchable` only when it makes sense, so the field never
 /// appears empty over an empty Queue and never grabs focus on its own.
 private struct OptionalSearchable: ViewModifier {

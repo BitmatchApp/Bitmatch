@@ -526,7 +526,7 @@ public enum EvidenceWriter: Sendable {
             let camera = project?.camera ?? ""
             let card = project?.card ?? ""
             let packagePath = project?.packagePath ?? ""
-            let verified = isMatchStatus(result.status) && result.checksum?.isEmpty == false && prefs?.verificationMode != .quick
+            let verified = result.isVerifiedStatus && result.checksum?.isEmpty == false && prefs?.verificationMode != .quick
             let details = verified ? "Verified" : result.status
             
             // Per-file times are not measured; the column stays for existing

@@ -18,12 +18,14 @@ struct TransferHistoryDocument: FileDocument {
             results: record.results, includeModePlan: record.plannedFileCounts != nil)
         if asCSV {
             func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused\n"
+            let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused,recorded_status\n"
             let rows = record.results.map { row in
-                [row.path, row.destinationPath ?? row.destination ?? "", row.status, String(row.size), row.checksum ?? "",
+                [row.path, row.destinationPath ?? row.destination ?? "",
+                 TransferHistoryResultPresentation.statusText(for: row, mode: record.verificationMode),
+                 String(row.size), row.checksum ?? "",
                  record.verificationMode.rawValue, record.state.rawValue, record.summary,
                  record.reportSettings.projectName, record.generateASCMHL ? "requested" : "not requested",
-                 record.reportSettings.clientName, row.wasReused ? "true" : "false"].map(quote).joined(separator: ",")
+                 record.reportSettings.clientName, row.wasReused ? "true" : "false", row.status].map(quote).joined(separator: ",")
             }
             func pair(_ key: String, _ value: String) -> String { quote(key) + "," + quote(value) }
             func detail(_ value: String) -> String {
@@ -80,7 +82,7 @@ struct TransferHistoryDocument: FileDocument {
                 let copyDurationSeconds: TimeInterval?
                 let verifyDurationSeconds: TimeInterval?
                 let performanceTelemetry: TransferPerformanceTelemetry?
-                let results: [ResultRow]
+                let results: [HistoryResult]
             }
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -96,7 +98,35 @@ struct TransferHistoryDocument: FileDocument {
                 copyDurationSeconds: record.copyDurationSeconds,
                 verifyDurationSeconds: record.verifyDurationSeconds,
                 performanceTelemetry: record.performanceTelemetry,
-                results: record.results))
+                results: record.results.map { HistoryResult(row: $0, mode: record.verificationMode) }))
         }
+    }
+}
+
+/// Export the interpreted status without changing the saved journal row.
+/// `recordedStatus` retains old wording when it could overstate verification.
+private struct HistoryResult: Encodable {
+    let id: UUID
+    let path: String
+    let status: String
+    let recordedStatus: String?
+    let size: Int64
+    let checksum: String?
+    let destination: String?
+    let destinationPath: String?
+    let clipIntegrity: ClipIntegrityFinding?
+    let wasReused: Bool?
+
+    init(row: ResultRow, mode: VerificationMode) {
+        id = row.id
+        path = row.path
+        status = TransferHistoryResultPresentation.statusText(for: row, mode: mode)
+        recordedStatus = status == row.status ? nil : row.status
+        size = row.size
+        checksum = row.checksum
+        destination = row.destination
+        destinationPath = row.destinationPath
+        clipIntegrity = row.clipIntegrity
+        wasReused = row.wasReused ? true : nil
     }
 }
