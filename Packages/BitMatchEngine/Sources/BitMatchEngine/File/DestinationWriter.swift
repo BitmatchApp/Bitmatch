@@ -1258,7 +1258,7 @@ public final class DestinationWriter {
         NSError(
             domain: "DestinationWriter",
             code: -4,
-            userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; destination was not modified"]
+            userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; keep the source and inspect the backup for a partial file"]
         )
     }
     #endif

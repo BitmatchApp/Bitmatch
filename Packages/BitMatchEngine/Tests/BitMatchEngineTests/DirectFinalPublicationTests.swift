@@ -83,6 +83,29 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testSourceChangeAfterFirstChunkWarnsAboutPartialFinalFile() async throws {
+        try await FileOperationsTestLock.shared.run {
+            try writeSource(Data(repeating: 0x63, count: 4 * 1024 * 1024 + 97))
+            let reads = Mutex(0)
+            let operation = try await perform(hooks: .init(
+                sourceDidRead: { _, data in
+                    let ordinal = reads.withLock { value in
+                        value += 1
+                        return value
+                    }
+                    return ordinal == 2 ? Data() : data
+                },
+                forceDirectFinalPublication: { _ in true }
+            ))
+            XCTAssertEqual(operation.results.count, 1)
+            XCTAssertFalse(operation.results[0].success)
+            XCTAssertTrue(operation.results[0].error?.localizedDescription.contains("partial file") == true)
+            XCTAssertEqual(try markers().first?.status, .incomplete)
+            XCTAssertEqual(try Data(contentsOf: outputRoot.appendingPathComponent("clip.bin")).count,
+                           4 * 1024 * 1024)
+        }
+    }
+
     func testFlushFailureRetainsFinalBytesAndIncompleteWarning() async throws {
         try await FileOperationsTestLock.shared.run {
             let bytes = Data(repeating: 0x5c, count: 8193)
