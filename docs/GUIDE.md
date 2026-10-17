@@ -16,7 +16,7 @@ Expand a running transfer to see how much each backup has written and read back.
 
 Copying a new file and checking it are separate jobs. In the verified modes, BitMatch reads the card, writes each backup, then reads the destination bytes back. A matching checksum is evidence that those bytes matched when they were checked; a copy finishing or a filename appearing isn't enough.
 
-- **Quick** copies and checks sizes. It doesn't verify contents and never marks the card safe to erase.
+- **Quick** copies and checks sizes. It doesn't verify contents, won't reuse a file already at a destination, and never marks the card safe to erase.
 - **Standard** hashes new files while copying and reads every backup back with SHA-256. Existing files are checked against a fresh source read before reuse.
 - **Thorough** also reads the source again, using SHA-256 and MD5 to check for changes during the transfer.
 - **Paranoid** adds a byte-by-byte comparison with the source as well as SHA-256.
