@@ -120,6 +120,10 @@ final class Issue10ExFATHandoffTests: XCTestCase {
             XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path))
             XCTAssertTrue(FileManager.default.fileExists(atPath:
                 manifest.deletingLastPathComponent().appendingPathComponent("ascmhl_chain.xml").path))
+            let status = manifest.deletingLastPathComponent().appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+            XCTAssertTrue(try ASCMHLGenerator.publicationIsComplete(at: status))
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: destination.path)
+                .contains { $0.hasPrefix(".bitmatch-ascmhl-") }, "Successful exFAT publication must not orphan its private staging directory")
         } catch {
             let ns = error as NSError
             print("ISSUE10 direct_mhl_failure domain=\(ns.domain) code=\(ns.code) swiftCancellation=\(error is CancellationError) taskCancelled=\(Task.isCancelled)")
@@ -296,6 +300,30 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         XCTAssertFalse(updates.values.contains { $0.published })
         XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(destinationURL: mount, files: files,
                                                                        startTime: Date(), toolVersion: "test"))
+    }
+
+    func testInterruptedPublicHistoryWithBothFilesIsNotCheckableOnRealExFAT() async throws {
+        let files = try inventory()
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: mount, files: files, startTime: Date(), toolVersion: "test",
+            readHooks: .init(didWritePublicHistoryFile: { name in
+                if name == "ascmhl_chain.xml" { throw CancellationError() }
+            })
+        )) { XCTAssertTrue($0 is CancellationError) }
+        let history = mount.appendingPathComponent("ascmhl", isDirectory: true)
+        let names = try FileManager.default.contentsOfDirectory(atPath: history.path)
+        XCTAssertTrue(names.contains(ASCMHLGenerator.publicationStatusName))
+        XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at:
+            history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)))
+        XCTAssertTrue(names.contains("ascmhl_chain.xml"))
+        XCTAssertTrue(names.contains { $0.hasSuffix(".mhl") && !$0.hasPrefix("._") })
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        do {
+            _ = try await checker.discover(under: mount)
+            XCTFail("Check must refuse a marked public exFAT history")
+        } catch let error as SavedChecksumCheck.CheckError {
+            XCTAssertEqual(error, .unreadableEvidence)
+        }
     }
 
     func testHistoryAppearingInsideClaimCannotBeReplaced() throws {

@@ -40,7 +40,7 @@ public enum SharedLogger: Sendable {
 extension SharedLogger {
     public enum TransferEvent: String, Codable, Sendable {
         case admitted, copyDrained, verificationDrained, pipelineDrained, authoritativeAccepted, authoritativeRefused
-        case mhlStarted, mhlFinished, mhlExclusiveRename, mhlClaimRename
+        case mhlStarted, mhlFinished, mhlExclusiveRename, mhlClaimRename, mhlClaimDirectWrite
         case reportStarted, reportFinished, explicitCancel, parentCancelled
         case phase, cancelOrigin, error, pipelineResult, config, destination, progress, appStarted, appEnded
         case terminalError, journalCancelled, journalInterrupted, journalFinished, phaseChanged

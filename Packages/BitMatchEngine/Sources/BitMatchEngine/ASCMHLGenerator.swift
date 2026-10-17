@@ -7,6 +7,26 @@ import Darwin
 /// the copy-verification algorithm; an independent MD5 digest provides ASC compatibility.
 /// No directory/root hashes are claimed: only the supplied files are inventoried.
 public enum ASCMHLGenerator: Sendable {
+    /// FAT histories retain this status file. Check requires its completion
+    /// record and verifies it against both ASC files before trusting them.
+    static let publicationStatusName = "BITMATCH_HISTORY_STATUS.txt"
+    static let fatManifestPrefix = "0001_BitMatch_FAT_"
+    static let publicationOpening = Data("BitMatch ASC MHL publication v1\nINCOMPLETE until a valid COMPLETE record follows. Keep the source.\n".utf8)
+
+    static func publicationCompletion(name: String, manifest: Data, chain: Data) -> Data {
+        let manifestHash = hex(SHA256.hash(data: manifest))
+        let chainHash = hex(SHA256.hash(data: chain))
+        return Data("COMPLETE \(name) \(manifest.count) \(manifestHash) \(chain.count) \(chainHash)\n".utf8)
+    }
+
+    private static func isGeneratedFATManifestName(_ name: String) -> Bool {
+        let match = name.range(
+            of: #"^0001_BitMatch_FAT_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}Z\.mhl$"#,
+            options: .regularExpression
+        )
+        return match == name.startIndex..<name.endIndex
+    }
+
     public struct Progress: Sendable {
         public let bytesProcessed: Int64
         public let totalBytes: Int64
@@ -64,6 +84,11 @@ public enum ASCMHLGenerator: Sendable {
         var didRead: (@Sendable (String, Int) -> Void)?
         var fileSystemType: (@Sendable () -> String?)?
         var didClaimHistory: (@Sendable () throws -> Void)?
+        var beforePublishingClaim: (@Sendable () throws -> Void)?
+        var didWritePublicHistoryFile: (@Sendable (String) throws -> Void)?
+        var beforePublishingCompletion: (@Sendable () throws -> Void)?
+        var afterPublishingCompletion: (@Sendable () throws -> Void)?
+        var beforeExclusiveRename: (@Sendable () throws -> Void)?
     }
 
     public enum GenerationError: LocalizedError, Sendable {
@@ -86,7 +111,8 @@ public enum ASCMHLGenerator: Sendable {
 
     /// Call only after every expected file in this destination completed verification.
     /// Reuses digests from a matching pinned readback identity, otherwise re-reads
-    /// the destination with F_NOCACHE. Publication remains atomic and no-replace.
+    /// the destination with F_NOCACHE. Exclusive rename is atomic where available;
+    /// FAT histories carry an incomplete marker until their direct writes are durable.
     public static func generateInitialHistory(
         destinationURL: URL, files: [VerifiedFile], startTime: Date, sourceURL: URL? = nil,
         toolVersion: String, progress: ProgressHandler? = nil, diagnosticRun: UUID? = nil,
@@ -267,7 +293,8 @@ public enum ASCMHLGenerator: Sendable {
         timestamp.locale = Locale(identifier: "en_US_POSIX")
         timestamp.timeZone = TimeZone(secondsFromGMT: 0)
         timestamp.dateFormat = "yyyy-MM-dd_HHmmss'Z'"
-        let name = "0001_BitMatch_\(timestamp.string(from: Date())).mhl"
+        let fatFamily = ["exfat", "msdos"].contains(destinationFileSystemType?.lowercased() ?? "")
+        let name = "\(fatFamily ? fatManifestPrefix : "0001_BitMatch_")\(timestamp.string(from: Date())).mhl"
         let chain = """
         <?xml version="1.0" encoding="UTF-8"?>
         <ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
@@ -287,67 +314,101 @@ public enum ASCMHLGenerator: Sendable {
         // All writes and publication are relative to the pinned destination descriptor.
         // Neither replacing the destination URL nor a staging symlink can redirect writes.
         try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
-        let stagingName = ".bitmatch-ascmhl-\(UUID().uuidString)"
-        guard mkdirat(rootFD, stagingName, 0o700) == 0 else { throw posixError() }
-        let stageFD = openat(rootFD, stagingName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW)
-        guard stageFD >= 0 else {
-            unlinkat(rootFD, stagingName, AT_REMOVEDIR)
-            throw posixError()
-        }
-        var published = false
-        defer {
-            if !published {
-                unlinkat(stageFD, name, 0)
-                unlinkat(stageFD, "ascmhl_chain.xml", 0)
-                unlinkat(rootFD, stagingName, AT_REMOVEDIR)
-            }
-            close(stageFD)
-        }
-        try write(Data(xml.utf8), name: name, directoryFD: stageFD)
-        try write(Data(chain.utf8), name: "ascmhl_chain.xml", directoryFD: stageFD)
-        try Task.checkCancellation()
-        guard lstat(root.path, &currentIdentity) == 0,
-              currentIdentity.st_dev == rootIdentity.st_dev,
-              currentIdentity.st_ino == rootIdentity.st_ino,
-              (currentIdentity.st_mode & S_IFMT) == S_IFDIR else {
-            throw GenerationError.changedFile(root.path)
-        }
-        try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
-        if renameatx_np(rootFD, stagingName, rootFD, "ascmhl", UInt32(RENAME_EXCL)) != 0 {
-            let publicationErrno = errno
-            SharedLogger.transferEvent(.mhlExclusiveRename, run: diagnosticRun, code: Int(publicationErrno))
-            // exFAT rejects exclusive directory rename. Claim an EMPTY directory
-            // with mkdirat (exclusive even on exFAT), then replace only that claim.
-            // POSIX directory rename cannot replace a nonempty history. No files
-            // are copied into the public directory: manifest + chain appear together.
-            guard publicationErrno == ENOTSUP || publicationErrno == ENOSYS || publicationErrno == EINVAL else {
-                throw NSError(domain: NSPOSIXErrorDomain, code: Int(publicationErrno))
-            }
+        if fatFamily {
+            // FAT cannot do an exclusive directory rename. Claim the public
+            // name once, then write only through its pinned descriptor. No
+            // staging name is created, renamed over, or deleted on this path.
             guard mkdirat(rootFD, "ascmhl", 0o700) == 0 else { throw posixError() }
-            var claim = stat()
-            guard fstatat(rootFD, "ascmhl", &claim, AT_SYMLINK_NOFOLLOW) == 0 else { throw posixError() }
-            // On interruption leave the empty reservation as an incomplete history.
-            // A retry refuses it; cleanup must never delete somebody else's history.
+            let historyFD = openat(rootFD, "ascmhl", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard historyFD >= 0 else { throw posixError() }
+            defer { close(historyFD) }
+            try synchronizeDirectory(rootFD)
+            // An interrupted empty reservation also blocks retries; never
+            // delete it automatically because another writer may now own it.
             try readHooks?.didClaimHistory?()
             try Task.checkCancellation()
             try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
-            var currentClaim = stat()
-            guard fstatat(rootFD, "ascmhl", &currentClaim, AT_SYMLINK_NOFOLLOW) == 0,
-                  currentClaim.st_dev == claim.st_dev, currentClaim.st_ino == claim.st_ino,
-                  (currentClaim.st_mode & S_IFMT) == S_IFDIR else { throw GenerationError.existingHistory }
-            guard renameat(rootFD, stagingName, rootFD, "ascmhl") == 0 else {
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+            try requireHistoryEntries([], directoryFD: historyFD)
+            try readHooks?.beforePublishingClaim?()
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+
+            let statusFD = openat(historyFD, publicationStatusName,
+                                  O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard statusFD >= 0 else { throw posixError() }
+            let statusHandle = FileHandle(fileDescriptor: statusFD, closeOnDealloc: true)
+            defer { try? statusHandle.close() }
+            try statusHandle.write(contentsOf: publicationOpening)
+            try PinnedDestinationDirectory.flushToMedium(statusFD)
+            // The incomplete status and directory name are durable before
+            // either public ASC file is created. No public name is removed.
+            try synchronizeDirectory(historyFD)
+            try synchronizeDirectory(rootFD)
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+
+            let manifestData = Data(xml.utf8)
+            let chainData = Data(chain.utf8)
+            try write(manifestData, name: name, directoryFD: historyFD, durable: true)
+            try readHooks?.didWritePublicHistoryFile?(name)
+            try Task.checkCancellation()
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+            try write(chainData, name: "ascmhl_chain.xml", directoryFD: historyFD, durable: true)
+            try readHooks?.didWritePublicHistoryFile?("ascmhl_chain.xml")
+            try Task.checkCancellation()
+            try synchronizeDirectory(historyFD)
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+            try requireHistoryEntries([publicationStatusName, name, "ascmhl_chain.xml"], directoryFD: historyFD)
+            try requireWrittenFile(publicationOpening, name: publicationStatusName, directoryFD: historyFD)
+            try requireWrittenFile(manifestData, name: name, directoryFD: historyFD)
+            try requireWrittenFile(chainData, name: "ascmhl_chain.xml", directoryFD: historyFD)
+            try Task.checkCancellation()
+            try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
+            try requireCurrentRoot(root, expected: rootIdentity)
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+            try readHooks?.beforePublishingCompletion?()
+            try requireCurrentStatus(directoryFD: historyFD, statusFD: statusFD)
+            let completion = publicationCompletion(name: name, manifest: manifestData, chain: chainData)
+            try statusHandle.write(contentsOf: completion)
+            try PinnedDestinationDirectory.flushToMedium(statusFD)
+            try synchronizeDirectory(historyFD)
+            try readHooks?.afterPublishingCompletion?()
+            try requireWrittenFile(publicationOpening + completion, name: publicationStatusName, directoryFD: historyFD)
+            try requireCurrentStatus(directoryFD: historyFD, statusFD: statusFD)
+            try requireHistoryEntries([publicationStatusName, name, "ascmhl_chain.xml"], directoryFD: historyFD)
+            try requireWrittenFile(manifestData, name: name, directoryFD: historyFD)
+            try requireWrittenFile(chainData, name: "ascmhl_chain.xml", directoryFD: historyFD)
+            try requireCurrentRoot(root, expected: rootIdentity)
+            try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
+            SharedLogger.transferEvent(.mhlClaimDirectWrite, run: diagnosticRun)
+        } else {
+            let stagingName = ".bitmatch-ascmhl-\(UUID().uuidString)"
+            guard mkdirat(rootFD, stagingName, 0o700) == 0 else { throw posixError() }
+            let stageFD = openat(rootFD, stagingName, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard stageFD >= 0 else { throw posixError() }
+            defer { close(stageFD) }
+            // A failed private stage is left alone: unlinking mutable names
+            // could remove another writer's files or substituted directory.
+            try write(Data(xml.utf8), name: name, directoryFD: stageFD)
+            try write(Data(chain.utf8), name: "ascmhl_chain.xml", directoryFD: stageFD)
+            try Task.checkCancellation()
+            try readHooks?.beforeExclusiveRename?()
+            try requireCurrentRoot(root, expected: rootIdentity)
+            try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
+            try requireCurrentNamedDirectory(rootFD: rootFD, name: stagingName, pinnedFD: stageFD)
+            guard renameatx_np(rootFD, stagingName, rootFD, "ascmhl", UInt32(RENAME_EXCL)) == 0 else {
                 let code = errno
-                SharedLogger.transferEvent(.mhlClaimRename, run: diagnosticRun, code: Int(code))
+                SharedLogger.transferEvent(.mhlExclusiveRename, run: diagnosticRun, code: Int(code))
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
             }
-            SharedLogger.transferEvent(.mhlClaimRename, run: diagnosticRun)
-        } else {
+            try requireCurrentHistory(rootFD: rootFD, historyFD: stageFD)
+            try requireHistoryEntries([name, "ascmhl_chain.xml"], directoryFD: stageFD)
+            try requireWrittenFile(Data(xml.utf8), name: name, directoryFD: stageFD)
+            try requireWrittenFile(Data(chain.utf8), name: "ascmhl_chain.xml", directoryFD: stageFD)
+            try requireCurrentRoot(root, expected: rootIdentity)
             SharedLogger.transferEvent(.mhlExclusiveRename, run: diagnosticRun)
         }
-        published = true
+        try requireCurrentRoot(root, expected: rootIdentity)
         emit(true)
-        // Do not remove successfully published contents in the deferred staging cleanup.
-        // Closing the descriptor remains necessary; names are now owned by the history.
         return root.appendingPathComponent("ascmhl").appendingPathComponent(name)
     }
 
@@ -398,6 +459,186 @@ public enum ASCMHLGenerator: Sendable {
         }
     }
 
+    private static func requireCurrentHistory(rootFD: Int32, historyFD: Int32) throws {
+        try requireCurrentNamedDirectory(rootFD: rootFD, name: "ascmhl", pinnedFD: historyFD)
+    }
+
+    private static func requireCurrentNamedDirectory(rootFD: Int32, name: String, pinnedFD: Int32) throws {
+        var pinned = stat()
+        var named = stat()
+        guard fstat(pinnedFD, &pinned) == 0,
+              fstatat(rootFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              pinned.st_dev == named.st_dev, pinned.st_ino == named.st_ino,
+              (pinned.st_mode & S_IFMT) == S_IFDIR,
+              (named.st_mode & S_IFMT) == S_IFDIR else {
+            throw GenerationError.existingHistory
+        }
+    }
+
+    private static func requireCurrentRoot(_ root: URL, expected: stat) throws {
+        var named = stat()
+        guard lstat(root.path, &named) == 0,
+              named.st_dev == expected.st_dev, named.st_ino == expected.st_ino,
+              (named.st_mode & S_IFMT) == S_IFDIR else {
+            throw GenerationError.changedFile(root.path)
+        }
+    }
+
+    private static func requireCurrentStatus(directoryFD: Int32, statusFD: Int32) throws {
+        var pinned = stat()
+        var named = stat()
+        guard fstat(statusFD, &pinned) == 0,
+              fstatat(directoryFD, publicationStatusName, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              pinned.st_dev == named.st_dev, pinned.st_ino == named.st_ino,
+              (pinned.st_mode & S_IFMT) == S_IFREG,
+              (named.st_mode & S_IFMT) == S_IFREG else { throw GenerationError.existingHistory }
+    }
+
+    /// Check's reader uses the same exact status format as the writer. A
+    /// missing, truncated, replaced or mismatching completion stays unsafe.
+    static func publicationIsComplete(at statusURL: URL) throws -> Bool {
+        let directoryFD = open(statusURL.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { return false }
+        defer { close(directoryFD) }
+        do {
+            guard let status = try boundedFile(publicationStatusName, directoryFD: directoryFD, maxBytes: 1024),
+                  status.starts(with: publicationOpening),
+                  let line = String(data: Data(status.dropFirst(publicationOpening.count)), encoding: .utf8),
+                  line.hasSuffix("\n") else { return false }
+            let fields = line.dropLast().split(separator: " ", omittingEmptySubsequences: false)
+            guard fields.count == 6, fields[0] == "COMPLETE",
+                  isGeneratedFATManifestName(String(fields[1])),
+                  let manifestSize = Int(fields[2]), manifestSize >= 0,
+                  let chainSize = Int(fields[4]), chainSize >= 0,
+                  fields[3].count == 64, fields[5].count == 64,
+                  fields[3].allSatisfy({ $0.isASCII && $0.isHexDigit }),
+                  fields[5].allSatisfy({ $0.isASCII && $0.isHexDigit }) else { return false }
+            let manifestName = String(fields[1])
+            guard let manifest = try boundedFile(manifestName, directoryFD: directoryFD, maxBytes: EvidenceReader.maxReportBytes),
+                  let chain = try boundedFile("ascmhl_chain.xml", directoryFD: directoryFD, maxBytes: EvidenceReader.maxReportBytes),
+                  manifest.count == manifestSize, chain.count == chainSize else { return false }
+            return hex(SHA256.hash(data: manifest)) == fields[3].lowercased()
+                && hex(SHA256.hash(data: chain)) == fields[5].lowercased()
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return false
+        }
+    }
+
+    private static func boundedFile(_ name: String, directoryFD: Int32, maxBytes: Int) throws -> Data? {
+        let fd = openat(directoryFD, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { return nil }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var before = stat()
+        guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
+              before.st_size >= 0, before.st_size <= Int64(maxBytes) else { return nil }
+        var data = Data()
+        while data.count < Int(before.st_size) {
+            try Task.checkCancellation()
+            let count = min(64 * 1024, Int(before.st_size) - data.count)
+            let chunk = try autoreleasepool { try handle.read(upToCount: count) ?? Data() }
+            guard !chunk.isEmpty else { return nil }
+            data.append(chunk)
+        }
+        guard (try handle.read(upToCount: 1) ?? Data()).isEmpty else { return nil }
+        var after = stat()
+        var named = stat()
+        guard fstat(fd, &after) == 0,
+              fstatat(directoryFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              before.st_dev == after.st_dev, before.st_ino == after.st_ino,
+              before.st_size == after.st_size,
+              before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec,
+              before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
+              before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec,
+              before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec,
+              after.st_dev == named.st_dev, after.st_ino == named.st_ino,
+              (named.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return data
+    }
+
+    private static func requireHistoryEntries(_ expected: Set<String>, directoryFD: Int32) throws {
+        // A fresh open gives readdir its own offset; dup would share the
+        // pinned descriptor's offset and later checks could see no entries.
+        let scanFD = openat(directoryFD, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard scanFD >= 0 else { throw posixError() }
+        guard let directory = fdopendir(scanFD) else {
+            let code = errno
+            close(scanFD)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        }
+        defer { closedir(directory) }
+        var actual = Set<String>()
+        errno = 0
+        while let entry = readdir(directory) {
+            let capacity = MemoryLayout.size(ofValue: entry.pointee.d_name)
+            let name = withUnsafePointer(to: &entry.pointee.d_name) { pointer in
+                pointer.withMemoryRebound(to: CChar.self, capacity: capacity) {
+                    String(cString: $0)
+                }
+            }
+            if name != "." && name != ".." { actual.insert(name) }
+            errno = 0
+        }
+        guard errno == 0 else { throw posixError() }
+        // macOS creates AppleDouble companions on exFAT. A matching name
+        // alone is insufficient: classify its bounded contents through a
+        // descriptor opened relative to our pinned public history.
+        guard expected.isSubset(of: actual) else { throw GenerationError.existingHistory }
+        for companion in actual.subtracting(expected) {
+            guard companion.hasPrefix("._"), expected.contains(String(companion.dropFirst(2))) else {
+                throw GenerationError.existingHistory
+            }
+            let fd = openat(directoryFD, companion, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else { throw GenerationError.existingHistory }
+            defer { close(fd) }
+            var info = stat()
+            guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG,
+                  info.st_size >= 26 else { throw GenerationError.existingHistory }
+            let valid: Bool
+            do {
+                valid = try AppleDoubleSelection.isMetadataOnlyCompanion(fd: fd, size: Int64(info.st_size))
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw GenerationError.existingHistory
+            }
+            guard valid else { throw GenerationError.existingHistory }
+        }
+    }
+
+    private static func synchronizeDirectory(_ fd: Int32) throws {
+        guard fsync(fd) == 0 else { throw posixError() }
+    }
+
+    private static func requireWrittenFile(_ expected: Data, name: String, directoryFD: Int32) throws {
+        let fd = openat(directoryFD, name, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+        guard fd >= 0 else { throw GenerationError.existingHistory }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var opened = stat()
+        guard fstat(fd, &opened) == 0,
+              (opened.st_mode & S_IFMT) == S_IFREG,
+              opened.st_size == Int64(expected.count) else { throw GenerationError.existingHistory }
+        var offset = 0
+        while offset < expected.count {
+            try Task.checkCancellation()
+            let count = min(64 * 1024, expected.count - offset)
+            let chunk = try autoreleasepool { try handle.read(upToCount: count) ?? Data() }
+            guard !chunk.isEmpty,
+                  chunk.elementsEqual(expected[offset..<(offset + chunk.count)]) else {
+                throw GenerationError.existingHistory
+            }
+            offset += chunk.count
+        }
+        var named = stat()
+        guard fstatat(directoryFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              named.st_dev == opened.st_dev, named.st_ino == opened.st_ino,
+              named.st_size == opened.st_size,
+              (named.st_mode & S_IFMT) == S_IFREG else { throw GenerationError.existingHistory }
+    }
+
     private static func openFile(parts: [String], rootFD: Int32) throws -> Int32 {
         var directoryFD = dup(rootFD)
         guard directoryFD >= 0 else { throw posixError() }
@@ -418,13 +659,17 @@ public enum ASCMHLGenerator: Sendable {
         return fd
     }
 
-    private static func write(_ data: Data, name: String, directoryFD: Int32) throws {
+    private static func write(_ data: Data, name: String, directoryFD: Int32, durable: Bool = false) throws {
         let fd = openat(directoryFD, name, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600)
         guard fd >= 0 else { throw posixError() }
         let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
         defer { try? handle.close() }
         try handle.write(contentsOf: data)
-        try handle.synchronize()
+        if durable {
+            try PinnedDestinationDirectory.flushToMedium(fd)
+        } else {
+            try handle.synchronize()
+        }
     }
 
     private static func rejectExistingHistory(_ root: URL) throws {

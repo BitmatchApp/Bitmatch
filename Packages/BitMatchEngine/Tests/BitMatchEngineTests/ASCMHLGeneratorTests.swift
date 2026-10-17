@@ -99,6 +99,327 @@ final class ASCMHLGeneratorTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: chain), originalChain)
     }
 
+    func testFallbackDoesNotReplaceAnEmptyHistorySwappedAfterClaimValidation() throws {
+        let (root, file) = try fixture()
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        let displacedClaim = root.appendingPathComponent("displaced-claim", isDirectory: true)
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "exfat" },
+                beforePublishingClaim: {
+                    try FileManager.default.moveItem(at: history, to: displacedClaim)
+                    try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+                }
+            )
+        ))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: history.path), [],
+                       "The substituted empty directory must not be replaced by a finished history")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: displacedClaim.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: history.appendingPathComponent("ascmhl_chain.xml").path))
+    }
+
+    func testDirectFATFallbackPublishesACompleteCheckableHistory() async throws {
+        let (root, file) = try fixture()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(fileSystemType: { "exfat" })
+        )
+        let history = manifest.deletingLastPathComponent()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: manifest.path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: history.appendingPathComponent("ascmhl_chain.xml").path))
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: status.path))
+        XCTAssertTrue(try ASCMHLGenerator.publicationIsComplete(at: status))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".bitmatch-ascmhl-") })
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let discovery = try await checker.discover(under: root)
+        let result = try await checker.check(discovery) { _ in }
+        XCTAssertTrue(result.isIntact)
+        XCTAssertEqual(result.recordedFileCount, 1)
+    }
+
+    func testInterruptedDirectFATWritesStayMarkedAndUncheckable() async throws {
+        for stopAfterChain in [false, true] {
+            let (root, file) = try fixture()
+            let media = try Data(contentsOf: root.appendingPathComponent("clip.txt"))
+            let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+            do {
+                _ = try ASCMHLGenerator.generateInitialHistory(
+                    destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+                    readHooks: .init(
+                        fileSystemType: { "exfat" },
+                        didWritePublicHistoryFile: { name in
+                            if (name == "ascmhl_chain.xml") == stopAfterChain { throw CancellationError() }
+                        }
+                    )
+                )
+                XCTFail("An interrupted public history must not be reported as published")
+            } catch is CancellationError {
+                // The warning stays even when both evidence files have been written.
+            }
+            let contents = try FileManager.default.contentsOfDirectory(atPath: history.path)
+            XCTAssertTrue(contents.contains(ASCMHLGenerator.publicationStatusName))
+            XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at:
+                history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)))
+            XCTAssertEqual(contents.contains("ascmhl_chain.xml"), stopAfterChain)
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent("clip.txt")), media)
+            let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            do {
+                _ = try await checker.discover(under: root)
+                XCTFail("Check must refuse a marked history")
+            } catch let error as SavedChecksumCheck.CheckError {
+                XCTAssertEqual(error, .unreadableEvidence)
+            }
+            XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+                destinationURL: root, files: [file], startTime: Date(), toolVersion: "test"
+            ))
+        }
+    }
+
+    func testMovedDestinationRootLeavesIncompleteHistoryAndCannotReportSuccess() throws {
+        let (root, file) = try fixture()
+        let movedRoot = root.deletingLastPathComponent().appendingPathComponent("moved-mhl-root-\(UUID())")
+        addTeardownBlock { try? FileManager.default.removeItem(at: movedRoot) }
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "exfat" },
+                didWritePublicHistoryFile: { name in
+                    guard name == "ascmhl_chain.xml" else { return }
+                    try FileManager.default.moveItem(at: root, to: movedRoot)
+                    try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+                }
+            )
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ascmhl").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath:
+            movedRoot.appendingPathComponent("ascmhl").appendingPathComponent(ASCMHLGenerator.publicationStatusName).path))
+    }
+
+    func testSubstitutedPrivateStageIsNeverRemovedByCleanup() throws {
+        let (root, file) = try fixture()
+        let movedStage = root.appendingPathComponent("moved-stage", isDirectory: true)
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "apfs" },
+                beforeExclusiveRename: {
+                    let stageName = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: root.path)
+                        .first { $0.hasPrefix(".bitmatch-ascmhl-") })
+                    let stage = root.appendingPathComponent(stageName, isDirectory: true)
+                    try FileManager.default.moveItem(at: stage, to: movedStage)
+                    try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: false)
+                    throw CancellationError()
+                }
+            )
+        )) { XCTAssertTrue($0 is CancellationError) }
+        let substituteName = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: root.path)
+            .first { $0.hasPrefix(".bitmatch-ascmhl-") })
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(
+            atPath: root.appendingPathComponent(substituteName).path), [])
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movedStage.path))
+    }
+
+    func testUnexpectedPublicHistoryEntryKeepsIncompleteMarker() throws {
+        let (root, file) = try fixture()
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        let other = history.appendingPathComponent("other.mhl")
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "exfat" },
+                didWritePublicHistoryFile: { name in
+                    if name == "ascmhl_chain.xml" { try Data("preserve".utf8).write(to: other) }
+                }
+            )
+        ))
+        XCTAssertEqual(try String(contentsOf: other, encoding: .utf8), "preserve")
+        XCTAssertTrue(FileManager.default.fileExists(atPath:
+            history.appendingPathComponent(ASCMHLGenerator.publicationStatusName).path))
+    }
+
+    func testInvalidAppleDoubleLookalikeCannotAuthorizeFATCompletion() throws {
+        let (root, file) = try fixture()
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "exfat" },
+                didWritePublicHistoryFile: { name in
+                    guard name == "ascmhl_chain.xml" else { return }
+                    let manifest = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: history.path)
+                        .first { $0.hasSuffix(".mhl") })
+                    try Data("not AppleDouble".utf8).write(to: history.appendingPathComponent("._" + manifest))
+                }
+            )
+        ))
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at: status))
+        let manifest = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: history.path)
+            .first { $0.hasSuffix(".mhl") })
+        XCTAssertEqual(try Data(contentsOf: history.appendingPathComponent("._" + manifest)),
+                       Data("not AppleDouble".utf8))
+    }
+
+    func testStatusSubstitutionCannotBeDeletedOrCompleted() throws {
+        let (root, file) = try fixture()
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        let movedStatus = root.appendingPathComponent("moved-status.txt")
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "exfat" },
+                beforePublishingCompletion: {
+                    try FileManager.default.moveItem(at: status, to: movedStatus)
+                    try Data("other writer's status".utf8).write(to: status)
+                }
+            )
+        ))
+        XCTAssertEqual(try Data(contentsOf: status), Data("other writer's status".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movedStatus.path))
+    }
+
+    func testChangedChainAtCompletionNeverReportsPublication() async throws {
+        for afterCompletion in [false, true] {
+            let (root, file) = try fixture()
+            let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+            let chain = history.appendingPathComponent("ascmhl_chain.xml")
+            let progress = MHLPublicationProbe()
+            let changeChain: @Sendable () throws -> Void = {
+                try Data("another writer changed the chain".utf8).write(to: chain)
+            }
+            XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+                destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+                readHooks: .init(
+                    fileSystemType: { "exfat" },
+                    beforePublishingCompletion: afterCompletion ? nil : changeChain,
+                    afterPublishingCompletion: afterCompletion ? changeChain : nil
+                ),
+                progress: { progress.record($0.published) }
+            ))
+            XCTAssertFalse(progress.published, "No complete progress event may escape after a chain change")
+            let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+            XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at: status))
+            let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            do {
+                _ = try await checker.discover(under: root)
+                XCTFail("Check must reject a changed chain")
+            } catch let error as SavedChecksumCheck.CheckError {
+                XCTAssertEqual(error, .unreadableEvidence)
+            }
+        }
+    }
+
+    func testSubstitutedPrivateStageCannotReportPublication() throws {
+        let (root, file) = try fixture()
+        let movedStage = root.appendingPathComponent("moved-stage", isDirectory: true)
+        let progress = MHLPublicationProbe()
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "apfs" },
+                beforeExclusiveRename: {
+                    let stageName = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: root.path)
+                        .first { $0.hasPrefix(".bitmatch-ascmhl-") })
+                    let stage = root.appendingPathComponent(stageName, isDirectory: true)
+                    try FileManager.default.moveItem(at: stage, to: movedStage)
+                    try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: false)
+                    try Data("foreign".utf8).write(to: stage.appendingPathComponent("keep.txt"))
+                }
+            ),
+            progress: { progress.record($0.published) }
+        ))
+        XCTAssertFalse(progress.published)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("ascmhl").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: movedStage.appendingPathComponent("ascmhl_chain.xml").path))
+        let substituteName = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: root.path)
+            .first { $0.hasPrefix(".bitmatch-ascmhl-") })
+        XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(substituteName).appendingPathComponent("keep.txt")),
+                       Data("foreign".utf8))
+    }
+
+    func testRemovingStatusAfterPartialFATManifestStillCannotPassCheck() async throws {
+        let (root, file) = try fixture()
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(
+                fileSystemType: { "exfat" },
+                didWritePublicHistoryFile: { name in
+                    if name.hasSuffix(".mhl") { throw CancellationError() }
+                }
+            )
+        ))
+        try FileManager.default.removeItem(at: history.appendingPathComponent(ASCMHLGenerator.publicationStatusName))
+        let manifest = try XCTUnwrap(FileManager.default.contentsOfDirectory(atPath: history.path)
+            .first { $0.hasSuffix(".mhl") })
+        XCTAssertEqual(rename(history.appendingPathComponent(manifest).path,
+                              history.appendingPathComponent(manifest.uppercased()).path), 0)
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        do {
+            _ = try await checker.discover(under: root)
+            XCTFail("A FAT manifest without its publication status is never legacy evidence")
+        } catch let error as SavedChecksumCheck.CheckError {
+            XCTAssertEqual(error, .unreadableEvidence)
+        }
+    }
+
+    func testCompletedFATStatusBindsExactManifestAndChainBytes() async throws {
+        for target in ["manifest", "chain"] {
+            let (root, file) = try fixture()
+            let manifest = try ASCMHLGenerator.generateInitialHistory(
+                destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+                readHooks: .init(fileSystemType: { "exfat" })
+            )
+            let history = manifest.deletingLastPathComponent()
+            let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+            let changed = target == "manifest" ? manifest : history.appendingPathComponent("ascmhl_chain.xml")
+            var bytes = try Data(contentsOf: changed)
+            bytes.append(0x20)
+            try bytes.write(to: changed)
+            XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at: status))
+            let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            do {
+                _ = try await checker.discover(under: root)
+                XCTFail("A \(target) change must invalidate the publication record")
+            } catch let error as SavedChecksumCheck.CheckError {
+                XCTAssertEqual(error, .unreadableEvidence)
+            }
+        }
+    }
+
+    func testExternalChainExtensionMakesBitMatchCheckFailClosed() async throws {
+        let (root, file) = try fixture()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(fileSystemType: { "exfat" })
+        )
+        let history = manifest.deletingLastPathComponent()
+        let chainURL = history.appendingPathComponent("ascmhl_chain.xml")
+        let secondName = "0002_External.mhl"
+        let manifestBytes = try Data(contentsOf: manifest)
+        try manifestBytes.write(to: history.appendingPathComponent(secondName))
+        let originalChain = try String(contentsOf: chainURL, encoding: .utf8)
+        let extensionEntry = "<hashlist sequencenr=\"2\"><path>\(secondName)</path><c4>\(ASCMHLGenerator.c4(manifestBytes))</c4></hashlist>"
+        let extendedChain = originalChain.replacingOccurrences(
+            of: "</ascmhldirectory>", with: "  \(extensionEntry)\n</ascmhldirectory>"
+        )
+        XCTAssertNotEqual(extendedChain, originalChain)
+        try extendedChain.write(to: chainURL, atomically: false, encoding: .utf8)
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at: status),
+                       "The status binds generation one; a later chain needs its own validation")
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        do {
+            _ = try await checker.discover(under: root)
+            XCTFail("BitMatch Check must not claim an unvalidated external chain is intact")
+        } catch let error as SavedChecksumCheck.CheckError {
+            XCTAssertEqual(error, .unreadableEvidence)
+        }
+    }
+
     func testNestedHistoryAndUnsafePathsAreRejected() throws {
         let (root, file) = try fixture()
         for path in ["../clip.txt", "/clip.txt", "a/../clip.txt", "ascmhl/clip.txt", "a\\clip.txt"] {
@@ -416,4 +737,11 @@ private final class MHLReadProbe: @unchecked Sendable {
     var bytes: Int { lock.withLock { byteCount } }
     func didOpen() { lock.withLock { openCount += 1 } }
     func didRead(_ count: Int) { lock.withLock { byteCount += count } }
+}
+
+private final class MHLPublicationProbe: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var published: Bool { lock.withLock { value } }
+    func record(_ published: Bool) { lock.withLock { value = value || published } }
 }
