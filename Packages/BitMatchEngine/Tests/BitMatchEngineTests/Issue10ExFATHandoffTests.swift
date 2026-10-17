@@ -30,9 +30,10 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         mounted = true
         var volume = statfs()
         XCTAssertEqual(statfs(mount.path, &volume), 0)
-        let type = withUnsafePointer(to: &volume.f_fstypename) {
-            $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) }
+        let type = withUnsafeBytes(of: volume.f_fstypename) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
         }
+        print("ISSUE10 mounted filesystem f_fstypename=\(type)")
         XCTAssertEqual(type.lowercased(), "exfat", "Must exercise the actual exFAT driver")
         // Deliberately fail setup rather than skip: no green test without
         // actually exercising the exFAT filesystem.
@@ -173,6 +174,16 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         XCTAssertTrue(operation.results.allSatisfy {
             $0.success && $0.verificationResult?.isValid == true
         }, "Failure occurs before MHL: \(operation.results.map { String(describing: $0.error) })")
+        let outputRoot = SafetyValidator.resolvedDestinationRoot(
+            source: fixture.source, destination: destination, settings: settings
+        )
+        let statusFiles = try FileManager.default.contentsOfDirectory(at: outputRoot, includingPropertiesForKeys: nil)
+            .filter { TransferStatusMarker.hasExactName($0.lastPathComponent) }
+        XCTAssertEqual(statusFiles.count, 1)
+        let statusFile = try XCTUnwrap(statusFiles.first)
+        XCTAssertEqual(TransferStatusMarker.validatedStatus(
+            at: statusFile, relativePath: statusFile.lastPathComponent
+        ), .filesVerified)
 
         let plan = TransferCompletion.ascmhlPlan(
             results: operation.results, sourceFiles: operation.sourceManifest,
@@ -188,6 +199,9 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         print("ISSUE10 copy_passed=\(operation.results.allSatisfy(\.success)) mhlIssues=\(issues) taskCancelled=\(Task.isCancelled)")
         XCTAssertTrue(issues.isEmpty,
                       "Copy/readback passed but MHL handoff failed on real exFAT: \(issues)")
+        XCTAssertEqual(TransferStatusMarker.validatedStatus(
+            at: statusFile, relativePath: statusFile.lastPathComponent
+        ), .filesVerified)
         XCTAssertEqual(try sourceContents(fixture.source), originalSource, "Source must remain byte-for-byte untouched")
         let updates = observed.values
         XCTAssertEqual(updates.first?.bytesProcessed, 0)

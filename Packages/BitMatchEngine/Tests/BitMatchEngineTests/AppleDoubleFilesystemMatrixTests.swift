@@ -88,7 +88,10 @@ final class AppleDoubleFilesystemMatrixTests: XCTestCase {
                         XCTAssertEqual(operation.results.count, before.count * 2)
                         if traceEnabled {
                             let observations = trace.withLock { $0 }
-                            XCTAssertTrue(observations.contains("before publication: companion exists=false"))
+                            // Direct-final publication exposes the media name at open.
+                            // The filesystem may create its companion before or after
+                            // this hook; only its final presence is the test contract.
+                            XCTAssertTrue(observations.contains { $0.hasPrefix("before publication: companion exists=") })
                             XCTAssertTrue(observations.contains("after publication: companion exists=true"))
                             print("Issue16 fresh exFAT trace: " + observations.joined(separator: "; "))
                         }

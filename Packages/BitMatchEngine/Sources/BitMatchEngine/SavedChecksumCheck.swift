@@ -163,6 +163,10 @@ public struct SavedChecksumCheck: Sendable {
             try await PauseGate.waitIfCurrentIsPaused()
             let path = try resolver.resolve(file)
             if Self.isEvidenceOrMetadata(path) { continue }
+            #if canImport(Darwin)
+            if discovery.expectedFiles[path] == nil,
+               TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }
+            #endif
             actual[path] = file.standardizedFileURL.resolvingSymlinksKeepingCase()
         }
 

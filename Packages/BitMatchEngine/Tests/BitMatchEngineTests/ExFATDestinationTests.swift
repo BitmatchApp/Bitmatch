@@ -1,9 +1,7 @@
 // ExFATDestinationTests.swift
-// exFAT has no hard links and no RENAME_EXCL, so the linkat no-replace
-// publish failed every file on exFAT backups (errno 45) in 0.1.4 through
-// 0.1.6. These tests mount a real exFAT disk image: APFS cannot reproduce
-// it, and macOS's exFAT driver also reports a temporary inode for a new
-// file until it is fsynced.
+// exFAT has no hard links and no RENAME_EXCL. These tests mount a real exFAT
+// image to exercise the visible, durable marker and direct final-file path.
+// macOS's exFAT driver reports a temporary inode until a file is fsynced.
 import Darwin
 import Foundation
 import XCTest
@@ -23,6 +21,13 @@ final class ExFATDestinationTests: XCTestCase {
               hdiutil(["attach", "-quiet", "-nobrowse", "-mountpoint", mountPoint.path, image.path + ".sparseimage"]) == 0 else {
             throw XCTSkip("hdiutil could not create or mount an exFAT image")
         }
+        var info = statfs()
+        XCTAssertEqual(statfs(mountPoint.path, &info), 0)
+        let actual = withUnsafeBytes(of: info.f_fstypename) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
+        }
+        print("EXFAT_DESTINATION mounted f_fstypename=\(actual)")
+        XCTAssertEqual(actual.lowercased(), "exfat")
     }
 
     override func tearDown() {
@@ -53,49 +58,60 @@ final class ExFATDestinationTests: XCTestCase {
         XCTAssertEqual(fsync(fd), 0)
     }
 
-    /// Fails if `PinnedDestinationDirectory.publishTemporaryFile` loses its fallback for filesystems
-    /// without hard links (only `linkat`, as in 0.1.4-0.1.6).
-    func testPublishOnExFATGivesTheFileItsName() throws {
+    /// The visible warning is durable before a final media name is opened.
+    func testDirectFinalFileOnExFATHasDurableMarker() throws {
         let parentFD = try openDirectory(mountPoint)
         defer { _ = Darwin.close(parentFD) }
-        try writeTemporary("clip", named: ".bitmatch.tmp.a", in: parentFD)
-
-        try PinnedDestinationDirectory.publishTemporaryFile(named: ".bitmatch.tmp.a", as: "A001C001.MXF", relativeTo: parentFD)
+        let marker = try TransferStatusMarker.create(rootFD: parentFD, attemptID: UUID(), sourcePaths: ["A001C001.MXF"])
+        XCTAssertEqual(try marker.currentStatus(), .incomplete)
+        let markerFD = Darwin.open(mountPoint.appendingPathComponent(marker.name).path, O_RDWR | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(markerFD, 0)
+        if markerFD >= 0 {
+            defer { _ = Darwin.close(markerFD) }
+            let fullSync = fcntl(markerFD, F_FULLFSYNC)
+            let fullError = fullSync == 0 ? 0 : errno
+            let fileSync = fsync(markerFD)
+            let fileError = fileSync == 0 ? 0 : errno
+            let rootSync = fsync(parentFD)
+            let rootError = rootSync == 0 ? 0 : errno
+            print("EXFAT_DESTINATION marker F_FULLFSYNC rc=\(fullSync) errno=\(fullError); marker fsync rc=\(fileSync) errno=\(fileError); root fsync rc=\(rootSync) errno=\(rootError)")
+            XCTAssertEqual(fileSync, 0)
+            XCTAssertEqual(rootSync, 0)
+        }
+        let fd = try PinnedDestinationDirectory.createDirectFinalFile(named: "A001C001.MXF", relativeTo: parentFD)
+        defer { _ = Darwin.close(fd) }
+        let bytes = Data("clip".utf8)
+        XCTAssertEqual(bytes.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }, bytes.count)
+        try PinnedDestinationDirectory.flushToMedium(fd)
+        try PinnedDestinationDirectory.synchronizeDirectory(parentFD)
 
         let published = mountPoint.appendingPathComponent("A001C001.MXF")
         XCTAssertEqual(try String(contentsOf: published, encoding: .utf8), "clip")
-        XCTAssertFalse(FileManager.default.fileExists(atPath: mountPoint.appendingPathComponent(".bitmatch.tmp.a").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: mountPoint.appendingPathComponent(marker.name).path))
     }
 
-    /// Promise 1: the fallback must still never replace an existing file.
-    /// Fails if the fallback renames over the name without claiming it
-    /// exclusively first.
-    func testPublishOnExFATRefusesToReplaceAnExistingFile() throws {
+    /// Promise 1: O_EXCL refuses an existing destination file.
+    func testDirectFinalOnExFATRefusesToReplaceAnExistingFile() throws {
         let parentFD = try openDirectory(mountPoint)
         defer { _ = Darwin.close(parentFD) }
         let existing = mountPoint.appendingPathComponent("A001C001.MXF")
         try Data("someone else's".utf8).write(to: existing)
-        try writeTemporary("clip", named: ".bitmatch.tmp.b", in: parentFD)
-
-        XCTAssertThrowsError(try PinnedDestinationDirectory.publishTemporaryFile(named: ".bitmatch.tmp.b", as: "A001C001.MXF", relativeTo: parentFD))
+        _ = try TransferStatusMarker.create(rootFD: parentFD, attemptID: UUID(), sourcePaths: ["A001C001.MXF"])
+        XCTAssertThrowsError(try PinnedDestinationDirectory.createDirectFinalFile(named: "A001C001.MXF", relativeTo: parentFD))
 
         XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "someone else's")
     }
 
-    /// The fallback itself must refuse a file that appeared at the name
-    /// (linkat reports EEXIST first when one is already there, so the test
-    /// above does not reach the fallback). Fails if `publishByClaimingName`
-    /// renames without claiming the name exclusively first.
-    func testClaimFallbackRefusesToReplaceAFileThatAppeared() throws {
+    /// Unknown filesystems without links cannot take the old claim path.
+    func testTemporaryPublicationOnExFATFailsClosedWithoutClaimOrRename() throws {
         let parentFD = try openDirectory(mountPoint)
         defer { _ = Darwin.close(parentFD) }
         let existing = mountPoint.appendingPathComponent("A001C002.MXF")
-        try Data("appeared meanwhile".utf8).write(to: existing)
         try writeTemporary("clip", named: ".bitmatch.tmp.c", in: parentFD)
-
-        XCTAssertThrowsError(try PinnedDestinationDirectory.publishByClaimingName(temporaryName: ".bitmatch.tmp.c", name: "A001C002.MXF", relativeTo: parentFD))
-
-        XCTAssertEqual(try String(contentsOf: existing, encoding: .utf8), "appeared meanwhile")
+        XCTAssertThrowsError(try PinnedDestinationDirectory.publishTemporaryFile(
+            named: ".bitmatch.tmp.c", as: "A001C002.MXF", relativeTo: parentFD
+        ))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: existing.path))
         XCTAssertTrue(FileManager.default.fileExists(atPath: mountPoint.appendingPathComponent(".bitmatch.tmp.c").path))
     }
 
