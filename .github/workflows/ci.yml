@@ -5,7 +5,7 @@ on:
   pull_request:
 
 env:
-  DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+  DEVELOPER_DIR: /Applications/Xcode_26.6.app/Contents/Developer
 
 jobs:
   evidence-corpus:
@@ -26,7 +26,7 @@ jobs:
       - run: python Scripts/ascmhl/validate_corpus.py dist/asc-reference
 
   mac-tests:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -36,7 +36,7 @@ jobs:
           DERIVED_DATA_ROOT: ${{ runner.temp }}/bitmatch-derived-data
 
   ipad-build:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
@@ -46,7 +46,7 @@ jobs:
           DERIVED_DATA_ROOT: ${{ runner.temp }}/bitmatch-derived-data
 
   engine-tests:
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
