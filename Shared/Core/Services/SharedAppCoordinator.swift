@@ -769,6 +769,9 @@ class SharedAppCoordinator: ObservableObject {
                 let presentation = self.progressPresentation
                 switch state {
                 case .inProgress, .copying, .verifying, .resuming:
+                    if case .resuming = state {
+                        self.liveProgress.rateFloorUptime = ProcessInfo.processInfo.systemUptime
+                    }
                     // One run is tracked once. Resume (`.resuming` then
                     // `.inProgress`) and stage changes keep the byte totals
                     // and speed samples; a new run stops tracking first
@@ -784,9 +787,11 @@ class SharedAppCoordinator: ObservableObject {
                 case .paused:
                     // Paused time is left out of speed and time remaining.
                     presentation.notePaused()
+                    self.liveProgress.rateFloorUptime = ProcessInfo.processInfo.systemUptime
                 case .completed, .failed, .cancelled:
                     presentation.stopProgressTracking()
                     self.lastPresentedBytes = 0
+                    self.liveProgress.rateFloorUptime = ProcessInfo.processInfo.systemUptime
                 default:
                     break
                 }
@@ -1830,6 +1835,8 @@ class SharedAppCoordinator: ObservableObject {
         let startID = UUID()
         activeStartID = startID
         startCancellationRequested = false
+        liveProgress.ioProgress = nil
+        liveProgress.rateFloorUptime = ProcessInfo.processInfo.systemUptime
         isOperationInProgress = true
         activeJournalRecordID = nil
         defer {
@@ -2044,6 +2051,13 @@ class SharedAppCoordinator: ObservableObject {
                 SharedLogger.transferEvent(.authoritativeAccepted, run: startID)
                 runResults.replace(with: allResults)
                 self.results = allResults
+            },
+            onIOProgress: { [weak self] update in
+                guard let self,
+                      self.activeStartID == startID,
+                      !self.startCancellationRequested,
+                      update.sequence > (self.liveProgress.ioProgress?.sequence ?? 0) else { return }
+                self.liveProgress.ioProgress = update
             }
         )
 
@@ -2791,6 +2805,8 @@ class SharedAppCoordinator: ObservableObject {
     func resetForNewOperation() {
         results = []
         progress = nil
+        liveProgress.ioProgress = nil
+        liveProgress.rateFloorUptime = 0
         progressPresentation.reset()
         lastPresentedBytes = 0
         presentedDestinationCount = nil

@@ -47,12 +47,19 @@ struct ProgressPresentationFeedTests {
         defer { folders.cleanup() }
         let coordinator = makeCoordinator(folders)
         coordinator.progress = progress(files: 2, of: 4, file: "B.ARW")
+        coordinator.liveProgress.ioProgress = TransferIOProgress(sequence: 1, destinations: [
+            DestinationIOProgress(writtenBytes: 1, readbackBytes: 0,
+                                  writeBytesPerSecond: nil, readbackBytesPerSecond: nil,
+                                  lastWriteUptime: nil, lastReadbackUptime: nil)
+        ])
         #expect(await waitUntil { coordinator.progressPresentation.fileCountTotal == 4 })
 
         coordinator.resetForNewOperation()
 
         #expect(coordinator.progressPresentation.fileCountTotal == 0)
         #expect(coordinator.progressPresentation.currentFileName == nil)
+        #expect(coordinator.liveProgress.ioProgress == nil)
+        #expect(coordinator.liveProgress.rateFloorUptime == 0)
     }
 
     /// Plant: in `setupProgressPresentation`, delete
@@ -68,5 +75,20 @@ struct ProgressPresentationFeedTests {
 
         coordinator.operationState = .cancelled
         #expect(!coordinator.progressPresentation.isTracking)
+    }
+
+    @Test func pauseInvalidatesTheLastPerDestinationRateSample() throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let coordinator = makeCoordinator(folders)
+        coordinator.operationState = .inProgress
+        coordinator.operationState = .paused(PauseInfo(
+            pausedAt: Date(), currentFile: nil, filesProcessed: 0, totalFiles: 1,
+            bytesProcessed: 0, reason: .userRequested
+        ))
+        let pausedFloor = coordinator.liveProgress.rateFloorUptime
+        #expect(pausedFloor > 0)
+        coordinator.operationState = .resuming
+        #expect(coordinator.liveProgress.rateFloorUptime >= pausedFloor)
     }
 }

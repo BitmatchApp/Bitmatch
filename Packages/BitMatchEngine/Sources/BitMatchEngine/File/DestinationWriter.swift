@@ -404,6 +404,7 @@ public final class PinnedDestinationFile: @unchecked Sendable {
 #endif
 
 public final class DestinationWriter {
+    typealias IOByteCallback = @Sendable (Int, TransferIOPhase, Int, TimeInterval) -> Void
     struct SourceReadEvidence: Sendable {
         let digests: VerifiedDigests
         let identity: VerifiedFileIdentity
@@ -533,6 +534,7 @@ public final class DestinationWriter {
         preEnumeratedFiles: [URL],
         pauseCheck: (@Sendable () async throws -> Void)? = nil,
         hooks: FanOutHooks? = nil,
+        onIOBytes: IOByteCallback? = nil,
         onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void = { _, _ in },
         onProgress: @escaping @Sendable (Int, String, Int64, Bool) async -> Void,
         onError: @escaping @Sendable (Int, String, Error) async -> Void
@@ -605,6 +607,7 @@ public final class DestinationWriter {
                                     checksumService: checksumService,
                                     pauseCheck: pauseCheck,
                                     hooks: hooks,
+                                    onIOBytes: onIOBytes,
                                     onSourceReadEvidence: onSourceReadEvidence,
                                     onProgress: onProgress,
                                     onError: onError
@@ -702,6 +705,7 @@ public final class DestinationWriter {
         checksumService: any ChecksumService,
         pauseCheck: (@Sendable () async throws -> Void)?,
         hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback?,
         onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void,
         onProgress: @escaping @Sendable (Int, String, Int64, Bool) async -> Void,
         onError: @escaping @Sendable (Int, String, Error) async -> Void
@@ -734,7 +738,8 @@ public final class DestinationWriter {
                         checksumService: checksumService,
                         destinationIndex: destination.index,
                         relativePath: relativePath,
-                        hooks: hooks
+                        hooks: hooks,
+                        onIOBytes: onIOBytes
                     )
                     pendingReuse.append(destination)
                 } else {
@@ -828,7 +833,10 @@ public final class DestinationWriter {
                                     file.destination.root.logicalRootURL,
                                     currentChunkIndex
                                 )
+                                let writeStarted = ProcessInfo.processInfo.systemUptime
                                 try writeAll(chunkData, to: file.temporaryFD)
+                                onIOBytes?(file.destination.index, .writing, chunkData.count,
+                                           ProcessInfo.processInfo.systemUptime - writeStarted)
                                 return FanOutWriteResult(file: file, error: nil)
                             } catch {
                                 return FanOutWriteResult(file: file, error: error)
@@ -957,7 +965,8 @@ public final class DestinationWriter {
                     try await validateReusableExistingDestinationFile(
                         source: source, destination: existing, sourceSize: sourceSize,
                         verificationMode: verificationMode, checksumService: checksumService,
-                        destinationIndex: file.destination.index, relativePath: relativePath, hooks: hooks)
+                        destinationIndex: file.destination.index, relativePath: relativePath,
+                        hooks: hooks, onIOBytes: onIOBytes)
                     file.cleanup()
                     await onProgress(file.destination.index, relativePath, sourceSize, true)
                     continue
@@ -1084,7 +1093,8 @@ public final class DestinationWriter {
         checksumService: any ChecksumService,
         destinationIndex: Int,
         relativePath: String,
-        hooks: FanOutHooks?
+        hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback?
     ) async throws {
         let destinationInfo = try destination.snapshot()
         guard Int64(destinationInfo.st_size) == sourceSize else {
@@ -1105,7 +1115,8 @@ public final class DestinationWriter {
                 pinnedDestination: destination,
                 destinationIndex: destinationIndex,
                 relativePath: relativePath,
-                hooks: hooks
+                hooks: hooks,
+                onIOBytes: onIOBytes
             ) else {
                 throw reuseConflict("Existing destination file bytes differ; refusing to overwrite it", relativePath: relativePath)
             }
@@ -1118,7 +1129,8 @@ public final class DestinationWriter {
             checksumService: checksumService,
             destinationIndex: destinationIndex,
             relativePath: relativePath,
-            hooks: hooks
+            hooks: hooks,
+            onIOBytes: onIOBytes
         ) else {
             throw reuseConflict("Existing destination file checksum differs; refusing to overwrite it", relativePath: relativePath)
         }
@@ -1165,6 +1177,7 @@ public final class DestinationWriter {
         sourceReadEvidence: SourceReadEvidence? = nil,
         destinationIndex: Int = -1,
         hooks: FanOutHooks? = nil,
+        onIOBytes: IOByteCallback? = nil,
         inspection: @Sendable (PinnedDestinationFile) throws -> ClipIntegrityFinding = {
             try $0.inspectClipIntegrity()
         }
@@ -1179,6 +1192,7 @@ public final class DestinationWriter {
             sourceReadEvidence: sourceReadEvidence,
             destinationIndex: destinationIndex,
             hooks: hooks,
+            onIOBytes: onIOBytes,
             inspection: inspection
         )
     }
@@ -1193,6 +1207,7 @@ public final class DestinationWriter {
         sourceReadEvidence: SourceReadEvidence? = nil,
         destinationIndex: Int = -1,
         hooks: FanOutHooks? = nil,
+        onIOBytes: IOByteCallback? = nil,
         inspection: @Sendable (PinnedDestinationFile) throws -> ClipIntegrityFinding = {
             try $0.inspectClipIntegrity()
         }
@@ -1214,7 +1229,8 @@ public final class DestinationWriter {
                 pinnedDestination: destination,
                 destinationIndex: destinationIndex,
                 relativePath: relativePath,
-                hooks: hooks
+                hooks: hooks,
+                onIOBytes: onIOBytes
             )
             // Paranoid mode still byte-compares through the pinned handle,
             // and also computes a real SHA-256 digest (source via the stable
@@ -1229,7 +1245,8 @@ public final class DestinationWriter {
                 sourceReadEvidence: sourceReadEvidence,
                 destinationIndex: destinationIndex,
                 relativePath: relativePath,
-                hooks: hooks
+                hooks: hooks,
+                onIOBytes: onIOBytes
             )
             verification = VerificationResult(
                 sourceChecksum: digest.sourceChecksum,
@@ -1251,7 +1268,8 @@ public final class DestinationWriter {
                 sourceReadEvidence: sourceReadEvidence,
                 destinationIndex: destinationIndex,
                 relativePath: relativePath,
-                hooks: hooks
+                hooks: hooks,
+                onIOBytes: onIOBytes
             )
         }
 
@@ -1287,7 +1305,8 @@ public final class DestinationWriter {
         checksumService: any ChecksumService,
         destinationIndex: Int,
         relativePath: String,
-        hooks: FanOutHooks?
+        hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback?
     ) async throws -> Bool {
         let types = verificationMode.checksumTypes
         guard !types.isEmpty else { return false }
@@ -1299,7 +1318,8 @@ public final class DestinationWriter {
             sourceReadEvidence: nil,
             destinationIndex: destinationIndex,
             relativePath: relativePath,
-            hooks: hooks
+            hooks: hooks,
+            onIOBytes: onIOBytes
         ).matches
     }
 
@@ -1315,7 +1335,8 @@ public final class DestinationWriter {
         sourceReadEvidence: SourceReadEvidence?,
         destinationIndex: Int,
         relativePath: String,
-        hooks: FanOutHooks?
+        hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback?
     ) async throws -> VerificationResult {
         let startTime = Date()
         var sourceValues: [ChecksumAlgorithm: String] = [:]
@@ -1353,7 +1374,8 @@ public final class DestinationWriter {
             algorithms: Array(Set(requiredTypes + [.md5])),
             destinationIndex: destinationIndex,
             relativePath: relativePath,
-            hooks: hooks
+            hooks: hooks,
+            onIOBytes: onIOBytes
         )
         let primary = requiredTypes.contains(.sha256) ? ChecksumAlgorithm.sha256 : requiredTypes[0]
         let matches = requiredTypes.allSatisfy { type in
@@ -1418,14 +1440,16 @@ public final class DestinationWriter {
         algorithms: [ChecksumAlgorithm],
         destinationIndex: Int,
         relativePath: String,
-        hooks: FanOutHooks?
+        hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback?
     ) async throws -> PinnedDigestRead {
         var hasher = MultiDigestHasher(algorithms: algorithms)
         let identity = try await readPinnedDestination(
             destination,
             destinationIndex: destinationIndex,
             relativePath: relativePath,
-            hooks: hooks
+            hooks: hooks,
+            onIOBytes: onIOBytes
         ) { hasher.update($0) }
         let digests = hasher.finalize()
         if let ordinal = TransferDiagnostics.verifyOrdinal {
@@ -1493,6 +1517,7 @@ public final class DestinationWriter {
         destinationIndex: Int,
         relativePath: String,
         hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback?,
         consume: (Data) -> Void
     ) async throws -> VerifiedFileIdentity {
         let initial = try destination.snapshot()
@@ -1512,13 +1537,16 @@ public final class DestinationWriter {
             try await PauseGate.waitIfCurrentIsPaused()
             // Bound temporary Foundation allocations to this chunk, even when
             // the pause gate returns without suspending the task.
-            let count = try autoreleasepool { () throws -> Int in
+            let (count, readSeconds) = try autoreleasepool { () throws -> (Int, TimeInterval) in
+                let readStarted = ProcessInfo.processInfo.systemUptime
                 let data = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                let readSeconds = ProcessInfo.processInfo.systemUptime - readStarted
                 if !data.isEmpty { consume(data) }
-                return data.count
+                return (data.count, readSeconds)
             }
             if count == 0 { break }
             hooks?.destinationDidRead?(destinationIndex, relativePath, count)
+            onIOBytes?(destinationIndex, .readingBack, count, readSeconds)
             bytesRead += Int64(count)
             if ordinal != nil, bytesRead >= nextBreadcrumb {
                 nextBreadcrumb += verifyReadBreadcrumbInterval
@@ -1542,7 +1570,8 @@ public final class DestinationWriter {
         pinnedDestination: PinnedDestinationFile,
         destinationIndex: Int = -1,
         relativePath: String = "",
-        hooks: FanOutHooks? = nil
+        hooks: FanOutHooks? = nil,
+        onIOBytes: IOByteCallback? = nil
     ) async throws -> Bool {
         let sourceAttributes = try FileManager.default.attributesOfItem(atPath: source.path)
         let sourceSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
@@ -1566,18 +1595,21 @@ public final class DestinationWriter {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
             // Drain each chunk's buffers; see readPinnedDestination.
-            let (sourceCount, destinationCount, same) = try autoreleasepool { () throws -> (Int, Int, Bool) in
+            let (sourceCount, destinationCount, same, readSeconds) = try autoreleasepool { () throws -> (Int, Int, Bool, TimeInterval) in
                 let sourceRead = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
                 let sourceData = try hooks?.transformVerificationSourceRead?(relativePath, sourceRead) ?? sourceRead
                 guard sourceData.count == sourceRead.count else { throw sourceChangedError() }
+                let readStarted = ProcessInfo.processInfo.systemUptime
                 let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-                return (sourceData.count, destinationData.count, sourceData == destinationData)
+                let readSeconds = ProcessInfo.processInfo.systemUptime - readStarted
+                return (sourceData.count, destinationData.count, sourceData == destinationData, readSeconds)
             }
             guard sourceCount > 0, destinationCount > 0 else {
                 throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
             }
             hooks?.verificationSourceDidRead?(relativePath, sourceCount)
             hooks?.destinationDidRead?(destinationIndex, relativePath, destinationCount)
+            onIOBytes?(destinationIndex, .readingBack, destinationCount, readSeconds)
             if !same { return false }
             bytesRead += Int64(sourceCount)
         }

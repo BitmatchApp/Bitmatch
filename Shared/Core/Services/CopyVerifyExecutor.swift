@@ -68,6 +68,21 @@ struct CopyVerifyCallbacks: Sendable {
     let onResult: @MainActor @Sendable (ResultRow) -> Void
     let onStateChange: @MainActor @Sendable (OperationState) -> Void
     let onAuthoritativeResults: @MainActor @Sendable ([ResultRow]) throws -> Void
+    let onIOProgress: @MainActor @Sendable (TransferIOProgress) -> Void
+
+    init(
+        onProgress: @escaping @MainActor @Sendable (OperationProgress) -> Void,
+        onResult: @escaping @MainActor @Sendable (ResultRow) -> Void,
+        onStateChange: @escaping @MainActor @Sendable (OperationState) -> Void,
+        onAuthoritativeResults: @escaping @MainActor @Sendable ([ResultRow]) throws -> Void,
+        onIOProgress: @escaping @MainActor @Sendable (TransferIOProgress) -> Void = { _ in }
+    ) {
+        self.onProgress = onProgress
+        self.onResult = onResult
+        self.onStateChange = onStateChange
+        self.onAuthoritativeResults = onAuthoritativeResults
+        self.onIOProgress = onIOProgress
+    }
 }
 
 /// Service that executes copy/verify operations
@@ -195,6 +210,12 @@ final class CopyVerifyExecutor {
                     self.handleProgress(progressUpdate, callbacks: callbacks)
                 }
             }
+            let ioProgressCallback: FileOperationsService.IOProgressCallback = { [weak self] update in
+                Task { @MainActor in
+                    guard let self, self.diagnosticRun == config.operationId else { return }
+                    callbacks.onIOProgress(update)
+                }
+            }
             let fileResultCallback: FileOperationsService.FileResultCallback? = { [weak self] fileResult in
                 guard let self else { return }
                 await self.handleFileResult(
@@ -218,6 +239,7 @@ final class CopyVerifyExecutor {
                     settings: config.cameraLabelSettings,
                     estimatedTotalBytes: config.estimatedBytes,
                     progressCallback: progressCallback,
+                    ioProgressCallback: ioProgressCallback,
                     onFileResult: fileResultCallback,
                     fanOutHooks: demoHooks
                 )
@@ -229,6 +251,7 @@ final class CopyVerifyExecutor {
                     settings: config.cameraLabelSettings,
                     estimatedTotalBytes: config.estimatedBytes,
                     progressCallback: progressCallback,
+                    ioProgressCallback: ioProgressCallback,
                     onFileResult: fileResultCallback
                 )
             }
@@ -240,6 +263,7 @@ final class CopyVerifyExecutor {
                 settings: config.cameraLabelSettings,
                 estimatedTotalBytes: config.estimatedBytes,
                 progressCallback: progressCallback,
+                ioProgressCallback: ioProgressCallback,
                 onFileResult: fileResultCallback
             )
 #endif

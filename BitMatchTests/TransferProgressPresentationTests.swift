@@ -50,6 +50,7 @@ struct TransferProgressPresentationTests {
         state: OperationState,
         isRunning: Bool = true,
         progress: OperationProgress?,
+        ioProgress: TransferIOProgress? = nil,
         destinations: [URL]? = nil,
         speed: String? = "90 MB/s",
         timeRemaining: String? = "3 min"
@@ -58,6 +59,7 @@ struct TransferProgressPresentationTests {
             state: state,
             isRunning: isRunning,
             progress: progress,
+            ioProgress: ioProgress,
             sourceName: "A001",
             destinations: destinations ?? [primary, secondary],
             speed: speed,
@@ -128,6 +130,55 @@ struct TransferProgressPresentationTests {
         #expect(p.destinations.map(\.name) == ["Primary", "Secondary"])
     }
 
+    @Test func destinationRowsKeepWriteAndReadbackMeasurementsSeparate() {
+        let sample = TransferIOProgress(sequence: 2, destinations: [
+            DestinationIOProgress(
+                writtenBytes: 8_000_000, readbackBytes: 4_000_000,
+                writeBytesPerSecond: 16_000_000, readbackBytesPerSecond: 8_000_000,
+                lastWriteUptime: 100, lastReadbackUptime: 100),
+            DestinationIOProgress(
+                writtenBytes: 0, readbackBytes: 0,
+                writeBytesPerSecond: nil, readbackBytesPerSecond: nil,
+                lastWriteUptime: nil, lastReadbackUptime: nil)
+        ])
+        let p = make(state: .inProgress,
+                     progress: progress(stage: .copying, overall: 0.25, totals: [2, 2], completed: [1, 0]),
+                     ioProgress: sample)
+        let first = p.destinations[0]
+        #expect(first.writeDetail(nowUptime: 100.5)?.contains("/s") == true)
+        #expect(first.readbackDetail(nowUptime: 100.5)?.contains("/s") == true)
+        #expect(first.writeDetail(nowUptime: 100.5) != first.readbackDetail(nowUptime: 100.5))
+        #expect(first.writeDetail(nowUptime: 103)?.contains("/s") == false)
+        #expect(p.destinations[1].writeDetail(nowUptime: 100.5) == nil)
+        #expect(p.destinations[1].readbackDetail(nowUptime: 100.5) == nil)
+
+        // Completed counts include failed files. A destination that has
+        // processed every file must not keep advertising a live write rate.
+        let processed = make(
+            state: .inProgress,
+            progress: progress(stage: .copying, overall: 0.5, totals: [1, 1], completed: [1, 1]),
+            ioProgress: sample
+        )
+        #expect(processed.destinations[0].stateLabel == "Processed")
+        #expect(processed.destinations[0].writeDetail(nowUptime: 100.5)?.contains("/s") == false)
+
+        let paused = TransferProgressPresentation.rows(
+            destinations: [primary, secondary], progress: nil,
+            ioProgress: sample, phase: .paused
+        )
+        #expect(paused[0].writeDetail(nowUptime: 100.5)?.contains("/s") == false)
+        let resumed = TransferProgressPresentation.rows(
+            destinations: [primary, secondary], progress: nil,
+            ioProgress: sample, minimumRateUptime: 101, phase: .copying
+        )
+        #expect(resumed[0].writeDetail(nowUptime: 101.5)?.contains("/s") == false)
+        let report = TransferProgressPresentation.rows(
+            destinations: [primary, secondary], progress: nil,
+            ioProgress: sample, phase: .writingReports
+        )
+        #expect(report[0].io == nil)
+    }
+
     @Test func destinationRowsReusePrecomputedVolumeNames() {
         let internalFolder = URL(fileURLWithPath: "/Users/mike/Backups/Project", isDirectory: true)
         let rows = TransferProgressPresentation.rows(
@@ -162,7 +213,7 @@ struct TransferProgressPresentationTests {
         #expect(p.destinations.first?.helpPath == folder.path)
     }
 
-    /// Audit C1: a fully copied backup is "Copied", then "Verifying", and
+    /// Audit C1: a fully processed backup is "Processed", then "Verifying", and
     /// never "Done" or a verdict while the run is still going.
     /// Plant: in `TransferProgressPresentation.rows`, replace
     /// `state = phase == .verifying ? .verifying : .copied` with `state = .copied`.
@@ -176,7 +227,7 @@ struct TransferProgressPresentationTests {
             progress: progress(stage: .verifying, overall: 0.75, totals: [4, 4], completed: [4, 4])
         )
 
-        #expect(copying.destinations.allSatisfy { $0.state == .copied && $0.stateLabel == "Copied" })
+        #expect(copying.destinations.allSatisfy { $0.state == .copied && $0.stateLabel == "Processed" })
         #expect(verifying.destinations.allSatisfy { $0.state == .verifying && $0.stateLabel == "Verifying" })
         #expect(verifying.destinations.allSatisfy { !$0.symbol.contains("checkmark") })
     }

@@ -326,6 +326,20 @@ private struct DestinationProgressRowView: View {
     let showsProgress: Bool
 
     var body: some View {
+        Group {
+            if row.io != nil {
+                // Refresh both the visible rate and its VoiceOver value when
+                // I/O stops, so a stale sample never sounds current.
+                TimelineView(.periodic(from: .now, by: 1)) { _ in
+                    content(nowUptime: ProcessInfo.processInfo.systemUptime)
+                }
+            } else {
+                content(nowUptime: ProcessInfo.processInfo.systemUptime)
+            }
+        }
+    }
+
+    private func content(nowUptime: TimeInterval) -> some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack(spacing: 8) {
                 Text(row.name)
@@ -353,6 +367,19 @@ private struct DestinationProgressRowView: View {
                     .tint(tint)
                     .frame(minHeight: 8)
             }
+            if row.io != nil {
+                VStack(alignment: .leading, spacing: 2) {
+                    if let detail = row.writeDetail(nowUptime: nowUptime) {
+                        Text(detail)
+                    }
+                    if let detail = row.readbackDetail(nowUptime: nowUptime) {
+                        Text(detail)
+                    }
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .monospacedDigit()
+            }
         }
         .padding(.vertical, 9)
         .padding(.horizontal, 2)
@@ -360,7 +387,11 @@ private struct DestinationProgressRowView: View {
         .help(row.helpPath)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Destination \(row.name), \(row.stateLabel)")
-        .accessibilityValue(row.countText ?? "")
+        .accessibilityValue([
+            row.countText,
+            row.writeDetail(nowUptime: nowUptime),
+            row.readbackDetail(nowUptime: nowUptime)
+        ].compactMap { $0 }.joined(separator: ", "))
     }
 
     private var statusColor: Color {

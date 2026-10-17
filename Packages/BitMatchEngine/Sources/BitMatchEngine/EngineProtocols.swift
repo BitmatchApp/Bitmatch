@@ -29,6 +29,7 @@ public protocol ChecksumService: Sendable {
 // MARK: - File Operations Service Protocol
 public protocol FileOperationsService: Sendable {
     typealias ProgressCallback = @Sendable (OperationProgress) -> Void
+    typealias IOProgressCallback = @Sendable (TransferIOProgress) -> Void
     typealias FileResultCallback = @Sendable (FileOperationResult) async -> Void
     
     func performFileOperation(
@@ -40,10 +41,43 @@ public protocol FileOperationsService: Sendable {
         progressCallback: @escaping ProgressCallback,
         onFileResult: FileResultCallback?
     ) async throws -> FileOperation
+
+    /// Optional live telemetry channel. Existing service implementations can
+    /// keep the original operation method; telemetry never affects the result.
+    func performFileOperation(
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        settings: CameraLabelSettings,
+        estimatedTotalBytes: Int64?,
+        progressCallback: @escaping ProgressCallback,
+        ioProgressCallback: @escaping IOProgressCallback,
+        onFileResult: FileResultCallback?
+    ) async throws -> FileOperation
     
     func cancelOperation()
     func pauseOperation() async
     func resumeOperation() async
+}
+
+public extension FileOperationsService {
+    func performFileOperation(
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        settings: CameraLabelSettings,
+        estimatedTotalBytes: Int64?,
+        progressCallback: @escaping ProgressCallback,
+        ioProgressCallback: @escaping IOProgressCallback,
+        onFileResult: FileResultCallback?
+    ) async throws -> FileOperation {
+        try await performFileOperation(
+            sourceURL: sourceURL, destinationURLs: destinationURLs,
+            verificationMode: verificationMode, settings: settings,
+            estimatedTotalBytes: estimatedTotalBytes,
+            progressCallback: progressCallback, onFileResult: onFileResult
+        )
+    }
 }
 
 // MARK: - Shared Result Types
