@@ -71,8 +71,14 @@ public struct FolderComparer: Sendable {
         // held a `._` sidecar the backup does not have, and doubt fails
         // closed. Files present on both sides are never content-compared.
         let onlyInSource = sourceSet.subtracting(destSet)
-        let onlyInDest = destSet.subtracting(sourceSet).filter {
-            !Self.isOffloadManifest($0) && !Self.isFinderMetadata($0)
+        let onlyInDest = destSet.subtracting(sourceSet).filter { path in
+            guard !Self.isOffloadManifest(path), !Self.isFinderMetadata(path) else { return false }
+            #if canImport(Darwin)
+            if let item = destMap[path], TransferStatusMarker.validatedStatus(at: item.url, relativePath: path) != nil {
+                return false
+            }
+            #endif
+            return true
         }
         let common = sourceSet.intersection(destSet).filter { !Self.isFinderMetadata($0) }
 

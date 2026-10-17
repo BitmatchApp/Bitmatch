@@ -23,9 +23,10 @@ final class MountedFilesystemFaultTests: XCTestCase {
         }
         var info = statfs()
         XCTAssertEqual(statfs(mount.path, &info), 0)
-        let actual = withUnsafePointer(to: &info.f_fstypename) {
-            $0.withMemoryRebound(to: CChar.self, capacity: 16) { String(cString: $0) }
+        let actual = withUnsafeBytes(of: info.f_fstypename) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self)
         }
+        print("MOUNTED_FAULT_MATRIX f_fstypename=\(actual)")
         XCTAssertEqual(actual, expected)
         scratch = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-real-fault-\(UUID())")
         source = scratch.appendingPathComponent("Card")
@@ -41,6 +42,70 @@ final class MountedFilesystemFaultTests: XCTestCase {
         if let destination, FileManager.default.fileExists(atPath: destination.path) {
             try FileManager.default.removeItem(at: destination)
         }
+    }
+
+    func testFATFamilyDirectPublicationAndHandoff() async throws {
+        let filesystem = ProcessInfo.processInfo.environment["BITMATCH_FAULT_MATRIX_TYPE"]
+        guard filesystem == "exfat" || filesystem == "msdos" else {
+            throw XCTSkip("This handoff exercises mounted exFAT and FAT32 only")
+        }
+        let directoryFD = Darwin.open(destination.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(directoryFD, 0)
+        guard directoryFD >= 0 else { return }
+        defer { _ = Darwin.close(directoryFD) }
+        let probeName = "status-flush-probe-\(UUID().uuidString).txt"
+        let probeFD = probeName.withCString {
+            openat(directoryFD, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        }
+        XCTAssertGreaterThanOrEqual(probeFD, 0)
+        guard probeFD >= 0 else { return }
+        defer {
+            _ = Darwin.close(probeFD)
+            try? FileManager.default.removeItem(at: destination.appendingPathComponent(probeName))
+        }
+        let probeBytes = Data("visible incomplete warning".utf8)
+        XCTAssertEqual(probeBytes.withUnsafeBytes { Darwin.write(probeFD, $0.baseAddress, $0.count) }, probeBytes.count)
+        let fullSync = fcntl(probeFD, F_FULLFSYNC)
+        let fullError = fullSync == 0 ? 0 : errno
+        let fileSync = fsync(probeFD)
+        let fileError = fileSync == 0 ? 0 : errno
+        let rootSync = fsync(directoryFD)
+        let rootError = rootSync == 0 ? 0 : errno
+        print("MOUNTED_FAULT_MATRIX \(filesystem ?? "unknown") marker F_FULLFSYNC rc=\(fullSync) errno=\(fullError); marker fsync rc=\(fileSync) errno=\(fileError); root fsync rc=\(rootSync) errno=\(rootError)")
+        XCTAssertEqual(fileSync, 0)
+        XCTAssertEqual(rootSync, 0)
+
+        let operation = try await run(destination, mode: .standard)
+        XCTAssertEqual(operation.results.count, 2)
+        XCTAssertTrue(operation.results.allSatisfy {
+            $0.success && $0.verificationResult?.isValid == true
+        }, "\(filesystem ?? "unknown"): \(operation.results.map { String(describing: $0.error) })")
+
+        let output = SafetyValidator.resolvedDestinationRoot(
+            source: source, destination: destination, settings: CameraLabelSettings()
+        )
+        let statuses = try FileManager.default.contentsOfDirectory(at: output, includingPropertiesForKeys: nil)
+            .filter { TransferStatusMarker.hasExactName($0.lastPathComponent) }
+        XCTAssertEqual(statuses.count, 1)
+        let status = try XCTUnwrap(statuses.first)
+        XCTAssertEqual(TransferStatusMarker.validatedStatus(
+            at: status, relativePath: status.lastPathComponent
+        ), .filesVerified)
+
+        let handoff = TransferCompletion.ascmhlPlan(
+            results: operation.results, sourceFiles: operation.sourceManifest,
+            destinations: [destination], source: source, settings: CameraLabelSettings()
+        )
+        XCTAssertEqual(handoff.jobs.count, 1)
+        XCTAssertTrue(handoff.issues.isEmpty)
+        let issues = try TransferCompletion.writeASCMHL(
+            handoff.jobs, planIssues: handoff.issues, startTime: operation.startTime,
+            source: source, toolVersion: "fat-family-probe", progress: { _ in }
+        )
+        XCTAssertTrue(issues.isEmpty, "\(filesystem ?? "unknown") handoff: \(issues)")
+        XCTAssertEqual(TransferStatusMarker.validatedStatus(
+            at: status, relativePath: status.lastPathComponent
+        ), .filesVerified)
     }
 
     func testConflictingFilePreservedAcrossModes() async throws {

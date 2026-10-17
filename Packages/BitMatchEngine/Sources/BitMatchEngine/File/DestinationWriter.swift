@@ -1,5 +1,6 @@
-// DestinationWriter.swift - Writes into a pinned backup folder: atomic,
-// never-replace publish (exFAT included), reuse checks, and verified reads.
+// DestinationWriter.swift - Writes into a pinned backup folder: atomic
+// no-replace links where supported, durable direct final files on FAT-family
+// drives, reuse checks, and verified reads.
 import Foundation
 import Synchronization
 import CryptoKit
@@ -12,27 +13,50 @@ import Darwin
 public final class PinnedDestinationDirectory: @unchecked Sendable {
     public let logicalRootURL: URL
     private let directoryFD: Int32
+    private let durableDirectDirectories: Bool
+    private let beforeDirectorySync: (@Sendable () throws -> Void)?
+    private let directorySyncFailed = Mutex(false)
+    private let statusMarker = Mutex<TransferStatusMarker?>(nil)
 
-    private init(logicalRootURL: URL, directoryFD: Int32) {
+    private init(
+        logicalRootURL: URL,
+        directoryFD: Int32,
+        durableDirectDirectories: Bool,
+        beforeDirectorySync: (@Sendable () throws -> Void)?
+    ) {
         self.logicalRootURL = logicalRootURL
         self.directoryFD = directoryFD
+        self.durableDirectDirectories = durableDirectDirectories
+        self.beforeDirectorySync = beforeDirectorySync
     }
 
     deinit { _ = Darwin.close(directoryFD) }
 
-    public static func open(destination: URL, rootComponents: [String]) throws -> PinnedDestinationDirectory {
+    public static func open(
+        destination: URL,
+        rootComponents: [String],
+        forceDirectFinalPublication: Bool = false,
+        beforeDirectorySync: (@Sendable () throws -> Void)? = nil
+    ) throws -> PinnedDestinationDirectory {
         let destinationFD = try openDirectory(at: destination, description: "selected destination")
         var currentFD = destinationFD
         var logicalRoot = destination
         do {
+            let direct = try forceDirectFinalPublication || isFATFamily(directoryFD: destinationFD)
             for component in rootComponents {
                 try validate(component: component)
-                let childFD = try openOrCreateDirectory(named: component, relativeTo: currentFD)
+                let childFD = try openOrCreateDirectory(
+                    named: component, relativeTo: currentFD,
+                    syncCreatedParent: direct, beforeDirectorySync: beforeDirectorySync
+                )
                 _ = Darwin.close(currentFD)
                 currentFD = childFD
                 logicalRoot.appendPathComponent(component, isDirectory: true)
             }
-            return PinnedDestinationDirectory(logicalRootURL: logicalRoot, directoryFD: currentFD)
+            return PinnedDestinationDirectory(
+                logicalRootURL: logicalRoot, directoryFD: currentFD,
+                durableDirectDirectories: direct, beforeDirectorySync: beforeDirectorySync
+            )
         } catch {
             _ = Darwin.close(currentFD)
             throw error
@@ -40,12 +64,22 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
     }
 
     public func openOrCreateDirectory(at relativeComponents: [String]) throws -> Int32 {
+        guard !directorySyncFailed.withLock({ $0 }) else {
+            throw FileOperationError.unsafeOperation(
+                "A new destination folder could not be saved on this drive; keep the source"
+            )
+        }
         var currentFD = Darwin.dup(directoryFD)
         guard currentFD >= 0 else { throw Self.posixError("Unable to duplicate pinned destination directory") }
         do {
             for component in relativeComponents {
                 try Self.validate(component: component)
-                let childFD = try Self.openOrCreateDirectory(named: component, relativeTo: currentFD)
+                let childFD = try Self.openOrCreateDirectory(
+                    named: component, relativeTo: currentFD,
+                    syncCreatedParent: durableDirectDirectories,
+                    beforeDirectorySync: beforeDirectorySync,
+                    onSyncFailure: { self.directorySyncFailed.withLock { $0 = true } }
+                )
                 _ = Darwin.close(currentFD)
                 currentFD = childFD
             }
@@ -58,6 +92,34 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
 
     public func destinationURL(for relativePath: String) -> URL {
         logicalRootURL.appendingPathComponent(relativePath)
+    }
+
+    /// FAT-family volumes have no hard links. A marker is saved before the
+    /// first direct final name can be created. Unknown filesystems still try
+    /// the atomic link path and fail closed if the capability is unavailable.
+    func preparePublication(
+        attemptID: UUID,
+        sourcePaths: [String],
+        markerHooks: TransferStatusMarker.CreationHooks? = nil
+    ) throws {
+        guard durableDirectDirectories else { return }
+        let marker = try TransferStatusMarker.create(rootFD: directoryFD, attemptID: attemptID,
+                                                      sourcePaths: sourcePaths, hooks: markerHooks)
+        statusMarker.withLock { $0 = marker }
+    }
+
+    var usesDirectFinalPublication: Bool { statusMarker.withLock { $0 != nil } }
+
+    func finishPublicationStatus(_ status: TransferStatusMarker.Status) throws {
+        guard let marker = statusMarker.withLock({ $0 }) else { return }
+        try marker.append(status)
+    }
+
+    func checkPublicationStatus(_ status: TransferStatusMarker.Status) throws {
+        guard let marker = statusMarker.withLock({ $0 }) else { return }
+        guard try marker.currentStatus() == status else {
+            throw FileOperationError.unsafeOperation("Transfer status is incomplete; keep the source")
+        }
     }
 
     /// Confirms that the folder path shown to the user still names this pinned
@@ -171,6 +233,45 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         return fd
     }
 
+    /// Called only after the visible status marker and its root directory are
+    /// durable. An error leaves any created final file in place as incomplete
+    /// evidence; it never pathname-unlinks that file.
+    static func createDirectFinalFile(named name: String, relativeTo parentFD: Int32) throws -> Int32 {
+        let fd = name.withCString {
+            openat(parentFD, $0, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        }
+        guard fd >= 0 else {
+            if errno == EEXIST {
+                throw posixError("Destination file already exists; choose a new folder or recheck the existing copy")
+            }
+            throw posixError("Unable to create destination file on this drive")
+        }
+        guard fcntl(fd, F_NOCACHE, 1) != -1 else {
+            let error = posixError("This drive would not let BitMatch bypass the system cache")
+            _ = Darwin.close(fd)
+            throw error
+        }
+        return fd
+    }
+
+    static func namedFileMatchesOpenFile(_ fd: Int32, named name: String, relativeTo parentFD: Int32) throws {
+        var opened = stat()
+        guard fstat(fd, &opened) == 0 else {
+            throw posixError("Unable to inspect open destination file")
+        }
+        try namedFileMatchesIdentity(opened, named: name, relativeTo: parentFD)
+    }
+
+    static func namedFileMatchesIdentity(_ opened: stat, named name: String, relativeTo parentFD: Int32) throws {
+        var named = stat()
+        guard name.withCString({ fstatat(parentFD, $0, &named, AT_SYMLINK_NOFOLLOW) }) == 0,
+              (named.st_mode & S_IFMT) == S_IFREG,
+              opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
+              opened.st_size == named.st_size else {
+            throw DestinationWriter.existingDestinationConflictError("Destination file name changed during copy; keep the source and inspect this backup")
+        }
+    }
+
     /// Pushes the file's data and metadata to the medium, not only to the
     /// drive's volatile cache (`F_FULLFSYNC`; plain `fsync` does not on
     /// macOS). A file system that does not implement the full flush at all
@@ -209,54 +310,14 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
             removeItem(named: temporaryName, relativeTo: parentFD)
             return
         }
-        // exFAT and FAT have no hard links (and no RENAME_EXCL): claim the
-        // name instead. Every other failure, including EEXIST, fails closed.
-        guard linkError == ENOTSUP || linkError == EOPNOTSUPP else {
-            errno = linkError
+        errno = linkError
+        if linkError == ENOTSUP || linkError == EOPNOTSUPP {
+            throw posixError("This destination filesystem cannot safely publish files; choose a different backup folder")
+        }
+        if linkError == EEXIST {
             throw posixError("Destination file appeared during copy; refusing to overwrite it")
         }
-        try publishByClaimingName(temporaryName: temporaryName, name: name, relativeTo: parentFD)
-    }
-
-    /// No-replace publication for filesystems without hard links. An
-    /// exclusive create claims the final name (failing if anything is
-    /// there), then the verified temporary file is renamed over that empty
-    /// claim once it is confirmed to still be ours. Only a file deleted and
-    /// recreated at this exact name between that check and the rename could
-    /// be replaced. The identity is read after fsync because macOS's exFAT
-    /// driver reports a temporary inode for a file until it is committed.
-    public static func publishByClaimingName(temporaryName: String, name: String, relativeTo parentFD: Int32) throws {
-        let flags = O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC
-        let claimFD = name.withCString { openat(parentFD, $0, flags, 0o600) }
-        guard claimFD >= 0 else { throw posixError("Destination file appeared during copy; refusing to overwrite it") }
-        defer { _ = Darwin.close(claimFD) }
-
-        var claimed = stat()
-        guard fsync(claimFD) == 0, fstat(claimFD, &claimed) == 0 else {
-            throw posixError("Unable to claim destination file name")
-        }
-        var current = stat()
-        let lookup = name.withCString { fstatat(parentFD, $0, &current, AT_SYMLINK_NOFOLLOW) }
-        guard lookup == 0, current.st_dev == claimed.st_dev, current.st_ino == claimed.st_ino,
-              (current.st_mode & S_IFMT) == S_IFREG, current.st_size == 0 else {
-            throw DestinationWriter.existingDestinationConflictError("Destination file changed during copy; refusing to overwrite it")
-        }
-
-        let renamed = temporaryName.withCString { temporaryNamePointer in
-            name.withCString { namePointer in
-                renameat(parentFD, temporaryNamePointer, parentFD, namePointer)
-            }
-        }
-        guard renamed == 0 else {
-            let renameError = posixError("Unable to publish destination file")
-            // Remove the empty claim only while the name is still ours.
-            var after = stat()
-            if name.withCString({ fstatat(parentFD, $0, &after, AT_SYMLINK_NOFOLLOW) }) == 0,
-               after.st_dev == claimed.st_dev, after.st_ino == claimed.st_ino, after.st_size == 0 {
-                removeItem(named: name, relativeTo: parentFD)
-            }
-            throw renameError
-        }
+        throw posixError("Could not safely publish on this destination filesystem; choose a different backup folder")
     }
 
     /// Descends from `/` one descriptor at a time so `O_NOFOLLOW` protects
@@ -315,13 +376,31 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         return status == 0 && (info.st_mode & S_IFMT) == S_IFLNK
     }
 
-    private static func openOrCreateDirectory(named name: String, relativeTo parentFD: Int32) throws -> Int32 {
+    private static func openOrCreateDirectory(
+        named name: String,
+        relativeTo parentFD: Int32,
+        syncCreatedParent: Bool,
+        beforeDirectorySync: (@Sendable () throws -> Void)?,
+        onSyncFailure: (() -> Void)? = nil
+    ) throws -> Int32 {
         let flags = O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC
         let openExisting = { name.withCString { openat(parentFD, $0, flags) } }
         var fd = openExisting()
         if fd < 0 && errno == ENOENT {
             let created = name.withCString { mkdirat(parentFD, $0, 0o755) }
             if created != 0 && errno != EEXIST { throw posixError("Unable to create destination directory") }
+            // ENOENT followed by EEXIST means another writer just created
+            // the name. Flush that observed parent entry as well before a
+            // direct final file may be opened beneath it.
+            if syncCreatedParent {
+                do {
+                    try beforeDirectorySync?()
+                    try synchronizeDirectory(parentFD)
+                } catch {
+                    onSyncFailure?()
+                    throw error
+                }
+            }
             fd = openExisting()
         }
         guard fd >= 0 else {
@@ -337,6 +416,17 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
             throw FileOperationError.unsafeOperation("Destination component \(name) is not a folder")
         }
         return fd
+    }
+
+    private static func isFATFamily(directoryFD: Int32) throws -> Bool {
+        var info = statfs()
+        guard fstatfs(directoryFD, &info) == 0 else {
+            throw posixError("Unable to identify destination filesystem")
+        }
+        let filesystem = withUnsafeBytes(of: info.f_fstypename) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self).lowercased()
+        }
+        return ["exfat", "msdos", "msdosfs", "fat", "fat32"].contains(filesystem)
     }
 
     private static func validate(component: String) throws {
@@ -489,7 +579,11 @@ public final class DestinationWriter {
         public var beforeFlush: (@Sendable (Int, URL) throws -> Void)?
         public var beforeClose: (@Sendable (Int, URL) throws -> Void)?
         public var beforePublish: (@Sendable (Int, URL) throws -> Void)?
+        /// Forces the FAT-style direct-final path on a test filesystem.
         public var useClaimedNamePublish: (@Sendable (Int) -> Bool)?
+        public var beforeDirectorySync: (@Sendable (Int) throws -> Void)?
+        public var beforeMarkerFileFlush: (@Sendable (Int) throws -> Void)?
+        public var beforeMarkerRootSync: (@Sendable (Int) throws -> Void)?
         public var afterPublish: (@Sendable (Int, URL) throws -> Void)?
         public var beforeDestinationRead: (@Sendable (Int, String) async throws -> Void)?
         public var destinationDidOpenForRead: (@Sendable (Int, String) -> Void)?
@@ -510,6 +604,9 @@ public final class DestinationWriter {
             beforeClose: (@Sendable (Int, URL) throws -> Void)? = nil,
             beforePublish: (@Sendable (Int, URL) throws -> Void)? = nil,
             useClaimedNamePublish: (@Sendable (Int) -> Bool)? = nil,
+            beforeDirectorySync: (@Sendable (Int) throws -> Void)? = nil,
+            beforeMarkerFileFlush: (@Sendable (Int) throws -> Void)? = nil,
+            beforeMarkerRootSync: (@Sendable (Int) throws -> Void)? = nil,
             afterPublish: (@Sendable (Int, URL) throws -> Void)? = nil,
             beforeDestinationRead: (@Sendable (Int, String) async throws -> Void)? = nil,
             destinationDidOpenForRead: (@Sendable (Int, String) -> Void)? = nil,
@@ -527,6 +624,9 @@ public final class DestinationWriter {
             self.beforeClose = beforeClose
             self.beforePublish = beforePublish
             self.useClaimedNamePublish = useClaimedNamePublish
+            self.beforeDirectorySync = beforeDirectorySync
+            self.beforeMarkerFileFlush = beforeMarkerFileFlush
+            self.beforeMarkerRootSync = beforeMarkerRootSync
             self.afterPublish = afterPublish
             self.beforeDestinationRead = beforeDestinationRead
             self.destinationDidOpenForRead = destinationDidOpenForRead
@@ -589,6 +689,7 @@ public final class DestinationWriter {
         workers: Int,
         checksumService: any ChecksumService,
         preEnumeratedFiles: [URL],
+        attemptID: UUID = UUID(),
         pauseCheck: (@Sendable () async throws -> Void)? = nil,
         hooks: FanOutHooks? = nil,
         onIOBytes: IOByteCallback? = nil,
@@ -596,12 +697,37 @@ public final class DestinationWriter {
         onProgress: @escaping @Sendable (Int, String, Int64, Bool) async -> Void,
         onError: @escaping @Sendable (Int, String, Error) async -> Void
     ) async throws {
+        let sourceResolver = RelativePathResolver(base: src)
+        let sourcePaths = try preEnumeratedFiles.map { try sourceResolver.resolve($0) }
+        // Root directories are also source names. A marker must not take one
+        // of those names on a case-insensitive backup filesystem.
+        let sourceRootNames = try FileManager.default.contentsOfDirectory(atPath: src.path)
+        var prepared: [FanOutDestination] = []
         for destination in destinations {
+            try Task.checkCancellation()
+            do {
+                try destination.root.preparePublication(
+                    attemptID: attemptID,
+                    sourcePaths: sourcePaths + sourceRootNames,
+                    markerHooks: .init(
+                        beforeFileFlush: { try hooks?.beforeMarkerFileFlush?(destination.index) },
+                        beforeRootSync: { try hooks?.beforeMarkerRootSync?(destination.index) }
+                    )
+                )
+                prepared.append(destination)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                for path in sourcePaths { await onError(destination.index, path, error) }
+            }
+        }
+        for destination in prepared {
+            try Task.checkCancellation()
             try await createDirectoryTreeSafely(from: src, in: destination.root) { path, error in
                 await onError(destination.index, path, error)
             }
         }
-        let sourceResolver = RelativePathResolver(base: src)
+        let activeDestinations = prepared
 
         // FAT/exFAT companion publication can retire or change an AppleDouble
         // entry. Finish media publication before copying its metadata files;
@@ -659,7 +785,7 @@ public final class DestinationWriter {
                                     from: fileURL,
                                     relativePath: relativePath,
                                     components: components,
-                                    destinations: destinations,
+                                    destinations: activeDestinations,
                                     verificationMode: verificationMode,
                                     checksumService: checksumService,
                                     pauseCheck: pauseCheck,
@@ -691,8 +817,10 @@ public final class DestinationWriter {
         private(set) var parentFD: Int32
         let filename: String
         let temporaryName: String
+        let directFinal: Bool
         private(set) var temporaryFD: Int32
         private(set) var published = false
+        private var flushedIdentity: stat?
 
         init(
             destination: FanOutDestination,
@@ -703,13 +831,12 @@ public final class DestinationWriter {
             self.destination = destination
             self.parentFD = parentFD
             self.filename = filename
-            temporaryName = ".bitmatch.tmp." + UUID().uuidString
-            temporaryFD = try PinnedDestinationDirectory.createTemporaryFile(
-                named: temporaryName,
-                relativeTo: parentFD
-            )
-            // Reaching this point means createTemporaryFile's mandatory
-            // F_NOCACHE call succeeded for this still-open descriptor.
+            directFinal = destination.root.usesDirectFinalPublication
+            temporaryName = directFinal ? filename : ".bitmatch.tmp." + UUID().uuidString
+            temporaryFD = try directFinal
+                ? PinnedDestinationDirectory.createDirectFinalFile(named: filename, relativeTo: parentFD)
+                : PinnedDestinationDirectory.createTemporaryFile(named: temporaryName, relativeTo: parentFD)
+            // Both creation paths require F_NOCACHE before the first write.
             hooks?.temporaryFileDidDisableCache?(destination.index, temporaryFD)
         }
 
@@ -718,6 +845,14 @@ public final class DestinationWriter {
         func closeTemporaryFile() throws {
             guard temporaryFD >= 0 else { return }
             let fd = temporaryFD
+            if directFinal {
+                var info = stat()
+                guard fstat(fd, &info) == 0 else {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno),
+                                  userInfo: [NSLocalizedDescriptionKey: "Unable to inspect direct destination file"])
+                }
+                flushedIdentity = info
+            }
             // POSIX leaves the descriptor state unspecified when close fails,
             // including after EINTR. Retire it before close and fail the file;
             // the caller must never publish after this method throws.
@@ -733,12 +868,19 @@ public final class DestinationWriter {
 
         func markPublished() { published = true }
 
+        func checkDirectFinalName() throws {
+            guard directFinal, let flushedIdentity else { return }
+            try PinnedDestinationDirectory.namedFileMatchesIdentity(
+                flushedIdentity, named: filename, relativeTo: parentFD
+            )
+        }
+
         func cleanup() {
             if temporaryFD >= 0 {
                 _ = Darwin.close(temporaryFD)
                 temporaryFD = -1
             }
-            if !published, parentFD >= 0 {
+            if !published, !directFinal, parentFD >= 0 {
                 PinnedDestinationDirectory.removeItem(named: temporaryName, relativeTo: parentFD)
             }
             if parentFD >= 0 {
@@ -993,16 +1135,15 @@ public final class DestinationWriter {
                 try hooks?.beforeFlush?(file.destination.index, file.destination.root.logicalRootURL)
                 try PinnedDestinationDirectory.flushToMedium(file.temporaryFD)
                 try hooks?.beforeClose?(file.destination.index, file.destination.root.logicalRootURL)
+                if file.directFinal {
+                    try PinnedDestinationDirectory.namedFileMatchesOpenFile(
+                        file.temporaryFD, named: file.filename, relativeTo: file.parentFD
+                    )
+                }
                 try file.closeTemporaryFile()
                 try hooks?.beforePublish?(file.destination.index, file.destination.root.logicalRootURL)
                 do {
-                    if hooks?.useClaimedNamePublish?(file.destination.index) == true {
-                        try PinnedDestinationDirectory.publishByClaimingName(
-                            temporaryName: file.temporaryName,
-                            name: file.filename,
-                            relativeTo: file.parentFD
-                        )
-                    } else {
+                    if !file.directFinal {
                         try PinnedDestinationDirectory.publishTemporaryFile(
                             named: file.temporaryName,
                             as: file.filename,
@@ -1029,7 +1170,9 @@ public final class DestinationWriter {
                 }
                 file.markPublished()
                 try PinnedDestinationDirectory.synchronizeDirectory(file.parentFD)
+                try file.checkDirectFinalName()
                 try hooks?.afterPublish?(file.destination.index, file.destination.root.logicalRootURL)
+                try file.checkDirectFinalName()
                 await onProgress(file.destination.index, relativePath, sourceSize, false)
             } catch is CancellationError {
                 file.cleanup()

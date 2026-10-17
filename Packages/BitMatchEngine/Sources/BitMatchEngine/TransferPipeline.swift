@@ -135,6 +135,20 @@ public actor RunLedger {
         return !rows[index].success
     }
 
+    func hasSuccessfulCoverage(
+        destination: Int,
+        sourcePaths: [String],
+        verificationMode: VerificationMode
+    ) -> Bool {
+        sourcePaths.allSatisfy { path in
+            guard let index = rowIndex[FileResultKey(sourceRelativePath: path, destinationIndex: destination)] else {
+                return false
+            }
+            let row = rows[index]
+            return row.success && (verificationMode == .quick || row.verificationResult?.isValid == true)
+        }
+    }
+
     private func store(_ row: FileOperationResult, relativePath: String, destination: Int) {
         let key = FileResultKey(sourceRelativePath: relativePath, destinationIndex: destination)
         if let index = rowIndex[key] {
@@ -732,9 +746,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     // creates every recipe component descriptor-relative with O_NOFOLLOW.
                     try Task.checkCancellation()
                     try destinationSetupHook?(destinationURL)
+                    let forceDirect = fanOutHooks?.useClaimedNamePublish?(destIndex) == true
                     pinnedDestinations[destIndex] = try PinnedDestinationDirectory.open(
                         destination: destinationURL,
-                        rootComponents: rootComponents
+                        rootComponents: rootComponents,
+                        forceDirectFinalPublication: forceDirect,
+                        beforeDirectorySync: { try self.fanOutHooks?.beforeDirectorySync?(destIndex) }
                     )
                 } catch let error as FileOperationError {
                     // A safety-policy rejection (e.g. a symlink substituted into
@@ -812,6 +829,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 workers: copyWorkers,
                 checksumService: self.checksumService,
                 preEnumeratedFiles: sourceFileURLs,
+                attemptID: operation.id,
                 pauseCheck: { try await pauseGate.wait() },
                 hooks: fanOutHooks,
                 onIOBytes: onIOBytes,
@@ -1133,6 +1151,43 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     destination: destIndex
                 )
                 await onFileResult?(failure)
+            }
+        }
+
+        // A FAT-family destination may expose a partial final-name file while
+        // it is being written. Only the current attempt's validated marker may
+        // advance from incomplete, and only after the ordinary independent
+        // readback and exact selected-file coverage have passed.
+        for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
+            guard let pinned = pinnedDestinations[destIndex],
+                  pinned.usesDirectFinalPublication,
+                  await ledger.hasSuccessfulCoverage(
+                    destination: destIndex,
+                    sourcePaths: sourceManifest.map(\.relativePath),
+                    verificationMode: operation.verificationMode
+                  ) else { continue }
+            let status: TransferStatusMarker.Status = operation.verificationMode == .quick
+                ? .copyCompleteUnverified : .filesVerified
+            do {
+                try pinned.finishPublicationStatus(status)
+                try pinned.checkPublicationStatus(status)
+            } catch {
+                let failure = completionGateError(
+                    "\(destinationURL.lastPathComponent)'s transfer status could not be saved or confirmed: \(error.localizedDescription). Keep the source."
+                )
+                for entry in sourceManifest {
+                    let row = FileOperationResult(
+                        sourceURL: entry.url,
+                        destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
+                        success: false,
+                        error: failure,
+                        fileSize: entry.size,
+                        verificationResult: nil,
+                        processingTime: 0
+                    )
+                    await ledger.record(row, relativePath: entry.relativePath, destination: destIndex)
+                    await onFileResult?(row)
+                }
             }
         }
 
