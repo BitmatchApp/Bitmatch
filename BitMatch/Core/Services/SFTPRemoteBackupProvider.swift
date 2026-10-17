@@ -43,55 +43,104 @@ private final class OpenSSHProcessOutput: @unchecked Sendable {
     private let lock = NSLock()
     private var stdout = Data()
     private var stderr = Data()
+    private var inputWriteFailed = false
 
     func setStdout(_ data: Data) { lock.withLock { stdout = data } }
     func setStderr(_ data: Data) { lock.withLock { stderr = data } }
+    func markInputWriteFailure() { lock.withLock { inputWriteFailed = true } }
+    func didInputWriteFail() -> Bool { lock.withLock { inputWriteFailed } }
     func result(status: Int32) -> OpenSSHCommandResult {
         lock.withLock { OpenSSHCommandResult(status: status, stdout: stdout, stderr: stderr) }
     }
 }
 
-/// Owns one launched OpenSSH child until its termination handler has drained
-/// both pipes. Cancellation before launch prevents the child from starting;
-/// cancellation after launch signals it, then forces exit if it ignores TERM.
+/// Owns one launched OpenSSH command until it exits and both pipes drain. A
+/// ProxyCommand may leave descendants holding those pipes after ssh exits, so
+/// cancellation signals the group created atomically with the child.
 private final class OpenSSHProcessLifetime: @unchecked Sendable {
     private let lock = NSLock()
-    private var process: Process?
+    private var childPID: pid_t?
     private var cancelled = false
     private var finished = false
     private var forceKill: DispatchWorkItem?
 
-    func launch(_ process: Process) throws {
+    func launch(_ command: OpenSSHCommand, input: Pipe, output: Pipe, error: Pipe) throws -> pid_t {
         try lock.withLock {
             guard !cancelled else { throw CancellationError() }
-            try process.run()
-            self.process = process
+            var actions: posix_spawn_file_actions_t?
+            try Self.check(posix_spawn_file_actions_init(&actions))
+            defer { posix_spawn_file_actions_destroy(&actions) }
+
+            let inputRead = input.fileHandleForReading.fileDescriptor
+            let outputWrite = output.fileHandleForWriting.fileDescriptor
+            let errorWrite = error.fileHandleForWriting.fileDescriptor
+            try Self.check(posix_spawn_file_actions_adddup2(&actions, inputRead, STDIN_FILENO))
+            try Self.check(posix_spawn_file_actions_adddup2(&actions, outputWrite, STDOUT_FILENO))
+            try Self.check(posix_spawn_file_actions_adddup2(&actions, errorWrite, STDERR_FILENO))
+            for descriptor in [inputRead, outputWrite, errorWrite,
+                               input.fileHandleForWriting.fileDescriptor,
+                               output.fileHandleForReading.fileDescriptor,
+                               error.fileHandleForReading.fileDescriptor] where descriptor > STDERR_FILENO {
+                try Self.check(posix_spawn_file_actions_addclose(&actions, descriptor))
+            }
+
+            var attributes: posix_spawnattr_t?
+            try Self.check(posix_spawnattr_init(&attributes))
+            defer { posix_spawnattr_destroy(&attributes) }
+            try Self.check(posix_spawnattr_setflags(
+                &attributes, Int16(POSIX_SPAWN_SETPGROUP | POSIX_SPAWN_CLOEXEC_DEFAULT)
+            ))
+            try Self.check(posix_spawnattr_setpgroup(&attributes, 0))
+
+            let strings = ([command.executable] + command.arguments).map { $0.withCString { strdup($0) } }
+            defer { strings.forEach { free($0) } }
+            guard strings.allSatisfy({ $0 != nil }) else { throw POSIXError(.ENOMEM) }
+            var arguments = strings + [nil]
+            var pid: pid_t = 0
+            let spawnError = command.executable.withCString { executable in
+                arguments.withUnsafeMutableBufferPointer { buffer in
+                    posix_spawn(&pid, executable, &actions, &attributes, buffer.baseAddress, environ)
+                }
+            }
+            try Self.check(spawnError)
+            childPID = pid
+            return pid
         }
+    }
+
+    private static func check(_ code: Int32) throws {
+        if code != 0 { throw NSError(domain: NSPOSIXErrorDomain, code: Int(code)) }
     }
 
     func cancel() {
         lock.withLock {
             guard !finished else { return }
             cancelled = true
-            guard let process, process.isRunning else { return }
-            _ = Darwin.kill(process.processIdentifier, SIGTERM)
-            let work = DispatchWorkItem { [weak self] in self?.killIfRunning() }
+            guard childPID != nil else { return }
+            signal(SIGTERM)
+            let work = DispatchWorkItem { [weak self] in self?.forceKillIfUnfinished() }
             forceKill = work
             DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: work)
         }
     }
 
-    private func killIfRunning() {
+    private func forceKillIfUnfinished() {
         lock.withLock {
-            guard !finished, let process, process.isRunning else { return }
-            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+            guard !finished else { return }
+            signal(SIGKILL)
         }
+    }
+
+    /// A terminated direct child does not mean its pipe-owning descendants
+    /// have exited. Keep signalling the owned group until both drains finish.
+    private func signal(_ value: Int32) {
+        if let childPID, childPID > 0 { _ = Darwin.kill(-childPID, value) }
     }
 
     func complete() -> Bool {
         lock.withLock {
             finished = true
-            process = nil
+            childPID = nil
             forceKill?.cancel()
             forceKill = nil
             return cancelled
@@ -339,41 +388,76 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
         let lifetime = OpenSSHProcessLifetime()
         let result: OpenSSHCommandResult = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<OpenSSHCommandResult, Error>) in
-                let process = Process()
-                let output = Pipe(); let error = Pipe(); let input = Pipe()
+                let output = Pipe(); let stderrPipe = Pipe(); let input = Pipe()
                 let collected = OpenSSHProcessOutput()
                 let drains = DispatchGroup()
-                process.executableURL = URL(fileURLWithPath: command.executable)
-                process.arguments = command.arguments
-                process.standardOutput = output; process.standardError = error; process.standardInput = input
-                // Reserve both drain completions before the child can terminate.
-                // Otherwise a fast child could notify an empty group before these
-                // readers have been registered.
                 drains.enter()
                 drains.enter()
-                process.terminationHandler = { completed in
-                    drains.notify(queue: .global()) {
-                        if lifetime.complete() {
-                            continuation.resume(throwing: CancellationError())
-                        } else {
-                            continuation.resume(returning: collected.result(status: completed.terminationStatus))
-                        }
-                    }
-                }
+                drains.enter()
                 do {
-                    try lifetime.launch(process)
+                    // A fast-exiting ssh/sftp child can close stdin while a
+                    // batch is being written. Return EPIPE, never SIGPIPE.
+                    guard Darwin.fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
+                        throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                    }
+                    let pid = try lifetime.launch(command, input: input, output: output, error: stderrPipe)
+                    // Only the child keeps the duplicated standard streams.
+                    input.fileHandleForReading.closeFile()
+                    output.fileHandleForWriting.closeFile()
+                    stderrPipe.fileHandleForWriting.closeFile()
                     DispatchQueue.global().async {
                         collected.setStdout(output.fileHandleForReading.readDataToEndOfFile())
+                        output.fileHandleForReading.closeFile()
                         drains.leave()
                     }
                     DispatchQueue.global().async {
-                        collected.setStderr(error.fileHandleForReading.readDataToEndOfFile())
+                        collected.setStderr(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                        stderrPipe.fileHandleForReading.closeFile()
                         drains.leave()
                     }
-                    if let data = command.standardInput { input.fileHandleForWriting.write(data) }
+                    // Do not reap the group leader until its output closes.
+                    // Observe its exit without reaping, then disarm the group
+                    // timer while its PID is still reserved. Only then reap.
+                    drains.notify(queue: .global()) {
+                        var exitInfo = siginfo_t()
+                        var observed: Int32
+                        repeat {
+                            observed = Darwin.waitid(P_PID, id_t(pid), &exitInfo, WEXITED | WNOWAIT)
+                        } while observed == -1 && errno == EINTR
+                        let wasCancelled = lifetime.complete()
+                        var rawStatus: Int32 = 0
+                        var waited: pid_t
+                        repeat { waited = Darwin.waitpid(pid, &rawStatus, 0) }
+                            while waited == -1 && errno == EINTR
+                        let status = observed == 0 && exitInfo.si_pid == pid && waited == pid
+                            ? Self.exitStatus(rawStatus) : nil
+                        if wasCancelled {
+                            continuation.resume(throwing: CancellationError())
+                        } else if let status {
+                            if status == 0 && collected.didInputWriteFail() {
+                                continuation.resume(throwing: RemoteBackupError.providerUnavailable)
+                            } else {
+                                continuation.resume(returning: collected.result(status: status))
+                            }
+                        } else {
+                            continuation.resume(throwing: RemoteBackupError.providerUnavailable)
+                        }
+                    }
+                    if let data = command.standardInput {
+                        do { try input.fileHandleForWriting.write(contentsOf: data) }
+                        catch { collected.markInputWriteFailure() }
+                    }
                     input.fileHandleForWriting.closeFile()
+                    drains.leave()
                 } catch {
+                    input.fileHandleForReading.closeFile()
+                    input.fileHandleForWriting.closeFile()
+                    output.fileHandleForReading.closeFile()
+                    output.fileHandleForWriting.closeFile()
+                    stderrPipe.fileHandleForReading.closeFile()
+                    stderrPipe.fileHandleForWriting.closeFile()
                     let wasCancelled = lifetime.complete()
+                    drains.leave()
                     drains.leave()
                     drains.leave()
                     if wasCancelled {
@@ -388,6 +472,11 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
         })
         try Task.checkCancellation()
         return result
+    }
+
+    private nonisolated static func exitStatus(_ rawStatus: Int32) -> Int32 {
+        let signal = rawStatus & 0x7f
+        return signal == 0 ? (rawStatus >> 8) & 0xff : 128 + signal
     }
 }
 #endif
