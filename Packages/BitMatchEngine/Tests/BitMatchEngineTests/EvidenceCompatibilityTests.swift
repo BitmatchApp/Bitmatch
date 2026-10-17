@@ -91,6 +91,42 @@ struct EvidenceCompatibilityTests {
         #expect(result.newPaths == ["unrecorded.txt"])
     }
 
+    /// The reference tool records both a file rename and a directory move in
+    /// generation two. Check must not ignore previousPath and imply it has
+    /// interpreted that history when it only knows how to check file bytes.
+    @Test func referenceRenameHistoryRequiresStructuralReader() async throws {
+        let container = try copyReference("md5-renames")
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("media")
+        let before = try contents(container)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+        #expect(try contents(container) == before)
+    }
+
+    /// Derived disposable variant: remove only the two file lineage markers
+    /// from the reference record. The remaining directory marker alone must
+    /// still keep Check from treating this as ordinary file-only evidence.
+    @Test func directoryRenameMarkerAloneIsUnsupported() async throws {
+        let container = try copyReference("md5-renames")
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("media")
+        let history = root.appendingPathComponent("ascmhl")
+        let manifest = try #require(FileManager.default.contentsOfDirectory(at: history, includingPropertiesForKeys: nil)
+            .first { $0.lastPathComponent.hasPrefix("0002_") && $0.pathExtension == "mhl" })
+        let original = try String(contentsOf: manifest, encoding: .utf8)
+        let modified = original
+            .replacingOccurrences(of: "<previousPath>Reel A/clip one.mov</previousPath>", with: "")
+            .replacingOccurrences(of: "<previousPath>Reel B/clip two.mov</previousPath>", with: "")
+        #expect(modified != original)
+        #expect(modified.contains("<previousPath>Reel B</previousPath>"))
+        try modified.write(to: manifest, atomically: true, encoding: .utf8)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
     /// Plant: silently compactMap an unsupported/invalid entry or swallow a bad record.
     @Test(arguments: ["unsupported", "invalid-digest", "duplicate", "traversal", "failed-action", "namespace", "version", "truncated"])
     func incompleteRecordsCannotBecomeAPartialGreen(kind: String) async throws {
@@ -203,6 +239,21 @@ struct EvidenceCompatibilityTests {
         await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
             _ = try await checker.discover(under: root)
         }
+    }
+
+    /// A supported neighbour cannot turn a legacy standalone-format record
+    /// into an apparently complete ASC check.
+    @Test func classicMHLBesideReferenceHistoryCannotBecomePartialGreen() async throws {
+        let container = try copyReference("md5")
+        defer { try? FileManager.default.removeItem(at: container) }
+        let root = container.appendingPathComponent("media")
+        try FileManager.default.copyItem(at: fixture("classic-v1.mhl"),
+                                         to: root.appendingPathComponent("ascmhl/classic-v1.mhl"))
+        let before = try contents(container)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+        #expect(try contents(container) == before)
     }
 
     /// Plant: resolve entity declarations or trust a nested metadata hash as a file digest.

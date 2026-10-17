@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-17T00:35:13-04:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <md5 hashdate="2026-10-17T00:35:13.436542-04:00">5bcd50fab8aa16f017f7a6e755556d03</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-17T00:35:13.436542-04:00">79ad990a57773810cd5d5c9654456bde</md5>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="19" lastmodificationdate="2026-10-17T00:35:13-04:00">Reel A/clip renamed.mov</path>
+      <md5 action="original" hashdate="2026-10-17T00:35:13.433173-04:00">bbb3e9a25ab3b29f321946e0ced197e5</md5>
+      <previousPath>Reel A/clip one.mov</previousPath>
+    </hash>
+    <hash>
+      <path size="11" lastmodificationdate="2026-10-17T00:35:13-04:00">Reel A/sidecar.xml</path>
+      <md5 action="verified" hashdate="2026-10-17T00:35:13.433954-04:00">90dc46f5178d03fba3d712bac451d6e8</md5>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-17T00:35:13-04:00">Reel A</path>
+      <content>
+        <md5 hashdate="2026-10-17T00:35:13.434580-04:00">8c63cc817a52bc5235cf3e8a35bc74f3</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-17T00:35:13.434580-04:00">d9f8b0c2af5056964a0ca7d4eb314a42</md5>
+      </structure>
+    </directoryhash>
+    <hash>
+      <path size="19" lastmodificationdate="2026-10-17T00:35:13-04:00">Reel C/clip two.mov</path>
+      <md5 action="original" hashdate="2026-10-17T00:35:13.435402-04:00">d597faaafb635c7ab9b94dce00f2caf3</md5>
+      <previousPath>Reel B/clip two.mov</previousPath>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-17T00:35:13-04:00">Reel C</path>
+      <content>
+        <md5 hashdate="2026-10-17T00:35:13.435945-04:00">1599790324681fcf0afe1efd7e5c1597</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-17T00:35:13.435945-04:00">fdd92faea2dfe67959219e35d00dcfda</md5>
+      </structure>
+      <previousPath>Reel B</previousPath>
+    </directoryhash>
+  </hashes>
+</hashlist>

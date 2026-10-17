@@ -16,7 +16,7 @@ import tempfile
 from unittest.mock import patch
 
 REFERENCE_COMMIT = '0fb61f1e4c7c1c3ff422449aa6f091ce0d3b7687'
-DATASETS = ('md5', 'xxh64', 'c4', 'sha1', 'xxh128', 'xxh64-boundaries')
+DATASETS = ('md5', 'xxh64', 'c4', 'sha1', 'xxh128', 'xxh64-boundaries', 'md5-renames')
 
 
 def snapshot(root):
@@ -75,7 +75,7 @@ def main():
             chain_schema.assertValid(chain)
             checks.append(f'{dataset}: chain XSD')
             entries = chain.findall('{urn:ASC:MHL:DIRECTORY:v2.0}hashlist')
-            if len(entries) != (2 if dataset == 'md5' else 1):
+            if len(entries) != (2 if dataset in ('md5', 'md5-renames') else 1):
                 raise RuntimeError(f'{dataset}: unexpected generation count')
             for entry in entries:
                 name = entry.findtext('{urn:ASC:MHL:DIRECTORY:v2.0}path')
@@ -84,6 +84,25 @@ def main():
                 if hasher.string_digest() != entry.findtext('{urn:ASC:MHL:DIRECTORY:v2.0}c4'):
                     raise RuntimeError(f'{dataset}: invalid chain C4 for {name}')
             checks.append(f'{dataset}: generation count and chain C4')
+            if dataset == 'md5-renames':
+                namespace = '{urn:ASC:MHL:v2.0}'
+                latest = etree.parse(str(sorted(history.glob('*.mhl'))[-1]))
+                moved_files = {
+                    (entry.findtext(namespace + 'path'), entry.findtext(namespace + 'previousPath'))
+                    for entry in latest.findall('.//' + namespace + 'hash')
+                    if entry.find(namespace + 'previousPath') is not None
+                }
+                moved_directories = {
+                    (entry.findtext(namespace + 'path'), entry.findtext(namespace + 'previousPath'))
+                    for entry in latest.findall('.//' + namespace + 'directoryhash')
+                    if entry.find(namespace + 'previousPath') is not None
+                }
+                if moved_files != {
+                    ('Reel A/clip renamed.mov', 'Reel A/clip one.mov'),
+                    ('Reel C/clip two.mov', 'Reel B/clip two.mov'),
+                } or moved_directories != {('Reel C', 'Reel B')}:
+                    raise RuntimeError('md5-renames: missing file or directory rename lineage')
+                checks.append('md5-renames: file and directory lineage')
             invoke(f'{dataset}: original bytes', mhldebugtool_cli, ['verify', '-v', str(root)])
             invoke(f'{dataset}: original paths', mhltool_cli, ['diff', str(root)])
             # Mutate only disposable copies, restoring a pristine case each time.
@@ -114,6 +133,12 @@ def main():
                         manifest.write_bytes(manifest.read_bytes() + b'\n')
                 required = ('found new file', 'missing file(s)') if fault == 'renamed' else ()
                 invoke(f'{dataset}: rejects {fault}', cli, [command, str(damaged)], expected, required)
+            if dataset == 'md5-renames':
+                damaged = work / 'md5-renames-directory-moved-again'
+                shutil.copytree(root, damaged)
+                (damaged / 'Reel C').rename(damaged / 'Reel D')
+                invoke('md5-renames: rejects unrecorded directory move', mhltool_cli,
+                       ['diff', str(damaged)], 10, ('found new file', 'missing file(s)'))
 
     if snapshot(corpus) != before:
         raise RuntimeError('Validation modified the permanent corpus')

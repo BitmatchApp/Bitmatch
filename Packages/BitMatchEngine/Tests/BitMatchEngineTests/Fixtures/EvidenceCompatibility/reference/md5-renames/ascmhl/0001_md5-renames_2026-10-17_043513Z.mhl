@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-17T00:35:13-04:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <md5 hashdate="2026-10-17T00:35:13.420594-04:00">5bcd50fab8aa16f017f7a6e755556d03</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-17T00:35:13.420594-04:00">2e811871b223a14d3cec169a67a2506f</md5>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="19" lastmodificationdate="2026-10-17T00:35:13-04:00">Reel A/clip one.mov</path>
+      <md5 action="original" hashdate="2026-10-17T00:35:13.417666-04:00">bbb3e9a25ab3b29f321946e0ced197e5</md5>
+    </hash>
+    <hash>
+      <path size="11" lastmodificationdate="2026-10-17T00:35:13-04:00">Reel A/sidecar.xml</path>
+      <md5 action="original" hashdate="2026-10-17T00:35:13.418321-04:00">90dc46f5178d03fba3d712bac451d6e8</md5>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-17T00:35:13-04:00">Reel A</path>
+      <content>
+        <md5 hashdate="2026-10-17T00:35:13.418893-04:00">8c63cc817a52bc5235cf3e8a35bc74f3</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-17T00:35:13.418893-04:00">e7355991ecfb7df08e89868c8c9c028c</md5>
+      </structure>
+    </directoryhash>
+    <hash>
+      <path size="19" lastmodificationdate="2026-10-17T00:35:13-04:00">Reel B/clip two.mov</path>
+      <md5 action="original" hashdate="2026-10-17T00:35:13.419556-04:00">d597faaafb635c7ab9b94dce00f2caf3</md5>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-17T00:35:13-04:00">Reel B</path>
+      <content>
+        <md5 hashdate="2026-10-17T00:35:13.420085-04:00">1599790324681fcf0afe1efd7e5c1597</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-17T00:35:13.420085-04:00">fdd92faea2dfe67959219e35d00dcfda</md5>
+      </structure>
+    </directoryhash>
+  </hashes>
+</hashlist>

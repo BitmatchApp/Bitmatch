@@ -100,7 +100,7 @@ public struct SavedChecksumCheck: Sendable {
             switch self {
             case .notFound: "No saved checksums found here."
             case .unreadableEvidence: "Some saved checksums are damaged or inconsistent. Compare with another folder instead."
-            case .unsupportedEvidence: "These saved checksums include a format or algorithm BitMatch cannot fully read yet. Compare with another folder instead."
+            case .unsupportedEvidence: "Some saved checksums use a format or history detail BitMatch can't check yet. Compare with another folder instead."
             }
         }
     }
@@ -438,6 +438,14 @@ public struct SavedChecksumCheck: Sendable {
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
             let name = elementName.lowercased()
             if stack.isEmpty && (name != "hashlist" || namespaceURI != namespace || attributeDict["version"] != "2.0") {
+                reject(parser, .unsupportedEvidence)
+                return
+            }
+            // A later ASC generation can move a file or whole directory and
+            // record the old location in previousPath. Until Check interprets
+            // that history, treating each generation as unrelated file paths
+            // would incorrectly call valid renamed media "missing".
+            if name == "previouspath" {
                 reject(parser, .unsupportedEvidence)
                 return
             }
