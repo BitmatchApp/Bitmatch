@@ -6,7 +6,7 @@
 
 <p align="center">
   <b>Free, open-source camera card offloading for Mac.</b><br>
-  Copy to several drives, verify every file with SHA-256, and know exactly when the card is safe to erase.
+  Copy to several drives, verify the files you chose, and know when it’s safe to erase the card.
 </p>
 
 <p align="center">
@@ -55,14 +55,14 @@ Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now
   💾 A   💾 B
 ```
 
-Plug in your card and drives, allow BitMatch to use them once, and it picks up the card as the source; you choose the destinations. In the default **Standard** mode, BitMatch hashes the card bytes as it copies to every drive, then reads each drive back from disk with SHA-256. **Thorough** independently rereads the card; **Paranoid** also compares bytes. **Quick** checks sizes only and never earns a safe verdict. The card is only **Safe to erase** when the required verification, coverage and evidence checks pass on every destination. Queue the next card while one copies; each card is a row that shows its own progress and verdict. Use **One-time transfer** for one card or **Project transfer** for a shoot with several cards and cameras.
+Plug in your card and drives, allow BitMatch to use them once, and it picks up the card as the source; you choose the destinations. In the default **Standard** mode, BitMatch hashes each new file as it copies to every drive, then reads each drive back from disk with SHA-256. An existing file is checked against a fresh source read before reuse. **Thorough** independently rereads the card for new copies; **Paranoid** also compares bytes. **Quick** checks sizes only and never earns a safe verdict. The card is only **Safe to erase** when the required verification, coverage and evidence checks pass on every destination. Queue the next card while one copies; each card is a row that shows its own progress and verdict. Use **One-time transfer** for one card or **Project transfer** for a shoot with several cards and cameras.
 
-Standard does not independently reread the source: a wrong source read can be copied and hashed consistently. Extra reads can catch differing bytes, but no mode can prove the original camera bytes or detect every repeatably wrong source read. See [How verification works](docs/GUIDE.md#how-verification-works) for scope and limits.
+For new copies, Standard does not independently reread the source: a wrong source read can be copied and hashed consistently. Extra reads can catch differing bytes, but no mode can prove the original camera bytes or detect every repeatably wrong source read. See [How verification works](docs/GUIDE.md#how-verification-works) for scope and limits.
 
 ## What It Does
 
-- **Multi destination copy**: the copy pass reads the card once and writes to every drive at the same time. Verification reads each drive back; Thorough and Paranoid also reread the card. Each destination gets its own results.
-- **Careful about "safe to erase"**: a card or folder that changes during the copy, online-only iCloud/Dropbox files, or two "backups" on the same physical drive never count as safe. Recognized AppleDouble `._` metadata companions are skipped by default; other hidden files and camera sidecars stay in the copy. Turn off **Ignore AppleDouble metadata files** in **Settings → File handling** to preserve them. That copy can verify the selected files, but it won't mark the whole card safe to erase.
+- **Multi destination copy**: for new files, the copy pass reads the card once and writes to every drive at the same time. Verification reads each drive back; reused files get a fresh source read, and Thorough and Paranoid reread the card too. Each destination gets its own results.
+- **Careful about "safe to erase"**: a card or folder that changes during the copy, or online-only iCloud/Dropbox files, won't earn a safe verdict. Two folders on the same physical drive count as one backup, not two independent ones. Recognized AppleDouble `._` metadata companions are skipped by default; other hidden files and camera sidecars stay in the copy. Turn off **Ignore AppleDouble metadata files** in **Settings → File handling** to preserve them. That copy can verify the selected files, but it won't mark the whole card safe to erase.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
 - **Check** for stuff you already copied: compare two folders, or check a backup against its saved checksums.
@@ -76,8 +76,8 @@ Standard does not independently reread the source: a wrong source read can be co
 
 | Mode | What it checks |
 | --- | --- |
-| Quick | Copy only; no checksum verification |
-| Standard — default | Reads the card once; reads every drive back and checks SHA-256 |
+| Quick | Copies and checks file sizes only; no checksum verification |
+| Standard — default | New copies: reads the card while copying, then reads each backup back with SHA-256. Reused files get a fresh source read |
 | Thorough | Also re-reads the card; SHA-256 and MD5 |
 | Paranoid | Also re-reads the card and compares every byte, plus SHA-256 |
 

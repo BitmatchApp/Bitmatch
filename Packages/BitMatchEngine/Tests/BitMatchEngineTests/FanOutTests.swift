@@ -646,8 +646,65 @@ struct FanOutTests {
     }
 
     @Test
+    func paranoidCopyStreamCorruptionIsCaughtByByteComparison() async throws {
+        try await assertCopyStreamCorruption(mode: .paranoid, expectsSafeVerdict: false)
+    }
+
+    @Test
     func standardCopyStreamCorruptionIsNotCaughtKnownStandardTradeOff() async throws {
         try await assertCopyStreamCorruption(mode: .standard, expectsSafeVerdict: true)
+    }
+
+    @Test
+    func repeatablyWrongSourceReadsDuringNewCopyCannotEstablishOriginalCameraBytes() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let original = Data(repeating: 0x35, count: 8193)
+            for mode in VerificationMode.allCases {
+                let fixture = try FanOutFixture(name: "repeatable-source-read-\(mode.rawValue)")
+                defer { fixture.cleanup() }
+                try fixture.write(original, to: "clip.bin")
+                let corrupt: @Sendable (Data) -> Data = { data in
+                    guard !data.isEmpty else { return data }
+                    var wrong = data
+                    wrong[wrong.startIndex] ^= 0xff
+                    return wrong
+                }
+                let operation = try await fixture.pipeline(hooks: .init(
+                    sourceDidRead: { _, data in corrupt(data) },
+                    transformVerificationSourceRead: { _, data in corrupt(data) }
+                )).performFileOperation(
+                    sourceURL: fixture.source,
+                    destinationURLs: fixture.destinations,
+                    verificationMode: mode,
+                    settings: CameraLabelSettings(),
+                    progressCallback: { _ in },
+                    onFileResult: nil
+                )
+
+                // The real source stays untouched. Every simulated card read
+                // returned the same wrong byte, so independent rereads cannot
+                // recover the original byte without outside evidence.
+                #expect(try Data(contentsOf: fixture.source.appendingPathComponent("clip.bin")) == original)
+                for destination in fixture.destinations {
+                    let output = SafetyValidator.resolvedDestinationRoot(
+                        source: fixture.source, destination: destination,
+                        settings: CameraLabelSettings()
+                    ).appendingPathComponent("clip.bin")
+                    #expect(try Data(contentsOf: output) == corrupt(original))
+                }
+                let verdict = fixture.verdict(for: operation, settings: CameraLabelSettings())
+                if mode == .quick {
+                    #expect(!verdict.success && verdict.copiedNotVerified)
+                } else {
+                    #expect(verdict.success)
+                    #expect(operation.results.allSatisfy { $0.verificationResult?.matches == true })
+                }
+            }
+            #else
+            #expect(true)
+            #endif
+        }
     }
 
     private func assertCopyStreamCorruption(
