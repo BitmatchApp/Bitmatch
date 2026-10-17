@@ -522,9 +522,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Perf 2: time-based throttle on progress callbacks (500ms)
         let ledger = RunLedger(destinationCount: destinationCount, filesPerDestination: perSourceFileCount, throttle: 0.5)
         let ioMeter = TransferIOMeter(destinationCount: destinationCount)
-        let onIOBytes: DestinationWriter.IOByteCallback = { index, phase, bytes, duration in
+        let onIOBytes: DestinationWriter.IOByteCallback = { index, phase, bytes, duration, ended in
             if let snapshot = ioMeter.record(destination: index, phase: phase,
-                                             bytes: bytes, duration: duration) {
+                                             bytes: bytes, duration: duration, now: ended) {
                 ioProgressCallback(snapshot)
             }
         }
@@ -788,6 +788,13 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     "➡️ Starting destination \(destination.index + 1)/\(destinationCount): \(destination.root.logicalRootURL.path)",
                     category: .transfer
                 )
+            }
+
+            // A first clip may take hours. Enter the copy stage before its
+            // first completed-file callback, without advancing any result or
+            // percentage. Live destination I/O can then appear immediately.
+            if !fanOutDestinations.isEmpty {
+                progressCallback(makeProgress(.copying, nil, await ledger.snapshot(), Date(), nil))
             }
 
             try await DestinationWriter.copyAllSafelyFanOut(

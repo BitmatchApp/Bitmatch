@@ -51,4 +51,27 @@ struct TransferIOMeterTests {
         #expect(final.destinations[0].writtenBytes == 300)
         #expect(abs((final.destinations[0].writeBytesPerSecond ?? 0) - 1_500) < 1)
     }
+
+    @Test func overlappingCallsCountConcurrentBytesOverOneActiveInterval() {
+        let meter = TransferIOMeter(destinationCount: 1)
+        let chunk = 4 * 1024 * 1024
+        _ = meter.record(destination: 0, phase: .writing, bytes: chunk, duration: 1, now: 10)
+        _ = meter.record(destination: 0, phase: .writing, bytes: chunk, duration: 1, now: 10)
+        let snapshot = meter.finalSnapshot(now: 10)
+        #expect(snapshot.destinations[0].writtenBytes == Int64(chunk * 2))
+        #expect(abs((snapshot.destinations[0].writeBytesPerSecond ?? 0) - Double(chunk * 2)) < 1)
+        #expect(snapshot.destinations[0].writeRateWindowStartUptime == 9)
+    }
+
+    @Test func sustainedFastCallsStillProduceARate() {
+        let meter = TransferIOMeter(destinationCount: 1)
+        for index in 0..<64 {
+            _ = meter.record(destination: 0, phase: .writing,
+                             bytes: 4 * 1024 * 1024, duration: 0.0005,
+                             now: 10 + Double(index + 1) * 0.0005)
+        }
+        let snapshot = meter.finalSnapshot(now: 10.032)
+        #expect(snapshot.destinations[0].writtenBytes == 64 * 4 * 1024 * 1024)
+        #expect((snapshot.destinations[0].writeBytesPerSecond ?? 0) > 0)
+    }
 }

@@ -135,10 +135,12 @@ struct TransferProgressPresentationTests {
             DestinationIOProgress(
                 writtenBytes: 8_000_000, readbackBytes: 4_000_000,
                 writeBytesPerSecond: 16_000_000, readbackBytesPerSecond: 8_000_000,
+                writeRateWindowStartUptime: 99.5, readbackRateWindowStartUptime: 99.5,
                 lastWriteUptime: 100, lastReadbackUptime: 100),
             DestinationIOProgress(
                 writtenBytes: 0, readbackBytes: 0,
                 writeBytesPerSecond: nil, readbackBytesPerSecond: nil,
+                writeRateWindowStartUptime: nil, readbackRateWindowStartUptime: nil,
                 lastWriteUptime: nil, lastReadbackUptime: nil)
         ])
         let p = make(state: .inProgress,
@@ -177,6 +179,51 @@ struct TransferProgressPresentationTests {
             ioProgress: sample, phase: .writingReports
         )
         #expect(report[0].io == nil)
+    }
+
+    @Test func firstLargeClipShowsActiveDestinationBeforeAnyFileCompletes() {
+        let sample = TransferIOProgress(sequence: 1, destinations: [
+            DestinationIOProgress(
+                writtenBytes: 8_000_000, readbackBytes: 0,
+                writeBytesPerSecond: 16_000_000, readbackBytesPerSecond: nil,
+                writeRateWindowStartUptime: 99.5, readbackRateWindowStartUptime: nil,
+                lastWriteUptime: 100, lastReadbackUptime: nil)
+        ])
+        let active = TransferProgressPresentation.rows(
+            destinations: [primary],
+            progress: progress(stage: .copying, overall: 0, files: 0, total: 1,
+                               totals: [1], completed: [0]),
+            ioProgress: sample, nowUptime: 100.5, phase: .copying
+        )
+        #expect(active[0].countText == "0 of 1")
+        #expect(active[0].stateLabel == "Copying")
+        #expect(active[0].writeDetail(nowUptime: 100.5)?.contains("/s") == true)
+
+        let stale = TransferProgressPresentation.rows(
+            destinations: [primary],
+            progress: progress(stage: .copying, overall: 0, files: 0, total: 1,
+                               totals: [1], completed: [0]),
+            ioProgress: sample, nowUptime: 103, phase: .copying
+        )
+        #expect(stale[0].stateLabel == "Waiting")
+        #expect(stale[0].writeDetail(nowUptime: 103)?.contains("/s") == false)
+    }
+
+    @Test func firstResumedSampleCannotReusePrePauseRateWindow() {
+        let mixed = TransferIOProgress(sequence: 2, destinations: [
+            DestinationIOProgress(
+                writtenBytes: 12_000_000, readbackBytes: 0,
+                writeBytesPerSecond: 20_000_000, readbackBytesPerSecond: nil,
+                writeRateWindowStartUptime: 99.5, readbackRateWindowStartUptime: nil,
+                lastWriteUptime: 101.3, lastReadbackUptime: nil)
+        ])
+        let rows = TransferProgressPresentation.rows(
+            destinations: [primary], progress: nil, ioProgress: mixed,
+            minimumRateUptime: 101, nowUptime: 101.5, phase: .copying
+        )
+        #expect(rows[0].stateLabel == "Copying")
+        #expect(rows[0].writeDetail(nowUptime: 101.5)?.contains("/s") == false)
+        #expect(rows[0].writeDetail(nowUptime: 101.5)?.contains("Written") == true)
     }
 
     @Test func destinationRowsReusePrecomputedVolumeNames() {

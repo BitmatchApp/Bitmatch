@@ -83,7 +83,9 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
     func writeDetail(nowUptime: TimeInterval) -> String? {
         guard let io, io.writtenBytes > 0 else { return nil }
         return Self.detail("Written", bytes: io.writtenBytes,
-                           rate: io.writeBytesPerSecond, lastUptime: io.lastWriteUptime,
+                           rate: io.writeBytesPerSecond,
+                           rateWindowStartUptime: io.writeRateWindowStartUptime,
+                           lastUptime: io.lastWriteUptime,
                            nowUptime: nowUptime,
                            showsRate: showsLiveRate && state == .copying,
                            minimumRateUptime: minimumRateUptime)
@@ -92,22 +94,26 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
     func readbackDetail(nowUptime: TimeInterval) -> String? {
         guard let io, io.readbackBytes > 0 else { return nil }
         return Self.detail("Read back", bytes: io.readbackBytes,
-                           rate: io.readbackBytesPerSecond, lastUptime: io.lastReadbackUptime,
+                           rate: io.readbackBytesPerSecond,
+                           rateWindowStartUptime: io.readbackRateWindowStartUptime,
+                           lastUptime: io.lastReadbackUptime,
                            nowUptime: nowUptime, showsRate: showsLiveRate,
                            minimumRateUptime: minimumRateUptime)
     }
 
     private static func detail(_ label: String, bytes: Int64, rate: Double?,
+                               rateWindowStartUptime: TimeInterval?,
                                lastUptime: TimeInterval?, nowUptime: TimeInterval,
                                showsRate: Bool, minimumRateUptime: TimeInterval) -> String {
         let amount = ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
         guard showsRate, let rate, rate.isFinite, rate > 0,
+              let rateWindowStartUptime, rateWindowStartUptime >= minimumRateUptime,
               let lastUptime, lastUptime >= minimumRateUptime,
               nowUptime - lastUptime >= 0,
               nowUptime - lastUptime < 2 else { return "\(label) \(amount)" }
         let rateAmount = ByteCountFormatter.string(
             fromByteCount: Int64(min(rate, Double(Int64.max / 2))), countStyle: .file)
-        return "\(label) \(amount) · \(rateAmount)/s"
+        return "\(label) \(amount) · active \(rateAmount)/s"
     }
 
     var symbol: String {
@@ -362,6 +368,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
         progress: OperationProgress?,
         ioProgress: TransferIOProgress? = nil,
         minimumRateUptime: TimeInterval = 0,
+        nowUptime: TimeInterval = ProcessInfo.processInfo.systemUptime,
         phase: ProgressPhase
     ) -> [DestinationProgressRow] {
         let totals = progress?.perDestinationTotals
@@ -387,6 +394,15 @@ struct TransferProgressPresentation: Equatable, Sendable {
             } ?? DestinationVolumeLabel.name(for: url)
             let measured = ioProgress.flatMap { update in
                 update.destinations.indices.contains(index) ? update.destinations[index] : nil
+            }
+            if state == .waiting, phase == .copying,
+               let measured, measured.writtenBytes > 0,
+               let lastWrite = measured.lastWriteUptime,
+               lastWrite >= minimumRateUptime,
+               nowUptime - lastWrite >= 0, nowUptime - lastWrite < 2 {
+                // The first large file has no completed-file count yet.
+                // Successful recent writes prove this destination is active.
+                state = .copying
             }
             let showsIO = phase == .copying || phase == .verifying
                 || phase == .paused || phase == .resuming

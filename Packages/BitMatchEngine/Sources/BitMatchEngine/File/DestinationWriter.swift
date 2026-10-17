@@ -404,7 +404,7 @@ public final class PinnedDestinationFile: @unchecked Sendable {
 #endif
 
 public final class DestinationWriter {
-    typealias IOByteCallback = @Sendable (Int, TransferIOPhase, Int, TimeInterval) -> Void
+    typealias IOByteCallback = @Sendable (Int, TransferIOPhase, Int, TimeInterval, TimeInterval) -> Void
     struct SourceReadEvidence: Sendable {
         let digests: VerifiedDigests
         let identity: VerifiedFileIdentity
@@ -833,10 +833,9 @@ public final class DestinationWriter {
                                     file.destination.root.logicalRootURL,
                                     currentChunkIndex
                                 )
-                                let writeStarted = ProcessInfo.processInfo.systemUptime
-                                try writeAll(chunkData, to: file.temporaryFD)
-                                onIOBytes?(file.destination.index, .writing, chunkData.count,
-                                           ProcessInfo.processInfo.systemUptime - writeStarted)
+                                try writeAll(chunkData, to: file.temporaryFD) { count, seconds, ended in
+                                    onIOBytes?(file.destination.index, .writing, count, seconds, ended)
+                                }
                                 return FanOutWriteResult(file: file, error: nil)
                             } catch {
                                 return FanOutWriteResult(file: file, error: error)
@@ -1004,14 +1003,23 @@ public final class DestinationWriter {
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
     }
 
-    private static func writeAll(_ data: Data, to fd: Int32) throws {
+    private static func writeAll(
+        _ data: Data,
+        to fd: Int32,
+        onWritten: (Int, TimeInterval, TimeInterval) -> Void
+    ) throws {
         try data.withUnsafeBytes { rawBuffer in
             guard let base = rawBuffer.baseAddress else { return }
             var written = 0
             while written < rawBuffer.count {
+                let started = ProcessInfo.processInfo.systemUptime
                 let count = Darwin.write(fd, base.advanced(by: written), rawBuffer.count - written)
                 if count > 0 {
                     written += count
+                    // Count successful syscalls even if a later write for the
+                    // same chunk fails and the temporary file is discarded.
+                    let ended = ProcessInfo.processInfo.systemUptime
+                    onWritten(count, ended - started, ended)
                 } else if count < 0, errno == EINTR {
                     continue
                 } else {
@@ -1537,16 +1545,16 @@ public final class DestinationWriter {
             try await PauseGate.waitIfCurrentIsPaused()
             // Bound temporary Foundation allocations to this chunk, even when
             // the pause gate returns without suspending the task.
-            let (count, readSeconds) = try autoreleasepool { () throws -> (Int, TimeInterval) in
+            let (count, readSeconds, readEnded) = try autoreleasepool { () throws -> (Int, TimeInterval, TimeInterval) in
                 let readStarted = ProcessInfo.processInfo.systemUptime
                 let data = try handle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-                let readSeconds = ProcessInfo.processInfo.systemUptime - readStarted
+                let readEnded = ProcessInfo.processInfo.systemUptime
                 if !data.isEmpty { consume(data) }
-                return (data.count, readSeconds)
+                return (data.count, readEnded - readStarted, readEnded)
             }
             if count == 0 { break }
             hooks?.destinationDidRead?(destinationIndex, relativePath, count)
-            onIOBytes?(destinationIndex, .readingBack, count, readSeconds)
+            onIOBytes?(destinationIndex, .readingBack, count, readSeconds, readEnded)
             bytesRead += Int64(count)
             if ordinal != nil, bytesRead >= nextBreadcrumb {
                 nextBreadcrumb += verifyReadBreadcrumbInterval
@@ -1595,21 +1603,22 @@ public final class DestinationWriter {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
             // Drain each chunk's buffers; see readPinnedDestination.
-            let (sourceCount, destinationCount, same, readSeconds) = try autoreleasepool { () throws -> (Int, Int, Bool, TimeInterval) in
+            let (sourceCount, destinationCount, same, readSeconds, readEnded) = try autoreleasepool { () throws -> (Int, Int, Bool, TimeInterval, TimeInterval) in
                 let sourceRead = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
                 let sourceData = try hooks?.transformVerificationSourceRead?(relativePath, sourceRead) ?? sourceRead
                 guard sourceData.count == sourceRead.count else { throw sourceChangedError() }
                 let readStarted = ProcessInfo.processInfo.systemUptime
                 let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
-                let readSeconds = ProcessInfo.processInfo.systemUptime - readStarted
-                return (sourceData.count, destinationData.count, sourceData == destinationData, readSeconds)
+                let readEnded = ProcessInfo.processInfo.systemUptime
+                return (sourceData.count, destinationData.count, sourceData == destinationData,
+                        readEnded - readStarted, readEnded)
             }
             guard sourceCount > 0, destinationCount > 0 else {
                 throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
             }
             hooks?.verificationSourceDidRead?(relativePath, sourceCount)
             hooks?.destinationDidRead?(destinationIndex, relativePath, destinationCount)
-            onIOBytes?(destinationIndex, .readingBack, destinationCount, readSeconds)
+            onIOBytes?(destinationIndex, .readingBack, destinationCount, readSeconds, readEnded)
             if !same { return false }
             bytesRead += Int64(sourceCount)
         }

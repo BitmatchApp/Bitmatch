@@ -384,7 +384,8 @@ private struct DestinationProgressRowView: View {
         .padding(.vertical, 9)
         .padding(.horizontal, 2)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .help(row.helpPath)
+        .help(row.io == nil ? row.helpPath :
+              "\(row.helpPath)\nRates measure active file reads and writes, not full-transfer or durable-storage speed.")
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Destination \(row.name), \(row.stateLabel)")
         .accessibilityValue([

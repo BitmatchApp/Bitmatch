@@ -9,6 +9,32 @@ import Darwin
 
 struct FanOutTests {
     @Test
+    func copyStageStartsBeforeFirstLargeFileFinishes() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "copy-stage-before-result")
+            defer { fixture.cleanup() }
+            try fixture.write(Data(repeating: 0x41, count: 4 * 1024 * 1024 + 1), to: "clip.bin")
+            let updates = Mutex<[OperationProgress]>([])
+            _ = try await fixture.pipeline(hooks: .init()).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: CameraLabelSettings(),
+                progressCallback: { update in updates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let stages = updates.withLock { $0 }
+            #expect(stages.first?.currentStage == .preparing)
+            #expect(stages.contains {
+                $0.currentStage == .copying && $0.filesProcessed == 0
+                    && $0.perDestinationCompleted == [0, 0]
+            })
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
     func liveIOCountsRealWritesAndReadbackWithoutChangingTheVerdict() async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)

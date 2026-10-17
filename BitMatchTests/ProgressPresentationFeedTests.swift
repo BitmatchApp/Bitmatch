@@ -50,6 +50,7 @@ struct ProgressPresentationFeedTests {
         coordinator.liveProgress.ioProgress = TransferIOProgress(sequence: 1, destinations: [
             DestinationIOProgress(writtenBytes: 1, readbackBytes: 0,
                                   writeBytesPerSecond: nil, readbackBytesPerSecond: nil,
+                                  writeRateWindowStartUptime: nil, readbackRateWindowStartUptime: nil,
                                   lastWriteUptime: nil, lastReadbackUptime: nil)
         ])
         #expect(await waitUntil { coordinator.progressPresentation.fileCountTotal == 4 })
