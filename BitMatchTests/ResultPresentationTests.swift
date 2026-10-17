@@ -21,6 +21,10 @@ final class ResultPresentationTests: XCTestCase {
 
         XCTAssertEqual(presentation.detail, "Copied to 1 destination and verified.")
         XCTAssertFalse(presentation.detail.contains("2 destinations"))
+        XCTAssertEqual(
+            presentation.sourceGuidance,
+            "BitMatch read every file on every backup and checked it against the bytes it read from the card."
+        )
     }
 
     func testLiveRowsNameDestinationOnlyWhenBackupsAreMixed() {
@@ -169,7 +173,11 @@ final class ResultPresentationTests: XCTestCase {
         )
 
         XCTAssertEqual(presentation.title, "Transfer failed")
-        XCTAssertEqual(presentation.sourceGuidance, "Do not erase the card. Nothing here has been confirmed safe.")
+        XCTAssertEqual(
+            presentation.detail,
+            "The transfer did not finish safely. Review any recorded results below."
+        )
+        XCTAssertEqual(presentation.sourceGuidance, "Do not erase the card. The transfer did not finish safely.")
     }
 
     func testVisibleRowsCapsMoreThanOneThousandIssuesWithoutTrapping() {
