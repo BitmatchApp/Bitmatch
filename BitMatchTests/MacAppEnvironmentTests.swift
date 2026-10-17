@@ -6,6 +6,30 @@ import Testing
 /// job view model; none keeps its own copy.
 @MainActor
 struct MacAppEnvironmentTests {
+    #if DEBUG
+    @Test func unitTestHostDoesNotStartLiveDriveMonitoring() {
+        #expect(MacUnitTestHost.isRunning())
+        #expect(MacUnitTestHost.isRunning(environment: ["XCTestConfigurationFilePath": "/tmp/test.xctest"]))
+        #expect(MacUnitTestHost.isRunning(environment: ["XCTestBundlePath": "/tmp/BitMatchTests.xctest"]))
+        #expect(!MacUnitTestHost.isRunning(environment: [:]))
+
+        // The real singleton is reached by test models and the Mac setup
+        // view. Its initializer must not scan /Volumes in this process.
+        #expect(!VolumeMonitorService.shared.startedLiveMonitoring)
+        #expect(!VolumeMonitorService.shared.scannedExistingVolumes)
+    }
+
+    @Test func unitTestHostKeepsStateOutOfTheUsersStores() {
+        let environment = MacAppEnvironment.makeForUnitTestHost()
+        let coordinator = environment.coordinator
+        #expect(coordinator.defaults !== UserDefaults.standard)
+        #expect(coordinator.transferJournal.fileURL == MacUnitTestHost.journalURL)
+        #expect(!environment.remoteBackups.hasRemoteQueueForTests)
+        #expect(!VolumeMonitorService.shared.startedLiveMonitoring)
+        #expect(!VolumeMonitorService.shared.scannedExistingVolumes)
+    }
+    #endif
+
     private func makeEnvironment() throws -> (MacAppEnvironment, CoordinatorFolders) {
         let folders = try CoordinatorFolders()
         let coordinator = SharedAppCoordinator(

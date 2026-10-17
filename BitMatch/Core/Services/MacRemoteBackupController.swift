@@ -19,6 +19,9 @@ final class MacRemoteBackupController: ObservableObject {
     let photographerJobViewModel: PhotographerJobViewModel
     private let results: () -> [ResultRow]
     private var remoteBackupQueue: RemoteBackupQueue?
+    #if DEBUG
+    var hasRemoteQueueForTests: Bool { remoteBackupQueue != nil }
+    #endif
     private var remoteBackupTimer: Timer?
     private var remoteSchedulerIsRunning = false
     private var remoteSchedulerNeedsRun = false
