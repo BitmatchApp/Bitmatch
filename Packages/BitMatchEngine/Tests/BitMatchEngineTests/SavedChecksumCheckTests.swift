@@ -149,6 +149,93 @@ struct SavedChecksumCheckTests {
         #expect(result.records.allSatisfy { $0.kind == .bitMatchReport })
     }
 
+    @Test func markedIncompleteHistoryBlocksEvenAnAdjacentReport() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+        try Data("interrupted".utf8).write(to: history.appendingPathComponent(ASCMHLGenerator.publicationStatusName))
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await makeChecker().discover(under: root)
+        }
+    }
+
+    @Test func malformedFATCompletionNameCannotEscapeHistoryOrUseAdjacentReport() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+        let manifest = Data("outside history".utf8)
+        let chain = Data("chain".utf8)
+        try chain.write(to: history.appendingPathComponent("ascmhl_chain.xml"))
+        let prefixDirectory = history.appendingPathComponent("0001_BitMatch_FAT_2026", isDirectory: true)
+        try FileManager.default.createDirectory(at: prefixDirectory, withIntermediateDirectories: false)
+        try manifest.write(to: root.appendingPathComponent("outside.mhl"))
+        let traversal = "0001_BitMatch_FAT_2026/../../outside.mhl"
+        let trailingNewline = "0001_BitMatch_FAT_2026-10-17_120000Z.mhl\n"
+        try manifest.write(to: history.appendingPathComponent(trailingNewline))
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        for invalidName in [traversal, trailingNewline] {
+            let bytes = ASCMHLGenerator.publicationOpening
+                + ASCMHLGenerator.publicationCompletion(name: invalidName, manifest: manifest, chain: chain)
+            try bytes.write(to: status)
+            #expect(try !ASCMHLGenerator.publicationIsComplete(at: status))
+            await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+                _ = try await makeChecker().discover(under: root)
+            }
+        }
+    }
+
+    @Test func markerAppearingAfterDiscoveryStopsTheSavedCheck() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try writeFile("clip.mov", text: "original", under: root)
+        try writeMHL(root: root, path: "clip.mov", sha256: sha256("original"))
+        let checker = makeChecker()
+        let discovery = try await checker.discover(under: root)
+        try Data("interrupted".utf8).write(
+            to: root.appendingPathComponent("ascmhl").appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        )
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.check(discovery) { _ in }
+        }
+    }
+
+    @Test func caseChangedFATManifestWithoutStatusBlocksAdjacentReport() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        let history = root.appendingPathComponent("ascmhl", isDirectory: true)
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+        try Data("partial history".utf8).write(to: history.appendingPathComponent("0001_BITMATCH_FAT_2026-10-17.MHL"))
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await makeChecker().discover(under: root)
+        }
+    }
+
+    @Test func statusAppearingAfterCheckBeginsStopsIntactVerdict() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try writeFile("clip.mov", text: "original", under: root)
+        try writeMHL(root: root, path: "clip.mov", sha256: sha256("original"))
+        let checker = makeChecker()
+        let discovery = try await checker.discover(under: root)
+        let status = root.appendingPathComponent("ascmhl").appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.check(discovery) { progress in
+                if progress.filesProcessed == 0 {
+                    _ = FileManager.default.createFile(atPath: status.path, contents: Data("interrupted".utf8))
+                }
+            }
+        }
+        #expect(FileManager.default.fileExists(atPath: status.path))
+    }
+
     @Test func oneChangedByteIsAMismatch() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

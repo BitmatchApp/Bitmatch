@@ -22,16 +22,11 @@ The supplied tests were reviewed and extended: they now assert the mounted files
 
 ## Publication contract
 
-The fast path remains `renameatx_np(RENAME_EXCL)`. Only unsupported-operation errors take the fallback:
+The later race fix keeps `renameatx_np(RENAME_EXCL)` for filesystems that support it. FAT-family volumes take a separate direct path because exFAT returned `ENOTSUP` (errno 45) for exclusive directory rename, and replacing a claimed empty directory with plain `renameat` could replace another writer's substituted directory.
 
-1. Write and synchronize the complete manifest and chain in a private staging directory relative to the pinned destination descriptor.
-2. Exclusively reserve `ascmhl` with `mkdirat`. Any existing file, symlink or directory at that name refuses the reservation.
-3. Check cancellation, source separation and the reservation's directory identity.
-4. Rename the staging directory over that owned empty reservation. A directory rename cannot replace a nonempty history. No public history is populated file by file.
+On FAT, BitMatch now reserves `ascmhl` once with `mkdirat`, opens that exact directory without following links, and durably writes a neutral status file **before** the public manifest or chain. It writes those two ASC files through the pinned descriptor with exclusive creation, rereads and checks their bytes and identities, then appends a completion record through its pinned status descriptor. That record binds the exact manifest and chain sizes and SHA-256 values. BitMatch never renames over or removes the public claim or status name. Check refuses the incomplete status, mismatched completion, and a FAT-tagged partial manifest whose status was removed, even if another BitMatch report exists nearby.
 
-An interruption before step 4 can leave an empty `ascmhl` reservation; it has no manifest or chain and is never reported as complete. A later attempt refuses it rather than guessing that it is safe to delete. Review an interrupted reservation before retrying. A process death can also leave a hidden staging directory. The patch does not automatically recover or delete these artifacts.
-
-Real-exFAT tests prove successful handoff, refusal of an existing history, preservation of a file added inside the reserved directory before publication, and absence of a complete history after interruption. The source remains untouched. Destination readback and checksum/identity validation remain mandatory.
+An interruption may leave an empty reservation or partial files. A later attempt refuses that history rather than deleting or replacing it. Unsupported non-FAT filesystems fail closed if exclusive rename is unavailable; a failed private stage is left untouched. Real-exFAT tests cover successful Standard copy/readback → MHL, interruption after both files, preserved existing histories, and no orphan stage after a successful FAT publication. The pinned ASC reference CLI accepts the completed extra-status history, verifies the media, and can append a generation. BitMatch Check currently refuses an externally extended chain because its own completion record binds the initial chain bytes. FAT32, physical drives and power-loss behavior remain untested. None of this establishes the cause of the reporter's interruption; the source remains untouched and destination readback stays mandatory.
 
 ## Progress
 

@@ -52,11 +52,13 @@ public struct SavedChecksumCheck: Sendable {
         public let root: URL
         public let expectedFiles: [String: ExpectedFile]
         public let records: [Record]
+        public let publicationStatuses: [URL]
 
-        public init(root: URL, expectedFiles: [String: ExpectedFile], records: [Record]) {
+        public init(root: URL, expectedFiles: [String: ExpectedFile], records: [Record], publicationStatuses: [URL] = []) {
             self.root = root
             self.expectedFiles = expectedFiles
             self.records = records
+            self.publicationStatuses = publicationStatuses
         }
 
         public var newestRecordDate: Date { records.map(\.date).max() ?? .distantPast }
@@ -121,6 +123,7 @@ public struct SavedChecksumCheck: Sendable {
 
         let files = try await fileAccess.getFileList(from: root)
         try Task.checkCancellation()
+        let statuses = try Self.validPublicationStatuses(in: files, under: canonicalRoot)
         let reports = files.filter { Self.isBitMatchReport($0, under: canonicalRoot) }
         var reportEntries: [ExpectedFile] = []
         for reportURL in reports {
@@ -128,7 +131,7 @@ public struct SavedChecksumCheck: Sendable {
             reportEntries.append(contentsOf: try Self.readReport(reportURL, root: canonicalRoot))
         }
         if !reportEntries.isEmpty {
-            return Self.makeDiscovery(root: canonicalRoot, entries: reportEntries)
+            return Self.makeDiscovery(root: canonicalRoot, entries: reportEntries, publicationStatuses: statuses)
         }
 
         let histories = files.filter { Self.isMHLHistory($0, under: canonicalRoot) }
@@ -141,7 +144,7 @@ public struct SavedChecksumCheck: Sendable {
             mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot))
         }
         guard !mhlEntries.isEmpty else { throw CheckError.notFound }
-        return Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries)
+        return Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries, publicationStatuses: statuses)
     }
 
     /// Re-reads every recorded file, reports ordered progress, and identifies
@@ -155,6 +158,11 @@ public struct SavedChecksumCheck: Sendable {
         defer { if scoped { fileAccess.stopAccessing(url: root) } }
 
         let files = try await fileAccess.getFileList(from: root)
+        try Task.checkCancellation()
+        let statuses = try Self.validPublicationStatuses(in: files, under: root)
+        guard statuses == discovery.publicationStatuses else {
+            throw CheckError.unreadableEvidence
+        }
         let resolver = RelativePathResolver(base: root)
         var actual: [String: URL] = [:]
         actual.reserveCapacity(files.count)
@@ -195,6 +203,11 @@ public struct SavedChecksumCheck: Sendable {
         }
 
         try Task.checkCancellation()
+        let finalFiles = try await fileAccess.getFileList(from: root)
+        try Task.checkCancellation()
+        guard try Self.validPublicationStatuses(in: finalFiles, under: root) == discovery.publicationStatuses else {
+            throw CheckError.unreadableEvidence
+        }
         let newPaths = Set(actual.keys).subtracting(expected.keys).sorted()
         let used = Set(expected.values.map(\.record.url))
         return Result(
@@ -379,6 +392,27 @@ public struct SavedChecksumCheck: Sendable {
         return relative.split(separator: "/").contains { $0.caseInsensitiveCompare("ascmhl") == .orderedSame }
     }
 
+    private static func isPublicationStatus(_ url: URL, under root: URL) -> Bool {
+        guard url.lastPathComponent.caseInsensitiveCompare(ASCMHLGenerator.publicationStatusName) == .orderedSame,
+              let relative = try? RelativePathResolver(base: root).resolve(url) else { return false }
+        let parts = relative.split(separator: "/")
+        return parts.count >= 2 && parts[parts.count - 2].caseInsensitiveCompare("ascmhl") == .orderedSame
+    }
+
+    private static func validPublicationStatuses(in files: [URL], under root: URL) throws -> [URL] {
+        let statuses = files.filter { isPublicationStatus($0, under: root) }.sorted { $0.path < $1.path }
+        let statusDirectories = Set(statuses.map { $0.deletingLastPathComponent().path })
+        let fatDirectories = Set(files.filter { url in
+            url.lastPathComponent.lowercased().hasPrefix(ASCMHLGenerator.fatManifestPrefix.lowercased())
+                && isMHLHistory(url, under: root)
+        }.map { $0.deletingLastPathComponent().path })
+        guard fatDirectories.isSubset(of: statusDirectories) else { throw CheckError.unreadableEvidence }
+        for status in statuses {
+            guard try ASCMHLGenerator.publicationIsComplete(at: status) else { throw CheckError.unreadableEvidence }
+        }
+        return statuses
+    }
+
     private static func isMHLMetadataCompanion(_ url: URL) throws -> Bool {
         guard url.lastPathComponent.hasPrefix("._") else { return false }
         guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
@@ -517,7 +551,7 @@ public struct SavedChecksumCheck: Sendable {
         }
     }
 
-    private static func makeDiscovery(root: URL, entries: [ExpectedFile]) -> Discovery {
+    private static func makeDiscovery(root: URL, entries: [ExpectedFile], publicationStatuses: [URL]) -> Discovery {
         let sorted = entries.sorted {
             if $0.record.date != $1.record.date { return $0.record.date < $1.record.date }
             return $0.record.url.path < $1.record.url.path
@@ -532,7 +566,7 @@ public struct SavedChecksumCheck: Sendable {
             if $0.date != $1.date { return $0.date > $1.date }
             return $0.url.path < $1.url.path
         }
-        return Discovery(root: root, expectedFiles: expected, records: records)
+        return Discovery(root: root, expectedFiles: expected, records: records, publicationStatuses: publicationStatuses)
     }
 
     private static func progress(processed: Int, total: Int, path: String?) -> OperationProgress {
