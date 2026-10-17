@@ -50,7 +50,7 @@ enum ReportExporter {
             try? PhotographerReportPayload.make(context: $0, results: results, finishedAt: finished)
         }
 
-        let summary = ReportSummary(
+        var summary = ReportSummary(
             jobID: jobID,
             started: started,
             finished: finished,
@@ -79,6 +79,9 @@ enum ReportExporter {
             notes: EvidenceWriter.normalizedNotes(reportPrefs.notes),
             safetyState: safetyState
         )
+        if mode == .copyAndVerify, let selectedMode = prefs.verificationMode {
+            summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results)
+        }
 
         let shouldGenerateFullReport = generateFullReport && prefs.makeReport
 
@@ -154,10 +157,15 @@ enum ReportExporter {
         let files = Set(record.results.map(\.path)).count
         let start = record.startedAt ?? record.createdAt
         let finish = record.endedAt ?? start
-        let notes = [EvidenceWriter.normalizedNotes(record.reportSettings.notes), record.summary,
+        let safetyState = TransferLibraryPresentation.safetyState(for: record)
+        // The saved summary may say "verified" even when the saved rows or
+        // selected-file plan do not support that verdict. Keep it in the
+        // History record/CSV/JSON, but omit it from unsafe regenerated PDFs.
+        let notes = [EvidenceWriter.normalizedNotes(record.reportSettings.notes),
+            safetyState == .safeToErase ? record.summary : nil,
             "Regenerated from saved history. No new verification was performed. Recorded results only.",
             record.startedAt == nil || record.endedAt == nil ? "Some original transfer timing is unavailable." : nil].compactMap { $0 }.joined(separator: "\n")
-        let summary = ReportSummary(jobID: record.id, started: start, finished: finish, mode: .copyAndVerify,
+        var summary = ReportSummary(jobID: record.id, started: start, finished: finish, mode: .copyAndVerify,
             source: record.source.url.path, destinations: record.destinations.map { $0.url.path }, totalFiles: files,
             matched: record.results.filter(\.isVerifiedStatus).count,
             issues: record.results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count,
@@ -167,8 +175,17 @@ enum ReportExporter {
             totalBytesProcessed: recordedBytes, averageSpeed: 0,
             copyDurationSeconds: record.copyDurationSeconds, verifyDurationSeconds: record.verifyDurationSeconds,
             clientLogoData: nil, companyLogoData: nil, photographyJob: nil, operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName), notes: notes,
-            safetyState: TransferLibraryPresentation.safetyState(for: record),
+            safetyState: safetyState,
             hasRecordedTiming: record.startedAt != nil && record.endedAt != nil)
+        summary.verificationScope = VerificationScopeEvidence(selectedMode: record.verificationMode,
+            results: record.results, includeModePlan: record.plannedFileCounts != nil)
+        if record.plannedFileCounts == nil {
+            summary.verificationScopeNote = "Original selected-file plan was not saved; this export describes recorded results only."
+        } else if TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false {
+            summary.verificationScopeNote = "Saved results do not cover the selected-file plan."
+        } else if [.interrupted, .cancelled, .failed].contains(record.state) {
+            summary.verificationScopeNote = "Attempt ended before completion; the selected mode does not mean every check finished."
+        }
         try Task.checkCancellation()
         return await MainActor.run { ReportPDFRenderer.renderPDF(summary: summary, results: record.results, thumbnails: thumbnails) }
     }

@@ -97,4 +97,31 @@ struct QueueAdmissionTests {
         let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
         #expect(try encoder.encode(decoded.last) == encoder.encode(JSONDecoder().decode(LocalTransferRecord.self, from: original)))
     }
+
+    @Test func priorBackupHintRequiresEveryPlannedFileExactlyOnce() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        func row(_ name: String) -> ResultRow {
+            ResultRow(path: name, status: ResultOutcome.verified.statusText, size: 1,
+                      checksum: "fixture", destination: "Backup",
+                      destinationPath: f.backup.appendingPathComponent(name).path)
+        }
+        func complete(plan: [Int]?, results: [ResultRow], fingerprint: String) throws {
+            let id = try f.journal.enqueue(sourceURL: f.source, destinationURLs: [f.backup],
+                                           verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                           reportSettings: ReportPrefs())
+            try f.journal.markRunning(id: id)
+            if let plan { try f.journal.recordPlan(id: id, fileCounts: plan) }
+            try f.journal.finish(id: id, results: results, summary: "Done", hadIssues: false,
+                                 sourceFingerprint: fingerprint)
+        }
+        try complete(plan: [2], results: [row("a.mov")], fingerprint: "missing")
+        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "missing") == nil)
+        try complete(plan: [2], results: [row("a.mov"), row("a.mov")], fingerprint: "duplicate")
+        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "duplicate") == nil)
+        try complete(plan: [2], results: [row("a.mov"), row("b.mov")], fingerprint: "complete")
+        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "complete") != nil)
+        try complete(plan: nil, results: [row("a.mov")], fingerprint: "legacy")
+        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "legacy") != nil)
+    }
 }

@@ -71,7 +71,21 @@ struct ReportView: View {
     }
 
     private var verifiedFileCount: Int {
-        rows.filter(TransferOutcomePresentation.isVerified).count
+        // Older Quick records may carry a legacy "✅ Match" status. That
+        // text cannot turn a size-only check into content verification.
+        guard !selectedQuickMode else { return 0 }
+        return rows.filter(TransferOutcomePresentation.isVerified).count
+    }
+
+    private var selectedQuickMode: Bool {
+        s.verificationScope?.selectedMode == .quick || s.verificationMode == .quick
+    }
+
+    private func statusPresentation(for row: ResultRow) -> ResultStatusPresentation {
+        if selectedQuickMode && row.isSuccessStatus {
+            return ResultStatusPresentation(tone: .unverified, symbol: "doc.on.doc")
+        }
+        return ResultStatusPresentation.make(status: row.status)
     }
     
     private var issueCount: Int {
@@ -91,7 +105,10 @@ struct ReportView: View {
         if s.safetyState == .needsAttention, s.photographyJob == nil,
            excludedResultCount > 0, reportIssueRows.isEmpty, !selected.isEmpty,
            selected.allSatisfy(TransferOutcomePresentation.isVerified) {
-            return "Selected files verified. AppleDouble metadata was intentionally excluded; the whole card is not backed up."
+            if selectedQuickMode {
+                return "Quick mode did not verify file contents. AppleDouble metadata was intentionally excluded; the whole card was not backed up."
+            }
+            return "Recorded selected results are marked verified. AppleDouble metadata was intentionally excluded; the whole card is not backed up."
         }
         return Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob)
     }
@@ -300,7 +317,7 @@ struct ReportView: View {
     }
 
     private func pdfManifestRow(_ row: ResultRow, showPreview: Bool) -> some View {
-        let status = ResultStatusPresentation.make(status: row.status)
+        let status = statusPresentation(for: row)
         let source = ResultPathMatch.comparablePath(s.source)
         let path = ResultPathMatch.comparablePath(row.path)
         let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
@@ -419,12 +436,32 @@ struct ReportView: View {
     
     private var pdfSummarySection: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("\(s.mode == .copyAndVerify ? "Copy & Verify" : "Check") · \(s.verificationMethod)")
+            Text("\(s.mode == .copyAndVerify ? "Copy & Verify" : "Check") · \(s.verificationScope.map { "Selected \($0.selectedMode.rawValue)" } ?? s.verificationMethod)")
                 .font(.system(size: 12, weight: .semibold))
-            Text("\(s.totalFiles) \(s.totalFiles == 1 ? "file" : "files") · \(verifiedFileCount) verified \(verifiedFileCount == 1 ? "copy" : "copies") · \(issueCount) file \(issueCount == 1 ? "issue" : "issues") · \(totalSizeFormatted)")
-                .font(.system(size: 10))
+            if let scope = s.verificationScope {
+                let sourceNoun = scope.recordedSelectedSourceFiles == 1 ? "file" : "files"
+                let issueNoun = issueCount == 1 ? "issue" : "issues"
+                // A zero sum with no successful saved rows is not evidence
+                // that the source or attempted transfer was empty.
+                let byteSuffix = rows.contains(where: \.isSuccessStatus)
+                    ? " · \(s.totalBytesProcessed == 0 ? "0 B" : totalSizeFormatted)" : ""
+                Text("Saved: \(scope.recordedVerifiedResults)/\(scope.recordedSelectedResults) selected backup results marked verified · \(scope.recordedSelectedSourceFiles) recorded source \(sourceNoun) · \(issueCount) \(issueNoun)\(byteSuffix)")
+                    .font(.system(size: 10))
+                if let checks = scope.configuredChecks {
+                    Text("Check plan: \(checks)")
+                        .font(.system(size: 9)).foregroundColor(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } else {
+                Text("\(s.totalFiles) \(s.totalFiles == 1 ? "file" : "files") · \(verifiedFileCount) verified \(verifiedFileCount == 1 ? "copy" : "copies") · \(issueCount) file \(issueCount == 1 ? "issue" : "issues") · \(totalSizeFormatted)")
+                    .font(.system(size: 10))
+            }
             if rows.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
                 Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
+            }
+            if let note = s.verificationScopeNote {
+                Text(note).font(.system(size: 9)).foregroundColor(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             if s.hasRecordedTiming {
                 Text("Elapsed: \(duration)" + (s.averageSpeed > 0 ? " · \(throughput)" : ""))
@@ -754,7 +791,7 @@ struct ReportView: View {
     
     private func manifestDataRow(for row: ResultRow, compact: Bool = false) -> some View {
         HStack(spacing: compact ? 8 : 12) {
-            let status = ResultStatusPresentation.make(status: row.status)
+            let status = statusPresentation(for: row)
             Image(systemName: status.symbol)
                 .foregroundColor(status.color)
                 .font(.system(size: 10))
