@@ -638,7 +638,8 @@ public final class TransferJournal: Sendable {
             // A current transfer records the selected manifest size before
             // copying. A shorter or duplicated result set is incomplete even
             // if every retained row says it verified. Legacy nil-plan records
-            // keep their historical rule.
+            // keep their saved state for provenance; History and prior-backup
+            // hints cannot infer whole-card coverage from them.
             let incompletePlan = !Self.hasCompletePlannedResults(record)
             // A complete plan can still contain copied-but-unverified rows.
             // Only Quick mode intentionally accepts that outcome.
@@ -695,12 +696,11 @@ public final class TransferJournal: Sendable {
               groups.reduce(0, { $0 + $1.count }) == record.results.count,
               let expectedPaths = groups.first.map({ Set($0.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
-        if let plan = record.plannedFileCounts {
-            guard plan.count == groups.count,
-                  zip(plan, groups).allSatisfy({ expected, rows in
-                      expected > 0 && Set(rows.map(\.path)).count == expected
-                  }) else { return false }
-        }
+        guard let plan = record.plannedFileCounts,
+              plan.count == groups.count,
+              zip(plan, groups).allSatisfy({ expected, rows in
+                  expected > 0 && Set(rows.map(\.path)).count == expected
+              }) else { return false }
         return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
     }
 

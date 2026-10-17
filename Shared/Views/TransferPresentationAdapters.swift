@@ -79,7 +79,8 @@ extension TransferOutcomePresentation {
             canRetry: isFinished && record?.canRetry == true,
             canExport: isFinished,
             sourceName: record?.title ?? coordinator.sourceURL?.lastPathComponent ?? "",
-            completionReason: record?.summary ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
+            completionReason: record.map { recordedCompletionReason(for: $0) }
+                ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
             independentDestinationCount: record?.independentDestinationCount
         )
     }
@@ -104,5 +105,17 @@ extension TransferOutcomePresentation {
             // turn an active journal row into a verified finish.
             return .inProgress
         }
+    }
+
+    /// Keep the journal's original message in History and exports, but do not
+    /// repeat a legacy success claim on Finish when its selected-file plan is
+    /// missing and the shared saved verdict has been downgraded.
+    @MainActor
+    static func recordedCompletionReason(for record: LocalTransferRecord) -> String {
+        if record.plannedFileCounts == nil,
+           (record.state == .completed || record.quickOnlyUnverified == true) {
+            return "Original selected-file plan was not saved; whole-card coverage cannot be confirmed. Keep the source."
+        }
+        return record.summary
     }
 }

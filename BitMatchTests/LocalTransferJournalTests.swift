@@ -16,6 +16,7 @@ struct LocalTransferJournalTests {
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
         )
         try journal.markRunning(id: verifiedID)
+        try journal.recordPlan(id: verifiedID, fileCounts: [1])
         try journal.finish(
             id: verifiedID,
             results: [ResultRow(

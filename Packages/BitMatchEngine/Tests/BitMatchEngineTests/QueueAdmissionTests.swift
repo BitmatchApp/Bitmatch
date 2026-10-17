@@ -122,6 +122,7 @@ struct QueueAdmissionTests {
         try complete(plan: [2], results: [row("a.mov"), row("b.mov")], fingerprint: "complete")
         #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "complete") != nil)
         try complete(plan: nil, results: [row("a.mov")], fingerprint: "legacy")
-        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "legacy") != nil)
+        #expect(f.journal.records.first(where: { $0.sourceFingerprint == "legacy" })?.state == .completed)
+        #expect(f.journal.matchingVerifiedRecord(sourceFingerprint: "legacy") == nil)
     }
 }

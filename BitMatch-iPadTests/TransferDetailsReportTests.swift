@@ -28,10 +28,13 @@ struct TransferDetailsReportTests {
         #expect(scope["recordedSelectedResults"] as? Int == 1)
         #expect(scope["configuredChecks"] == nil)
         #expect(object["selectedFilePlanRecorded"] as? Bool == false)
+        #expect(object["savedVerdict"] as? String == "Needs attention")
+        #expect(object["savedSafeToErase"] as? Bool == false)
         let csv = String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self)
         #expect(csv.contains("\"operatorName\",\"Alex, \"\"DIT\"\"\""))
         #expect(csv.contains(record.reportSettings.notes))
         #expect(csv.contains("Original selected-file plan was not saved; export describes recorded results only"))
+        #expect(csv.contains("\"savedSafeToErase\",\"false\""))
         let pdfData = try await ReportExporter.historyPDF(record: record, includeThumbnails: false)
         let pdf = try #require(PDFDocument(data: pdfData))
         if let path = ProcessInfo.processInfo.environment["BITMATCH_WORKFLOW_SNAPSHOT_OUTPUT_DIR"]

@@ -62,6 +62,19 @@ struct TransferLibraryPresentationTests {
         #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
     }
 
+    @Test @MainActor func quickCopiedOnlyHistoryNeedsItsOriginalSelectedPlan() {
+        var record = PresentationTestSupport.record(state: .issues, verificationMode: .quick)
+        record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
+        record.quickOnlyUnverified = true
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .copiedNotVerified)
+
+        record.plannedFileCounts = nil
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
+        #expect(TransferOutcomePresentation.recordedCompletionReason(for: record).contains("selected-file plan was not saved"))
+        #expect(record.results.count == 1)
+    }
+
     /// Only a completed, checksum-verified transfer is green.
     /// Plant: in `TransferLibraryPresentation.stateLabel`, change the
     /// `.issues` label's `tone: .warning` to `tone: .verified`.
@@ -92,9 +105,10 @@ struct TransferLibraryPresentationTests {
         #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
         #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
 
-        // Old journals have no recorded plan; preserve their existing rule.
+        // An older journal can show verified rows without proving that they
+        // covered the selected source set.
         record.plannedFileCounts = nil
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .safeToErase)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
     }
 
     @Test func duplicateVerifiedPathCannotHideMissingPlannedFile() {
@@ -139,6 +153,29 @@ struct TransferLibraryPresentationTests {
         #expect(TransferOutcomePresentation.recordedState(for: record) == .failed)
     }
 
+    @Test @MainActor func legacyCompletedFinishDoesNotRepeatAnUnprovableSavedSuccess() throws {
+        var record = PresentationTestSupport.record(state: .completed)
+        record.plannedFileCounts = nil
+        record.summary = "Selected files verified"
+        record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
+
+        let reason = TransferOutcomePresentation.recordedCompletionReason(for: record)
+        let state = try #require(TransferOutcomePresentation.recordedState(for: record))
+        let finish = TransferOutcomePresentation.make(
+            state: state, rows: record.results, destinations: record.destinations.map(\.url),
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: nil, verificationMode: record.verificationMode,
+            canRetry: true, canExport: true, sourceName: record.title,
+            completionReason: reason
+        )
+
+        #expect(finish.safetyState == .needsAttention)
+        #expect(finish.visibleVerdictText.contains("Original selected-file plan was not saved"))
+        #expect(finish.visibleVerdictText.contains("Keep the source"))
+        #expect(!finish.visibleVerdictText.contains("Selected files verified"))
+        #expect(record.summary == "Selected files verified")
+    }
+
     @Test func completedHistoryRequiresEveryPlannedSelectedFileOncePerDestination() {
         var record = PresentationTestSupport.record(state: .completed)
         let destination = record.destinations[0].url
@@ -165,7 +202,7 @@ struct TransferLibraryPresentationTests {
         record.plannedFileCounts = nil
         record.results = [first]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == nil)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .safeToErase)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
     }
 
     @Test func plannedSelectedCountDoesNotIncludeAppleDoubleExclusions() {
@@ -476,6 +513,7 @@ private enum PresentationTestSupport {
             reportSettings: ReportPrefs(), generateASCMHL: true, projectID: nil
         )
         record.state = state
+        record.plannedFileCounts = [1]
         return record
     }
 }
