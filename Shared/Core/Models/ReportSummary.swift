@@ -22,6 +22,8 @@ struct ReportSummary {
     let company: String
     let verificationMethod: String
     var verificationMode: VerificationMode? = nil
+    var verificationScope: VerificationScopeEvidence? = nil
+    var verificationScopeNote: String? = nil
     let totalBytesProcessed: Int64
     let averageSpeed: Double // MB/s
     var copyDurationSeconds: TimeInterval? = nil
