@@ -151,7 +151,7 @@ actor RemoteBackupQueue {
     }
 
     func run(_ id: UUID) async {
-        guard !runningItemIDs.contains(id), isRunnable(id) else { return }
+        guard !Task.isCancelled, !runningItemIDs.contains(id), isRunnable(id) else { return }
         let runGeneration = runGenerations[id] ?? 0
         runningItemIDs.insert(id)
         defer { runningItemIDs.remove(id) }
@@ -389,6 +389,7 @@ actor RemoteBackupQueue {
             queuedItem.errorSummary = nil
         }) else { return }
 
+        try Task.checkCancellation()
         try await provider.upload(
             local: localURL,
             toTemporary: item.temporaryRemoteRelativePath,
@@ -433,6 +434,7 @@ actor RemoteBackupQueue {
         provider: any RemoteBackupProvider
     ) async throws {
         guard let item = items[itemID], isRunnable(itemID, runGeneration: runGeneration) else { return }
+        try Task.checkCancellation()
         try await provider.promoteNoReplace(
             temporary: item.temporaryRemoteRelativePath,
             final: item.remoteRelativePath
@@ -495,6 +497,7 @@ actor RemoteBackupQueue {
             return
         }
 
+        try Task.checkCancellation()
         let evidence = try await provider.verificationEvidence(
             for: items[itemID]?.remoteRelativePath ?? manifestEntry.relativePath,
             expectedSHA256: manifestEntry.sha256
@@ -581,10 +584,22 @@ actor RemoteBackupQueue {
               let item = items[itemID],
               !item.state.isTerminal,
               item.state != .paused else { return }
-        let backupError = (error as? RemoteBackupError) ?? .providerUnavailable
+        // A cancelled worker is an interruption, not a user cancellation. The
+        // explicit cancel action persists `.cancelled` and invalidates this run.
+        // Keep a concrete provider/integrity failure even if cancellation
+        // arrives while that error is propagating. Only a cancelled worker
+        // without a more specific failure is an interruption.
+        let backupError: RemoteBackupError
+        if let providerError = error as? RemoteBackupError {
+            backupError = providerError
+        } else if error is CancellationError || Task.isCancelled {
+            backupError = .interrupted
+        } else {
+            backupError = .providerUnavailable
+        }
 
         do {
-            if backupError.isTransientNetworkFault {
+            if backupError.isTransientNetworkFault && !Task.isCancelled {
                 let retryCount = item.retryCount + 1
                 if retryCount > Self.maxRetryCount {
                     _ = try await transition(itemID: itemID) { queuedItem in
@@ -606,7 +621,7 @@ actor RemoteBackupQueue {
                     }
                 }
             } else {
-                _ = try await transition(itemID: itemID) { queuedItem in
+                _ = try await transition(itemID: itemID, allowingTaskCancellation: true) { queuedItem in
                     // Keep the promotion-intent marker only for recoverable
                     // verification/promotion interruptions. Invalid persisted
                     // linkage, a digest mismatch, conflict, or resume
@@ -614,6 +629,10 @@ actor RemoteBackupQueue {
                     if item.state != .verifying || clearsPromotionIntent(backupError) {
                         queuedItem.state = backupError.failClosedState
                         queuedItem.promotionIntent = false
+                    } else {
+                        // Preserve recovery of an owned final, but stop
+                        // automatic retries until local evidence is valid.
+                        queuedItem.state = .paused
                     }
                     queuedItem.nextAttemptAt = nil
                     queuedItem.errorSummary = backupError.errorDescription
@@ -645,12 +664,14 @@ actor RemoteBackupQueue {
     private func transition(
         itemID: UUID,
         allowingCancellation: Bool = false,
+        allowingTaskCancellation: Bool = false,
         _ change: (inout RemoteQueueItem) -> Void
     ) async throws -> Bool {
         guard var updatedItem = deferredWrites[itemID]?.item ?? items[itemID],
               allowingCancellation || !cancellingItemIDs.contains(itemID) else {
             return false
         }
+        if !allowingCancellation && !allowingTaskCancellation { try Task.checkCancellation() }
         change(&updatedItem)
         updatedItem.updatedAt = now()
         let generation = nextMutationGeneration(for: itemID)
