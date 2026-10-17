@@ -87,6 +87,47 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         }
     }
 
+    /// Inspect the final public name without creating any missing parent
+    /// directory or following a substituted symlink. Coverage uses this to
+    /// compare the current file with the inode that supplied readback bytes.
+    func currentRegularFileIdentity(at relativePath: String) throws -> VerifiedFileIdentity? {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard !components.isEmpty else { return nil }
+        for component in components { try Self.validate(component: component) }
+
+        var currentFD = Darwin.dup(directoryFD)
+        guard currentFD >= 0 else { throw Self.posixError("Unable to inspect pinned destination directory") }
+        defer { _ = Darwin.close(currentFD) }
+        for component in components.dropLast() {
+            let childFD = component.withCString {
+                openat(currentFD, $0, O_SEARCH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            }
+            if childFD < 0 {
+                if errno == ENOENT || errno == ENOTDIR || errno == ELOOP { return nil }
+                throw Self.posixError("Unable to inspect destination folder")
+            }
+            _ = Darwin.close(currentFD)
+            currentFD = childFD
+        }
+
+        var info = stat()
+        let status = components[components.count - 1].withCString {
+            fstatat(currentFD, $0, &info, AT_SYMLINK_NOFOLLOW)
+        }
+        if status < 0 {
+            if errno == ENOENT || errno == ENOTDIR || errno == ELOOP { return nil }
+            throw Self.posixError("Unable to inspect destination file")
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+        return VerifiedFileIdentity(
+            device: UInt64(info.st_dev), inode: UInt64(info.st_ino), size: Int64(info.st_size),
+            modificationSeconds: Int64(info.st_mtimespec.tv_sec),
+            modificationNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+            changeSeconds: Int64(info.st_ctimespec.tv_sec),
+            changeNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+        )
+    }
+
     /// Opens a destination file below the pinned directory. The returned
     /// descriptor, not `logicalRootURL`, is the authority for subsequent
     /// reads. This is deliberately separate from the display URL above.
@@ -350,6 +391,22 @@ public final class PinnedDestinationFile: @unchecked Sendable {
             throw DestinationWriter.existingDestinationConflictError("Existing destination item is not a regular file")
         }
         return info
+    }
+
+    /// A pinned descriptor may remain readable after its final name has been
+    /// replaced. Verify that the name still identifies this exact file.
+    func nameStillMatchesPinnedFile(_ pinned: stat) -> Bool {
+        var current = stat()
+        let status = name.withCString { fstatat(parentFD, $0, &current, AT_SYMLINK_NOFOLLOW) }
+        return status == 0
+            && (current.st_mode & S_IFMT) == S_IFREG
+            && current.st_dev == pinned.st_dev
+            && current.st_ino == pinned.st_ino
+            && current.st_size == pinned.st_size
+            && current.st_mtimespec.tv_sec == pinned.st_mtimespec.tv_sec
+            && current.st_mtimespec.tv_nsec == pinned.st_mtimespec.tv_nsec
+            && current.st_ctimespec.tv_sec == pinned.st_ctimespec.tv_sec
+            && current.st_ctimespec.tv_nsec == pinned.st_ctimespec.tv_nsec
     }
 
     public func inspectClipIntegrity() throws -> ClipIntegrityFinding {
@@ -1563,7 +1620,8 @@ public final class DestinationWriter {
             }
         }
         let final = try destination.snapshot()
-        guard bytesRead == Int64(initial.st_size), pinnedFileRemainedStable(initial, final) else {
+        guard bytesRead == Int64(initial.st_size), pinnedFileRemainedStable(initial, final),
+              destination.nameStillMatchesPinnedFile(final) else {
             throw NSError(
                 domain: "DestinationWriter",
                 code: -11,

@@ -117,6 +117,14 @@ public actor RunLedger {
 
     public func results() -> [FileOperationResult] { rows }
 
+    func result(relativePath: String, destination: Int) -> FileOperationResult? {
+        guard let index = rowIndex[FileResultKey(
+            sourceRelativePath: relativePath,
+            destinationIndex: destination
+        )] else { return nil }
+        return rows[index]
+    }
+
     /// Completion coverage gates add failures for rows that were successful.
     /// They must not replace a more specific copy or verification failure.
     func alreadyFailed(relativePath: String, destination: Int) -> Bool {
@@ -1068,6 +1076,31 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     )
                     await onFileResult?(failure)
                     continue
+                }
+                if operation.verificationMode != .quick {
+                    let verifiedIdentity = await ledger.result(
+                        relativePath: entry.relativePath,
+                        destination: destIndex
+                    )?.verificationResult?.destinationReadIdentity
+                    let currentIdentity = try? pinned.currentRegularFileIdentity(at: entry.relativePath)
+                    if verifiedIdentity == nil || currentIdentity != verifiedIdentity {
+                        let reason = "\(destinationURL.lastPathComponent)'s \(entry.relativePath) changed or could not be rechecked after verification. Keep the source media."
+                        let failure = FileOperationResult(
+                            sourceURL: entry.url,
+                            destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
+                            success: false,
+                            error: completionGateError(reason),
+                            fileSize: entry.size,
+                            verificationResult: nil,
+                            processingTime: 0
+                        )
+                        await ledger.record(
+                            failure,
+                            relativePath: entry.relativePath,
+                            destination: destIndex
+                        )
+                        await onFileResult?(failure)
+                    }
                 }
             }
         }
