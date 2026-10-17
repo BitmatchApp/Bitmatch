@@ -1,6 +1,17 @@
 import Foundation
 import BitMatchEngine
 
+/// Keep older Quick rows' original status in the journal, but present their
+/// successful copy as unverified everywhere a person reads it.
+enum TransferHistoryResultPresentation {
+    static func statusText(for row: ResultRow, mode: VerificationMode) -> String {
+        if mode == .quick && row.isSuccessStatus {
+            return "Copied · contents not verified"
+        }
+        return row.status
+    }
+}
+
 /// What History shows for each journal record, and which records raise the
 /// "review in History" banner on Mac, iPad and iPhone.
 /// Pure values, so every platform shows the same state the same way.

@@ -660,17 +660,24 @@ struct LocalTransferJournalTests {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .quick,
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         try journal.markRunning(id: id)
-        try journal.finish(id: id, results: [ResultRow(path: "file", status: "✅ Copied", size: 1, checksum: nil, destination: "Backup")],
+        try journal.finish(id: id, results: [ResultRow(path: "file", status: "✅ Match", size: 1, checksum: nil, destination: "Backup")],
                            summary: "Done", hadIssues: false)
         let record = try #require(journal.records.first)
+        #expect(record.results.first?.status == "✅ Match")
         let csv = try TransferHistoryDocument(record: record, asCSV: true)
         let csvText = String(decoding: csv.data, as: UTF8.self)
         #expect(csvText.contains("verification,transfer_state,transfer_summary"))
         #expect(csvText.contains("\"Quick\",\"issues\""))
         #expect(csvText.contains("Quick mode only compares file sizes"))
+        #expect(csvText.contains("reused,recorded_status"))
+        #expect(csvText.contains("\"Copied · contents not verified\""))
+        #expect(csvText.contains("\"✅ Match\""))
         let json = try TransferHistoryDocument(record: record, asCSV: false)
         let payload = try #require(JSONSerialization.jsonObject(with: json.data) as? [String: Any])
         #expect(payload["state"] as? String == "issues")
+        let exportedRow = try #require((payload["results"] as? [[String: Any]])?.first)
+        #expect(exportedRow["status"] as? String == "Copied · contents not verified")
+        #expect(exportedRow["recordedStatus"] as? String == "✅ Match")
         #expect(payload["source"] as? String == f.source.path)
         #expect(payload["bookmark"] == nil)
         #expect(!String(decoding: json.data, as: UTF8.self).contains(record.source.bookmark.base64EncodedString()))
@@ -696,6 +703,7 @@ struct LocalTransferJournalTests {
         #expect(payload["clientName"] as? String == "Studio")
         #expect(payload["ascMHLRequested"] as? Bool == true)
         #expect((payload["results"] as? [[String: Any]])?.count == 1)
+        #expect((payload["results"] as? [[String: Any]])?.first?["recordedStatus"] == nil)
 
         let csv = try TransferHistoryDocument(record: record, asCSV: true)
         let csvText = String(decoding: csv.data, as: UTF8.self)
