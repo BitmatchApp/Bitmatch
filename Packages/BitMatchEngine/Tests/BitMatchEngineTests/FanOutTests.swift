@@ -9,6 +9,183 @@ import Darwin
 
 struct FanOutTests {
     @Test
+    func copyStageStartsBeforeFirstLargeFileFinishes() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "copy-stage-before-result")
+            defer { fixture.cleanup() }
+            try fixture.write(Data(repeating: 0x41, count: 4 * 1024 * 1024 + 1), to: "clip.bin")
+            let updates = Mutex<[OperationProgress]>([])
+            _ = try await fixture.pipeline(hooks: .init()).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: CameraLabelSettings(),
+                progressCallback: { update in updates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let stages = updates.withLock { $0 }
+            #expect(stages.first?.currentStage == .preparing)
+            #expect(stages.contains {
+                $0.currentStage == .copying && $0.filesProcessed == 0
+                    && $0.perDestinationCompleted == [0, 0]
+            })
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func liveIOCountsRealWritesAndReadbackWithoutChangingTheVerdict() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "live-io")
+            defer { fixture.cleanup() }
+            let bytes = Data(repeating: 0x42, count: 4 * 1024 * 1024 + 37)
+            try fixture.write(bytes, to: "clip.bin")
+            let updates = Mutex<[TransferIOProgress]>([])
+            let settings = CameraLabelSettings()
+            let pipeline = fixture.pipeline(hooks: .init())
+            let operation = try await pipeline.performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: settings,
+                estimatedTotalBytes: Int64(bytes.count),
+                progressCallback: { _ in },
+                ioProgressCallback: { update in updates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let snapshots = updates.withLock { $0 }
+            let latest = try #require(snapshots.max(by: { $0.sequence < $1.sequence }))
+            #expect(latest.destinations.count == 2)
+            #expect(latest.destinations.allSatisfy {
+                $0.writtenBytes == Int64(bytes.count) && $0.readbackBytes == Int64(bytes.count)
+            })
+            #expect(operation.results.count == 2)
+            #expect(operation.results.allSatisfy { $0.success })
+            #expect(try Data(contentsOf: fixture.source.appendingPathComponent("clip.bin")) == bytes)
+
+            // Reuse independently reads the existing destination, but writes
+            // no new media bytes and must not inflate the copy-speed line.
+            let reusedUpdates = Mutex<[TransferIOProgress]>([])
+            let reused = try await fixture.pipeline(hooks: .init()).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: settings,
+                estimatedTotalBytes: Int64(bytes.count),
+                progressCallback: { _ in },
+                ioProgressCallback: { update in reusedUpdates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let reusedSnapshots = reusedUpdates.withLock { $0 }
+            let reusedLatest = try #require(reusedSnapshots.max(by: { $0.sequence < $1.sequence }))
+            #expect(reusedLatest.destinations.allSatisfy {
+                $0.writtenBytes == 0 && $0.readbackBytes >= Int64(bytes.count)
+            })
+            #expect(reused.results.count == 2)
+            #expect(reused.results.allSatisfy { $0.success })
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func quickCopyReportsWritesButNoReadback() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "quick-live-io")
+            defer { fixture.cleanup() }
+            let bytes = Data(repeating: 0x33, count: 4 * 1024 * 1024 + 1)
+            try fixture.write(bytes, to: "clip.bin")
+            let updates = Mutex<[TransferIOProgress]>([])
+            _ = try await fixture.pipeline(hooks: .init()).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .quick, settings: CameraLabelSettings(),
+                estimatedTotalBytes: Int64(bytes.count),
+                progressCallback: { _ in },
+                ioProgressCallback: { update in updates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let snapshots = updates.withLock { $0 }
+            let latest = try #require(snapshots.max(by: { $0.sequence < $1.sequence }))
+            #expect(latest.destinations.allSatisfy {
+                $0.writtenBytes == Int64(bytes.count) && $0.readbackBytes == 0
+            })
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func paranoidReportsBothPhysicalDestinationReadPasses() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "paranoid-live-io")
+            defer { fixture.cleanup() }
+            let bytes = Data(repeating: 0x54, count: 16_401)
+            try fixture.write(bytes, to: "clip.bin")
+            let updates = Mutex<[TransferIOProgress]>([])
+            let operation = try await fixture.pipeline(hooks: .init()).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .paranoid, settings: CameraLabelSettings(),
+                estimatedTotalBytes: Int64(bytes.count),
+                progressCallback: { _ in },
+                ioProgressCallback: { update in updates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let snapshots = updates.withLock { $0 }
+            let latest = try #require(snapshots.max(by: { $0.sequence < $1.sequence }))
+            #expect(latest.destinations.allSatisfy {
+                $0.writtenBytes == Int64(bytes.count)
+                    && $0.readbackBytes == Int64(bytes.count * 2)
+            })
+            #expect(operation.results.allSatisfy { $0.success })
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
+    func failedPartialWriteReportsOnlySuccessfulIOAndNoCompletedResult() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try FanOutFixture(name: "partial-live-io")
+            defer { fixture.cleanup() }
+            let size = 4 * 1024 * 1024 + 1
+            let sourceBytes = Data(repeating: 0x77, count: size)
+            try fixture.write(sourceBytes, to: "clip.bin")
+            let updates = Mutex<[TransferIOProgress]>([])
+            let hooks = DestinationWriter.FanOutHooks(beforeWrite: { destination, _, chunk in
+                if destination == 1 && chunk == 1 {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+                }
+            })
+            let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: CameraLabelSettings(),
+                estimatedTotalBytes: Int64(size),
+                progressCallback: { _ in },
+                ioProgressCallback: { update in updates.withLock { $0.append(update) } },
+                onFileResult: nil
+            )
+            let snapshots = updates.withLock { $0 }
+            let latest = try #require(snapshots.max(by: { $0.sequence < $1.sequence }))
+            #expect(latest.destinations[0].writtenBytes == Int64(size))
+            #expect(latest.destinations[1].writtenBytes == 4 * 1024 * 1024)
+            #expect(latest.destinations[1].readbackBytes == 0)
+            #expect(operation.results.contains { !$0.success })
+            let failedRoot = SafetyValidator.resolvedDestinationRoot(
+                source: fixture.source, destination: fixture.destinations[1],
+                settings: CameraLabelSettings())
+            #expect(!FileManager.default.fileExists(atPath: failedRoot.appendingPathComponent("clip.bin").path))
+            #expect(try Data(contentsOf: fixture.source.appendingPathComponent("clip.bin")) == sourceBytes)
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
+    @Test
     func destinationFaultsStayIsolatedAndFailCoverage() async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)

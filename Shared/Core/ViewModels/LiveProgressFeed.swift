@@ -12,6 +12,9 @@ import BitMatchEngine
 @MainActor
 final class LiveProgressFeed: ObservableObject {
     @Published var progress: OperationProgress?
+    @Published var ioProgress: TransferIOProgress?
+    /// A pause/resume or new run cannot reuse a pre-pause speed sample.
+    @Published var rateFloorUptime: TimeInterval = 0
 
     init(progress: OperationProgress? = nil) {
         self.progress = progress

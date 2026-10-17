@@ -10,6 +10,8 @@ extension TransferProgressPresentation {
             state: coordinator.operationState,
             isRunning: coordinator.isOperationInProgress,
             progress: coordinator.progress,
+            ioProgress: coordinator.liveProgress.ioProgress,
+            minimumRateUptime: coordinator.liveProgress.rateFloorUptime,
             sourceName: coordinator.presentedSourceURL?.lastPathComponent,
             destinations: coordinator.presentedDestinationURLs,
             destinationNames: coordinator.presentedDestinationNames,

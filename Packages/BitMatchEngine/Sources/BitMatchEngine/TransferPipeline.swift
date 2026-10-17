@@ -320,6 +320,25 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         progressCallback: @escaping ProgressCallback,
         onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
+        try await performFileOperation(
+            sourceURL: sourceURL, destinationURLs: destinationURLs,
+            verificationMode: verificationMode, settings: settings,
+            estimatedTotalBytes: estimatedTotalBytes,
+            progressCallback: progressCallback, ioProgressCallback: { _ in },
+            onFileResult: onFileResult
+        )
+    }
+
+    public func performFileOperation(
+        sourceURL: URL,
+        destinationURLs: [URL],
+        verificationMode: VerificationMode,
+        settings: CameraLabelSettings,
+        estimatedTotalBytes: Int64?,
+        progressCallback: @escaping ProgressCallback,
+        ioProgressCallback: @escaping IOProgressCallback,
+        onFileResult: FileResultCallback?
+    ) async throws -> FileOperation {
         let operationID = UUID()
         guard activeOperations.reserve(operationID) else {
             throw FileOperationError.operationAlreadyInProgress
@@ -347,7 +366,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // tasks it starts, and nothing outside it (I9).
         let operationTask = Task { [pauseGate] in
             try await PauseGate.$current.withValue(pauseGate) {
-                try await executeOperation(operation, progressCallback: progressCallback, onFileResult: onFileResult)
+                try await executeOperation(operation, progressCallback: progressCallback,
+                                           ioProgressCallback: ioProgressCallback, onFileResult: onFileResult)
             }
         }
         activeOperations.attach(operationTask, to: operationID)
@@ -371,6 +391,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         settings: CameraLabelSettings,
         estimatedTotalBytes: Int64?,
         progressCallback: @escaping ProgressCallback,
+        ioProgressCallback: @escaping IOProgressCallback = { _ in },
         onFileResult: FileResultCallback?,
         fanOutHooks: DestinationWriter.FanOutHooks?
     ) async throws -> FileOperation {
@@ -388,6 +409,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             settings: settings,
             estimatedTotalBytes: estimatedTotalBytes,
             progressCallback: progressCallback,
+            ioProgressCallback: ioProgressCallback,
             onFileResult: onFileResult
         )
     }
@@ -414,6 +436,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
     private func executeOperation(
         _ operation: FileOperation,
         progressCallback: @escaping ProgressCallback,
+        ioProgressCallback: @escaping IOProgressCallback,
         onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
         
@@ -498,6 +521,14 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let totalStageUnits = operation.verificationMode == .quick ? 1 : 2
         // Perf 2: time-based throttle on progress callbacks (500ms)
         let ledger = RunLedger(destinationCount: destinationCount, filesPerDestination: perSourceFileCount, throttle: 0.5)
+        let ioMeter = TransferIOMeter(destinationCount: destinationCount)
+        let onIOBytes: DestinationWriter.IOByteCallback = { index, phase, bytes, duration, ended in
+            if let snapshot = ioMeter.record(destination: index, phase: phase,
+                                             bytes: bytes, duration: duration, now: ended) {
+                ioProgressCallback(snapshot)
+            }
+        }
+        defer { ioProgressCallback(ioMeter.finalSnapshot()) }
         // Retain an exclusion row for every source/destination pair before any
         // copying, so cancellation and saved history keep the selected scope.
         for (index, destination) in operation.destinationURLs.enumerated() {
@@ -596,7 +627,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             clipURL: job.destination,
                             sourceReadEvidence: job.sourceReadEvidence,
                             destinationIndex: job.destinationIndex,
-                            hooks: self.fanOutHooks
+                            hooks: self.fanOutHooks,
+                            onIOBytes: onIOBytes
                         )
                     }
                 }
@@ -758,6 +790,13 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 )
             }
 
+            // A first clip may take hours. Enter the copy stage before its
+            // first completed-file callback, without advancing any result or
+            // percentage. Live destination I/O can then appear immediately.
+            if !fanOutDestinations.isEmpty {
+                progressCallback(makeProgress(.copying, nil, await ledger.snapshot(), Date(), nil))
+            }
+
             try await DestinationWriter.copyAllSafelyFanOut(
                 from: operation.sourceURL,
                 toPinnedRoots: fanOutDestinations,
@@ -767,6 +806,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 preEnumeratedFiles: sourceFileURLs,
                 pauseCheck: { try await pauseGate.wait() },
                 hooks: fanOutHooks,
+                onIOBytes: onIOBytes,
                 onSourceReadEvidence: { relativePath, evidence in
                     await sourceReadEvidence.record(evidence, for: relativePath)
                 },
@@ -880,7 +920,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                             clipURL: destinationFileURL,
                                             sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath),
                                             destinationIndex: destIndex,
-                                            hooks: fanOutHooks
+                                            hooks: fanOutHooks,
+                                            onIOBytes: onIOBytes
                                         )
                                     }
                                 }
