@@ -217,9 +217,12 @@ actor RemoteBackupQueue {
         cancellingItemIDs.insert(id)
         do {
             _ = try await transition(itemID: id, allowingCancellation: true) { item in
+                let interruptedUpload = item.state == .uploading
                 item.state = .cancelled
                 item.nextAttemptAt = nil
-                item.errorSummary = RemoteBackupError.cancelled.errorDescription
+                item.errorSummary = interruptedUpload
+                    ? "The off-site upload was cancelled. A partial file may remain at \(item.temporaryRemoteRelativePath.description) under the selected remote root; BitMatch leaves it untouched."
+                    : RemoteBackupError.cancelled.errorDescription
                 item.promotionIntent = false
             }
             runGenerations[id] = nextRunGeneration
@@ -279,9 +282,12 @@ actor RemoteBackupQueue {
         do {
             _ = try await transition(itemID: id, allowingCancellation: true) { queuedItem in
                 guard !queuedItem.state.isTerminal else { return }
+                let interruptedUpload = queuedItem.state == .uploading
                 queuedItem.state = .paused
                 queuedItem.nextAttemptAt = nil
-                queuedItem.errorSummary = nil
+                queuedItem.errorSummary = interruptedUpload
+                    ? "The off-site upload is paused. A partial file may remain at \(queuedItem.temporaryRemoteRelativePath.description) under the selected remote root. Retry starts this file from zero."
+                    : nil
                 // Keep the promotion marker so a provider-side completion that
                 // races this pause can be finalized safely after retry.
                 queuedItem.promotionIntent = hadPromotionIntent
@@ -342,39 +348,36 @@ actor RemoteBackupQueue {
             return
         }
 
-        let remoteTemporaryObject = try await provider.inspect(path: item.temporaryRemoteRelativePath)
-        var remoteTemporaryByteCount = remoteTemporaryObject?.byteCount ?? 0
-        guard isRunnable(itemID, runGeneration: runGeneration) else { return }
-
-        // `.verifying` is the durable promotion-intent marker. It is written
-        // before promotion, so a crash after promotion can only resume finalization.
         if item.state == .verifying {
-            if let remoteTemporaryObject,
-               remoteTemporaryObject.byteCount == manifestEntry.byteCount {
-                try await promoteAndFinalize(
-                    itemID: itemID,
-                    runGeneration: runGeneration,
-                    profile: profile,
-                    manifestEntry: manifestEntry,
-                    provider: provider
-                )
-                return
-            } else {
-                try await resetMismatchedTemporary(
-                    itemID: itemID,
-                    runGeneration: runGeneration,
-                    provider: provider
-                )
-                remoteTemporaryByteCount = 0
+            // Saving promotion intent does not prove that a temporary file
+            // still has the bytes we uploaded. Leave that name untouched and
+            // require an explicit retry with a new exclusive attempt.
+            _ = try await transition(itemID: itemID) { queuedItem in
+                queuedItem.state = .paused
+                queuedItem.promotionIntent = false
+                queuedItem.nextAttemptAt = nil
+                queuedItem.errorSummary = "Off-site publication was interrupted before the final file appeared. Review the old temporary file at \(queuedItem.temporaryRemoteRelativePath.description) under the selected remote root; BitMatch leaves it untouched. Retry starts this file from zero with a new temporary name."
+                if !queuedItem.abandonedTemporaryRemoteRelativePaths.contains(queuedItem.temporaryRemoteRelativePath) {
+                    queuedItem.abandonedTemporaryRemoteRelativePaths.append(queuedItem.temporaryRemoteRelativePath)
+                }
             }
-        } else if item.uploadedByteCount != remoteTemporaryByteCount {
-            try await resetMismatchedTemporary(
-                itemID: itemID,
-                runGeneration: runGeneration,
-                provider: provider
-            )
-            remoteTemporaryByteCount = 0
+            return
         }
+
+        // A previous attempt's leaf may have been replaced by another
+        // object, including a symlink. Never reopen or delete it. Rotate to
+        // a fresh durable name; ensureDirectory still rejects an unsafe
+        // ancestor before any upload starts.
+        let remoteTemporaryObject: RemoteObject?
+        let previousTemporaryContested: Bool
+        do {
+            remoteTemporaryObject = try await provider.inspect(path: item.temporaryRemoteRelativePath)
+            previousTemporaryContested = false
+        } catch RemoteBackupError.unsafePath {
+            remoteTemporaryObject = nil
+            previousTemporaryContested = true
+        }
+        guard isRunnable(itemID, runGeneration: runGeneration) else { return }
 
         if item.remoteRelativePath.components.count > 1 {
             let parent = try RemoteRelativePath(components: Array(item.remoteRelativePath.components.dropLast()))
@@ -382,25 +385,43 @@ actor RemoteBackupQueue {
             guard isRunnable(itemID, runGeneration: runGeneration) else { return }
         }
 
+        // Never append to a pathname that might have been replaced since its
+        // last upload. A new UUID path is durable before the provider opens it.
+        // Old partial files remain untouched; pathname-only removal cannot
+        // prove which inode another writer left there.
+        let newAttemptID = UUID()
+        let newTemporaryPath = try expectedTemporaryPath(
+            final: item.remoteRelativePath,
+            itemID: item.id,
+            attemptID: newAttemptID
+        )
         guard try await transition(itemID: itemID, { queuedItem in
+            if (remoteTemporaryObject != nil || previousTemporaryContested),
+               !queuedItem.abandonedTemporaryRemoteRelativePaths.contains(item.temporaryRemoteRelativePath) {
+                queuedItem.abandonedTemporaryRemoteRelativePaths.append(item.temporaryRemoteRelativePath)
+            }
+            queuedItem.uploadAttemptID = newAttemptID
+            queuedItem.temporaryRemoteRelativePath = newTemporaryPath
             queuedItem.state = .uploading
-            queuedItem.uploadedByteCount = remoteTemporaryByteCount
+            queuedItem.uploadedByteCount = 0
             queuedItem.nextAttemptAt = nil
             queuedItem.errorSummary = nil
+            queuedItem.promotionIntent = false
         }) else { return }
 
         try Task.checkCancellation()
         try await provider.upload(
             local: localURL,
-            toTemporary: item.temporaryRemoteRelativePath,
-            fromOffset: remoteTemporaryByteCount,
+            toTemporary: newTemporaryPath,
+            fromOffset: 0,
+            expectedSHA256: manifestEntry.sha256,
             progress: { [weak self] byteCount in
                 await self?.recordProgress(itemID: itemID, runGeneration: runGeneration, byteCount: byteCount)
             }
         )
         guard isRunnable(itemID, runGeneration: runGeneration) else { return }
 
-        let completedTemporaryByteCount = try await provider.inspect(path: item.temporaryRemoteRelativePath)?.byteCount ?? 0
+        let completedTemporaryByteCount = try await provider.inspect(path: newTemporaryPath)?.byteCount ?? 0
         guard isRunnable(itemID, runGeneration: runGeneration) else { return }
         guard completedTemporaryByteCount == manifestEntry.byteCount else {
             throw RemoteBackupError.resumeOffsetMismatch(
@@ -415,6 +436,9 @@ actor RemoteBackupQueue {
             queuedItem.nextAttemptAt = nil
             queuedItem.errorSummary = nil
             queuedItem.promotionIntent = true
+            if !queuedItem.abandonedTemporaryRemoteRelativePaths.contains(newTemporaryPath) {
+                queuedItem.abandonedTemporaryRemoteRelativePaths.append(newTemporaryPath)
+            }
         }) else { return }
 
         try await promoteAndFinalize(
@@ -449,34 +473,6 @@ actor RemoteBackupQueue {
         )
     }
 
-    /// A temporary object is disposable recovery state. When its observed
-    /// length disagrees with the durable queue offset, delete that object and
-    /// restart from zero rather than appending to bytes whose provenance is
-    /// unknown. This operation is scoped to the item-owned temporary path and
-    /// can never replace or delete the final object.
-    private func resetMismatchedTemporary(
-        itemID: UUID,
-        runGeneration: UInt64,
-        provider: any RemoteBackupProvider
-    ) async throws {
-        guard let item = items[itemID], isRunnable(itemID, runGeneration: runGeneration) else { return }
-        do {
-            try await provider.discardTemporary(item.temporaryRemoteRelativePath)
-        } catch {
-            // Do not retry or append to an object whose ownership/offset could
-            // not be reset safely. Leave the item paused for explicit retry.
-            throw RemoteBackupError.temporaryCleanupFailed
-        }
-        guard isRunnable(itemID, runGeneration: runGeneration) else { return }
-        _ = try await transition(itemID: itemID) { queuedItem in
-            queuedItem.state = .queued
-            queuedItem.uploadedByteCount = 0
-            queuedItem.nextAttemptAt = nil
-            queuedItem.errorSummary = nil
-            queuedItem.promotionIntent = false
-        }
-    }
-
     private func finalizeOwnedFinal(
         itemID: UUID,
         runGeneration: UInt64,
@@ -485,7 +481,34 @@ actor RemoteBackupQueue {
         provider: any RemoteBackupProvider
     ) async throws {
         guard isRunnable(itemID, runGeneration: runGeneration) else { return }
+        guard let item = items[itemID] else { return }
+        guard try await provider.confirmsOwnedFinal(
+            temporary: item.temporaryRemoteRelativePath,
+            final: item.remoteRelativePath
+        ) else {
+            throw RemoteBackupError.conflict
+        }
+        guard isRunnable(itemID, runGeneration: runGeneration) else { return }
+        // Older saved queues may resume after the final link was created but
+        // before the retained temporary name was recorded. Save the possible
+        // cleanup path before accepting any terminal result.
+        if let item = items[itemID],
+           !item.abandonedTemporaryRemoteRelativePaths.contains(item.temporaryRemoteRelativePath) {
+            guard try await transition(itemID: itemID, { queuedItem in
+                queuedItem.abandonedTemporaryRemoteRelativePaths.append(item.temporaryRemoteRelativePath)
+            }) else { return }
+        }
         guard profile.verificationMode == .sha256 else {
+            // Upload-only has no digest, but it still must not turn a raced
+            // symlink/non-file or wrong-length final object into completion.
+            guard let finalPath = items[itemID]?.remoteRelativePath else {
+                throw RemoteBackupError.manifestUnavailable
+            }
+            let finalObject = try await provider.inspect(path: finalPath)
+            guard isRunnable(itemID, runGeneration: runGeneration) else { return }
+            guard finalObject?.byteCount == manifestEntry.byteCount else {
+                throw RemoteBackupError.verificationFailed
+            }
             _ = try await transition(itemID: itemID) { queuedItem in
                 queuedItem.state = .uploadedUnverified
                 queuedItem.uploadedByteCount = manifestEntry.byteCount
@@ -538,7 +561,8 @@ actor RemoteBackupQueue {
               item.temporaryRemoteRelativePath != item.remoteRelativePath,
               item.temporaryRemoteRelativePath == (try expectedTemporaryPath(
                   final: item.remoteRelativePath,
-                  itemID: item.id
+                  itemID: item.id,
+                  attemptID: item.uploadAttemptID
               )),
               item.localArtifactBookmarkReference.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false,
               entry.byteCount >= 0,
@@ -560,10 +584,17 @@ actor RemoteBackupQueue {
 
     private func expectedTemporaryPath(
         final: RemoteRelativePath,
-        itemID: UUID
+        itemID: UUID,
+        attemptID: UUID
     ) throws -> RemoteRelativePath {
         let parent = try RemoteRelativePath(components: Array(final.components.dropLast()))
-        return try parent.appending(".bitmatch-upload-\(itemID.uuidString.lowercased())")
+        let itemName = itemID.uuidString.lowercased()
+        // The original item-ID-only name remains valid for saved queues, but
+        // all new names bind both the immutable queue item and its attempt.
+        let name = attemptID == itemID
+            ? ".bitmatch-upload-\(itemName)"
+            : ".bitmatch-upload-\(itemName)-\(attemptID.uuidString.lowercased())"
+        return try parent.appending(name)
     }
 
     private func recordProgress(itemID: UUID, runGeneration: UInt64, byteCount: Int64) async {
@@ -597,6 +628,10 @@ actor RemoteBackupQueue {
         } else {
             backupError = .providerUnavailable
         }
+        let explanation = (backupError.errorDescription ?? "The remote upload stopped.")
+            + (item.state == .uploading
+                ? " A retry starts this file from zero with a new temporary name. Check \(item.temporaryRemoteRelativePath.description) under the selected remote root for a possible partial file; BitMatch leaves it untouched."
+                : "")
 
         do {
             if backupError.isTransientNetworkFault && !Task.isCancelled {
@@ -606,7 +641,7 @@ actor RemoteBackupQueue {
                         queuedItem.state = .failed
                         queuedItem.retryCount = retryCount
                         queuedItem.nextAttemptAt = nil
-                        queuedItem.errorSummary = "\(backupError.errorDescription ?? "The network connection failed.") Gave up after \(Self.maxRetryCount) attempts; retry manually when the destination is reachable."
+                        queuedItem.errorSummary = "\(explanation) Gave up after \(Self.maxRetryCount) attempts; retry manually when the destination is reachable."
                         // Keep this marker across manual retry if promotion
                         // may already have happened remotely.
                         queuedItem.promotionIntent = queuedItem.promotionIntent || item.state == .verifying
@@ -617,7 +652,7 @@ actor RemoteBackupQueue {
                         queuedItem.state = item.state == .verifying ? .verifying : .retrying
                         queuedItem.retryCount = retryCount
                         queuedItem.nextAttemptAt = now().addingTimeInterval(delay)
-                        queuedItem.errorSummary = backupError.errorDescription
+                        queuedItem.errorSummary = explanation
                     }
                 }
             } else {
@@ -635,7 +670,7 @@ actor RemoteBackupQueue {
                         queuedItem.state = .paused
                     }
                     queuedItem.nextAttemptAt = nil
-                    queuedItem.errorSummary = backupError.errorDescription
+                    queuedItem.errorSummary = explanation
                 }
             }
         } catch {

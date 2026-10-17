@@ -1,5 +1,6 @@
 import Foundation
 import BitMatchEngine
+import CryptoKit
 
 struct OpenSSHHostTrustRequest: Equatable, Sendable {
     let host: String
@@ -26,6 +27,24 @@ struct OpenSSHCommand: Equatable, Sendable {
     let executable: String
     let arguments: [String]
     let standardInput: Data?
+    /// Stream a verified local backup directly into SSH without loading it
+    /// into memory or reopening a remote pathname after the exclusive claim.
+    let standardInputFile: URL?
+    /// Immutable manifest digest. The exact descriptor sent to SSH is hashed
+    /// before launch, closing the validation-then-reopen pathname gap.
+    let expectedInputSHA256: String?
+    /// Stream remote readback into an exclusive local file. Capturing the
+    /// command's stdout in Data would scale memory with footage size.
+    let standardOutputFile: URL?
+
+    init(executable: String, arguments: [String], standardInput: Data?, standardInputFile: URL? = nil, expectedInputSHA256: String? = nil, standardOutputFile: URL? = nil) {
+        self.executable = executable
+        self.arguments = arguments
+        self.standardInput = standardInput
+        self.standardInputFile = standardInputFile
+        self.expectedInputSHA256 = expectedInputSHA256
+        self.standardOutputFile = standardOutputFile
+    }
 }
 
 struct OpenSSHCommandResult: Sendable {
@@ -43,14 +62,46 @@ private final class OpenSSHProcessOutput: @unchecked Sendable {
     private let lock = NSLock()
     private var stdout = Data()
     private var stderr = Data()
+    private var drainError: Error?
     private var inputWriteFailed = false
 
     func setStdout(_ data: Data) { lock.withLock { stdout = data } }
     func setStderr(_ data: Data) { lock.withLock { stderr = data } }
+    func setDrainError(_ error: Error) { lock.withLock { drainError = error } }
     func markInputWriteFailure() { lock.withLock { inputWriteFailed = true } }
-    func didInputWriteFail() -> Bool { lock.withLock { inputWriteFailed } }
-    func result(status: Int32) -> OpenSSHCommandResult {
-        lock.withLock { OpenSSHCommandResult(status: status, stdout: stdout, stderr: stderr) }
+    func result(status: Int32) throws -> OpenSSHCommandResult {
+        try lock.withLock {
+            if let drainError { throw drainError }
+            if status == 0 && inputWriteFailed { throw RemoteBackupError.providerUnavailable }
+            return OpenSSHCommandResult(status: status, stdout: stdout, stderr: stderr)
+        }
+    }
+}
+
+private struct OpenSSHInputIdentity: Equatable, Sendable {
+    let device: Int64
+    let inode: UInt64
+    let byteCount: Int64
+    let modifiedSeconds: Int64
+    let modifiedNanoseconds: Int64
+    let changedSeconds: Int64
+    let changedNanoseconds: Int64
+
+    init(fileDescriptor: Int32) throws {
+        var info = stat()
+        guard Darwin.fstat(fileDescriptor, &info) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG, info.st_size >= 0 else {
+            throw RemoteBackupError.localArtifactNotVerified
+        }
+        device = Int64(info.st_dev)
+        inode = UInt64(info.st_ino)
+        byteCount = Int64(info.st_size)
+        modifiedSeconds = Int64(info.st_mtimespec.tv_sec)
+        modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
+        changedSeconds = Int64(info.st_ctimespec.tv_sec)
+        changedNanoseconds = Int64(info.st_ctimespec.tv_nsec)
     }
 }
 
@@ -64,7 +115,7 @@ private final class OpenSSHProcessLifetime: @unchecked Sendable {
     private var finished = false
     private var forceKill: DispatchWorkItem?
 
-    func launch(_ command: OpenSSHCommand, input: Pipe, output: Pipe, error: Pipe) throws -> pid_t {
+    func launch(_ command: OpenSSHCommand, input: Pipe, inputFileFD: Int32?, output: Pipe, error: Pipe) throws -> pid_t {
         try lock.withLock {
             guard !cancelled else { throw CancellationError() }
             var actions: posix_spawn_file_actions_t?
@@ -74,13 +125,15 @@ private final class OpenSSHProcessLifetime: @unchecked Sendable {
             let inputRead = input.fileHandleForReading.fileDescriptor
             let outputWrite = output.fileHandleForWriting.fileDescriptor
             let errorWrite = error.fileHandleForWriting.fileDescriptor
-            try Self.check(posix_spawn_file_actions_adddup2(&actions, inputRead, STDIN_FILENO))
+            try Self.check(posix_spawn_file_actions_adddup2(&actions, inputFileFD ?? inputRead, STDIN_FILENO))
             try Self.check(posix_spawn_file_actions_adddup2(&actions, outputWrite, STDOUT_FILENO))
             try Self.check(posix_spawn_file_actions_adddup2(&actions, errorWrite, STDERR_FILENO))
-            for descriptor in [inputRead, outputWrite, errorWrite,
+            let descriptors = [inputRead, outputWrite, errorWrite,
                                input.fileHandleForWriting.fileDescriptor,
                                output.fileHandleForReading.fileDescriptor,
-                               error.fileHandleForReading.fileDescriptor] where descriptor > STDERR_FILENO {
+                               error.fileHandleForReading.fileDescriptor,
+                               inputFileFD].compactMap { $0 }
+            for descriptor in Set(descriptors) where descriptor > STDERR_FILENO {
                 try Self.check(posix_spawn_file_actions_addclose(&actions, descriptor))
             }
 
@@ -174,21 +227,17 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
             throw RemoteBackupError.authenticationFailed
         }
         try await establishExplicitTrustIfNeeded()
-        let result = try await run(try ssh(command: "if command -v ln >/dev/null 2>&1 && command -v rm >/dev/null 2>&1; then exit 0; else printf __BITMATCH_NO_LN_RM__ >&2; exit 42; fi"))
-        guard result.status == 0 else {
-            let stderr = String(decoding: result.stderr, as: UTF8.self).lowercased()
-            if result.status == 42, stderr.contains("__bitmatch_no_ln_rm__") {
-                throw RemoteBackupError.capabilityUnavailable(.noReplacePromotion)
-            }
-            throw classify(result)
+        let result = try await run(try helperCommand(action: "check"))
+        guard result.status == 0,
+              String(decoding: result.stdout, as: UTF8.self).contains("__BITMATCH_HELPER_READY__") else {
+            throw result.status == 255 ? classify(result) : RemoteBackupError.streamUploadUnavailable
         }
         return RemoteProviderCapabilities(supportsNoReplacePromotion: true, supportsVerificationEvidence: true)
     }
 
     func inspect(path: RemoteRelativePath) async throws -> RemoteObject? {
-        let remotePath = try remote(path)
-        let result = try await run(try ssh(command: "if test -e \(shellQuote(remotePath)); then wc -c < \(shellQuote(remotePath)); fi"))
-        guard result.status == 0 else { throw classify(result) }
+        let result = try await run(try helperCommand(action: "inspect", paths: [path]))
+        guard result.status == 0 else { throw classifyHelper(result) }
         let output = String(decoding: result.stdout, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !output.isEmpty else { return nil }
         guard let count = Int64(output), count >= 0 else { throw RemoteBackupError.providerUnavailable }
@@ -196,8 +245,8 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
     }
 
     func ensureDirectory(_ path: RemoteRelativePath) async throws {
-        let result = try await run(try ssh(command: "mkdir -p \(shellQuote(try remote(path)))"))
-        guard result.status == 0 else { throw classify(result) }
+        let result = try await run(try helperCommand(action: "mkdir", paths: [path]))
+        guard result.status == 0 else { throw classifyHelper(result) }
     }
 
     func discardTemporary(_ path: RemoteRelativePath) async throws {
@@ -207,36 +256,77 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
         else {
             throw RemoteBackupError.unsafePath
         }
-        let result = try await run(try ssh(command: "rm -f \(shellQuote(try remote(path)))"))
-        guard result.status == 0 else { throw classify(result) }
+        // Even an item-owned name can be replaced between a check and `rm`.
+        // The queue rotates attempt names and leaves old partials for explicit
+        // operator cleanup instead of unlinking a possible replacement.
+        throw RemoteBackupError.temporaryCleanupFailed
     }
 
-    func upload(local: URL, toTemporary path: RemoteRelativePath, fromOffset: Int64, progress: @Sendable (Int64) async -> Void) async throws {
-        guard fromOffset >= 0 else { throw RemoteBackupError.resumeOffsetMismatch(local: fromOffset, remote: 0) }
+    func upload(local: URL, toTemporary path: RemoteRelativePath, fromOffset: Int64, expectedSHA256: String, progress: @Sendable (Int64) async -> Void) async throws {
+        try Task.checkCancellation()
+        guard expectedSHA256.count == 64,
+              expectedSHA256.utf8.allSatisfy({ (48...57).contains($0) || (65...70).contains($0) || (97...102).contains($0) }) else {
+            throw RemoteBackupError.localArtifactNotVerified
+        }
         let remoteObject = try await inspect(path: path)
-        guard (remoteObject?.byteCount ?? 0) == fromOffset else {
+        try Task.checkCancellation()
+        guard fromOffset == 0 else {
             throw RemoteBackupError.resumeOffsetMismatch(local: fromOffset, remote: remoteObject?.byteCount ?? 0)
         }
-        let batch = "put -a \(try sftpQuote(local.path)) \(try sftpQuote(try remote(path)))\n"
-        let result = try await run(try sftp(batch: batch))
-        guard result.status == 0 else { throw classify(result) }
+        guard remoteObject == nil else {
+            throw RemoteBackupError.temporaryClaimFailed
+        }
+        // The helper pins each parent directory and opens the leaf with
+        // O_EXCL|O_NOFOLLOW. A pathname swap cannot redirect its stream.
+        let sshCommand = try helperCommand(action: "upload", paths: [path])
+        let result = try await run(OpenSSHCommand(
+            executable: sshCommand.executable,
+            arguments: sshCommand.arguments,
+            standardInput: nil,
+            standardInputFile: local,
+            expectedInputSHA256: expectedSHA256
+        ))
+        try Task.checkCancellation()
+        guard result.status == 0 else { throw classifyHelper(result, claim: true) }
         let complete = try await inspect(path: path)?.byteCount ?? 0
+        try Task.checkCancellation()
         await progress(complete)
     }
 
     func promoteNoReplace(temporary: RemoteRelativePath, final: RemoteRelativePath) async throws {
-        let temporaryPath = try remote(temporary)
-        let finalPath = try remote(final)
-        let command = "ln \(shellQuote(temporaryPath)) \(shellQuote(finalPath)) && rm \(shellQuote(temporaryPath))"
-        let result = try await run(try ssh(command: command))
-        guard result.status == 0 else { throw classifyPromotion(result) }
+        // linkat pins both parent directories, refuses an existing final name
+        // (including a directory symlink), and leaves the temp hard link for
+        // explicit operator cleanup. No pathname-only removal follows it.
+        let result = try await run(try helperCommand(action: "promote", paths: [temporary, final]))
+        guard result.status == 0 else { throw classifyHelper(result, promotion: true) }
+    }
+
+    func confirmsOwnedFinal(temporary: RemoteRelativePath, final: RemoteRelativePath) async throws -> Bool {
+        let result = try await run(try helperCommand(action: "same", paths: [temporary, final]))
+        // A replaced symlink or non-file is never ownership evidence.
+        if result.status == 43 { return false }
+        guard result.status == 0 else { throw classifyHelper(result) }
+        let answer = String(decoding: result.stdout, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        switch answer {
+        case "__BITMATCH_SAME__": return true
+        case "__BITMATCH_DIFFERENT__": return false
+        default: throw RemoteBackupError.providerUnavailable
+        }
     }
 
     func verificationEvidence(for path: RemoteRelativePath, expectedSHA256: String) async throws -> RemoteVerificationEvidence {
         let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: temporary) }
-        let result = try await run(try sftp(batch: "get \(try sftpQuote(try remote(path))) \(try sftpQuote(temporary.path))\n"))
-        guard result.status == 0 else { throw classify(result) }
+        let sshCommand = try helperCommand(action: "download", paths: [path])
+        let result = try await run(OpenSSHCommand(
+            executable: sshCommand.executable,
+            arguments: sshCommand.arguments,
+            standardInput: nil,
+            standardOutputFile: temporary
+        ))
+        guard result.status == 0 else { throw classifyHelper(result) }
+        try Task.checkCancellation()
         let actual = try await ChecksumEngine.shared.generateChecksum(for: temporary, type: .sha256)
         guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame else { throw RemoteBackupError.verificationFailed }
         return .readBackSHA256(actual)
@@ -340,6 +430,55 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
     private func shellQuote(_ value: String) -> String { Self.shellQuote(value) }
     private func sftpQuote(_ value: String) throws -> String { try Self.sftpQuote(value) }
 
+    private static let helperSource: String? = {
+        let url = Bundle.main.url(forResource: "SFTPRemoteHelper", withExtension: "py")
+            ?? Bundle.main.url(forResource: "SFTPRemoteHelper", withExtension: "py", subdirectory: "Resources")
+        guard let url else { return nil }
+        return try? String(contentsOf: url, encoding: .utf8)
+    }()
+
+    private func helperCommand(action: String, paths: [RemoteRelativePath] = []) throws -> OpenSSHCommand {
+        guard let source = Self.helperSource else { throw RemoteBackupError.providerUnavailable }
+        let encodedPaths = try paths.map { path -> String in
+            let components = try profile.root.appending(path: path).components
+            let jsonData = try JSONSerialization.data(withJSONObject: components)
+            guard let json = String(data: jsonData, encoding: .utf8) else {
+                throw RemoteBackupError.unsafePath
+            }
+            return Self.shellQuote(json)
+        }
+        let command = (["python3", "-c", Self.shellQuote(source), Self.shellQuote(action)] + encodedPaths)
+            .joined(separator: " ")
+        return try ssh(command: command)
+    }
+
+    private func classifyHelper(
+        _ result: OpenSSHCommandResult,
+        claim: Bool = false,
+        promotion: Bool = false
+    ) -> RemoteBackupError {
+        switch result.status {
+        case 42:
+            return promotion ? .conflict : claim ? .temporaryClaimFailed : .providerUnavailable
+        case 43:
+            return .unsafePath
+        case 44, 127:
+            return .streamUploadUnavailable
+        case 46:
+            return .remoteStorageFull
+        case 47:
+            return .permissionDenied
+        case 48:
+            return .capabilityUnavailable(.noReplacePromotion)
+        case 45:
+            return .providerUnavailable
+        case 255:
+            return classify(result)
+        default:
+            return .providerUnavailable
+        }
+    }
+
     private func classify(_ result: OpenSSHCommandResult) -> RemoteBackupError {
         Self.classify(stderr: result.stderr)
     }
@@ -347,13 +486,10 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
     nonisolated static func classify(stderr: Data) -> RemoteBackupError {
         let text = String(decoding: stderr, as: UTF8.self).lowercased()
         if text.contains("host key verification") || text.contains("no matching host key") { return .hostKeyMismatch }
+        if text.contains("no space left on device") || text.contains("disk quota exceeded") { return .remoteStorageFull }
         if text.contains("permission denied") { return .permissionDenied }
         if text.contains("authentication") { return .authenticationFailed }
         return .networkUnavailable
-    }
-
-    private func classifyPromotion(_ result: OpenSSHCommandResult) -> RemoteBackupError {
-        Self.promotionError(stderr: result.stderr)
     }
 
     static func fixedArguments(knownHostsURL: URL, port: Int, username: String?, portFlag: String) -> [String] {
@@ -363,7 +499,7 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
     }
 
     nonisolated static func shellQuote(_ value: String) -> String {
-        "'\(value.replacingOccurrences(of: "'", with: "'\\\"'\\\"'"))'"
+        "'\(value.replacingOccurrences(of: "'", with: "'\"'\"'"))'"
     }
 
     nonisolated static func sftpQuote(_ value: String) throws -> String {
@@ -377,14 +513,99 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
         try root.appending(path: path).description
     }
 
-    nonisolated static func promotionError(stderr: Data) -> RemoteBackupError {
-        String(decoding: stderr, as: UTF8.self).lowercased().contains("file exists")
-            ? .conflict
-            : .capabilityUnavailable(.noReplacePromotion)
+    private nonisolated static func validatePinnedInput(
+        fileDescriptor: Int32,
+        identity: OpenSSHInputIdentity,
+        expectedSHA256: String
+    ) throws {
+        let bufferSize = 1024 * 1024
+        let buffer = UnsafeMutableRawPointer.allocate(byteCount: bufferSize, alignment: 4096)
+        defer { buffer.deallocate() }
+        var hasher = SHA256()
+        var offset: Int64 = 0
+        while offset < identity.byteCount {
+            try Task.checkCancellation()
+            let requested = Int(min(Int64(bufferSize), identity.byteCount - offset))
+            let count = Darwin.pread(fileDescriptor, buffer, requested, off_t(offset))
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw RemoteBackupError.localArtifactNotVerified
+            }
+            guard count > 0 else { throw RemoteBackupError.localArtifactNotVerified }
+            autoreleasepool {
+                hasher.update(data: Data(bytes: buffer, count: count))
+            }
+            offset += Int64(count)
+        }
+        let actual = hasher.finalize().map { String(format: "%02x", $0) }.joined()
+        guard actual.caseInsensitiveCompare(expectedSHA256) == .orderedSame,
+              try OpenSSHInputIdentity(fileDescriptor: fileDescriptor) == identity else {
+            throw RemoteBackupError.localArtifactNotVerified
+        }
+    }
+
+    /// Keep command responses and error markers, but never let an unexpected
+    /// remote shell flood grow the app's memory. Continue draining to EOF so
+    /// the child can exit and be reaped even after the capture limit is hit.
+    private nonisolated static func captureBoundedOutput(_ handle: FileHandle) -> Data {
+        let limit = 1024 * 1024
+        var captured = Data()
+        while true {
+            let reachedEnd = autoreleasepool { () -> Bool in
+                let chunk = handle.readData(ofLength: 64 * 1024)
+                if chunk.isEmpty { return true }
+                if captured.count < limit {
+                    captured.append(chunk.prefix(limit - captured.count))
+                }
+                return false
+            }
+            if reachedEnd { return captured }
+        }
     }
 
     // Kept internal so the real subprocess lifetime can be exercised by tests.
     static func runProcess(_ command: OpenSSHCommand) async throws -> OpenSSHCommandResult {
+        guard command.standardInput == nil || command.standardInputFile == nil else {
+            throw RemoteBackupError.providerUnavailable
+        }
+        guard command.expectedInputSHA256 == nil || command.standardInputFile != nil else {
+            throw RemoteBackupError.providerUnavailable
+        }
+        try Task.checkCancellation()
+        let openedInput: (handle: FileHandle, identity: OpenSSHInputIdentity)? = try command.standardInputFile.map { url in
+            // The queue already hashed this local artifact. Reject a replaced
+            // leaf rather than following it between that check and SSH launch.
+            let fd = Darwin.open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+            guard fd >= 0 else {
+                let code = errno
+                if [ELOOP, ENOENT, ENOTDIR, EACCES, EPERM].contains(code) {
+                    throw RemoteBackupError.localArtifactNotVerified
+                }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+            }
+            do {
+                let identity = try OpenSSHInputIdentity(fileDescriptor: fd)
+                return (FileHandle(fileDescriptor: fd, closeOnDealloc: true), identity)
+            } catch {
+                _ = Darwin.close(fd)
+                throw error
+            }
+        }
+        defer { try? openedInput?.handle.close() }
+        if let openedInput, let expectedSHA256 = command.expectedInputSHA256 {
+            try Self.validatePinnedInput(
+                fileDescriptor: openedInput.handle.fileDescriptor,
+                identity: openedInput.identity,
+                expectedSHA256: expectedSHA256
+            )
+        }
+        let fileOutput: FileHandle? = try command.standardOutputFile.map { url in
+            let fd = Darwin.open(url.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR)
+            guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        }
+        defer { try? fileOutput?.close() }
+
         let lifetime = OpenSSHProcessLifetime()
         let result: OpenSSHCommandResult = try await withTaskCancellationHandler(operation: {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<OpenSSHCommandResult, Error>) in
@@ -395,29 +616,46 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
                 drains.enter()
                 drains.enter()
                 do {
-                    // A fast-exiting ssh/sftp child can close stdin while a
-                    // batch is being written. Return EPIPE, never SIGPIPE.
+                    // A fast-exiting child can close stdin while a batch is
+                    // being written. Return EPIPE instead of raising SIGPIPE.
                     guard Darwin.fcntl(input.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1) != -1 else {
                         throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
                     }
-                    let pid = try lifetime.launch(command, input: input, output: output, error: stderrPipe)
-                    // Only the child keeps the duplicated standard streams.
+                    let pid = try lifetime.launch(command, input: input, inputFileFD: openedInput?.handle.fileDescriptor, output: output, error: stderrPipe)
+                    // The child keeps only its duplicated standard streams.
                     input.fileHandleForReading.closeFile()
                     output.fileHandleForWriting.closeFile()
                     stderrPipe.fileHandleForWriting.closeFile()
+
                     DispatchQueue.global().async {
-                        collected.setStdout(output.fileHandleForReading.readDataToEndOfFile())
+                        if let fileOutput {
+                            var writeFailure: Error?
+                            while true {
+                                let reachedEnd = autoreleasepool { () -> Bool in
+                                    let chunk = output.fileHandleForReading.readData(ofLength: 1024 * 1024)
+                                    if chunk.isEmpty { return true }
+                                    if writeFailure == nil {
+                                        do { try fileOutput.write(contentsOf: chunk) }
+                                        catch { writeFailure = error }
+                                    }
+                                    return false
+                                }
+                                if reachedEnd { break }
+                            }
+                            if let writeFailure { collected.setDrainError(writeFailure) }
+                        } else {
+                            collected.setStdout(Self.captureBoundedOutput(output.fileHandleForReading))
+                        }
                         output.fileHandleForReading.closeFile()
                         drains.leave()
                     }
                     DispatchQueue.global().async {
-                        collected.setStderr(stderrPipe.fileHandleForReading.readDataToEndOfFile())
+                        collected.setStderr(Self.captureBoundedOutput(stderrPipe.fileHandleForReading))
                         stderrPipe.fileHandleForReading.closeFile()
                         drains.leave()
                     }
-                    // Do not reap the group leader until its output closes.
-                    // Observe its exit without reaping, then disarm the group
-                    // timer while its PID is still reserved. Only then reap.
+                    // Reap only after all streams close. While the leader is
+                    // unreaped, its PID cannot be reused by an unrelated job.
                     drains.notify(queue: .global()) {
                         var exitInfo = siginfo_t()
                         var observed: Int32
@@ -434,16 +672,13 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
                         if wasCancelled {
                             continuation.resume(throwing: CancellationError())
                         } else if let status {
-                            if status == 0 && collected.didInputWriteFail() {
-                                continuation.resume(throwing: RemoteBackupError.providerUnavailable)
-                            } else {
-                                continuation.resume(returning: collected.result(status: status))
-                            }
+                            do { continuation.resume(returning: try collected.result(status: status)) }
+                            catch { continuation.resume(throwing: error) }
                         } else {
                             continuation.resume(throwing: RemoteBackupError.providerUnavailable)
                         }
                     }
-                    if let data = command.standardInput {
+                    if openedInput == nil, let data = command.standardInput {
                         do { try input.fileHandleForWriting.write(contentsOf: data) }
                         catch { collected.markInputWriteFailure() }
                     }
@@ -460,17 +695,17 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
                     drains.leave()
                     drains.leave()
                     drains.leave()
-                    if wasCancelled {
-                        continuation.resume(throwing: CancellationError())
-                    } else {
-                        continuation.resume(throwing: error)
-                    }
+                    continuation.resume(throwing: wasCancelled ? CancellationError() : error)
                 }
             }
         }, onCancel: {
             lifetime.cancel()
         })
         try Task.checkCancellation()
+        if let openedInput,
+           try OpenSSHInputIdentity(fileDescriptor: openedInput.handle.fileDescriptor) != openedInput.identity {
+            throw RemoteBackupError.localArtifactNotVerified
+        }
         return result
     }
 

@@ -25,6 +25,9 @@ final class MacRemoteBackupController: ObservableObject {
     private var remoteBackupTimer: Timer?
     private var remoteSchedulerIsRunning = false
     private var remoteSchedulerNeedsRun = false
+    /// Only controller-owned workers have a task handle that can stop their
+    /// SSH subprocess after a durable user cancellation.
+    private var remoteWorkerTasks: [UUID: Task<Void, Never>] = [:]
     private var remoteTimerGeneration: UInt64 = 0
     @Published private(set) var hostTrustPrompt: HostTrustPrompt?
     private var hostTrustContinuation: CheckedContinuation<Bool, Never>?
@@ -145,7 +148,10 @@ final class MacRemoteBackupController: ObservableObject {
                 try await queue.restore()
                 await refreshAllRemoteBackupSummaries()
                 for id in await queue.runnableIDs() {
-                    await queue.run(id)
+                    let worker = Task { await queue.run(id) }
+                    remoteWorkerTasks[id] = worker
+                    await worker.value
+                    remoteWorkerTasks[id] = nil
                     if let item = await queue.item(id: id) {
                         await refreshRemoteBackupSummary(for: item.cardIngestID)
                     }
@@ -237,19 +243,28 @@ final class MacRemoteBackupController: ObservableObject {
     /// cancellation is persisted before returning.
     func cancelRemoteBackup(for cardIngestID: UUID) {
         Task { [weak self] in
-            guard let self, let queue = self.remoteBackupQueue else { return }
-            do {
-                try await queue.restore()
-                for item in await queue.itemsForCardIngest(cardIngestID) {
-                    try await queue.cancel(item.id)
-                }
-            } catch {
-                self.photographerJobViewModel.setRemoteFeedback("Could not cancel off-site backup: \(error.localizedDescription)")
-                await self.armRemoteBackupTimer()
-                return
-            }
-            await self.armRemoteBackupTimer()
-            await self.refreshRemoteBackupSummary(for: cardIngestID)
+            await self?.cancelRemoteBackupNow(for: cardIngestID)
         }
+    }
+
+    /// Exposed internally so the durable cancellation and worker signal can
+    /// be tested as one ordered operation.
+    func cancelRemoteBackupNow(for cardIngestID: UUID) async {
+        guard let queue = remoteBackupQueue else { return }
+        do {
+            try await queue.restore()
+            for item in await queue.itemsForCardIngest(cardIngestID) {
+                try await queue.cancel(item.id)
+                // Persist the cancellation first. Only then terminate the
+                // owned worker and its SSH process group.
+                remoteWorkerTasks[item.id]?.cancel()
+            }
+        } catch {
+            photographerJobViewModel.setRemoteFeedback("Could not cancel off-site backup: \(error.localizedDescription)")
+            await armRemoteBackupTimer()
+            return
+        }
+        await armRemoteBackupTimer()
+        await refreshRemoteBackupSummary(for: cardIngestID)
     }
 }

@@ -851,6 +851,13 @@ final class PhotographerJobViewModel: ObservableObject {
         } else {
             verificationEvidence = .none
         }
+        let abandonedPaths = orderedItems.flatMap(\.abandonedTemporaryRemoteRelativePaths)
+        let abandonedNote: String? = abandonedPaths.isEmpty ? nil :
+            "Remote temporary names may remain under the selected root: \(abandonedPaths.prefix(5).map(\.description).joined(separator: ", "))\(abandonedPaths.count > 5 ? " (and \(abandonedPaths.count - 5) more)" : ""). Completed uploads use hard links, not extra copies; interrupted uploads restart from zero. Review these names before removing them manually."
+        let stateError = orderedItems.compactMap(\.errorSummary).first
+            ?? (hasMismatchedDigest ? "Remote verification evidence does not match the saved manifest." : nil)
+            ?? (hasCompleteManifestCoverage ? nil : "Off-site file evidence is incomplete or inconsistent. Queue a new backup.")
+        let visibleNote = [stateError, abandonedNote].compactMap { $0 }.joined(separator: " ")
         return RemoteBackupCardSummary(
             targetID: targetID,
             state: state,
@@ -865,9 +872,7 @@ final class PhotographerJobViewModel: ObservableObject {
             uploadedByteCount: totalBytes,
             verificationEvidence: verificationEvidence,
             remotePath: orderedItems.first?.remoteRelativePath,
-            errorSummary: orderedItems.compactMap(\.errorSummary).first
-                ?? (hasMismatchedDigest ? "Remote verification evidence does not match the saved manifest." : nil)
-                ?? (hasCompleteManifestCoverage ? nil : "Off-site file evidence is incomplete or inconsistent. Queue a new backup."),
+            errorSummary: visibleNote.isEmpty ? nil : visibleNote,
             // Refreshing saved queue items (including on launch) is not a new
             // verification event. Keep the durable item's latest event time.
             updatedAt: orderedItems.map(\.updatedAt).max()

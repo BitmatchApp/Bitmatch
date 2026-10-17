@@ -285,7 +285,14 @@ struct RemoteQueueItem: Identifiable, Codable, Equatable, Sendable {
     let localArtifactBookmarkReference: String
     let localArtifactRelativePath: RemoteRelativePath
     let remoteRelativePath: RemoteRelativePath
-    let temporaryRemoteRelativePath: RemoteRelativePath
+    var temporaryRemoteRelativePath: RemoteRelativePath
+    /// A fresh UUID is persisted before each upload attempt. Older saved
+    /// items used the item ID as their first temporary-file identity.
+    var uploadAttemptID: UUID
+    /// Possible remaining temporary paths: earlier partial uploads and the
+    /// retained hard link used for no-replace promotion. Keep them for a
+    /// private operator cleanup note; never remove them by pathname.
+    var abandonedTemporaryRemoteRelativePaths: [RemoteRelativePath]
     var state: RemoteBackupState
     var uploadedByteCount: Int64
     var retryCount: Int
@@ -304,7 +311,8 @@ struct RemoteQueueItem: Identifiable, Codable, Equatable, Sendable {
         case id, jobID, cardIngestID, destinationProfileID, manifestID,
              manifestEntryID, localArtifactBookmarkReference,
              localArtifactRelativePath, remoteRelativePath,
-             temporaryRemoteRelativePath, state, uploadedByteCount, retryCount,
+             temporaryRemoteRelativePath, uploadAttemptID,
+             abandonedTemporaryRemoteRelativePaths, state, uploadedByteCount, retryCount,
              nextAttemptAt, verificationEvidence, errorSummary, promotionIntent,
              createdAt, updatedAt
     }
@@ -320,6 +328,8 @@ struct RemoteQueueItem: Identifiable, Codable, Equatable, Sendable {
         localArtifactRelativePath: RemoteRelativePath,
         remoteRelativePath: RemoteRelativePath,
         temporaryRemoteRelativePath: RemoteRelativePath,
+        uploadAttemptID: UUID? = nil,
+        abandonedTemporaryRemoteRelativePaths: [RemoteRelativePath] = [],
         state: RemoteBackupState,
         uploadedByteCount: Int64,
         retryCount: Int,
@@ -340,6 +350,8 @@ struct RemoteQueueItem: Identifiable, Codable, Equatable, Sendable {
         self.localArtifactRelativePath = localArtifactRelativePath
         self.remoteRelativePath = remoteRelativePath
         self.temporaryRemoteRelativePath = temporaryRemoteRelativePath
+        self.uploadAttemptID = uploadAttemptID ?? id
+        self.abandonedTemporaryRemoteRelativePaths = abandonedTemporaryRemoteRelativePaths
         self.state = state
         self.uploadedByteCount = uploadedByteCount
         self.retryCount = retryCount
@@ -364,6 +376,8 @@ struct RemoteQueueItem: Identifiable, Codable, Equatable, Sendable {
             localArtifactRelativePath: try values.decode(RemoteRelativePath.self, forKey: .localArtifactRelativePath),
             remoteRelativePath: try values.decode(RemoteRelativePath.self, forKey: .remoteRelativePath),
             temporaryRemoteRelativePath: try values.decode(RemoteRelativePath.self, forKey: .temporaryRemoteRelativePath),
+            uploadAttemptID: try values.decodeIfPresent(UUID.self, forKey: .uploadAttemptID),
+            abandonedTemporaryRemoteRelativePaths: try values.decodeIfPresent([RemoteRelativePath].self, forKey: .abandonedTemporaryRemoteRelativePaths) ?? [],
             state: try values.decode(RemoteBackupState.self, forKey: .state),
             uploadedByteCount: try values.decode(Int64.self, forKey: .uploadedByteCount),
             retryCount: try values.decode(Int.self, forKey: .retryCount),

@@ -643,6 +643,40 @@ struct PhotographerJobViewModelTests {
         #expect(RemoteBackupStatusPresentation.make(summary: consistent).isFullyBackedUp == (terminalState == .verified))
     }
 
+    @Test func completedRemoteBackupStillShowsEarlierPartialCleanupPath() throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let entry = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: 10, sha256: String(repeating: "a", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [entry], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var item = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: entry, state: .verified, uploadedBytes: 10
+        )
+        item.verificationEvidence = .readBackSHA256(entry.sha256)
+        let oldTemporary = try RemoteRelativePath(components: ["Jobs", ".bitmatch-upload-11111111-2222-3333-4444-555555555555"])
+        item.abandonedTemporaryRemoteRelativePaths = [oldTemporary]
+
+        makeViewModel(store: store).refreshRemoteBackupSummary(for: cardID, items: [item])
+
+        let summary = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(summary.state == .verified)
+        #expect(RemoteBackupStatusPresentation.make(summary: summary).isFullyBackedUp)
+        #expect(summary.errorSummary?.contains(oldTemporary.description) == true)
+        #expect(summary.errorSummary?.contains("restart from zero") == true)
+    }
+
     @Test func zeroByteRemoteReadbackRemainsValid() throws {
         let store = InMemoryPhotographerJobStore()
         let jobID = UUID()
