@@ -55,9 +55,9 @@ Requires **macOS 15.5 or newer**. For iPad and iPhone, build from source for now
   💾 A   💾 B
 ```
 
-Plug in your card and drives, allow BitMatch to use them once, and it picks up the card as the source; you choose the destinations. In the default **Standard** mode, BitMatch hashes the card bytes as it copies to every drive, then reads each drive back from disk with SHA-256. **Thorough** independently rereads the card; **Paranoid** also compares bytes. **Quick** checks sizes only and never earns a safe verdict. The card is only **Safe to erase** when the required verification, coverage and evidence checks pass on every destination. Queue the next card while one copies; each card is a row that shows its own progress and verdict. Use **One-time transfer** for one card or **Project transfer** for a shoot with several cards and cameras.
+Plug in your card and drives, allow BitMatch to use them once, and it picks up the card as the source; you choose the destinations. In the default **Standard** mode, BitMatch hashes each new file as it copies to every drive, then reads each drive back from disk with SHA-256. An existing file is checked against a fresh source read before reuse. **Thorough** independently rereads the card for new copies; **Paranoid** also compares bytes. **Quick** checks sizes only and never earns a safe verdict. The card is only **Safe to erase** when the required verification, coverage and evidence checks pass on every destination. Queue the next card while one copies; each card is a row that shows its own progress and verdict. Use **One-time transfer** for one card or **Project transfer** for a shoot with several cards and cameras.
 
-Standard does not independently reread the source: a wrong source read can be copied and hashed consistently. Extra reads can catch differing bytes, but no mode can prove the original camera bytes or detect every repeatably wrong source read. See [How verification works](docs/GUIDE.md#how-verification-works) for scope and limits.
+For new copies, Standard does not independently reread the source: a wrong source read can be copied and hashed consistently. Extra reads can catch differing bytes, but no mode can prove the original camera bytes or detect every repeatably wrong source read. See [How verification works](docs/GUIDE.md#how-verification-works) for scope and limits.
 
 ## What It Does
 

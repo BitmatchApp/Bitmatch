@@ -10,14 +10,14 @@ Notifications say when a card is safe to erase, when something needs you, and wh
 
 ## How Verification Works
 
-Copying a file and checking it are separate jobs. In the verified modes, BitMatch reads the card, writes each backup, then reads the destination bytes back. A matching checksum is evidence that those bytes matched when they were checked; a copy finishing or a filename appearing isn't enough.
+Copying a new file and checking it are separate jobs. In the verified modes, BitMatch reads the card, writes each backup, then reads the destination bytes back. A matching checksum is evidence that those bytes matched when they were checked; a copy finishing or a filename appearing isn't enough.
 
 - **Quick** copies and checks sizes. It doesn't verify contents and never marks the card safe to erase.
-- **Standard** hashes the source while copying and reads every backup back with SHA-256.
+- **Standard** hashes new files while copying and reads every backup back with SHA-256. Existing files are checked against a fresh source read before reuse.
 - **Thorough** also reads the source again, using SHA-256 and MD5 to check for changes during the transfer.
 - **Paranoid** adds a byte-by-byte comparison with the source as well as SHA-256.
 
-Standard verifies the backup against the bytes obtained during the copy read. If that read returns wrong bytes consistently to the copy and hash, its destination readback can still match. Thorough's separate source read and Paranoid's byte comparison can reveal differing reads; neither can prove what the camera originally wrote or rule out a fault that returns the same wrong bytes every time. A verified backup and a healthy source card are separate questions.
+For new copies, Standard verifies the backup against the bytes obtained during the copy read. If that read returns wrong bytes consistently to the copy and hash, its destination readback can still match. Thorough's separate source read and Paranoid's byte comparison can reveal differing reads; neither can prove what the camera originally wrote or rule out a fault that returns the same wrong bytes every time. A verified backup and a healthy source card are separate questions.
 
 An existing file is reused only after the selected verification checks establish that it matches. Conflicting files are never overwritten. A failed, cancelled or interrupted attempt keeps its partial results and stays unsafe. A retry is a new attempt, not permission to trust the old one.
 

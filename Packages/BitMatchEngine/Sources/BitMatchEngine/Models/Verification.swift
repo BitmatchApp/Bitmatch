@@ -222,7 +222,7 @@ public enum VerificationMode: String, CaseIterable, Identifiable, Codable, Senda
     public var description: String {
         switch self {
         case .quick: return "Quick checks file sizes only; file contents are not checksum-verified."
-        case .standard: return "Standard reads the card once and checks every drive."
+        case .standard: return "Standard reads each backup back with SHA-256. New copies use the source hash from copying; existing files are checked against a fresh source read."
         case .thorough: return "Thorough also re-reads the card for verification."
         case .paranoid: return "Paranoid also compares every byte."
         }

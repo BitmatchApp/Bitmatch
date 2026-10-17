@@ -360,12 +360,7 @@ struct PreferencesWindow: View {
     }
 
     private var verificationExplanation: String {
-        switch coordinator.verificationMode {
-        case .standard: "Standard reads the card once and checks every drive."
-        case .quick: "Quick compares file sizes without checking file contents."
-        case .thorough: "Thorough also re-reads the card for verification."
-        case .paranoid: "Paranoid also compares every byte."
-        }
+        coordinator.verificationMode.description
     }
 }
 
