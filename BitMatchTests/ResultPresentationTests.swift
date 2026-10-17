@@ -180,6 +180,26 @@ final class ResultPresentationTests: XCTestCase {
         XCTAssertEqual(presentation.sourceGuidance, "Do not erase the card. The transfer did not finish safely.")
     }
 
+    func testNeedsAttentionWithoutFailedRowsDoesNotClaimZeroFilesHadProblems() {
+        let presentation = CompletionVerdictPresentation.make(.issues, issueCount: 0)
+
+        XCTAssertEqual(presentation.detail, "The saved results don't confirm the full transfer. Review them below.")
+        XCTAssertEqual(
+            presentation.sourceGuidance,
+            "Do not erase the card. These results don't establish a complete verified backup."
+        )
+    }
+
+    func testNeedsAttentionWithFailedRowsKeepsTheActualCount() {
+        let presentation = CompletionVerdictPresentation.make(.issues, issueCount: 2)
+
+        XCTAssertEqual(presentation.detail, "2 files had problems. Review them below.")
+        XCTAssertEqual(
+            presentation.sourceGuidance,
+            "Do not erase the card. These results don't establish a complete verified backup."
+        )
+    }
+
     func testVisibleRowsCapsMoreThanOneThousandIssuesWithoutTrapping() {
         let rows = (0..<1_001).map { row("\($0).mov", status: "❌ Failed") }
 

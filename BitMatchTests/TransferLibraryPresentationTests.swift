@@ -173,6 +173,8 @@ struct TransferLibraryPresentationTests {
         #expect(finish.visibleVerdictText.contains("Original selected-file plan was not saved"))
         #expect(finish.visibleVerdictText.contains("Keep the source"))
         #expect(!finish.visibleVerdictText.contains("Selected files verified"))
+        #expect(!finish.visibleVerdictText.contains("0 files had problems"))
+        #expect(finish.guidance == "Do not erase the card. These results don't establish a complete verified backup.")
         #expect(record.summary == "Selected files verified")
     }
 

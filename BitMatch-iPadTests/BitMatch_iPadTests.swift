@@ -168,7 +168,7 @@ struct BitMatch_iPadTests {
 
         #expect(success.title == "The card is safe to erase")
         #expect(issues.title == "The card needs attention")
-        #expect(issues.sourceGuidance == "Do not erase the card until every file below is resolved.")
+        #expect(issues.sourceGuidance == "Do not erase the card. These results don't establish a complete verified backup.")
     }
 
 }
