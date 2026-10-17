@@ -231,7 +231,10 @@ enum TransferLibraryPresentation {
               }),
               let expectedPaths = summaries.first.map({ Set($0.rows.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
-        if record.plannedFileCounts != nil, savedResultsCoverSelectedPlan(record) != true { return false }
+        // Without the original selected-file plan, matching saved rows cannot
+        // establish that every source file was represented. Keep older
+        // completed records visible, but do not infer whole-card safety.
+        guard savedResultsCoverSelectedPlan(record) == true else { return false }
         return summaries.allSatisfy { Set($0.rows.map(\.path)) == expectedPaths }
     }
 

@@ -940,7 +940,7 @@ struct ReportView: View {
         case .copiedNotVerified:
             return "The card is not safe to erase because Quick mode copied the files without verifying their contents."
         case .needsAttention:
-            return "The card is not safe to erase because one or more files need attention."
+            return "These results do not establish a complete verified backup. Do not erase the card."
         case .failed:
             return "The card is not safe to erase because the transfer failed."
         case .interrupted:

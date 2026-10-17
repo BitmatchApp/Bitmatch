@@ -2,12 +2,121 @@ import AppKit
 import Foundation
 import XCTest
 import CryptoKit
+import Combine
 import Testing
 @testable import BitMatch
 import BitMatchEngine
 
 @MainActor
 final class LocalTransferQueueIntegrationTests: XCTestCase {
+    func testReviewLegacyCompletedRecordUsesDerivedCautionWithoutChangingSavedSummary() throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        var oldRecord = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: f.source),
+            destinations: [try LocalTransferResource(url: f.destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(makeReport: false)
+        )
+        oldRecord.state = .completed
+        oldRecord.summary = "Selected files verified"
+        oldRecord.results = [ResultRow(
+            path: f.source.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 4, checksum: "fixture",
+            destination: f.destination.lastPathComponent,
+            destinationPath: f.destination.appendingPathComponent("clip.mov").path
+        )]
+        var plannedRecord = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: oldRecord.source,
+            destinations: oldRecord.destinations, verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(makeReport: false)
+        )
+        plannedRecord.state = .completed
+        plannedRecord.summary = "Selected files verified"
+        plannedRecord.results = oldRecord.results
+        plannedRecord.plannedFileCounts = [1]
+        try JSONEncoder().encode([oldRecord, plannedRecord]).write(to: f.journalURL)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: journal, defaults: f.defaults
+        )
+
+        coordinator.reviewQueuedTransfer(oldRecord.id)
+
+        guard case .completed(let info) = coordinator.operationState else {
+            return XCTFail("Expected a review outcome")
+        }
+        XCTAssertFalse(info.success)
+        XCTAssertTrue(info.message.contains("Original selected-file plan was not saved"))
+        XCTAssertFalse(info.message.contains("Selected files verified"))
+        XCTAssertEqual(coordinator.outcomeRecord?.summary, "Selected files verified")
+        XCTAssertEqual(DockTileState.makeTransfer(coordinator: coordinator), .needsReview)
+
+        coordinator.reviewQueuedTransfer(plannedRecord.id)
+        XCTAssertNil(coordinator.activeRunContext)
+        XCTAssertEqual(coordinator.outcomeRecord?.id, plannedRecord.id)
+        XCTAssertEqual(DockTileState.makeTransfer(coordinator: coordinator), .verified)
+    }
+
+    func testFailedPlanWriteBlocksAutomaticReportHandoff() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeRecordPlan: { _ in
+            throw NSError(domain: "BitMatchTestPlanWrite", code: 78)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults)
+
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted
+                && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertNil(record.plannedFileCounts)
+        XCTAssertEqual(record.results.count, 1)
+        XCTAssertEqual(coordinator.operationState, .failed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: f.destination.appendingPathComponent("Reports").path))
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase)
+    }
+
+    func testLateJournalFinishFailureNeverEmitsASafeLiveVerdict() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults)
+        var safeSignals = 0
+        let subscription = coordinator.transferSignals.sink { signal in
+            if case .safeToErase = signal { safeSignals += 1 }
+        }
+        defer { subscription.cancel() }
+
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted
+                && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertEqual(record.plannedFileCounts, [1])
+        XCTAssertEqual(record.results.count, 1)
+        XCTAssertEqual(coordinator.operationState, .failed)
+        XCTAssertEqual(safeSignals, 0)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase)
+    }
+
     func testUnexpectedCancellationErrorPersistsInterruptedRatherThanCancelled() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -1392,6 +1501,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let unsafeID = try coordinator.enqueue(source: unsafe, destinations: [f.destination])
         for id in [firstID, secondID, unsafeID] {
             try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
             let isSafe = id != unsafeID
             try journal.finish(
                 id: id,
@@ -1436,6 +1546,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
         )
         try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
         try journal.finish(
             id: id,
             results: [ResultRow(path: "clip.mov", status: ResultOutcome.verified.statusText,
@@ -1633,6 +1744,7 @@ private final class QuickQueueRecordingOperations: FileOperationsService, @unche
         progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
         let sourceFile = sourceURL.appendingPathComponent("clip.mov")
+        progressCallback(testPlannedProgress(filesPerDestination: 1, destinationCount: destinationURLs.count))
         let sourceBytes = try Data(contentsOf: sourceFile)
         let rows = try destinationURLs.map { destination in
             let outputRoot = try SafetyValidator.resolvedDestinationRootChecked(
@@ -1698,6 +1810,7 @@ private final class SnapshotIsolationOperations: FileOperationsService, @uncheck
             label: settings.label,
             mode: verificationMode
         ))
+        progressCallback(testPlannedProgress(filesPerDestination: 1, destinationCount: destinationURLs.count))
         let sourceFile = sourceURL.appendingPathComponent("clip.mov")
         let results = destinationURLs.map { destination -> FileOperationResult in
             let verification = verificationMode == .quick ? nil : VerificationResult(
@@ -1806,6 +1919,7 @@ private final class QueueRecordingOperations: FileOperationsService, @unchecked 
                               settings: CameraLabelSettings, estimatedTotalBytes: Int64?,
                               progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?) async throws -> FileOperation {
         await gate.record(QueueStartSnapshot(source: sourceURL, destinations: destinationURLs, label: settings.label, mode: verificationMode))
+        progressCallback(testPlannedProgress(filesPerDestination: 0, destinationCount: destinationURLs.count))
         return FileOperation(sourceURL: sourceURL, destinationURLs: destinationURLs, startTime: Date(), endTime: Date(),
                              results: [], verificationMode: verificationMode, settings: settings, estimatedTotalBytes: estimatedTotalBytes)
     }

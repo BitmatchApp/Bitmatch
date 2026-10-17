@@ -2,6 +2,23 @@ import Foundation
 @testable import BitMatch
 import BitMatchEngine
 
+/// Fake file operations must publish the same selected-file plan that the
+/// real engine saves before it can finalize a transfer.
+func testPlannedProgress(
+    filesPerDestination: Int,
+    destinationCount: Int,
+    stage: ProgressStage = .preparing,
+    fraction: Double = 0
+) -> OperationProgress {
+    OperationProgress(
+        overallProgress: fraction, currentFile: nil, filesProcessed: 0,
+        totalFiles: filesPerDestination, currentStage: stage, speed: nil,
+        elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
+        bytesProcessed: nil, totalBytes: nil,
+        perDestinationTotals: Array(repeating: filesPerDestination, count: destinationCount)
+    )
+}
+
 /// A source card with one file and two empty backups in a throwaway folder.
 struct CoordinatorFolders {
     let root: URL
@@ -88,9 +105,14 @@ final class RecordingFileOperations: FileOperationsService, @unchecked Sendable 
         onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
         if let reportsStage {
-            progressCallback(OperationProgress(
-                overallProgress: 0.5, currentFile: "A.ARW", filesProcessed: 0, totalFiles: 1,
-                currentStage: reportsStage, speed: nil))
+            progressCallback(testPlannedProgress(
+                filesPerDestination: 0, destinationCount: destinationURLs.count,
+                stage: reportsStage, fraction: 0.5
+            ))
+        } else {
+            progressCallback(testPlannedProgress(
+                filesPerDestination: 0, destinationCount: destinationURLs.count
+            ))
         }
         await gate.record(RecordedStart(
             source: sourceURL,

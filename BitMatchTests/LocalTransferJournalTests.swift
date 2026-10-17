@@ -16,6 +16,7 @@ struct LocalTransferJournalTests {
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
         )
         try journal.markRunning(id: verifiedID)
+        try journal.recordPlan(id: verifiedID, fileCounts: [1])
         try journal.finish(
             id: verifiedID,
             results: [ResultRow(
@@ -549,7 +550,9 @@ struct LocalTransferJournalTests {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), generateASCMHL: true)
         try journal.markRunning(id: id)
-        let row = ResultRow(path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc", destination: "Backup")
+        try journal.recordPlan(id: id, fileCounts: [1])
+        let row = ResultRow(path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc",
+                            destination: "Backup", destinationPath: f.destination.appendingPathComponent("clip.mov").path)
         try journal.finish(id: id, results: [row], summary: "ASC MHL history already exists", hadIssues: true)
 
         let copyOnlyRetryID = try journal.requeue(id: id, generateASCMHL: false)
@@ -693,7 +696,9 @@ struct LocalTransferJournalTests {
         let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
                                      cameraSettings: CameraLabelSettings(), reportSettings: reportSettings, generateASCMHL: true)
         try journal.markRunning(id: id)
-        try journal.finish(id: id, results: [ResultRow(path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc", destination: "Backup")],
+        try journal.recordPlan(id: id, fileCounts: [1])
+        try journal.finish(id: id, results: [ResultRow(path: "clip.mov", status: "✅ Verified", size: 1, checksum: "abc",
+                                                     destination: "Backup", destinationPath: f.destination.appendingPathComponent("clip.mov").path)],
                            summary: "Done", hadIssues: false)
         let record = try #require(journal.records.first)
 

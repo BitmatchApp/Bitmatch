@@ -766,6 +766,7 @@ struct FinishedRunSnapshotTests {
             reportSettings: ReportPrefs(), generateASCMHL: false
         )
         try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
         try journal.finish(
             id: id,
             results: [ResultRow(

@@ -19,7 +19,7 @@ struct ReportPDFLayoutTests {
         #expect(ReportView.unsafeReportReason(safetyState: .failed, photographyJob: nil)
             == "The card is not safe to erase because the transfer failed.")
         #expect(ReportView.unsafeReportReason(safetyState: .needsAttention, photographyJob: nil)
-            == "The card is not safe to erase because one or more files need attention.")
+            == "These results do not establish a complete verified backup. Do not erase the card.")
         #expect(!ReportView.shouldShowSuccessBadge(safetyState: .failed, photographyJob: nil))
         #expect(!ReportView.shouldShowSuccessBadge(safetyState: .needsAttention, photographyJob: nil))
     }

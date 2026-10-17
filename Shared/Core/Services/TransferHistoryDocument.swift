@@ -16,16 +16,18 @@ struct TransferHistoryDocument: FileDocument {
     init(record: LocalTransferRecord, asCSV: Bool) throws {
         let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
             results: record.results, includeModePlan: record.plannedFileCounts != nil)
+        let savedVerdict = TransferLibraryPresentation.safetyState(for: record)
         if asCSV {
             func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
-            let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused,recorded_status\n"
+            let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused,recorded_status,saved_verdict,saved_safe_to_erase\n"
             let rows = record.results.map { row in
                 [row.path, row.destinationPath ?? row.destination ?? "",
                  TransferHistoryResultPresentation.statusText(for: row, mode: record.verificationMode),
                  String(row.size), row.checksum ?? "",
                  record.verificationMode.rawValue, record.state.rawValue, record.summary,
                  record.reportSettings.projectName, record.generateASCMHL ? "requested" : "not requested",
-                 record.reportSettings.clientName, row.wasReused ? "true" : "false", row.status].map(quote).joined(separator: ",")
+                 record.reportSettings.clientName, row.wasReused ? "true" : "false", row.status,
+                 savedVerdict.title, savedVerdict.isSafe ? "true" : "false"].map(quote).joined(separator: ",")
             }
             func pair(_ key: String, _ value: String) -> String { quote(key) + "," + quote(value) }
             func detail(_ value: String) -> String {
@@ -39,13 +41,15 @@ struct TransferHistoryDocument: FileDocument {
                 pair("retryOf", record.retryOf?.uuidString ?? ""),
                 pair("plannedFileCounts", record.plannedFileCounts?.map(String.init).joined(separator: ";") ?? ""),
                 pair("selectedMode", scope.selectedMode.rawValue),
+                pair("savedVerdict", savedVerdict.title),
+                pair("savedSafeToErase", savedVerdict.isSafe ? "true" : "false"),
                 pair("selectedModeChecks", scope.configuredChecks ?? "Not recorded for this attempt"),
                 pair("recordedSelectedSourceFiles", String(scope.recordedSelectedSourceFiles)),
                 pair("recordedSelectedBackupResults", String(scope.recordedSelectedResults)),
                 pair("recordedVerifiedBackupResults", String(scope.recordedVerifiedResults)),
                 pair("recordedExcludedSourceFiles", String(scope.recordedExcludedSourceFiles)),
                 pair("evidenceScope", record.plannedFileCounts == nil
-                    ? "Original selected-file plan was not saved; export describes recorded results only"
+                    ? "Original selected-file plan was not saved; export describes recorded results only and cannot establish whole-card safety"
                     : "Saved results only; selected mode does not prove every check finished"),
                 pair("operatorName", detail(record.reportSettings.operatorName)),
                 pair("notes", detail(record.reportSettings.notes)),
@@ -72,6 +76,8 @@ struct TransferHistoryDocument: FileDocument {
                 let summary: String
                 let createdAt: Date
                 let verificationMode: VerificationMode
+                let savedVerdict: String
+                let savedSafeToErase: Bool
                 let verificationScope: VerificationScopeEvidence
                 let selectedFilePlanRecorded: Bool
                 let projectName: String
@@ -90,6 +96,7 @@ struct TransferHistoryDocument: FileDocument {
             data = try encoder.encode(Report(id: record.id, retryOf: record.retryOf, plannedFileCounts: record.plannedFileCounts, source: record.source.url.path,
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
+                savedVerdict: savedVerdict.title, savedSafeToErase: savedVerdict.isSafe,
                 verificationScope: scope, selectedFilePlanRecorded: record.plannedFileCounts != nil,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
                 operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName),

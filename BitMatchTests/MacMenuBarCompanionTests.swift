@@ -29,13 +29,30 @@ struct MacMenuBarCompanionTests {
         #expect(MenuBarDestinationLabel.text(for: .verifying) == "Verifying")
     }
 
-    @Test func recentStatusUsesSavedTerminalStateAndMakesNoSafetyClaim() {
-        #expect(MenuBarRecentTransfer.status(for: .queued)?.text == nil)
-        #expect(MenuBarRecentTransfer.status(for: .running)?.text == nil)
-        #expect(MenuBarRecentTransfer.status(for: .completed)?.text == "Completed · review results in BitMatch")
-        #expect(MenuBarRecentTransfer.status(for: .issues)?.needsAttention == true)
-        #expect(MenuBarRecentTransfer.status(for: .failed)?.text == "Transfer failed")
-        #expect(MenuBarRecentTransfer.status(for: .cancelled)?.text == "Transfer cancelled")
-        #expect(MenuBarRecentTransfer.status(for: .interrupted)?.text == "Transfer interrupted")
+    @Test func recentStatusUsesDerivedSavedVerdictForOldRecords() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("menu-plan-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Card")
+        let destination = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(),
+            source: try LocalTransferResource(url: source),
+            destinations: [try LocalTransferResource(url: destination)],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        #expect(MenuBarRecentTransfer.status(for: record)?.text == nil)
+        record.state = .completed
+        record.results = [ResultRow(path: source.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 1, checksum: "abc", destination: "Backup",
+            destinationPath: destination.appendingPathComponent("clip.mov").path)]
+        #expect(MenuBarRecentTransfer.latest(in: [record])?.status == "Needs review")
+        #expect(MenuBarRecentTransfer.latest(in: [record])?.needsAttention == true)
+        record.plannedFileCounts = [1]
+        #expect(MenuBarRecentTransfer.latest(in: [record])?.status == "Completed · review results in BitMatch")
+        record.state = .cancelled
+        #expect(MenuBarRecentTransfer.status(for: record)?.text == "Transfer cancelled")
+        record.state = .interrupted
+        #expect(MenuBarRecentTransfer.status(for: record)?.text == "Transfer interrupted")
     }
 }

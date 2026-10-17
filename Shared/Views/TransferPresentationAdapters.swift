@@ -79,22 +79,25 @@ extension TransferOutcomePresentation {
             canRetry: isFinished && record?.canRetry == true,
             canExport: isFinished,
             sourceName: record?.title ?? coordinator.sourceURL?.lastPathComponent ?? "",
-            completionReason: record?.summary ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
+            completionReason: journalWriteFailed
+                ? "Could not save transfer results. Keep the source and review History."
+                : record.map { recordedCompletionReason(for: $0) }
+                    ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
             independentDestinationCount: record?.independentDestinationCount
         )
     }
 
     /// Translate a saved attempt into presentation state without treating an
     /// interrupted process as a user-requested cancellation in the journal.
-    @MainActor
     static func recordedState(for record: LocalTransferRecord) -> OperationState? {
+        let reason = recordedCompletionReason(for: record)
         switch TransferLibraryPresentation.safetyState(for: record) {
         case .safeToErase:
-            return .completed(.init(success: true, message: record.summary))
+            return .completed(.init(success: true, message: reason))
         case .copiedNotVerified:
-            return .completed(.init(success: false, message: record.summary, copiedNotVerified: true))
+            return .completed(.init(success: false, message: reason, copiedNotVerified: true))
         case .needsAttention:
-            return .completed(.init(success: false, message: record.summary))
+            return .completed(.init(success: false, message: reason))
         case .failed:
             return .failed
         case .interrupted:
@@ -104,5 +107,25 @@ extension TransferOutcomePresentation {
             // turn an active journal row into a verified finish.
             return .inProgress
         }
+    }
+
+    /// The running executor's optimistic completion is replaced only after
+    /// the journal settles. An unexpected interruption stays distinct from
+    /// a person pressing Cancel in the live operation state.
+    static func settledLiveState(for record: LocalTransferRecord) -> OperationState? {
+        guard record.state != .queued, record.state != .running else { return nil }
+        if record.state == .interrupted { return .failed }
+        return recordedState(for: record)
+    }
+
+    /// Keep the journal's original message in History and exports, but do not
+    /// repeat a legacy success claim on Finish when its selected-file plan is
+    /// missing and the shared saved verdict has been downgraded.
+    static func recordedCompletionReason(for record: LocalTransferRecord) -> String {
+        if record.plannedFileCounts == nil,
+           (record.state == .completed || record.quickOnlyUnverified == true) {
+            return "Original selected-file plan was not saved; whole-card coverage cannot be confirmed. Keep the source."
+        }
+        return record.summary
     }
 }

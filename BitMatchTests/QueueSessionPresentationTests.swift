@@ -290,6 +290,30 @@ struct QueueSessionPresentationTests {
         #expect(!presentation.rows[2].showsSafeHero)
     }
 
+    @Test func legacyCompletedRowDoesNotRepeatUnprovenSuccessInQueue() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        var record = try fixture.record(
+            name: "A001", state: .completed, outcome: .verified,
+            summary: "Selected files verified", at: 1
+        )
+        record.plannedFileCounts = nil
+
+        let row = try #require(QueueSessionPresentation.make(
+            records: [record], sessionIDs: [record.id], progress: nil,
+            mountedSourceIDs: [record.id]
+        ).rows.first)
+
+        #expect(row.safetyState == .needsAttention)
+        #expect(row.action == .review)
+        #expect(row.cause?.contains("Original selected-file plan was not saved") == true)
+        #expect(row.copySummary.contains("Original selected-file plan was not saved"))
+        #expect(row.outcome?.visibleVerdictText.contains("Original selected-file plan was not saved") == true)
+        #expect(!row.copySummary.contains("Selected files verified"))
+        #expect(row.outcome?.visibleVerdictText.contains("Selected files verified") == false)
+        #expect(record.summary == "Selected files verified")
+    }
+
     @Test func nonSafeRowNeverOffersOrAutomaticallyTriggersEject() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -451,6 +475,7 @@ private final class QueuePresentationFixture {
         record.summary = summary
         record.quickOnlyUnverified = quickOnlyUnverified
         if let outcome {
+            record.plannedFileCounts = [1]
             record.results = [ResultRow(
                 path: source.appendingPathComponent("clip.mov").path,
                 status: outcome.statusText, size: size, checksum: outcome == .verified ? "abc" : nil,

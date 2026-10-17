@@ -100,9 +100,8 @@ struct TransferFinishNoticeTests {
         ))
     }
 
-    /// Plant: in `SharedAppCoordinator.notifyIfTransferEnded`, call the
-    /// source/destination overload with live selection instead of this
-    /// record overload; a later selection can then enter the notification.
+    /// The settled record supplies both the card identity and the verdict;
+    /// a later selection or the executor's early success cannot replace it.
     @Test func finishedRecordBuildsNotificationIdentity() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("bitmatch-notice-\(UUID())", isDirectory: true)
@@ -111,18 +110,41 @@ struct TransferFinishNoticeTests {
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let record = LocalTransferRecord(
+        var record = LocalTransferRecord(
             id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: source),
             destinations: [try LocalTransferResource(url: backup)], verificationMode: .standard,
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
         )
+        record.state = .completed
+        record.plannedFileCounts = [1]
+        record.results = [ResultRow(
+            path: source.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 4, checksum: "fixture",
+            destination: backup.lastPathComponent,
+            destinationPath: backup.appendingPathComponent("clip.mov").path
+        )]
 
-        let notice = TransferFinishNotice.make(
-            state: .completed(.init(success: true, message: "Verified")),
-            record: record, issueCount: 0, kind: .standaloneFinish
-        )
+        let notice = TransferFinishNotice.make(record: record, kind: .standaloneFinish)
 
         #expect(notice?.title == "A001 is safe to erase")
         #expect(notice?.body == "Verified on \(TransferOutcomePresentation.destinationDriveName(backup)).")
+
+        // No journal settlement means no notification, even if the executor
+        // has already reached its in-memory success state.
+        record.state = .running
+        #expect(TransferFinishNotice.make(record: record, kind: .standaloneFinish) == nil)
+
+        // A finished record without its selected-file plan is an attention
+        // result, not a safe-to-erase notification.
+        record.state = .completed
+        record.plannedFileCounts = nil
+        let settledState = try #require(TransferOutcomePresentation.recordedState(for: record))
+        let kind = TransferNotificationDecision.kind(
+            state: settledState, issueCount: 0, queueIsRunning: false,
+            isReplayingQueuedTransfer: false, notifyAttention: true,
+            notifyFinish: true, notifyEachQueuedCard: false
+        )
+        #expect(kind == .attention)
+        #expect(TransferFinishNotice.make(record: record, kind: .standaloneFinish)?.title == "A001 needs attention")
     }
 }

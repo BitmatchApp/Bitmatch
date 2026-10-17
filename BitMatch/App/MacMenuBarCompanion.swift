@@ -210,18 +210,20 @@ struct MenuBarRecentTransfer: Equatable {
             .max(by: { ($0.endedAt ?? $0.createdAt) < ($1.endedAt ?? $1.createdAt) }) else {
             return nil
         }
-        guard let result = status(for: record.state) else { return nil }
+        guard let result = status(for: record) else { return nil }
         return Self(cardName: record.title, status: result.text, needsAttention: result.needsAttention)
     }
 
-    static func status(for state: LocalTransferState) -> (text: String, needsAttention: Bool)? {
-        switch state {
-        case .completed: ("Completed · review results in BitMatch", false)
-        case .issues: ("Needs review", true)
+    static func status(for record: LocalTransferRecord) -> (text: String, needsAttention: Bool)? {
+        guard record.state != .queued, record.state != .running else { return nil }
+        return switch TransferLibraryPresentation.safetyState(for: record) {
+        case .safeToErase: ("Completed · review results in BitMatch", false)
+        case .copiedNotVerified: ("Copied, not verified", true)
+        case .needsAttention: ("Needs review", true)
         case .failed: ("Transfer failed", true)
-        case .cancelled: ("Transfer cancelled", true)
-        case .interrupted: ("Transfer interrupted", true)
-        case .queued, .running: nil
+        case .interrupted:
+            (record.state == .cancelled ? "Transfer cancelled" : "Transfer interrupted", true)
+        case .waiting, .preparing, .copying, .verifying, .finishing: nil
         }
     }
 }

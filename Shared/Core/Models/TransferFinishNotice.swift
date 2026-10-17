@@ -16,17 +16,16 @@ struct TransferFinishNotice: Equatable, Sendable {
         self.kind = kind
     }
 
-    static func make(
-        state: OperationState,
-        record: LocalTransferRecord,
-        issueCount: Int,
-        kind: TransferNotificationKind
-    ) -> TransferFinishNotice? {
-        make(
+    /// Use only a settled journal record. The executor may report success
+    /// before the journal has persisted its plan and final verdict.
+    static func make(record: LocalTransferRecord, kind: TransferNotificationKind) -> TransferFinishNotice? {
+        guard record.state != .queued, record.state != .running,
+              let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
+        return make(
             state: state,
             sourceName: record.title,
             destinations: record.destinations.map(\.url),
-            issueCount: issueCount,
+            issueCount: record.results.filter { !$0.isSuccessStatus }.count,
             kind: kind
         )
     }

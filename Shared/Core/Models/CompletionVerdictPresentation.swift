@@ -46,9 +46,11 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
             let files = issueCount == 1 ? "1 file" : "\(issueCount) files"
             return Self(
                 title: safetyState.headline(cardName: cardName),
-                detail: "\(files) had problems. Review them below.",
+                detail: issueCount == 0
+                    ? "The saved results don't confirm the full transfer. Review them below."
+                    : "\(files) had problems. Review them below.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "Do not erase \(card) until every file below is resolved."
+                sourceGuidance: "Do not erase \(card). These results don't establish a complete verified backup."
             )
         case .failed:
             return Self(
@@ -99,7 +101,7 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 title: presentation.title,
                 detail: info.message,
                 symbol: presentation.symbol,
-                sourceGuidance: "Do not erase \(card) until the problems are resolved."
+                sourceGuidance: presentation.sourceGuidance
             )
         }
         return presentation

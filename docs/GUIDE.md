@@ -25,6 +25,8 @@ For new copies, Standard verifies the backup against the bytes obtained during t
 
 An existing file is reused only after the selected verification checks establish that it matches. Conflicting files are never overwritten. A failed, cancelled or interrupted attempt keeps its partial results and stays unsafe. A retry is a new attempt, not permission to trust the old one.
 
+Older History entries may not include the original selected-file plan. Their saved rows can still show which files were verified, but they cannot establish whole-card coverage or a safe-to-erase verdict. Keep the source and run a new verified transfer if you need that verdict.
+
 “Safe to erase” requires complete verified coverage on every required backup, plus any requested handoff/report steps. Two folders on the same physical drive aren't independent backups. Quick, missing files and intentional AppleDouble exclusions cannot earn a whole-card safe verdict. Keep the source until you've reviewed the results; a successful check doesn't promise that a drive can never fail later.
 
 PDF, CSV, JSON and ASC MHL describe the recorded work. They don't perform another verification just because you export them. Master Report summarizes saved records; **Check** reads the media again. Clip previews are optional report decoration and never proof of integrity.
@@ -95,9 +97,9 @@ You can ignore SFTP entirely and keep everything local. No app analytics uploads
 
 ## Before You Trust It With Your Footage
 
-BitMatch reads the source without writing to it. It copies through temporary files and doesn't overwrite conflicting destination files. Checksum modes reuse an existing file only after verifying that it matches.
+BitMatch reads the source without writing to it. It copies through temporary files and refuses destination files it finds already in place. Checksum modes reuse an existing file only after verifying that it matches.
 
-Source scanning rejects unreadable metadata, unsafe paths, and portable filename collisions. Hidden files and empty folders are preserved, except for designated macOS metadata folders at the volume root; symlink entries are skipped. Verification rejects files that change size or identity while being read. Completion screens and reports count failures and sidecars too.
+Source scanning rejects unreadable metadata, unsafe paths, and portable filename collisions. Apart from the AppleDouble setting and designated macOS metadata folders at a volume root, hidden files and empty folders are preserved; symlink entries are skipped. Verification rejects files that change size or identity while being read. Completion screens and reports count failures and sidecars too.
 
 **This is beta software from a one-person project.** I have not tested every camera, drive, filesystem, hub, or OS combination. Try it with disposable files before using it on a job. Keep the source card until every required backup finishes cleanly and you've checked the report. Keep another independent copy of anything you can't replace.
 

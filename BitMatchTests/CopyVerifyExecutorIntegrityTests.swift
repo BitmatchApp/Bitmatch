@@ -265,6 +265,31 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.appendingPathComponent("Reports").path))
     }
 
+    func testMissingSavedPlanStopsAutomaticReportBeforeItCanClaimCompletion() async throws {
+        let fixture = try reportFixture(blockReportsFolder: false)
+        var projectFinalizations = 0
+        let harness = ExecutorHarness(returnedResults: [fixture.result], emittedResults: [],
+            lifecycleCompletion: { _ in
+                projectFinalizations += 1
+                return PhotographerFinalizationResult(context: nil, locallySafe: true)
+            },
+            sourceURL: fixture.source, destinationURLs: [fixture.destination],
+            generateASCMHL: true, makeReport: true)
+        harness.onAuthoritativeResults = { throw TransferPlanPersistenceError.missingSavedPlan }
+
+        do {
+            _ = try await harness.execute()
+            XCTFail("A missing saved plan must interrupt report publication")
+        } catch is TransferPlanPersistenceError { }
+
+        XCTAssertEqual(harness.completedRows.count, 1)
+        XCTAssertNil(harness.terminalInfo)
+        XCTAssertEqual(harness.lastState, .failed)
+        XCTAssertEqual(projectFinalizations, 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.appendingPathComponent("ascmhl").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.appendingPathComponent("Reports").path))
+    }
+
     func testUnexpectedCancellationErrorIsNotAnIntentionalCancellation() async throws {
         let harness = ExecutorHarness(returnedResults: [], emittedResults: [], thrownError: CancellationError())
         do { _ = try await harness.execute(); XCTFail("Must propagate interruption") }
