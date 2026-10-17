@@ -52,7 +52,9 @@ struct RemoteBackupDestinationView: View {
                         Text("SFTP · \(profile.username)@\(profile.host) · \(profile.root.description)")
                             .font(DesignSystem.Typography.monoSmall)
                             .foregroundColor(DesignSystem.Colors.textSecondary)
-                        Text(profile.verificationMode == .sha256 ? "Remote SHA-256 verification required." : "Upload-only reports Uploaded · Unverified.")
+                        Text(profile.verificationMode == .sha256
+                            ? "After upload, BitMatch downloads each file and checks its SHA-256 hash."
+                            : "Upload only: files are not downloaded and checked.")
                             .font(DesignSystem.Typography.caption)
                             .foregroundColor(profile.verificationMode == .sha256 ? DesignSystem.Colors.textTertiary : DesignSystem.Colors.warning)
                     }
