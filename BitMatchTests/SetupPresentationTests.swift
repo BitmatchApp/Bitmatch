@@ -125,6 +125,48 @@ struct SetupPresentationTests {
         #expect(presentation.start.blocker == nil)
     }
 
+    @Test func unresolvedDriveSeparationAppearsBesideTheDestinationCountWithoutBlockingStart() {
+        let first = URL(fileURLWithPath: "/Volumes/A")
+        let second = URL(fileURLWithPath: "/Volumes/B")
+        let ready = plan(source: source, backups: [first, second])
+        let note = "BitMatch can't confirm whether these destinations share storage."
+        let presentation = StartButtonPresentation.make(
+            plan: ready,
+            usesProjectWorkflow: false,
+            hasPreparedCard: false,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 2,
+            physicalSeparationNote: note
+        )
+
+        #expect(presentation.canStart)
+        #expect(presentation.blocker == nil)
+        #expect(presentation.readyLine?.contains("to 2 destinations") == true)
+        #expect(presentation.readyLine?.hasSuffix(note) == true)
+
+        let preparedProject = StartButtonPresentation.make(
+            plan: ready,
+            usesProjectWorkflow: true,
+            hasPreparedCard: true,
+            projectBlocker: nil,
+            projectUnit: "Card",
+            isOperationInProgress: false,
+            hasComposerCard: true,
+            sourceFileCount: 12,
+            sourceBytes: 4_000,
+            destinationCount: 2,
+            physicalSeparationNote: note
+        )
+        #expect(preparedProject.canStart)
+        #expect(preparedProject.startsProject)
+        #expect(preparedProject.readyLine?.hasSuffix(note) == true)
+    }
+
     @MainActor
     @Test func priorBackupWordingIncludesYearForAnOlderTransfer() {
         let calendar = Calendar(identifier: .gregorian)

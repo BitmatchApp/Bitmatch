@@ -72,6 +72,7 @@ extension SetupPresentation {
             sourceBytes: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.totalSize,
             destinationCount: independence.independentCopyCount,
             hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
+            physicalSeparationNote: independence.physicalSeparationNote,
             informationalLines: [coordinator.alreadyBackedUpLine, coordinator.appleDoubleSelection.summaryLine].compactMap { $0 }
         )
     }

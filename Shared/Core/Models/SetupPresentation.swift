@@ -70,7 +70,8 @@ struct StartButtonPresentation: Equatable, Sendable {
         stagedVerificationModes: [VerificationMode] = [],
         sourceFileCount: Int?,
         sourceBytes: Int64?,
-        destinationCount: Int
+        destinationCount: Int,
+        physicalSeparationNote: String? = nil
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard
         let unit = projectUnit.lowercased()
@@ -214,7 +215,8 @@ struct StartButtonPresentation: Equatable, Sendable {
                         destinationRoutes: destinationRoutes,
                         destinationRouteIdentities: destinationRouteIdentities
                     )
-                    : readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount))
+                    : [readyLine(fileCount: sourceFileCount, bytes: sourceBytes, destinationCount: destinationCount),
+                       physicalSeparationNote].compactMap { $0 }.joined(separator: " "))
                 : nil,
             accessibilityHint: canStart
                 ? (cardCount > 1
@@ -330,6 +332,7 @@ struct SetupPresentation: Equatable {
         sourceBytes: Int64?,
         destinationCount: Int,
         hasProjectEvidence: Bool,
+        physicalSeparationNote: String? = nil,
         informationalLines: [String] = []
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard || isProjectRunInProgress
@@ -352,7 +355,8 @@ struct SetupPresentation: Equatable {
                 stagedVerificationModes: stagedVerificationModes,
                 sourceFileCount: sourceFileCount,
                 sourceBytes: sourceBytes,
-                destinationCount: destinationCount
+                destinationCount: destinationCount,
+                physicalSeparationNote: physicalSeparationNote
             ),
             workflow: isProject ? .project : .quick,
             isWorkflowLocked: hasPreparedCard || isProjectRunInProgress,
