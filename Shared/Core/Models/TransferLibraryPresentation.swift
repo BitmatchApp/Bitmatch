@@ -165,6 +165,11 @@ enum TransferLibraryPresentation {
         case .completed, .issues:
             guard !record.results.isEmpty else { return .needsAttention }
             if record.verificationMode == .quick {
+                // Quick journals are always `.issues`: that state alone does
+                // not distinguish a clean size-only copy from a failed report.
+                // Older records have no explicit verdict, so keep them out of
+                // the benign copied-only state rather than hide a real issue.
+                guard record.quickOnlyUnverified == true else { return .needsAttention }
                 if hasCompleteEvidence(record, where: {
                     ResultOutcome(statusText: $0.status) == .copiedUnverified
                 }) {
@@ -209,9 +214,21 @@ enum TransferLibraryPresentation {
             destinations: record.destinations.map(\.url)
         )
         guard summaries.count == record.destinations.count,
-              summaries.allSatisfy({ !$0.rows.isEmpty && $0.rows.allSatisfy(accepts) }),
+              summaries.allSatisfy({ summary in
+                  !summary.rows.isEmpty && summary.rows.allSatisfy(accepts)
+                      && Set(summary.rows.map(\.path)).count == summary.rows.count
+              }),
               let expectedPaths = summaries.first.map({ Set($0.rows.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
+        // Recent journals store the selected manifest size for each backup.
+        // A completed flag and a smaller, internally consistent set of rows
+        // are not enough to prove that every selected file was verified.
+        if let plan = record.plannedFileCounts {
+            guard plan.count == summaries.count,
+                  zip(plan, summaries).allSatisfy({ expected, summary in
+                      expected > 0 && Set(summary.rows.map(\.path)).count == expected
+                  }) else { return false }
+        }
         return summaries.allSatisfy { Set($0.rows.map(\.path)) == expectedPaths }
     }
 

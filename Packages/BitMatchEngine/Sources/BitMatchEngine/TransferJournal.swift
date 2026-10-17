@@ -127,6 +127,10 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public let retryOf: UUID?
     /// Selected files per destination, from the engine manifest (exclusions omitted).
     public var plannedFileCounts: [Int]?
+    /// True only when Quick's size-only check was the sole reason the attempt
+    /// could not be verified. False when reporting, coverage, or another part
+    /// of the attempt also failed; nil for journals written before this field.
+    public var quickOnlyUnverified: Bool? = nil
     /// Physical drives represented by `destinations`. Nil for older records
     /// whose disk independence was never assessed.
     public var independentDestinationCount: Int?
@@ -156,7 +160,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
-        case independentDestinationCount, retryOf, plannedFileCounts
+        case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified
     }
 
     public init(from decoder: Decoder) throws {
@@ -189,6 +193,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         independentDestinationCount = try c.decodeIfPresent(Int.self, forKey: .independentDestinationCount)
         retryOf = try c.decodeIfPresent(UUID.self, forKey: .retryOf)
         plannedFileCounts = try c.decodeIfPresent([Int].self, forKey: .plannedFileCounts)
+        quickOnlyUnverified = try c.decodeIfPresent(Bool.self, forKey: .quickOnlyUnverified)
     }
     public var issueCount: Int { results.filter { !$0.isSuccessStatus }.count }
 }
@@ -605,6 +610,7 @@ public final class TransferJournal: Sendable {
         results: [ResultRow],
         summary: String,
         hadIssues: Bool,
+        quickOnlyUnverified: Bool? = nil,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
@@ -628,17 +634,34 @@ public final class TransferJournal: Sendable {
                 )
             }
             record.sourceFingerprint = sourceFingerprint
-            record.state = hadIssues || results.isEmpty || results.contains(where: { !$0.isSuccessStatus }) ? .issues : .completed
+            record.quickOnlyUnverified = record.verificationMode == .quick ? quickOnlyUnverified : nil
+            // A current transfer records the selected manifest size before
+            // copying. A shorter or duplicated result set is incomplete even
+            // if every retained row says it verified. Legacy nil-plan records
+            // keep their historical rule.
+            let incompletePlan = !Self.hasCompletePlannedResults(record)
+            // A complete plan can still contain copied-but-unverified rows.
+            // Only Quick mode intentionally accepts that outcome.
+            let missingVerification = record.verificationMode != .quick && results.contains { row in
+                row.isSuccessStatus && !row.isVerifiedStatus
+            }
+            record.state = hadIssues || results.isEmpty || incompletePlan || missingVerification
+                || results.contains(where: { !$0.isSuccessStatus }) ? .issues : .completed
+            let truthfulSummary = incompletePlan
+                ? "Transfer results are incomplete. Do not erase the card."
+                : missingVerification && !hadIssues
+                    ? "Some selected files were not verified. Do not erase the card."
+                    : summary
             // A Quick-mode record must always say its contents were not
             // verified, whatever `summary` says. In the normal flow `summary`
             // already carries that note (see `TransferCompletion.verdict`),
             // so only add it once, never twice.
             if record.verificationMode == .quick {
                 let note = TransferCompletion.quickModeNote
-                record.summary = summary.contains(note) ? summary : "\(summary) \(note)"
+                record.summary = truthfulSummary.contains(note) ? truthfulSummary : "\(truthfulSummary) \(note)"
                 record.state = .issues
             } else {
-                record.summary = summary
+                record.summary = truthfulSummary
             }
             record.endedAt = Date()
         }
@@ -668,10 +691,40 @@ public final class TransferJournal: Sendable {
                 return PathContainment.isWithin(path, root: destination.url.path)
             }
         }
-        guard groups.allSatisfy({ !$0.isEmpty }),
+        guard groups.allSatisfy({ !$0.isEmpty && Set($0.map(\.path)).count == $0.count }),
               groups.reduce(0, { $0 + $1.count }) == record.results.count,
               let expectedPaths = groups.first.map({ Set($0.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
+        if let plan = record.plannedFileCounts {
+            guard plan.count == groups.count,
+                  zip(plan, groups).allSatisfy({ expected, rows in
+                      expected > 0 && Set(rows.map(\.path)).count == expected
+                  }) else { return false }
+        }
+        return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
+    }
+
+    /// Match the recorded selected-file count for each destination. Reviewed
+    /// AppleDouble exclusions are retained as evidence but are not selected
+    /// files, so they do not make a complete selected-file plan look short.
+    private static func hasCompletePlannedResults(_ record: LocalTransferRecord) -> Bool {
+        guard let plan = record.plannedFileCounts else { return true }
+        guard plan.count == record.destinations.count else { return false }
+        let selected = record.results.filter {
+            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+        }
+        let groups = record.destinations.map { destination in
+            selected.filter { row in
+                guard let path = row.destinationPath else { return false }
+                return PathContainment.isWithin(path, root: destination.url.path)
+            }
+        }
+        guard groups.reduce(0, { $0 + $1.count }) == selected.count,
+              zip(plan, groups).allSatisfy({ expected, rows in
+                  expected >= 0 && rows.count == expected
+                      && Set(rows.map(\.path)).count == expected
+              }) else { return false }
+        guard let expectedPaths = groups.first.map({ Set($0.map(\.path)) }) else { return false }
         return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
     }
 

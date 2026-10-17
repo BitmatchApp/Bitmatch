@@ -293,12 +293,7 @@ struct SetupLocationsView: View {
     }
 
     private var shortVerificationDetail: String {
-        switch verificationMode {
-        case .quick: "File sizes only; contents are not checksum-verified"
-        case .standard: "Reads the card once and checks every drive"
-        case .thorough: "Also re-reads the card for verification"
-        case .paranoid: "Also compares every byte"
-        }
+        verificationMode.shortDescription
     }
 
     private var destinationsAccessibilityLabel: String {

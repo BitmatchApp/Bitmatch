@@ -908,7 +908,7 @@ struct ReportView: View {
             return "The card is not safe to erase because the transfer failed."
         case .interrupted:
             return "The card is not safe to erase because the transfer was interrupted."
-        case .waiting, .preparing, .copying, .verifying:
+        case .waiting, .preparing, .copying, .verifying, .finishing:
             return "The card is not safe to erase because verification did not finish."
         case .safeToErase:
             return "Every file on every destination was verified."

@@ -84,6 +84,17 @@ struct TransferProgressPresentationTests {
         #expect(p.countText == "3 of 8")
     }
 
+    @Test func finishedFileWorkDoesNotShowCompletedTransferBeforeJournalSettles() {
+        let p = make(state: .inProgress, progress: progress(stage: .completed, overall: 1))
+
+        #expect(p.phase == .finishing)
+        #expect(p.title == "Finishing")
+        #expect(p.fraction == 0.99)
+        #expect(p.percentText == "99%")
+        #expect(p.accessibilityValue.contains("Finishing, 99%"))
+        #expect(p.tone != .attention)
+    }
+
     /// Plant: in `TransferProgressPresentation.make`, pass
     /// `canCancel: true` to `ProgressControls`.
     @Test func cancelUnavailableWhenIdle() {

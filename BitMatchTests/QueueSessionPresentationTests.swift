@@ -53,6 +53,28 @@ struct QueueSessionPresentationTests {
         #expect(verifying.rows.first?.oneLineStatus().contains("Verifying 40%") == true)
     }
 
+    @Test func fileWorkAtOneHundredPercentIsStillFinishingWhileRecordRuns() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let running = try fixture.record(name: "A001", state: .running, at: 1)
+        let progress = OperationProgress(
+            overallProgress: 1, currentFile: nil, filesProcessed: 2, totalFiles: 2,
+            currentStage: .completed, speed: nil, elapsedTime: nil, averageSpeed: nil,
+            peakSpeed: nil, bytesProcessed: nil, totalBytes: nil, stageProgress: 1
+        )
+
+        let queue = QueueSessionPresentation.make(
+            records: [running], sessionIDs: [running.id], progress: progress,
+            mountedSourceIDs: []
+        )
+        let row = try #require(queue.rows.first)
+        #expect(row.safetyState == .finishing(progress: 99))
+        #expect(row.progressFraction == 0.99)
+        #expect(row.oneLineStatus().contains("Finishing 99%"))
+        #expect(queue.headerTitle == "Finishing A001")
+        #expect(!row.safetyState.canEject)
+    }
+
     /// Plant: filter `projectID != nil` records out of the session.
     @Test func projectRecordUsesTheSameRunningAndFinishedSafetyRows() throws {
         let fixture = try QueuePresentationFixture()
@@ -105,7 +127,10 @@ struct QueueSessionPresentationTests {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
         let safe = try fixture.record(name: "A001", state: .completed, outcome: .verified, at: 1)
-        let quick = try fixture.record(name: "A002", state: .issues, mode: .quick, outcome: .copiedUnverified, at: 2)
+        let quick = try fixture.record(
+            name: "A002", state: .issues, mode: .quick, outcome: .copiedUnverified,
+            quickOnlyUnverified: true, at: 2
+        )
         let attention = try fixture.record(name: "A003", state: .issues, outcome: .failed, summary: "3 files failed on Shuttle B", at: 3)
         let failed = try fixture.record(name: "A004", state: .failed, summary: "A004 is not connected", at: 4)
         let interrupted = try fixture.record(name: "A005", state: .interrupted, summary: "Cancelled", at: 5)
@@ -244,7 +269,8 @@ struct QueueSessionPresentationTests {
         defer { fixture.cleanup() }
         let safe = try fixture.record(name: "A001", state: .completed, outcome: .verified, at: 1)
         let quick = try fixture.record(
-            name: "A002", state: .issues, mode: .quick, outcome: .copiedUnverified, at: 2
+            name: "A002", state: .issues, mode: .quick, outcome: .copiedUnverified,
+            quickOnlyUnverified: true, at: 2
         )
         let attention = try fixture.record(name: "A003", state: .issues, outcome: .failed, at: 3)
         let records = [safe, quick, attention]
@@ -405,6 +431,7 @@ private final class QueuePresentationFixture {
         state: LocalTransferState,
         mode: VerificationMode = .standard,
         outcome: ResultOutcome? = nil,
+        quickOnlyUnverified: Bool? = nil,
         size: Int64 = 64,
         summary: String = "Ready",
         wasReused: Bool = false,
@@ -422,6 +449,7 @@ private final class QueuePresentationFixture {
         )
         record.state = state
         record.summary = summary
+        record.quickOnlyUnverified = quickOnlyUnverified
         if let outcome {
             record.results = [ResultRow(
                 path: source.appendingPathComponent("clip.mov").path,

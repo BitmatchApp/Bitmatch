@@ -76,10 +76,10 @@ struct QueueAccessoryPresentation: Equatable, Sendable {
 
         if let running, let index = queue.rows.firstIndex(where: { $0.id == running.id }) {
             let completed = queue.rows.filter(\.isFinished).count
-            let cardProgress = min(max(running.progressFraction ?? 0, 0), 1)
+            let cardProgress = min(max(running.progressFraction ?? 0, 0), 0.99)
             let overall = min(
                 max((Double(completed) + cardProgress) / Double(queue.rows.count), 0),
-                1
+                0.99
             )
             var details = ["\(index + 1) of \(queue.rows.count)", percent(overall)]
             if let timeRemaining { details.append("\(timeRemaining) left") }

@@ -206,6 +206,13 @@ struct ReportThumbnailTests {
     @Test func transferDetailsPreviewsAndSelectionStayConsistentAcrossModes() async throws {
         try await FileOperationsTestLock.shared.run {
             let fm = FileManager.default
+            // The matrix exercises the real copy engine, but owns its pipeline.
+            // Parallel cancellation tests must not cancel this run through the
+            // Mac platform manager's process-wide pipeline.
+            let platform = RecordingPlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSPlatformManager.shared.fileSystem,
+                checksum: MacOSPlatformManager.shared.checksum
+            ))
             for mode in VerificationMode.allCases {
                 for exclude in [false, true] {
                     let root = fm.temporaryDirectory.appendingPathComponent("bitmatch-combined-\(UUID())")
@@ -228,7 +235,7 @@ struct ReportThumbnailTests {
                     if exclude { settings.excludedAppleDoublePaths = try AppleDoubleSelection.review(source: source) }
                     let prefs = ReportPrefs(verificationMode: mode, includeThumbnails: true,
                         notes: "Card 01 · 日本語 & <notes>", operatorName: "Alex & Sam")
-                    let executor = CopyVerifyExecutor(platformManager: MacOSPlatformManager.shared,
+                    let executor = CopyVerifyExecutor(platformManager: platform,
                         timingService: OperationTimingService(), errorService: ErrorReportingService(),
                         stateService: OperationStateService(), backgroundTaskService: IOSBackgroundTaskService.shared)
                     var terminal: OperationCompletionInfo?

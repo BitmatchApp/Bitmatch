@@ -1532,6 +1532,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(ended)
         XCTAssertNil(coordinator.queuePausedRecordID)
         XCTAssertEqual(coordinator.queuePresentation.tally.copiedNotVerified, 2)
+        XCTAssertTrue(journal.records.allSatisfy { $0.quickOnlyUnverified == true })
         XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
     }
 
@@ -1562,11 +1563,18 @@ private final class QuickQueueRecordingOperations: FileOperationsService, @unche
         progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
         let sourceFile = sourceURL.appendingPathComponent("clip.mov")
-        let rows = destinationURLs.map { destination in
-            FileOperationResult(
+        let sourceBytes = try Data(contentsOf: sourceFile)
+        let rows = try destinationURLs.map { destination in
+            let outputRoot = try SafetyValidator.resolvedDestinationRootChecked(
+                source: sourceURL, destination: destination, settings: settings
+            )
+            try FileManager.default.createDirectory(at: outputRoot, withIntermediateDirectories: true)
+            let outputFile = outputRoot.appendingPathComponent("clip.mov")
+            try sourceBytes.write(to: outputFile)
+            return FileOperationResult(
                 sourceURL: sourceFile,
-                destinationURL: destination.appendingPathComponent("clip.mov"),
-                success: true, error: nil, fileSize: 3,
+                destinationURL: outputFile,
+                success: true, error: nil, fileSize: Int64(sourceBytes.count),
                 verificationResult: nil, processingTime: 0
             )
         }

@@ -327,7 +327,7 @@ struct SettingsSheetView: View {
                 }
 
                 Section {
-                    Text("Every destination is checked against your card before BitMatch calls it verified. This sets how thoroughly that check runs.")
+                    Text("This controls how BitMatch checks a copy. Quick checks file sizes without verifying contents.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 } header: {

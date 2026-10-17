@@ -971,9 +971,37 @@ class SharedAppCoordinator: ObservableObject {
     /// A compare shows its outcome inside the Compare screen; it is never
     /// the transfer outcome summary.
     var showsOutcomeSummary: Bool {
+        Self.shouldShowOutcomeSummary(
+            state: operationState,
+            recordState: outcomeRecord?.state,
+            isOperationInProgress: isOperationInProgress,
+            hasJournalPersistenceError: transferJournal.persistenceError != nil,
+            lastOperationWasCompare: lastOperationWasCompare
+        )
+    }
+
+    static func shouldShowOutcomeSummary(
+        state: OperationState,
+        recordState: LocalTransferState?,
+        isOperationInProgress: Bool,
+        hasJournalPersistenceError: Bool,
+        lastOperationWasCompare: Bool
+    ) -> Bool {
         guard !lastOperationWasCompare else { return false }
-        switch operationState {
-        case .completed, .failed, .cancelled:
+        switch state {
+        case .completed:
+            // The executor can finish before the durable journal settles.
+            // Keep showing the active queue row until History has a terminal
+            // record; otherwise a verified-looking Finish can flash early.
+            guard let recordState else { return false }
+            return recordState != .queued && recordState != .running
+        case .failed, .cancelled:
+            // Error handling also writes its journal outcome asynchronously.
+            // Only a confirmed journal write failure may fall back to the
+            // live failure state after the operation stops.
+            if recordState == .running {
+                return state == .failed && !isOperationInProgress && hasJournalPersistenceError
+            }
             return true
         default:
             return false
@@ -2044,6 +2072,7 @@ class SharedAppCoordinator: ObservableObject {
                     results: runResults.rows,
                     summary: info.message,
                     hadIssues: !info.success,
+                    quickOnlyUnverified: info.copiedNotVerified,
                     copyDurationSeconds: durations.copySeconds,
                     verifyDurationSeconds: durations.verifySeconds,
                     performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,

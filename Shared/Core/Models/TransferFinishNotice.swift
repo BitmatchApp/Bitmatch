@@ -57,7 +57,7 @@ struct TransferFinishNotice: Equatable, Sendable {
             return .init(title: "\(card) failed", body: "Do not erase the card.", kind: .attention)
         case .interrupted:
             return .init(title: "\(card) was interrupted", body: "Do not erase the card.", kind: .attention)
-        case .waiting, .preparing, .copying, .verifying:
+        case .waiting, .preparing, .copying, .verifying, .finishing:
             return nil
         }
     }
