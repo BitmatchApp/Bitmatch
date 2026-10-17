@@ -313,9 +313,11 @@ struct PhotographerReportTests {
         let payload = try PhotographerReportPayload.make(context: context, results: rows)
         #expect(payload.isLocallySafe == (kind == "valid"))
         #expect(payload.fullyBackedUpAt == (kind == "valid" ? locallySafeAt : nil))
-        #expect(payload.remoteBackupEvidence.first?.status == "Remote readback verified")
+        #expect(payload.remoteBackupEvidence.first?.status == "Uploaded · Downloaded and checked")
+        #expect(String(decoding: try JSONEncoder().encode(payload), as: UTF8.self).contains("Uploaded · Downloaded and checked"))
         let csv = try ReportExporter.projectCSVEvidence(context: context, results: rows)
         #expect(csv.summaryRows.contains(["Fully Backed Up", kind == "valid" ? locallySafeAt.ISO8601Format() : "—"]))
+        #expect(csv.summaryRows.contains(where: { $0.first == "Off-site Backup" && $0.dropFirst().first == "Uploaded · Downloaded and checked" }))
     }
 
     @Test func unverifiedRemoteEvidenceKeepsLocalSafetyWithoutFullyBackedUpTimestamp() throws {

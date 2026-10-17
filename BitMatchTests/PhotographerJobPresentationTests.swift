@@ -119,12 +119,13 @@ struct PhotographerJobPresentationTests {
             (.queued, .none, "Remote Queued"),
             (.uploading, .none, "Remote Uploading"),
             (.uploadedUnverified, .none, "Uploaded · Unverified"),
+            (.verifying, .none, "Finishing off-site backup"),
             (.paused, .none, "Remote Paused"),
             (.conflict, .none, "Remote Conflict"),
             (.failed, .none, "Remote Failed"),
             (.verified, .none, "Verification Evidence Missing"),
             (.verified, .sha256(validDigest), "Remote checksum verified"),
-            (.verified, .readBackSHA256(validDigest), "Remote readback verified")
+            (.verified, .readBackSHA256(validDigest), "Uploaded · Downloaded and checked")
         ]
 
         for (state, evidence, expectedTitle) in states {
@@ -133,6 +134,7 @@ struct PhotographerJobPresentationTests {
                 evidence: evidence
             )
             #expect(presentation.title == expectedTitle)
+            if state == .verifying { #expect(!presentation.isFullyBackedUp) }
         }
     }
 

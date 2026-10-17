@@ -742,27 +742,102 @@ final class PhotographerJobViewModel: ObservableObject {
             }
             return $0.id.uuidString < $1.id.uuidString
         }
-        let totalBytes = orderedItems.reduce(Int64(0)) { $0 + $1.uploadedByteCount }
-        let expectedBytes = try orderedItems.reduce(Int64(0)) { (total, item) throws -> Int64 in
-            total + (try remoteManifestEntryByteCount(for: item))
+        var totalBytes: Int64 = 0
+        var hasValidUploadedCounts = true
+        for item in orderedItems {
+            guard item.uploadedByteCount >= 0 else {
+                hasValidUploadedCounts = false
+                continue
+            }
+            let (sum, overflow) = totalBytes.addingReportingOverflow(item.uploadedByteCount)
+            if overflow { hasValidUploadedCounts = false; totalBytes = Int64.max }
+            else { totalBytes = sum }
+        }
+        let savedManifests = try store.manifests()
+        let itemsByManifest = Dictionary(grouping: orderedItems, by: \.manifestID)
+        var expectedFileCount = 0
+        var expectedBytes: Int64 = 0
+        var expectedEntryByItemID: [UUID: RemoteManifestEntry] = [:]
+        var hasCompleteManifestCoverage = hasValidUploadedCounts
+        for (manifestID, manifestItems) in itemsByManifest {
+            let matches = savedManifests.filter { $0.id == manifestID }
+            guard matches.count == 1, let manifest = matches.first,
+                  manifest.jobID == manifestItems[0].jobID,
+                  manifest.cardIngestID == manifestItems[0].cardIngestID,
+                  manifest.destinationProfileID == targetID,
+                  manifest.pendingCleanupBookmarkReference == nil else {
+                hasCompleteManifestCoverage = false
+                expectedFileCount += manifestItems.count
+                continue
+            }
+            expectedFileCount += manifest.entries.count
+            for entry in manifest.entries {
+                guard entry.byteCount >= 0 else {
+                    hasCompleteManifestCoverage = false
+                    continue
+                }
+                let (sum, overflow) = expectedBytes.addingReportingOverflow(entry.byteCount)
+                if overflow { hasCompleteManifestCoverage = false; expectedBytes = Int64.max }
+                else { expectedBytes = sum }
+            }
+            let entriesByID = Dictionary(manifest.entries.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            let itemEntryIDs = Set(manifestItems.map(\.manifestEntryID))
+            if entriesByID.count != manifest.entries.count
+                || Set(manifestItems.map(\.id)).count != manifestItems.count
+                || manifestItems.count != manifest.entries.count
+                || itemEntryIDs != Set(entriesByID.keys) {
+                hasCompleteManifestCoverage = false
+            }
+            for item in manifestItems {
+                guard let entry = entriesByID[item.manifestEntryID],
+                      entry.relativePath == item.localArtifactRelativePath,
+                      (try? manifest.packageRelativePath.appending(path: entry.relativePath)) == item.remoteRelativePath else {
+                    hasCompleteManifestCoverage = false
+                    continue
+                }
+                if (item.state == .verified || item.state == .uploadedUnverified)
+                    && item.uploadedByteCount != entry.byteCount {
+                    hasCompleteManifestCoverage = false
+                }
+                expectedEntryByItemID[item.id] = entry
+            }
         }
         // A card is fully backed up only when every manifest entry has durable
         // verified evidence. Never let the first item conceal a later conflict,
         // failure, or upload-only terminal state.
         let state: RemoteBackupState
-        let allVerified = orderedItems.allSatisfy {
-            $0.state == .verified && RemoteBackupStatusPresentation.make(state: $0.state, evidence: $0.verificationEvidence).isFullyBackedUp
+        let allVerified = hasCompleteManifestCoverage && orderedItems.allSatisfy { item in
+            guard item.state == .verified,
+                  let entry = expectedEntryByItemID[item.id],
+                  item.uploadedByteCount == entry.byteCount,
+                  let digest = item.verificationEvidence.digest else { return false }
+            return digest.caseInsensitiveCompare(entry.sha256) == .orderedSame
+        }
+        let hasMismatchedDigest = orderedItems.contains { item in
+            guard item.state == .verified,
+                  let entry = expectedEntryByItemID[item.id],
+                  let digest = item.verificationEvidence.digest else { return false }
+            return digest.caseInsensitiveCompare(entry.sha256) != .orderedSame
         }
         if allVerified { state = .verified }
         else if orderedItems.contains(where: { $0.state == .conflict }) { state = .conflict }
         else if orderedItems.contains(where: { $0.state == .failed }) { state = .failed }
         else if orderedItems.contains(where: { $0.state == .cancelled }) { state = .cancelled }
-        else if orderedItems.contains(where: { $0.state == .uploadedUnverified }) { state = .uploadedUnverified }
+        else if hasMismatchedDigest { state = .failed }
+        else if !hasCompleteManifestCoverage { state = .failed }
         else if orderedItems.contains(where: { $0.state == .verifying }) { state = .verifying }
         else if orderedItems.contains(where: { $0.state == .paused }) { state = .paused }
         else if orderedItems.contains(where: { $0.state == .retrying }) { state = .retrying }
         else if orderedItems.contains(where: { $0.state == .uploading }) { state = .uploading }
-        else { state = .queued }
+        else if orderedItems.contains(where: { $0.state == .queued }) { state = .queued }
+        // Only report an upload-only target as uploaded after every file has
+        // reached a terminal upload state. A prior file must not hide pending
+        // work on another file in the same target.
+        else if orderedItems.contains(where: { $0.state == .uploadedUnverified }) { state = .uploadedUnverified }
+        // A persisted verified state without matching digest evidence remains
+        // visible as missing evidence, never as a successful backup or a new
+        // queued transfer.
+        else { state = .verified }
         let verificationEvidence: RemoteVerificationEvidence
         if allVerified {
             // A card-level readback claim requires readback evidence for every
@@ -779,25 +854,24 @@ final class PhotographerJobViewModel: ObservableObject {
         return RemoteBackupCardSummary(
             targetID: targetID,
             state: state,
-            totalFileCount: orderedItems.count,
-            uploadedFileCount: orderedItems.filter { $0.state == .uploadedUnverified || $0.state == .verified }.count,
+            totalFileCount: expectedFileCount,
+            uploadedFileCount: Set(orderedItems.compactMap { item -> UUID? in
+                guard item.state == .uploadedUnverified || item.state == .verified,
+                      let entry = expectedEntryByItemID[item.id], entry.byteCount >= 0,
+                      item.uploadedByteCount == entry.byteCount else { return nil }
+                return item.manifestEntryID
+            }).count,
             totalByteCount: expectedBytes,
             uploadedByteCount: totalBytes,
             verificationEvidence: verificationEvidence,
             remotePath: orderedItems.first?.remoteRelativePath,
-            errorSummary: orderedItems.compactMap(\.errorSummary).first,
+            errorSummary: orderedItems.compactMap(\.errorSummary).first
+                ?? (hasMismatchedDigest ? "Remote verification evidence does not match the saved manifest." : nil)
+                ?? (hasCompleteManifestCoverage ? nil : "Off-site file evidence is incomplete or inconsistent. Queue a new backup."),
             // Refreshing saved queue items (including on launch) is not a new
             // verification event. Keep the durable item's latest event time.
             updatedAt: orderedItems.map(\.updatedAt).max()
         )
-    }
-
-    private func remoteManifestEntryByteCount(for item: RemoteQueueItem) throws -> Int64 {
-        guard let manifest = try store.manifests().first(where: { $0.id == item.manifestID }),
-              let entry = manifest.entries.first(where: { $0.id == item.manifestEntryID }) else {
-            throw ProjectRemoteCoordinatorError.manifestUnavailable
-        }
-        return entry.byteCount
     }
 
     private func replaceLoadedJob(_ updatedJob: PhotographerJob) {
