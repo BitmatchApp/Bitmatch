@@ -22,10 +22,14 @@ final class SonyDetectionService: Sendable {
         // and XDCAM EX (BPAV). VENICE firmware 3.0+ can rename XDROOT to
         // Cam ID + Reel, so any root folder's MEDIAPRO.XML also counts.
         let fm = FileManager.default
-        let rootFolders = ((try? fm.contentsOfDirectory(atPath: url.path)) ?? [])
+        guard !Task.isCancelled else { return nil }
+        let rootNames = (try? fm.contentsOfDirectory(atPath: url.path)) ?? []
+        guard !Task.isCancelled else { return nil }
+        let rootFolders = rootNames
             .filter { !$0.hasPrefix(".") }
             .sorted()
             .map { "\($0)/MEDIAPRO.XML" }
+        guard !Task.isCancelled else { return nil }
         let candidatePaths = [
             "PRIVATE/M4ROOT/MEDIAPRO.XML",
             "XDROOT/MEDIAPRO.XML",
@@ -33,41 +37,46 @@ final class SonyDetectionService: Sendable {
             "BPAV/MEDIAPRO.XML"
         ] + rootFolders
 
-        guard let mediaProPath = candidatePaths
-                .map({ url.appendingPathComponent($0) })
-                .first(where: { fm.fileExists(atPath: $0.path) }) else { return nil }
-        
-        do {
-            let xmlString = try String(contentsOf: mediaProPath, encoding: .utf8)
-            
-            if let systemIdRange = xmlString.range(of: #"systemId="([^"]+)""#, options: .regularExpression) {
-                let systemId = String(xmlString[systemIdRange])
-                    .replacingOccurrences(of: #"systemId=""#, with: "")
-                    .replacingOccurrences(of: "\"", with: "")
-                
-                if let cameraModel = mapSonySystemId(systemId) {
-                    return "Sony \(cameraModel)"
+        var foundReadableSidecar = false
+        for candidate in candidatePaths {
+            guard !Task.isCancelled else { return nil }
+            let mediaProPath = url.appendingPathComponent(candidate)
+            let model: String? = autoreleasepool {
+                guard let xmlData = AdvisoryMetadataFileReader.read(mediaProPath),
+                      let xmlString = String(data: xmlData, encoding: .utf8),
+                      !Task.isCancelled else { return nil }
+                foundReadableSidecar = true
+
+                if let systemIdRange = xmlString.range(of: #"systemId="([^"]+)""#, options: .regularExpression) {
+                    let systemId = String(xmlString[systemIdRange])
+                        .replacingOccurrences(of: #"systemId=""#, with: "")
+                        .replacingOccurrences(of: "\"", with: "")
+
+                    if let cameraModel = mapSonySystemId(systemId) {
+                        return "Sony \(cameraModel)"
+                    }
                 }
-            }
-            
-            if let systemKindRange = xmlString.range(of: #"systemKind="([^"]+)""#, options: .regularExpression) {
-                // Extract attribute value
-                var systemKind = String(xmlString[systemKindRange])
-                systemKind = systemKind.replacingOccurrences(of: #"systemKind=""#, with: "")
-                                       .replacingOccurrences(of: "\"", with: "")
-                                       .trimmingCharacters(in: .whitespacesAndNewlines)
-                
-                if let cameraModel = mapSonySystemKind(systemKind) {
-                    SharedLogger.info("Resolved model: \(cameraModel) from systemKind=\(systemKind) at \(mediaProPath.path)", category: .transfer)
-                    return "Sony \(cameraModel)"
+
+                guard !Task.isCancelled else { return nil }
+                if let systemKindRange = xmlString.range(of: #"systemKind="([^"]+)""#, options: .regularExpression) {
+                    // Extract attribute value
+                    var systemKind = String(xmlString[systemKindRange])
+                    systemKind = systemKind.replacingOccurrences(of: #"systemKind=""#, with: "")
+                                           .replacingOccurrences(of: "\"", with: "")
+                                           .trimmingCharacters(in: .whitespacesAndNewlines)
+
+                    if let cameraModel = mapSonySystemKind(systemKind) {
+                        SharedLogger.info("Resolved model: \(cameraModel) from systemKind=\(systemKind) at \(mediaProPath.path)", category: .transfer)
+                        return "Sony \(cameraModel)"
+                    }
                 }
+                return nil
             }
-            
-            return "Sony"
-            
-        } catch {
-            return nil
+            guard !Task.isCancelled else { return nil }
+            if let model { return model }
         }
+
+        return Task.isCancelled ? nil : (foundReadableSidecar ? "Sony" : nil)
     }
     
     // MARK: - System ID/Kind Mapping

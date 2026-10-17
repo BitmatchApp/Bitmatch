@@ -16,27 +16,37 @@ final class ARRIDetectionService: Sendable {
     
     private func checkForALEFile(at url: URL) -> String? {
         let fm = FileManager.default
+        var foundGenericALE = false
         
         // Look for .ale files in the directory tree
         if let enumerator = fm.enumerator(at: url, includingPropertiesForKeys: [.isRegularFileKey], options: [.skipsHiddenFiles]) {
             for case let fileURL as URL in enumerator {
                 guard !Task.isCancelled else { return nil }
                 if fileURL.pathExtension.lowercased() == "ale" {
-                    return extractCameraFromALE(aleFile: fileURL)
+                    if let camera = extractCameraFromALE(aleFile: fileURL) {
+                        if camera == "ARRI" {
+                            foundGenericALE = true
+                            continue
+                        }
+                        return camera
+                    }
                 }
             }
         }
         
-        return nil
+        return Task.isCancelled ? nil : (foundGenericALE ? "ARRI" : nil)
     }
     
     private func extractCameraFromALE(aleFile: URL) -> String? {
-        do {
-            let aleContent = try String(contentsOf: aleFile, encoding: .utf8)
+        return autoreleasepool {
+            guard let data = AdvisoryMetadataFileReader.read(aleFile),
+                  let aleContent = String(data: data, encoding: .utf8),
+                  !Task.isCancelled else { return nil }
             let lines = aleContent.components(separatedBy: .newlines)
             
             // Look for camera information in ALE metadata
             for line in lines {
+                guard !Task.isCancelled else { return nil }
                 let trimmedLine = line.trimmingCharacters(in: .whitespaces)
                 
                 // Check for ARRI camera models in metadata. ALE files mix
@@ -74,9 +84,6 @@ final class ARRIDetectionService: Sendable {
             
             // If we found an ALE file but no specific camera model, assume ARRI
             return "ARRI"
-            
-        } catch {
-            return nil
         }
     }
     

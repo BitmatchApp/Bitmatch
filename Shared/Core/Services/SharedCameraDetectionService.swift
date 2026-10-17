@@ -107,6 +107,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             if confidence < 0.8 {
                 let xmlURLs = fileURLs.filter { $0.pathExtension.lowercased() == "xml" }
                 for xmlURL in xmlURLs.prefix(3) { // Only check first 3 XML files
+                    guard !Task.isCancelled else { break }
                     do {
                         let xmlMetadata = try await parseXMLMetadata(from: xmlURL)
                         let (_, _, xmlConfidence) = extractCameraFromXMLMetadata(xmlMetadata)
@@ -115,6 +116,8 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                             detectionMethod = "xml_metadata"
                             metadata.merge(xmlMetadata) { _, new in new }
                         }
+                    } catch is CancellationError {
+                        break
                     } catch {
                         // XML parsing failed, continue
                     }
@@ -267,7 +270,12 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
     }
     
     func parseXMLMetadata(from fileURL: URL) async throws -> [String: Any] {
-        let data = try Data(contentsOf: fileURL)
+        try Task.checkCancellation()
+        guard let data = AdvisoryMetadataFileReader.read(fileURL) else {
+            try Task.checkCancellation()
+            return [:]
+        }
+        try Task.checkCancellation()
         var metadata: [String: Any] = [:]
         
         // Simple XML parsing for common camera metadata patterns
@@ -283,6 +291,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             ]
             
             for (key, pattern) in patterns {
+                try Task.checkCancellation()
                 if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) {
                     let range = NSRange(xmlString.startIndex..., in: xmlString)
                     if let match = regex.firstMatch(in: xmlString, range: range),
@@ -292,7 +301,8 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                 }
             }
         }
-        
+
+        try Task.checkCancellation()
         return metadata
     }
     
