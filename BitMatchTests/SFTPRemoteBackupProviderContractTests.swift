@@ -25,7 +25,22 @@ struct SFTPRemoteBackupProviderContractTests {
 
     @Test func remotePathsUsePOSIXSingleQuoteEscaping() {
         #if os(macOS)
-        #expect(SFTPRemoteBackupProvider.shellQuote("/remote/O'Reilly.mov") == "'/remote/O'\\\"'\\\"'Reilly.mov'")
+        #expect(SFTPRemoteBackupProvider.shellQuote("/remote/O'Reilly.mov") == "'/remote/O'\"'\"'Reilly.mov'")
+        #endif
+    }
+
+    @Test func quotedRemoteNamesRemainOneShellArgument() throws {
+        #if os(macOS)
+        let name = "O'Reilly; clip.bin"
+        let process = Process()
+        let output = Pipe()
+        process.executableURL = URL(fileURLWithPath: "/bin/sh")
+        process.arguments = ["-c", "printf %s " + SFTPRemoteBackupProvider.shellQuote(name)]
+        process.standardOutput = output
+        try process.run()
+        process.waitUntilExit()
+        #expect(process.terminationStatus == 0)
+        #expect(String(decoding: output.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self) == name)
         #endif
     }
 
@@ -46,16 +61,16 @@ struct SFTPRemoteBackupProviderContractTests {
         #endif
     }
 
-    @Test func existingFinalFromLnIsClassifiedAsConflict() {
-        #if os(macOS)
-        #expect(SFTPRemoteBackupProvider.promotionError(stderr: Data("ln: File exists".utf8)) == .conflict)
-        #expect(SFTPRemoteBackupProvider.promotionError(stderr: Data("shell disabled".utf8)) == .capabilityUnavailable(.noReplacePromotion))
-        #endif
-    }
-
     @Test func hostKeyVerificationFailureIsClassifiedBeforeCapabilityFailure() {
         #if os(macOS)
         #expect(SFTPRemoteBackupProvider.classify(stderr: Data("Host key verification failed.".utf8)) == .hostKeyMismatch)
+        #endif
+    }
+
+    @Test func remoteStorageFailureIsNotMisclassifiedAsNetworkRetry() {
+        #if os(macOS)
+        #expect(SFTPRemoteBackupProvider.classify(stderr: Data("cat: write error: No space left on device".utf8)) == .remoteStorageFull)
+        #expect(SFTPRemoteBackupProvider.classify(stderr: Data("Disk quota exceeded".utf8)) == .remoteStorageFull)
         #endif
     }
 
@@ -77,7 +92,45 @@ struct SFTPRemoteBackupProviderContractTests {
         #endif
     }
 
-    @Test func resumeOffsetMismatchStopsBeforeSFTPTransfer() async throws {
+    @Test func missingRemotePythonFailsClearlyAtPreflight() async throws {
+        #if os(macOS)
+        let recorder = OpenSSHCommandRecorder(missingPython: true)
+        let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
+        try FileManager.default.createDirectory(at: knownHosts.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("backup.example ssh-ed25519 AAAA\n".utf8).write(to: knownHosts)
+        defer { try? FileManager.default.removeItem(at: knownHosts.deletingLastPathComponent()) }
+        let profile = try fixtureProfile()
+        let provider = SFTPRemoteBackupProvider(profile: profile, credential: .sshAgent,
+                                                knownHostsURL: knownHosts, run: { command in await recorder.run(command) })
+
+        await #expect(throws: RemoteBackupError.streamUploadUnavailable) {
+            _ = try await provider.preflight(profile: profile, credential: .sshAgent)
+        }
+        #expect((await recorder.commands()).count == 1)
+        #endif
+    }
+
+    @Test func promotionLinksWithoutPathnameCleanup() async throws {
+        #if os(macOS)
+        let recorder = OpenSSHCommandRecorder()
+        let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
+        try FileManager.default.createDirectory(at: knownHosts.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("backup.example ssh-ed25519 AAAA\n".utf8).write(to: knownHosts)
+        defer { try? FileManager.default.removeItem(at: knownHosts.deletingLastPathComponent()) }
+        let provider = SFTPRemoteBackupProvider(profile: try fixtureProfile(), credential: .sshAgent,
+                                                knownHostsURL: knownHosts, run: { command in await recorder.run(command) })
+        let temporary = try RemoteRelativePath(components: ["Jobs", ".bitmatch-upload-11111111-2222-3333-4444-555555555555"])
+        let final = try RemoteRelativePath(components: ["Jobs", "A.mov"])
+
+        try await provider.promoteNoReplace(temporary: temporary, final: final)
+
+        let commands = await recorder.commands()
+        #expect(commands.count == 1)
+        #expect(commands[0].arguments.last?.contains("'promote' '[\"Backups\",\"Jobs\",\".bitmatch-upload-11111111-2222-3333-4444-555555555555\"]' '[\"Backups\",\"Jobs\",\"A.mov\"]'") == true)
+        #endif
+    }
+
+    @Test func nonzeroOffsetStopsBeforeStreaming() async throws {
         #if os(macOS)
         let recorder = OpenSSHCommandRecorder(inspectLength: 3)
         let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
@@ -88,14 +141,81 @@ struct SFTPRemoteBackupProviderContractTests {
         let temporary = try RemoteRelativePath(components: ["Jobs", ".bitmatch-upload-item"])
 
         await #expect(throws: RemoteBackupError.resumeOffsetMismatch(local: 2, remote: 3)) {
-            try await provider.upload(local: URL(fileURLWithPath: "/tmp/local.mov"), toTemporary: temporary, fromOffset: 2) { _ in }
+            try await provider.upload(local: URL(fileURLWithPath: "/tmp/local.mov"), toTemporary: temporary, fromOffset: 2, expectedSHA256: String(repeating: "a", count: 64)) { _ in }
         }
 
-        #expect(!(await recorder.commands()).contains(where: { $0.executable == "/usr/bin/sftp" }))
+        #expect(!(await recorder.commands()).contains(where: { $0.standardInputFile != nil }))
         #endif
     }
 
-    @Test func discardTemporaryAcceptsOnlyItemOwnedUUIDPath() async throws {
+    @Test func firstUploadClaimsAndStreamsThroughOneSSHCommand() async throws {
+        #if os(macOS)
+        let recorder = OpenSSHCommandRecorder()
+        let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
+        try FileManager.default.createDirectory(at: knownHosts.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("backup.example ssh-ed25519 AAAA\n".utf8).write(to: knownHosts)
+        defer { try? FileManager.default.removeItem(at: knownHosts.deletingLastPathComponent()) }
+        let provider = SFTPRemoteBackupProvider(
+            profile: try fixtureProfile(), credential: .sshAgent,
+            knownHostsURL: knownHosts, run: { command in await recorder.run(command) }
+        )
+        let temporary = try RemoteRelativePath(components: ["Jobs", ".bitmatch-upload-11111111-2222-3333-4444-555555555555"])
+
+        try await provider.upload(local: URL(fileURLWithPath: "/tmp/local.mov"), toTemporary: temporary, fromOffset: 0, expectedSHA256: String(repeating: "a", count: 64)) { _ in }
+
+        let commands = await recorder.commands()
+        #expect(commands.count == 3)
+        #expect(commands[0].executable == "/usr/bin/ssh")
+        #expect(commands[1].executable == "/usr/bin/ssh")
+        #expect(commands[1].arguments.last?.contains("'upload' '[\"Backups\",\"Jobs\",\".bitmatch-upload-11111111-2222-3333-4444-555555555555\"]'") == true)
+        #expect(commands[1].standardInputFile == URL(fileURLWithPath: "/tmp/local.mov"))
+        #expect(commands[1].expectedInputSHA256 == String(repeating: "a", count: 64))
+        #expect(commands[1].standardInput == nil)
+        #expect(commands[2].executable == "/usr/bin/ssh")
+        #endif
+    }
+
+    @Test func failedExclusiveClaimNeverReportsUploadComplete() async throws {
+        #if os(macOS)
+        let recorder = OpenSSHCommandRecorder(claimFails: true)
+        let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
+        try FileManager.default.createDirectory(at: knownHosts.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("backup.example ssh-ed25519 AAAA\n".utf8).write(to: knownHosts)
+        defer { try? FileManager.default.removeItem(at: knownHosts.deletingLastPathComponent()) }
+        let provider = SFTPRemoteBackupProvider(
+            profile: try fixtureProfile(), credential: .sshAgent,
+            knownHostsURL: knownHosts, run: { command in await recorder.run(command) }
+        )
+        let temporary = try RemoteRelativePath(components: ["Jobs", ".bitmatch-upload-11111111-2222-3333-4444-555555555555"])
+
+        await #expect(throws: RemoteBackupError.temporaryClaimFailed) {
+            try await provider.upload(local: URL(fileURLWithPath: "/tmp/local.mov"), toTemporary: temporary, fromOffset: 0, expectedSHA256: String(repeating: "a", count: 64)) { _ in }
+        }
+        #expect((await recorder.commands()).filter { $0.standardInputFile != nil }.count == 1)
+        #endif
+    }
+
+    @Test func symlinkedRemoteObjectNeverStartsStream() async throws {
+        #if os(macOS)
+        let recorder = OpenSSHCommandRecorder(unsafeInspect: true)
+        let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
+        try FileManager.default.createDirectory(at: knownHosts.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("backup.example ssh-ed25519 AAAA\n".utf8).write(to: knownHosts)
+        defer { try? FileManager.default.removeItem(at: knownHosts.deletingLastPathComponent()) }
+        let provider = SFTPRemoteBackupProvider(
+            profile: try fixtureProfile(), credential: .sshAgent,
+            knownHostsURL: knownHosts, run: { command in await recorder.run(command) }
+        )
+        let temporary = try RemoteRelativePath(components: ["Jobs", ".bitmatch-upload-11111111-2222-3333-4444-555555555555"])
+
+        await #expect(throws: RemoteBackupError.unsafePath) {
+            try await provider.upload(local: URL(fileURLWithPath: "/tmp/local.mov"), toTemporary: temporary, fromOffset: 0, expectedSHA256: String(repeating: "a", count: 64)) { _ in }
+        }
+        #expect(!(await recorder.commands()).contains(where: { $0.standardInputFile != nil }))
+        #endif
+    }
+
+    @Test func discardTemporaryRefusesPathnameOnlyDeletion() async throws {
         #if os(macOS)
         let recorder = OpenSSHCommandRecorder()
         let knownHosts = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString).appendingPathComponent("known_hosts")
@@ -113,12 +233,12 @@ struct SFTPRemoteBackupProviderContractTests {
             components: ["Jobs", ".bitmatch-upload-\(itemID.uuidString.lowercased())"]
         )
 
-        try await provider.discardTemporary(temporary)
+        await #expect(throws: RemoteBackupError.temporaryCleanupFailed) {
+            try await provider.discardTemporary(temporary)
+        }
 
         let commands = await recorder.commands()
-        #expect(commands.count == 1)
-        #expect(commands[0].executable == "/usr/bin/ssh")
-        #expect(commands[0].arguments.last == "rm -f 'Backups/Jobs/.bitmatch-upload-11111111-2222-3333-4444-555555555555'")
+        #expect(commands.isEmpty)
         #endif
     }
 
@@ -296,8 +416,16 @@ private func fixtureProfile() throws -> RemoteDestinationProfile {
 private actor OpenSSHCommandRecorder {
     private var recorded: [OpenSSHCommand] = []
     private let inspectLength: Int64?
+    private let claimFails: Bool
+    private let unsafeInspect: Bool
+    private let missingPython: Bool
 
-    init(inspectLength: Int64? = nil) { self.inspectLength = inspectLength }
+    init(inspectLength: Int64? = nil, claimFails: Bool = false, unsafeInspect: Bool = false, missingPython: Bool = false) {
+        self.inspectLength = inspectLength
+        self.claimFails = claimFails
+        self.unsafeInspect = unsafeInspect
+        self.missingPython = missingPython
+    }
 
     func run(_ command: OpenSSHCommand) -> OpenSSHCommandResult {
         recorded.append(command)
@@ -307,8 +435,25 @@ private actor OpenSSHCommandRecorder {
         case "/usr/bin/ssh-keygen":
             return .init(status: 0, stdout: Data("256 SHA256:test backup.example\n".utf8), stderr: Data())
         case "/usr/bin/ssh":
-            let output = inspectLength.map { Data("\($0)\n".utf8) } ?? Data()
+            let remoteCommand = command.arguments.last ?? ""
+            if missingPython, remoteCommand.hasSuffix(" 'check'") {
+                return .init(status: 127, stdout: Data(), stderr: Data("python3: command not found".utf8))
+            }
+            if remoteCommand.hasSuffix(" 'check'") {
+                return .init(status: 0, stdout: Data("__BITMATCH_HELPER_READY__\n".utf8), stderr: Data())
+            }
+            if command.standardInputFile != nil, claimFails {
+                return .init(status: 42, stdout: Data(), stderr: Data("cannot overwrite existing file".utf8))
+            }
+            if remoteCommand.contains("'inspect'"), unsafeInspect {
+                return .init(status: 43, stdout: Data(), stderr: Data("__BITMATCH_UNSAFE_PATH__".utf8))
+            }
+            let output = remoteCommand.contains("'inspect'")
+                ? (inspectLength.map { Data("\($0)\n".utf8) } ?? Data())
+                : Data()
             return .init(status: 0, stdout: output, stderr: Data())
+        case "/usr/bin/sftp":
+            return .init(status: 0, stdout: Data(), stderr: Data())
         default:
             return .init(status: 1, stdout: Data(), stderr: Data("unexpected command".utf8))
         }
@@ -320,26 +465,25 @@ private actor OpenSSHCommandRecorder {
 private actor SFTPDownloadRecorder {
     private let bytes: Data
     private var recorded: [OpenSSHCommand] = []
-    private var path: String?
+    private var outputPath: String?
 
     init(bytes: Data) { self.bytes = bytes }
 
     func run(_ command: OpenSSHCommand) throws -> OpenSSHCommandResult {
         recorded.append(command)
-        guard command.executable == "/usr/bin/sftp",
-              let batch = command.standardInput.flatMap({ String(data: $0, encoding: .utf8) }) else {
+        guard command.executable == "/usr/bin/ssh",
+              command.arguments.last?.contains("'download'") == true,
+              command.standardInput == nil,
+              command.standardInputFile == nil,
+              let outputURL = command.standardOutputFile else {
             throw RemoteBackupError.providerUnavailable
         }
-        let fields = batch.components(separatedBy: "\"")
-        guard fields.count >= 4, fields[0] == "get ", fields[1] == "Backups/Jobs/clip.mov" else {
-            throw RemoteBackupError.providerUnavailable
-        }
-        path = fields[3]
-        try bytes.write(to: URL(fileURLWithPath: fields[3]))
+        outputPath = outputURL.path
+        try bytes.write(to: outputURL)
         return .init(status: 0, stdout: Data(), stderr: Data())
     }
 
     func commands() -> [OpenSSHCommand] { recorded }
-    func downloadedPath() -> String? { path }
+    func downloadedPath() -> String? { outputPath }
 }
 #endif

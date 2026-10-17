@@ -83,9 +83,11 @@ Have a server to back up to? Save an SFTP destination for the job and queue an u
 A few things to know:
 
 - Authentication uses your SSH agent. You'll confirm the host key when connecting to a new host.
-- The server needs SFTP **and SSH shell access**, with standard file utilities and hard-link support. An SFTP-only account won't do.
+- The server needs SSH shell access and Python 3 with `openat`/`linkat` support; its destination filesystem must support hard links. An SFTP-only account won't do. The configured remote root is relative to the SSH login directory. BitMatch checks that the helper can run before uploading; if the destination cannot make a hard link, publication stops with an issue and leaves the temporary file for review.
 - **SHA-256 read-back** downloads the remote file to check it. That costs extra bandwidth and local temporary space.
 - **Upload only** means **Uploaded · Unverified**. Getting it onto the server isn't proof that the contents match.
+- If an upload stops partway through, the next attempt starts that file from zero under a new hidden temporary name. BitMatch leaves the earlier partial file untouched and shows its remote path for you to review and remove manually. It never appends to an old partial file.
+- After a completed SFTP upload, the hidden temporary name remains as a hard link to the final file. This uses no extra data space, and BitMatch shows the name for optional manual cleanup. It does not remove remote paths automatically because another writer could replace them between checking and deletion.
 - **Uploaded · Downloaded and checked** means BitMatch downloaded the remote file and confirmed it matches the verified local backup. Older server-checksum evidence says **Remote checksum verified**. Neither label establishes a new source-card reread or a whole-card safe-to-erase verdict; the local transfer retains its own verification mode, coverage and outcome.
 - iPad can keep the project's remote settings, but uploads run on Mac. S3 and WebDAV aren't available yet.
 

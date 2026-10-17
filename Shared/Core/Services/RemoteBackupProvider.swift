@@ -42,12 +42,14 @@ struct RemoteObject: Equatable, Sendable {
 
 enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
     case providerUnavailable
+    case streamUploadUnavailable
     case capabilityUnavailable(RemoteProviderRequirement)
     case missingProfile
     case missingCredential
     case invalidDestination
     case conflict
     case networkUnavailable
+    case remoteStorageFull
     case authenticationFailed
     case hostKeyMismatch
     case unsafePath
@@ -56,6 +58,7 @@ enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
     case permissionDenied
     case manifestUnavailable
     case resumeOffsetMismatch(local: Int64, remote: Int64)
+    case temporaryClaimFailed
     case temporaryCleanupFailed
     case verificationFailed
     case interrupted
@@ -82,6 +85,8 @@ enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
         switch self {
         case .providerUnavailable:
             return "The remote backup provider is unavailable."
+        case .streamUploadUnavailable:
+            return "The remote server needs Python 3 with safe filesystem calls for off-site backups."
         case .capabilityUnavailable(let requirement):
             return "The remote backup provider lacks required capability: \(requirement.rawValue)."
         case .missingProfile:
@@ -94,6 +99,8 @@ enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
             return "A final object already exists at the remote destination."
         case .networkUnavailable:
             return "The network connection to the remote backup destination was interrupted."
+        case .remoteStorageFull:
+            return "The remote backup destination is out of space or has reached its storage quota. The upload is paused."
         case .authenticationFailed:
             return "Authentication to the remote backup destination failed."
         case .hostKeyMismatch:
@@ -110,6 +117,8 @@ enum RemoteBackupError: Error, Equatable, Sendable, LocalizedError {
             return "The persisted remote backup manifest is unavailable."
         case .resumeOffsetMismatch(let local, let remote):
             return "The saved upload offset (\(local)) does not match the remote temporary object (\(remote))."
+        case .temporaryClaimFailed:
+            return "The remote temporary upload could not be created without replacing an existing object. Nothing was overwritten."
         case .temporaryCleanupFailed:
             return "The remote temporary upload could not be safely discarded; retry when the destination is reachable."
         case .verificationFailed:
@@ -125,16 +134,24 @@ protocol RemoteBackupProvider: Sendable {
     func preflight(profile: RemoteDestinationProfile, credential: RemoteCredential) async throws -> RemoteProviderCapabilities
     func inspect(path: RemoteRelativePath) async throws -> RemoteObject?
     func ensureDirectory(_ path: RemoteRelativePath) async throws
-    /// Removes only the item-owned temporary object. Implementations must
-    /// never remove a final destination through this operation.
+    /// Optional cleanup of an item-owned temporary object. Implementations
+    /// must refuse if they cannot prove the pathname still names that object;
+    /// no cleanup may remove a final destination.
     func discardTemporary(_ path: RemoteRelativePath) async throws
     func upload(
         local: URL,
         toTemporary path: RemoteRelativePath,
         fromOffset: Int64,
+        expectedSHA256: String,
         progress: @Sendable (Int64) async -> Void
     ) async throws
+    /// Publish without replacing a final object. Leave the temporary name in
+    /// place; pathname-only cleanup can remove a different writer's object.
     func promoteNoReplace(temporary: RemoteRelativePath, final: RemoteRelativePath) async throws
+    /// Prove the final name and retained temporary name still refer to the
+    /// same regular remote inode. A saved promotion intent alone is not proof
+    /// that this app created a preexisting final object after a restart.
+    func confirmsOwnedFinal(temporary: RemoteRelativePath, final: RemoteRelativePath) async throws -> Bool
     func verificationEvidence(for path: RemoteRelativePath, expectedSHA256: String) async throws -> RemoteVerificationEvidence
     func close() async
 }
