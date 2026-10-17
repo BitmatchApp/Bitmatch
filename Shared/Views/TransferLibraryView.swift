@@ -251,8 +251,28 @@ struct TransferLibraryView: View {
     @ViewBuilder
     private func detailsView(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
         let safetyState = TransferLibraryPresentation.safetyState(for: record)
+        let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
+            results: record.results, includeModePlan: record.plannedFileCounts != nil)
         VStack(alignment: .leading, spacing: 8) {
-            Text(record.summary).fixedSize(horizontal: false, vertical: true)
+            Label(safetyState.title, systemImage: safetyState.symbol)
+                .font(.caption.weight(.semibold)).foregroundStyle(safetyState.tint.color)
+            Text("Saved attempt message: \(record.summary)")
+                .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(scope.selectedModeLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Text(scope.recordedResultsLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let exclusion = scope.exclusionLine {
+                Text(exclusion).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if record.plannedFileCounts == nil {
+                Text("Original selected-file plan was not saved; these details describe recorded results only.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false {
+                Text("Saved results do not cover the selected-file plan.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            } else if [.interrupted, .cancelled, .failed].contains(record.state) {
+                Text("The attempt ended before completion; the selected mode does not mean every check finished.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
             if let operatorName = EvidenceWriter.normalizedNotes(record.reportSettings.operatorName) {
                 Text("Operator: \(operatorName)").font(.caption).textSelection(.enabled)
             }
@@ -290,7 +310,8 @@ struct TransferLibraryView: View {
             ForEach(record.results.prefix(100)) { row in
                 VStack(alignment: .leading) {
                     Text(row.fileName)
-                    Text("\(row.destination ?? "Destination"): \(row.status)").foregroundStyle(.secondary)
+                    Text("\(row.destination ?? "Destination"): \(TransferHistoryResultPresentation.statusText(for: row, mode: record.verificationMode))")
+                        .foregroundStyle(.secondary)
                 }
                 .accessibilityElement(children: .combine)
             }
@@ -329,6 +350,17 @@ struct TransferLibraryView: View {
     private func retry(_ id: UUID, generateASCMHL: Bool? = nil) {
         coordinator.retryTransfer(id, generateASCMHL: generateASCMHL)
         onBack?()
+    }
+}
+
+/// History keeps the original row status in exports, but Quick's older
+/// "Match" wording must not be presented as content verification on screen.
+enum TransferHistoryResultPresentation {
+    static func statusText(for row: ResultRow, mode: VerificationMode) -> String {
+        if mode == .quick && row.isSuccessStatus {
+            return "Copied · contents not verified"
+        }
+        return row.status
     }
 }
 

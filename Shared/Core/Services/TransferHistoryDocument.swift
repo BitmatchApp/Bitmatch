@@ -14,6 +14,8 @@ struct TransferHistoryDocument: FileDocument {
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 
     init(record: LocalTransferRecord, asCSV: Bool) throws {
+        let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
+            results: record.results, includeModePlan: record.plannedFileCounts != nil)
         if asCSV {
             func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
             let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused\n"
@@ -34,6 +36,15 @@ struct TransferHistoryDocument: FileDocument {
                 "\n# Summary",
                 pair("retryOf", record.retryOf?.uuidString ?? ""),
                 pair("plannedFileCounts", record.plannedFileCounts?.map(String.init).joined(separator: ";") ?? ""),
+                pair("selectedMode", scope.selectedMode.rawValue),
+                pair("selectedModeChecks", scope.configuredChecks ?? "Not recorded for this attempt"),
+                pair("recordedSelectedSourceFiles", String(scope.recordedSelectedSourceFiles)),
+                pair("recordedSelectedBackupResults", String(scope.recordedSelectedResults)),
+                pair("recordedVerifiedBackupResults", String(scope.recordedVerifiedResults)),
+                pair("recordedExcludedSourceFiles", String(scope.recordedExcludedSourceFiles)),
+                pair("evidenceScope", record.plannedFileCounts == nil
+                    ? "Original selected-file plan was not saved; export describes recorded results only"
+                    : "Saved results only; selected mode does not prove every check finished"),
                 pair("operatorName", detail(record.reportSettings.operatorName)),
                 pair("notes", detail(record.reportSettings.notes)),
                 pair("copyDurationSeconds", record.copyDurationSeconds.map { String($0) } ?? ""),
@@ -59,6 +70,8 @@ struct TransferHistoryDocument: FileDocument {
                 let summary: String
                 let createdAt: Date
                 let verificationMode: VerificationMode
+                let verificationScope: VerificationScopeEvidence
+                let selectedFilePlanRecorded: Bool
                 let projectName: String
                 let clientName: String
                 let operatorName: String?
@@ -75,6 +88,7 @@ struct TransferHistoryDocument: FileDocument {
             data = try encoder.encode(Report(id: record.id, retryOf: record.retryOf, plannedFileCounts: record.plannedFileCounts, source: record.source.url.path,
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
+                verificationScope: scope, selectedFilePlanRecorded: record.plannedFileCounts != nil,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
                 operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName),
                 notes: EvidenceWriter.normalizedNotes(record.reportSettings.notes),

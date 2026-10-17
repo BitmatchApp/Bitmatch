@@ -212,7 +212,26 @@ enum TransferLibraryPresentation {
               summaries.allSatisfy({ !$0.rows.isEmpty && $0.rows.allSatisfy(accepts) }),
               let expectedPaths = summaries.first.map({ Set($0.rows.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
+        if record.plannedFileCounts != nil, savedResultsCoverSelectedPlan(record) != true { return false }
         return summaries.allSatisfy { Set($0.rows.map(\.path)) == expectedPaths }
+    }
+
+    /// A saved plan counts selected source files per destination. Excluded
+    /// AppleDouble rows remain in the evidence, but are outside those counts.
+    /// Nil preserves the older records for which no selected-file plan exists.
+    static func savedResultsCoverSelectedPlan(_ record: LocalTransferRecord) -> Bool? {
+        guard let planned = record.plannedFileCounts else { return nil }
+        let summaries = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
+        guard !summaries.isEmpty, summaries.count == record.destinations.count,
+              planned.count == summaries.count else { return false }
+        let selected = summaries.map { summary in
+            summary.rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        }
+        guard zip(selected, planned).allSatisfy({ rows, count in
+            rows.count == count && Set(rows.map(\.path)).count == count
+        }) else { return false }
+        let firstPaths = Set(selected[0].map(\.path))
+        return selected.allSatisfy { Set($0.map(\.path)) == firstPaths }
     }
 
     /// The buttons a record offers. Mirrors the journal's own rules

@@ -672,6 +672,15 @@ public final class TransferJournal: Sendable {
               groups.reduce(0, { $0 + $1.count }) == record.results.count,
               let expectedPaths = groups.first.map({ Set($0.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
+        if let planned = record.plannedFileCounts {
+            guard planned.count == groups.count,
+                  zip(groups, planned).allSatisfy({ rows, count in
+                      let selected = rows.filter {
+                          ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+                      }
+                      return selected.count == count && Set(selected.map(\.path)).count == count
+                  }) else { return false }
+        }
         return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
     }
 

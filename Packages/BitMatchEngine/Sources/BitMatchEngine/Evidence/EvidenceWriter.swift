@@ -208,12 +208,17 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let algorithm: String?
         public let issuesByType: [String: Int]
         public let checksumCache: CacheStats?
+        /// New reports record the selected plan separately from saved results.
+        /// Older reports omit this field; method/algorithm alone do not prove
+        /// that a card reread or a complete transfer happened.
+        public let scope: VerificationScopeEvidence?
 
-        public init(method: String, algorithm: String?, issuesByType: [String: Int], checksumCache: CacheStats?) {
+        public init(method: String, algorithm: String?, issuesByType: [String: Int], checksumCache: CacheStats?, scope: VerificationScopeEvidence? = nil) {
             self.method = method
             self.algorithm = algorithm
             self.issuesByType = issuesByType
             self.checksumCache = checksumCache
+            self.scope = scope
         }
     }
     
@@ -405,7 +410,10 @@ public enum EvidenceWriter: Sendable {
                                  verifyDurationSeconds: verifyDurationSeconds,
                                  performanceTelemetry: performanceTelemetry,
                                  project: projectCSV,
-                                 prefs: prefs)
+                                 prefs: prefs,
+                                 scope: kind == .copyAndVerify && safeToErase != nil
+                                     ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results) }
+                                     : nil)
             
             try Task.checkCancellation()
             // Save enhanced JSON report
@@ -473,7 +481,8 @@ public enum EvidenceWriter: Sendable {
                                           verifyDurationSeconds: TimeInterval?,
                                           performanceTelemetry: TransferPerformanceTelemetry?,
                                           project: ProjectCSVEvidence? = nil,
-                                          prefs: ReportPrefs? = nil) throws {
+                                          prefs: ReportPrefs? = nil,
+                                          scope: VerificationScopeEvidence? = nil) throws {
         let csvContent = try makeEnhancedCSV(
             results: results,
             started: started,
@@ -483,7 +492,8 @@ public enum EvidenceWriter: Sendable {
             verifyDurationSeconds: verifyDurationSeconds,
             performanceTelemetry: performanceTelemetry,
             project: project,
-            prefs: prefs
+            prefs: prefs,
+            scope: scope
         )
         try csvContent.data(using: .utf8)?.write(to: url)
     }
@@ -497,7 +507,8 @@ public enum EvidenceWriter: Sendable {
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         project: ProjectCSVEvidence?,
-        prefs: ReportPrefs? = nil
+        prefs: ReportPrefs? = nil,
+        scope: VerificationScopeEvidence? = nil
     ) throws -> String {
         var csvContent = csvRow([
             "Status", "File Path", "Target Path", "Job", "Photographer", "Camera", "Card", "Package Path", "Details", "Timestamp", "Bytes", "Checksum"
@@ -547,6 +558,15 @@ public enum EvidenceWriter: Sendable {
         csvContent += csvRow(["Verified", String(results.filter { $0.isVerifiedStatus }.count)])
         csvContent += csvRow(["Copied, not verified", String(results.filter { isMatchStatus($0.status) && !$0.isVerifiedStatus }.count)])
         csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count)])
+        if let scope {
+            csvContent += csvRow(["Selected Mode", scope.selectedMode.rawValue])
+            csvContent += csvRow(["Selected Mode Checks", scope.configuredChecks ?? "Not recorded for this attempt"])
+            csvContent += csvRow(["Recorded Selected Source Files", String(scope.recordedSelectedSourceFiles)])
+            csvContent += csvRow(["Recorded Selected Backup Results", String(scope.recordedSelectedResults)])
+            csvContent += csvRow(["Recorded Verified Backup Results", String(scope.recordedVerifiedResults)])
+            csvContent += csvRow(["Recorded Excluded Source Files", String(scope.recordedExcludedSourceFiles)])
+            csvContent += csvRow(["Evidence Scope", "Recorded results only; selected mode does not prove every check finished"])
+        }
         csvContent += csvRow(["Duration", "\(String(format: "%.2f", duration)) seconds"])
         if copyDurationSeconds != nil || verifyDurationSeconds != nil {
             csvContent += csvRow(["Copy Duration", copyDurationSeconds.map { "\(String(format: "%.2f", $0)) seconds" } ?? ""])
@@ -808,7 +828,10 @@ public enum EvidenceWriter: Sendable {
                 method: verificationDescription(for: prefs).method,
                 algorithm: verificationDescription(for: prefs).algorithm,
                 issuesByType: issuesByType,
-                checksumCache: nil // Would need to track cache stats during operation
+                checksumCache: nil, // Would need to track cache stats during operation
+                scope: kind == .copyAndVerify && safeToErase != nil
+                    ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results) }
+                    : nil
             ),
             results: results.map { JSONReportItem(from: $0) },
             photographyJob: project,

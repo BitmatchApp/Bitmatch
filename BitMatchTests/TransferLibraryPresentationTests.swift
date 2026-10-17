@@ -67,6 +67,47 @@ struct TransferLibraryPresentationTests {
         #expect(label.tint != .green)
     }
 
+    @Test func completedHistoryRequiresEveryPlannedSelectedFileOncePerDestination() {
+        var record = PresentationTestSupport.record(state: .completed)
+        let destination = record.destinations[0].url
+        let first = PresentationTestSupport.row(.verified, destination: destination)
+        let duplicate = ResultRow(path: first.path, status: first.status, size: first.size,
+                                  checksum: first.checksum, destination: first.destination,
+                                  destinationPath: first.destinationPath)
+        let second = ResultRow(path: "/Card/A002.mov", status: ResultOutcome.verified.statusText,
+                               size: 10, checksum: "def", destination: "Backup",
+                               destinationPath: destination.appendingPathComponent("A002.mov").path)
+        record.plannedFileCounts = [2]
+        record.results = [first]
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        record.results = [first, duplicate]
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        record.results = [first, second]
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == true)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .safeToErase)
+        record.plannedFileCounts = [2, 2]
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        record.plannedFileCounts = nil
+        record.results = [first]
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == nil)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .safeToErase)
+    }
+
+    @Test func plannedSelectedCountDoesNotIncludeAppleDoubleExclusions() {
+        var record = PresentationTestSupport.record(state: .completed)
+        let destination = record.destinations[0].url
+        record.plannedFileCounts = [1]
+        record.results = [PresentationTestSupport.row(.verified, destination: destination),
+                          ResultRow(path: "/Card/._A001.mov", status: ResultOutcome.excludedAppleDouble.statusText,
+                                    size: 2, checksum: nil, destination: "Backup",
+                                    destinationPath: destination.appendingPathComponent("._A001.mov").path)]
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == true)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+    }
+
     /// Every pill supplies words and a symbol, so color is never the only cue.
     @Test func everyStateHasWordsAndASymbol() {
         let labels = allStates.map { state -> TransferLibraryPresentation.StateLabel in
