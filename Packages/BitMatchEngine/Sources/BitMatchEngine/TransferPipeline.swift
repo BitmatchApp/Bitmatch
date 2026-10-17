@@ -746,7 +746,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     // creates every recipe component descriptor-relative with O_NOFOLLOW.
                     try Task.checkCancellation()
                     try destinationSetupHook?(destinationURL)
-                    let forceDirect = fanOutHooks?.useClaimedNamePublish?(destIndex) == true
+                    let forceDirect = fanOutHooks?.forceDirectFinalPublication?(destIndex) == true
                     pinnedDestinations[destIndex] = try PinnedDestinationDirectory.open(
                         destination: destinationURL,
                         rootComponents: rootComponents,

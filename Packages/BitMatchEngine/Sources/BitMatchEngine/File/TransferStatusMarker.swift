@@ -50,7 +50,12 @@ final class TransferStatusMarker: @unchecked Sendable {
     ) throws -> TransferStatusMarker {
         // The source manifest remains authoritative, including an ordinary
         // source file whose name happens to look exactly like our marker.
-        let sourceRootNames = sourcePaths.filter { !$0.contains("/") }
+        // Callers include explicit root entries, including empty folders.
+        // Also derive them from nested paths so this API cannot choose a
+        // marker name occupied by a source folder if only files were passed.
+        let sourceRootNames = sourcePaths.compactMap {
+            $0.split(separator: "/", maxSplits: 1).first.map(String.init)
+        }
         for candidate in 0..<64 {
             let markerID = candidate == 0 ? (firstCandidateID ?? UUID()) : UUID()
             let name = prefix + markerID.uuidString + suffix

@@ -1,7 +1,7 @@
 # exFAT/FAT media-file publication design
 
-This is the design for the exFAT/FAT publication-race change. Source cards
-remain read-only; a backup file or history that BitMatch did not create is
+This is the design for the exFAT/FAT media-file publication-race change.
+Source cards remain read-only; a media file that BitMatch did not create is
 never replaced or removed.
 
 ## What is measured
@@ -26,9 +26,9 @@ they do not establish that a customer has hit either race.
 Without a supported late atomic no-replace operation, exFAT cannot provide
 all three properties at once: a normal final name that stays invisible until
 fully written, no replacement of a concurrent writer's name, and cleanup of
-only the file BitMatch owns. The fallback should choose no replacement and
-honest incomplete-output evidence. Its normal final name may be visible while
-bytes are still being written.
+only the file BitMatch owns. The fallback chooses no replacement and honest
+incomplete-output evidence. Its normal final name may be visible while bytes
+are still being written.
 
 ## On-disk attempt marker
 
@@ -67,8 +67,9 @@ verdict:
 2. `filesVerified`: append/fsync only when every selected file for this
    destination has a valid independent readback result and exact coverage.
 3. `copyCompleteUnverified`: Quick mode only; never safe to erase.
-An unsuccessful attempt leaves `incomplete` as its last valid status. A failed
-append or torn record also leaves the attempt unsafe.
+A copy or readback failure leaves `incomplete` as the last valid status. Later
+MHL, report or journal failure can leave `filesVerified` while the whole
+attempt remains unsafe. A failed append or torn record also leaves it unsafe.
 
 A successful `filesVerified` marker cannot turn a failed report, missing MHL,
 cancelled run or failed journal commit into success. Conversely, an unreadable
@@ -97,6 +98,12 @@ in place, marked by the attempt status and an unsafe History result. A
 replacement of the final name while the descriptor is open must fail the
 attempt's identity/coverage checks; BitMatch must not delete or replace the
 new occupant. APFS's current hard-link publication path remains separate.
+The retained marker is checked immediately before each direct final-name
+create, at the start of a file, and at 256 MiB write intervals. A missing or
+changed marker stops further writes at the next check, and final coverage
+checks it again. A deliberate deletion between checks cannot be made atomic
+with a write on this filesystem; do not treat the marker as proof of complete
+media.
 
 An unknown filesystem that rejects hard links fails closed with an actionable
 message. It does not fall back to the old claim-and-rename path. This change
@@ -106,12 +113,17 @@ no atomic unlink-if-owned primitive, so a deliberate replacement of a temp
 name at the exact cleanup boundary remains a separate design problem. Do not
 describe this change as a universal namespace-race proof.
 
-A same-size replacement of the named destination during pinned readback is
-also a separate safety fix: the reader currently checks its open descriptor,
-while final coverage checks path and size. Test and close that identity gap on
-its own branch before the larger exFAT fallback change; then rebase this
-branch onto it. Do not use the exFAT marker as a substitute for a named-entry
-identity check.
+The existing ASC MHL directory fallback is separate from media-file
+publication. On exFAT it preserves a nonempty valid history, but a concurrent
+writer could substitute an empty directory at its claim boundary. That
+directory race needs its own ownership design and regression work; this media
+protocol does not close it.
+
+The separate named-readback identity fix landed in PR #51 before this change.
+The reader checks that the public name still identifies its open file, and
+final coverage compares the current named file with the file used for
+readback. This identity proof must remain ahead of status advancement; the
+exFAT marker cannot substitute for it.
 
 On a new run or retry, a final name that already exists is never overwritten.
 Standard/Thorough/Paranoid may reuse it only after the existing whole-file
@@ -149,9 +161,12 @@ while no-overwrite of media names holds through O_EXCL.
 | Existing file in Quick | Reuse refused. |
 | Same source name as a would-be marker | Exact source file still selected; marker name regenerated or setup fails safely. |
 | Corrupt/torn/missing current marker | Never a safe verdict. |
-| Real exFAT, FAT and APFS transfers | exFAT/FAT direct final FD; APFS hard-link path; full readback, MHL/report, cancellation and journal coverage. |
+| Mounted exFAT and APFS transfers | exFAT direct final FD, APFS hard-link path, full readback, MHL/report, cancellation and journal coverage. Mounted FAT32 transfer and sync behavior remain a follow-up because this Mac could not attach FAT images. |
 | Deliberately swapped random temp name on APFS | Characterize separately; do not claim a conditional-unlink guarantee. |
 
 The original two red cases now exercise direct-final publication boundaries.
-The real exFAT file-level capability probe is complete; FAT-family durability
-and transfer regressions must pass before merging.
+Mounted exFAT file and root-directory flushes, full Standard readback and ASC
+MHL handoff passed on the test Mac. FAT32 remains untested here because this
+Mac's `hdiutil` returned “Device not configured” while creating or attaching
+FAT images, before the test could reach the filesystem. This is a test-host
+limitation, not evidence that FAT32 supports or rejects these sync calls.

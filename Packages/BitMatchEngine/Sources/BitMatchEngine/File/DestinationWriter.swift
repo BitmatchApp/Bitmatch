@@ -110,6 +110,17 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
 
     var usesDirectFinalPublication: Bool { statusMarker.withLock { $0 != nil } }
 
+    /// A removed or changed visible warning blocks the next direct final
+    /// create or write. The final completion gate validates it again.
+    func requireIncompletePublicationStatus() throws {
+        guard let marker = statusMarker.withLock({ $0 }),
+              try marker.currentStatus() == .incomplete else {
+            throw FileOperationError.unsafeOperation(
+                "The visible transfer status changed; keep the source and inspect this backup"
+            )
+        }
+    }
+
     func finishPublicationStatus(_ status: TransferStatusMarker.Status) throws {
         guard let marker = statusMarker.withLock({ $0 }) else { return }
         try marker.append(status)
@@ -285,8 +296,8 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         guard fsync(fd) == 0 else { throw posixError("Unable to flush the copy to the drive") }
     }
 
-    /// Makes a just-published name durable: the directory entry itself is
-    /// flushed, so a power cut cannot lose the file's name after "verified".
+    /// Requests durability for a just-created name by flushing its parent
+    /// directory. Power-loss behavior still depends on the OS and drive.
     public static func synchronizeDirectory(_ parentFD: Int32) throws {
         guard fsync(parentFD) == 0 else { throw posixError("Unable to save the destination folder on the drive") }
     }
@@ -580,7 +591,8 @@ public final class DestinationWriter {
         public var beforeClose: (@Sendable (Int, URL) throws -> Void)?
         public var beforePublish: (@Sendable (Int, URL) throws -> Void)?
         /// Forces the FAT-style direct-final path on a test filesystem.
-        public var useClaimedNamePublish: (@Sendable (Int) -> Bool)?
+        public var forceDirectFinalPublication: (@Sendable (Int) -> Bool)?
+        public var beforeDirectFinalCreate: (@Sendable (Int, URL) throws -> Void)?
         public var beforeDirectorySync: (@Sendable (Int) throws -> Void)?
         public var beforeMarkerFileFlush: (@Sendable (Int) throws -> Void)?
         public var beforeMarkerRootSync: (@Sendable (Int) throws -> Void)?
@@ -603,7 +615,8 @@ public final class DestinationWriter {
             beforeFlush: (@Sendable (Int, URL) throws -> Void)? = nil,
             beforeClose: (@Sendable (Int, URL) throws -> Void)? = nil,
             beforePublish: (@Sendable (Int, URL) throws -> Void)? = nil,
-            useClaimedNamePublish: (@Sendable (Int) -> Bool)? = nil,
+            forceDirectFinalPublication: (@Sendable (Int) -> Bool)? = nil,
+            beforeDirectFinalCreate: (@Sendable (Int, URL) throws -> Void)? = nil,
             beforeDirectorySync: (@Sendable (Int) throws -> Void)? = nil,
             beforeMarkerFileFlush: (@Sendable (Int) throws -> Void)? = nil,
             beforeMarkerRootSync: (@Sendable (Int) throws -> Void)? = nil,
@@ -623,7 +636,8 @@ public final class DestinationWriter {
             self.beforeFlush = beforeFlush
             self.beforeClose = beforeClose
             self.beforePublish = beforePublish
-            self.useClaimedNamePublish = useClaimedNamePublish
+            self.forceDirectFinalPublication = forceDirectFinalPublication
+            self.beforeDirectFinalCreate = beforeDirectFinalCreate
             self.beforeDirectorySync = beforeDirectorySync
             self.beforeMarkerFileFlush = beforeMarkerFileFlush
             self.beforeMarkerRootSync = beforeMarkerRootSync
@@ -750,7 +764,7 @@ public final class DestinationWriter {
                             do {
                                 relativePath = try sourceResolver.resolve(fileURL)
                             } catch {
-                                for destination in destinations {
+                                for destination in activeDestinations {
                                     await onError(destination.index, fileURL.path, error)
                                 }
                                 continue
@@ -761,7 +775,7 @@ public final class DestinationWriter {
                                     code: NSFileWriteNoPermissionError,
                                     userInfo: [NSLocalizedDescriptionKey: "Path contains traversal component"]
                                 )
-                                for destination in destinations {
+                                for destination in activeDestinations {
                                     await onError(destination.index, relativePath, error)
                                 }
                                 continue
@@ -774,7 +788,7 @@ public final class DestinationWriter {
                                     code: NSFileWriteNoPermissionError,
                                     userInfo: [NSLocalizedDescriptionKey: "Source file resolves outside source directory"]
                                 )
-                                for destination in destinations {
+                                for destination in activeDestinations {
                                     await onError(destination.index, relativePath, error)
                                 }
                                 continue
@@ -798,7 +812,7 @@ public final class DestinationWriter {
                             } catch is CancellationError {
                                 throw CancellationError()
                             } catch {
-                                for destination in destinations {
+                                for destination in activeDestinations {
                                     await onError(destination.index, relativePath, error)
                                 }
                             }
@@ -833,6 +847,10 @@ public final class DestinationWriter {
             self.filename = filename
             directFinal = destination.root.usesDirectFinalPublication
             temporaryName = directFinal ? filename : ".bitmatch.tmp." + UUID().uuidString
+            if directFinal {
+                try hooks?.beforeDirectFinalCreate?(destination.index, destination.root.logicalRootURL)
+                try destination.root.requireIncompletePublicationStatus()
+            }
             temporaryFD = try directFinal
                 ? PinnedDestinationDirectory.createDirectFinalFile(named: filename, relativeTo: parentFD)
                 : PinnedDestinationDirectory.createTemporaryFile(named: temporaryName, relativeTo: parentFD)
@@ -1032,6 +1050,13 @@ public final class DestinationWriter {
                                     file.destination.root.logicalRootURL,
                                     currentChunkIndex
                                 )
+                                // A marker read on every 4 MiB chunk would
+                                // add thousands of small disk reads to one
+                                // long clip. Check at entry and every 256 MiB;
+                                // final coverage validates it again.
+                                if file.directFinal && currentChunkIndex.isMultiple(of: 64) {
+                                    try file.destination.root.requireIncompletePublicationStatus()
+                                }
                                 try writeAll(chunkData, to: file.temporaryFD) { count, seconds, ended in
                                     onIOBytes?(file.destination.index, .writing, count, seconds, ended)
                                 }

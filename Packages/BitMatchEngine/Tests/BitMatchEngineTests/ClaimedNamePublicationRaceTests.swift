@@ -88,6 +88,26 @@ final class ClaimedNamePublicationRaceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent(existing)), Data("source data".utf8))
     }
 
+    func testMarkerNameCollisionAlsoChecksNestedSourceRootDirectory() throws {
+        let parentFD = try openScratchDirectory()
+        defer { _ = Darwin.close(parentFD) }
+        let collisionID = UUID()
+        let rootName = "BITMATCH_TRANSFER_STATUS_\(collisionID.uuidString).txt"
+        let sourceRoot = scratch.appendingPathComponent("SOURCE", isDirectory: true)
+        let nested = sourceRoot.appendingPathComponent(rootName, isDirectory: true)
+        try FileManager.default.createDirectory(at: nested, withIntermediateDirectories: true)
+        let sourceFile = nested.appendingPathComponent("clip.mov")
+        try Data("source data".utf8).write(to: sourceFile)
+
+        let marker = try TransferStatusMarker.create(
+            rootFD: parentFD, attemptID: UUID(),
+            sourcePaths: ["\(rootName.lowercased())/clip.mov"], firstCandidateID: collisionID
+        )
+        XCTAssertNotEqual(marker.name.lowercased(), rootName.lowercased())
+        XCTAssertEqual(try Data(contentsOf: sourceFile), Data("source data".utf8))
+        XCTAssertEqual(try marker.currentStatus(), .incomplete)
+    }
+
     func testTornMarkerCannotAuthorizeVerifiedStatus() throws {
         let parentFD = try openScratchDirectory()
         defer { _ = Darwin.close(parentFD) }

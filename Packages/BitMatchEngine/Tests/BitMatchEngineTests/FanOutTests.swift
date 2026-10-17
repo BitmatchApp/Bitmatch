@@ -433,16 +433,16 @@ struct FanOutTests {
     }
 
     @Test
-    func claimedNamePublishFallbackCompletesThroughFanOut() async throws {
+    func directFinalPublicationCompletesThroughFanOut() async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)
-            let fixture = try FanOutFixture(name: "claim-publish")
+            let fixture = try FanOutFixture(name: "direct-final")
             defer { fixture.cleanup() }
             let expected = Data(repeating: 0x6c, count: 4099)
             try fixture.write(expected, to: "clip.bin")
             let probe = FanOutProbe()
             let hooks = DestinationWriter.FanOutHooks(
-                useClaimedNamePublish: { probe.shouldClaimName(for: $0) }
+                forceDirectFinalPublication: { probe.shouldForceDirectFinal(for: $0) }
             )
             let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
                 sourceURL: fixture.source,
@@ -455,13 +455,13 @@ struct FanOutTests {
 
             #expect(operation.results.count == fixture.destinations.count)
             #expect(operation.results.allSatisfy { $0.success && $0.verificationResult?.isValid == true })
-            #expect(probe.publishDecisions == Set(fixture.destinations.indices))
-            let claimedFile = SafetyValidator.resolvedDestinationRoot(
+            #expect(probe.directFinalDecisions == Set(fixture.destinations.indices))
+            let directFile = SafetyValidator.resolvedDestinationRoot(
                 source: fixture.source,
                 destination: fixture.destinations[1],
                 settings: CameraLabelSettings()
             ).appendingPathComponent("clip.bin")
-            #expect(try Data(contentsOf: claimedFile) == expected)
+            #expect(try Data(contentsOf: directFile) == expected)
             #else
             #expect(true)
             #endif
@@ -1126,7 +1126,7 @@ private final class FanOutProbe: Sendable {
         var completedPerDestination: [Int] = []
         var noCacheDestinations: Set<Int> = []
         var allNoCacheDescriptorsWereOpen = true
-        var publishDecisions: Set<Int> = []
+        var directFinalDecisions: Set<Int> = []
         var destinationOpens: [String: Int] = [:]
         var destinationBytes: [String: Int] = [:]
         var verificationSourceOpens: [String: Int] = [:]
@@ -1200,12 +1200,12 @@ private final class FanOutProbe: Sendable {
     var noCacheDestinations: Set<Int> { state.withLock { $0.noCacheDestinations } }
     var allNoCacheDescriptorsWereOpen: Bool { state.withLock { $0.allNoCacheDescriptorsWereOpen } }
 
-    func shouldClaimName(for destination: Int) -> Bool {
-        _ = state.withLock { $0.publishDecisions.insert(destination) }
+    func shouldForceDirectFinal(for destination: Int) -> Bool {
+        _ = state.withLock { $0.directFinalDecisions.insert(destination) }
         return destination == 1
     }
 
-    var publishDecisions: Set<Int> { state.withLock { $0.publishDecisions } }
+    var directFinalDecisions: Set<Int> { state.withLock { $0.directFinalDecisions } }
 
     private func destinationKey(destination: Int, path: String) -> String { "\(destination):\(path)" }
 

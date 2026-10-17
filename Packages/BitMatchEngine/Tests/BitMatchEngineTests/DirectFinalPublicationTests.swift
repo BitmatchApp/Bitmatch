@@ -43,7 +43,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
 
     private func perform(
         mode: VerificationMode = .standard,
-        hooks: DestinationWriter.FanOutHooks = .init(useClaimedNamePublish: { _ in true })
+        hooks: DestinationWriter.FanOutHooks = .init(forceDirectFinalPublication: { _ in true })
     ) async throws -> FileOperation {
         try await TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
                                    fanOutHooks: hooks).performFileOperation(
@@ -74,7 +74,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
                 beforeWrite: { _, _, chunk in
                     if chunk == 1 { throw NSError(domain: "InjectedWrite", code: 1) }
                 },
-                useClaimedNamePublish: { _ in true }
+                forceDirectFinalPublication: { _ in true }
             ))
             XCTAssertEqual(operation.results.count, 1)
             XCTAssertFalse(operation.results[0].success)
@@ -89,7 +89,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
             try writeSource(bytes)
             let operation = try await perform(hooks: .init(
                 beforeFlush: { _, _ in throw NSError(domain: "InjectedFlush", code: 1) },
-                useClaimedNamePublish: { _ in true }
+                forceDirectFinalPublication: { _ in true }
             ))
             XCTAssertFalse(operation.results[0].success)
             XCTAssertEqual(try markers().first?.status, .incomplete)
@@ -101,7 +101,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
         try await FileOperationsTestLock.shared.run {
             try writeSource(Data("clip data".utf8))
             let operation = try await perform(hooks: .init(
-                useClaimedNamePublish: { _ in true },
+                forceDirectFinalPublication: { _ in true },
                 beforeMarkerFileFlush: { _ in throw NSError(domain: "InjectedMarkerFlush", code: 1) }
             ))
             XCTAssertEqual(operation.results.count, 1)
@@ -115,7 +115,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
             let fixture = try DisposableTransferFixture(seed: 20_261_017, fileCount: 1, bytesPerFile: 4096)
             defer { fixture.cleanup() }
             let hooks = DestinationWriter.FanOutHooks(
-                useClaimedNamePublish: { _ in true },
+                forceDirectFinalPublication: { _ in true },
                 beforeMarkerRootSync: { index in
                     if index == 0 { throw NSError(domain: "InjectedRootSync", code: 1) }
                 }
@@ -149,6 +149,59 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    func testMarkerRemovedBeforeDirectCreateOpensNoMediaName() async throws {
+        try await FileOperationsTestLock.shared.run {
+            try writeSource(Data("clip data".utf8))
+            let root = outputRoot
+            let operation = try await perform(hooks: .init(
+                forceDirectFinalPublication: { _ in true },
+                beforeDirectFinalCreate: { _, _ in
+                    let entries = try FileManager.default.contentsOfDirectory(
+                        at: root, includingPropertiesForKeys: nil
+                    )
+                    let marker = try XCTUnwrap(entries.first {
+                        TransferStatusMarker.hasExactName($0.lastPathComponent)
+                    })
+                    try FileManager.default.removeItem(at: marker)
+                }
+            ))
+            XCTAssertTrue(operation.results.allSatisfy { !$0.success })
+            XCTAssertFalse(FileManager.default.fileExists(
+                atPath: root.appendingPathComponent("clip.bin").path
+            ))
+        }
+    }
+
+    func testMarkerRemovedAtPeriodicWriteCheckStopsPartialFile() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let boundary = 256 * 1024 * 1024
+            let sourceFile = source.appendingPathComponent("clip.bin")
+            XCTAssertTrue(FileManager.default.createFile(atPath: sourceFile.path, contents: nil))
+            let sourceHandle = try FileHandle(forWritingTo: sourceFile)
+            try sourceHandle.truncate(atOffset: UInt64(boundary + 97))
+            try sourceHandle.close()
+            let root = outputRoot
+            let operation = try await perform(hooks: .init(
+                beforeWrite: { _, _, chunk in
+                    guard chunk == 64 else { return }
+                    let entries = try FileManager.default.contentsOfDirectory(
+                        at: root, includingPropertiesForKeys: nil
+                    )
+                    let marker = try XCTUnwrap(entries.first {
+                        TransferStatusMarker.hasExactName($0.lastPathComponent)
+                    })
+                    try FileManager.default.removeItem(at: marker)
+                },
+                forceDirectFinalPublication: { _ in true }
+            ))
+            XCTAssertTrue(operation.results.allSatisfy { !$0.success })
+            let partial = try FileManager.default.attributesOfItem(
+                atPath: root.appendingPathComponent("clip.bin").path
+            )
+            XCTAssertEqual((partial[.size] as? NSNumber)?.intValue, boundary)
+        }
+    }
+
     func testNestedDirectorySyncFailureOpensNoFinalMediaName() async throws {
         try await FileOperationsTestLock.shared.run {
             let nested = source.appendingPathComponent("NESTED", isDirectory: true)
@@ -156,7 +209,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
             try Data("clip data".utf8).write(to: nested.appendingPathComponent("clip.bin"))
             let root = outputRoot
             let operation = try await perform(hooks: .init(
-                useClaimedNamePublish: { _ in true },
+                forceDirectFinalPublication: { _ in true },
                 beforeDirectorySync: { _ in
                     let entries = (try? FileManager.default.contentsOfDirectory(
                         at: root, includingPropertiesForKeys: nil
@@ -180,7 +233,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
             let root = outputRoot
             let removed = Mutex(false)
             let operation = try await perform(hooks: .init(
-                useClaimedNamePublish: { _ in true },
+                forceDirectFinalPublication: { _ in true },
                 beforeDestinationRead: { _, _ in
                     let shouldRemove = removed.withLock { value in
                         if value { return false }
@@ -205,7 +258,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
             let root = outputRoot
             let removed = Mutex(false)
             let operation = try await perform(hooks: .init(
-                useClaimedNamePublish: { _ in true },
+                forceDirectFinalPublication: { _ in true },
                 beforeDestinationRead: { _, _ in
                     let shouldRemove = removed.withLock { value in
                         if value { return false }
@@ -236,7 +289,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
                     try FileManager.default.removeItem(at: finalURL)
                     try outsider.write(to: finalURL, options: .withoutOverwriting)
                 },
-                useClaimedNamePublish: { _ in true }
+                forceDirectFinalPublication: { _ in true }
             ))
             XCTAssertFalse(operation.results[0].success)
             XCTAssertEqual(try Data(contentsOf: finalURL), outsider)
@@ -249,7 +302,7 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
             let bytes = Data("recover after interruption".utf8)
             try writeSource(bytes)
             let first = try await perform(hooks: .init(
-                useClaimedNamePublish: { _ in true },
+                forceDirectFinalPublication: { _ in true },
                 beforeDestinationRead: { _, _ in throw NSError(domain: "InjectedRead", code: 1) }
             ))
             XCTAssertFalse(first.results[0].success)
