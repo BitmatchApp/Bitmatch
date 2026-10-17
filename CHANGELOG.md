@@ -7,6 +7,10 @@ All notable changes to this project will be documented in this file.
 - Mac: The menu bar shows the current transfer and its destinations, or the most recent result when idle. The idle icon is a small copy-and-check mark. Closing the main window during a transfer hides it while the work continues; Open BitMatch brings the same window back. Quit still asks before stopping active work.
 - Expanded transfer details show bytes written and read back for each destination, with separate live rates. These are measurements of active file I/O, not a drive-health or verification verdict.
 - Optional local Apple crash and hang summaries can be added to a diagnostics export. This is off by default, never uploaded by BitMatch, and Apple may not deliver a report.
+- Remote backups now claim a new filename before upload and recover only files BitMatch can still identify as its own. Existing remote files are left alone; unsupported server setups stop with an issue.
+- Cancelling a remote backup now stops the SSH work it started, including child processes.
+- Camera hints skip oversized XML metadata instead of loading it all into memory. This does not change the transfer file list.
+- The finish screen describes the checks actually performed and acknowledges files that did verify even when the transfer as a whole needs attention.
 - Keep copy and verification failures below 100% in live progress; the engine emits “Complete” only when all selected files pass the chosen mode. The final safety verdict still includes later ASC MHL and report steps.
 - Ignore a disappearing root `.fseventsd` metadata directory during card scans without hiding ordinary files. A regular source file with that name now contributes to the source fingerprint.
 - Bound saved JSON, MHL and adjacent checksum-manifest reads during loading. Damaged, oversized, conflicting or empty adjacent records are reported instead of silently falling back to partial evidence, including when another companion looks valid.
