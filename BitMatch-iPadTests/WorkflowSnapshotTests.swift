@@ -112,6 +112,23 @@ final class WorkflowSnapshotTests: XCTestCase {
                     size: CGSize(width: 820, height: 1_100), name: "ipad-history-diagnostics")
     }
 
+    func testCaptureStagedSetupStorageNote() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        fixture.seedSetup()
+        _ = try fixture.coordinator.enqueue(
+            source: fixture.source,
+            destinations: [fixture.backup, fixture.secondBackup]
+        )
+        fixture.coordinator.sourceURL = nil
+        await settle()
+        try capture(ContentView(coordinator: fixture.coordinator),
+                    size: CGSize(width: 393, height: 1_300), name: "iphone-staged-setup-full")
+        try capture(ContentView(coordinator: fixture.coordinator),
+                    size: CGSize(width: 820, height: 1_100), name: "ipad-staged-setup")
+    }
+
     func testCaptureAppleDoubleControls() async throws {
         try requireCaptureConfiguration()
         let fixture = try SnapshotFixture()

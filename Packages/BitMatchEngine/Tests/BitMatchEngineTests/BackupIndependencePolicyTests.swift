@@ -42,7 +42,7 @@ struct BackupIndependencePolicyTests {
         #expect(result.selectedDestinationCount == 3)
         #expect(result.resolvedIdentityGroupCount == 2)
         #expect(result.unresolvedDestinationCount == 1)
-        #expect(result.physicalSeparationNote == "BitMatch can't confirm whether these destinations share storage.")
+        #expect(result.physicalSeparationNote == "Separate storage isn't confirmed.")
         #expect(result.warnings.isEmpty)
     }
 

@@ -62,6 +62,8 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
 }
 
 public struct BackupIndependenceAssessment: Equatable, Sendable {
+    public static let unconfirmedStorageNote = "Separate storage isn't confirmed."
+
     /// Selected folders, including folders that share a resolved identity.
     public let selectedDestinationCount: Int
     /// Distinct identity strings the provider could resolve. A composite or
@@ -77,7 +79,7 @@ public struct BackupIndependenceAssessment: Equatable, Sendable {
     /// A quiet setup note, separate from warnings and the safety verdict.
     public var physicalSeparationNote: String? {
         guard selectedDestinationCount > 1, unresolvedDestinationCount > 0 else { return nil }
-        return "BitMatch can't confirm whether these destinations share storage."
+        return Self.unconfirmedStorageNote
     }
 }
 
