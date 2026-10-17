@@ -455,8 +455,265 @@ struct PhotographerJobViewModelTests {
         reopened.refreshRemoteBackupSummary(for: cardID, items: [itemA, itemB])
         let readBack = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
         #expect(readBack.verificationEvidence == .readBackSHA256(entryA.sha256))
-        #expect(RemoteBackupStatusPresentation.make(summary: readBack).title == "Remote readback verified")
+        #expect(RemoteBackupStatusPresentation.make(summary: readBack).title == "Uploaded · Downloaded and checked")
         #expect(readBack.updatedAt == itemB.updatedAt)
+    }
+
+    @Test(arguments: [RemoteBackupState.queued, .uploading, .retrying, .paused, .verifying, .verified])
+    func uploadedFileDoesNotHideAnotherFileStillPendingOrVerified(otherState: RemoteBackupState) throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let first = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: 10, sha256: String(repeating: "a", count: 64)
+        )
+        let second = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["B.mov"]),
+            byteCount: 20, sha256: String(repeating: "b", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [first, second], createdAt: eventDate
+        )
+        try store.save(manifest)
+        let uploaded = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: first, state: .uploadedUnverified, uploadedBytes: 10
+        )
+        var other = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: second, state: otherState,
+            uploadedBytes: otherState == .verified ? 20 : 0
+        )
+        if otherState == .verified { other.verificationEvidence = .readBackSHA256(second.sha256) }
+
+        let viewModel = makeViewModel(store: store)
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [uploaded, other])
+
+        let summary = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(summary.state == (otherState == .verified ? .uploadedUnverified : otherState))
+        #expect(summary.verificationEvidence == .none)
+        #expect(!RemoteBackupStatusPresentation.make(summary: summary).isFullyBackedUp)
+        #expect(summary.uploadedFileCount < summary.totalFileCount || otherState == .verified)
+    }
+
+    @Test func verifiedQueueItemWithoutDigestShowsMissingEvidenceInsteadOfQueued() throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let entry = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: 10, sha256: String(repeating: "a", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [entry], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var item = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: entry, state: .verified, uploadedBytes: 10
+        )
+
+        let viewModel = makeViewModel(store: store)
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [item])
+
+        let summary = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        let presentation = RemoteBackupStatusPresentation.make(summary: summary)
+        #expect(summary.state == .verified)
+        #expect(summary.verificationEvidence == .none)
+        #expect(presentation.title == "Verification Evidence Missing")
+        #expect(!presentation.isFullyBackedUp)
+
+        item.verificationEvidence = .readBackSHA256(String(repeating: "b", count: 64))
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [item])
+        let mismatch = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(mismatch.state == .failed)
+        #expect(mismatch.verificationEvidence == .none)
+        #expect(mismatch.errorSummary?.contains("does not match") == true)
+        #expect(!RemoteBackupStatusPresentation.make(summary: mismatch).isFullyBackedUp)
+    }
+
+    @Test(arguments: [RemoteBackupState.uploadedUnverified, .verified])
+    func partialManifestCannotClaimCompletedOffSiteBackup(terminalState: RemoteBackupState) throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let first = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: 10, sha256: String(repeating: "a", count: 64)
+        )
+        let second = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["B.mov"]),
+            byteCount: 20, sha256: String(repeating: "b", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [first, second], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var itemA = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: first, state: terminalState, uploadedBytes: 10
+        )
+        if terminalState == .verified { itemA.verificationEvidence = .readBackSHA256(first.sha256) }
+        let viewModel = makeViewModel(store: store)
+
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [itemA])
+
+        let partial = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(partial.state == .failed)
+        #expect(partial.totalFileCount == 2)
+        #expect(partial.uploadedFileCount == 1)
+        #expect(partial.verificationEvidence == .none)
+        #expect(partial.errorSummary?.contains("incomplete") == true)
+        #expect(!RemoteBackupStatusPresentation.make(summary: partial).isFullyBackedUp)
+
+        var itemB = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: second, state: terminalState, uploadedBytes: 20
+        )
+        if terminalState == .verified { itemB.verificationEvidence = .readBackSHA256(second.sha256) }
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [itemA, itemB])
+
+        let complete = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(complete.state == terminalState)
+        #expect(complete.totalFileCount == 2)
+        #expect(complete.uploadedFileCount == 2)
+        #expect(complete.errorSummary == nil)
+        #expect(RemoteBackupStatusPresentation.make(summary: complete).title ==
+            (terminalState == .verified ? "Uploaded · Downloaded and checked" : "Uploaded · Unverified"))
+        #expect(RemoteBackupStatusPresentation.make(summary: complete).isFullyBackedUp == (terminalState == .verified))
+    }
+
+    @Test(arguments: [RemoteBackupState.uploadedUnverified, .verified], [Int64(-1), 0, 9, 11])
+    func terminalRemoteByteCountMustMatchManifest(terminalState: RemoteBackupState, recordedBytes: Int64) throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let entry = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: 10, sha256: String(repeating: "a", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [entry], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var item = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: entry, state: terminalState, uploadedBytes: recordedBytes
+        )
+        if terminalState == .verified { item.verificationEvidence = .readBackSHA256(entry.sha256) }
+        let viewModel = makeViewModel(store: store)
+
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [item])
+
+        let inconsistent = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(inconsistent.state == .failed)
+        #expect(inconsistent.uploadedFileCount == 0)
+        #expect(inconsistent.verificationEvidence == .none)
+        #expect(inconsistent.errorSummary?.contains("inconsistent") == true)
+        #expect(!RemoteBackupStatusPresentation.make(summary: inconsistent).isFullyBackedUp)
+
+        item.uploadedByteCount = entry.byteCount
+        viewModel.refreshRemoteBackupSummary(for: cardID, items: [item])
+
+        let consistent = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(consistent.state == terminalState)
+        #expect(consistent.uploadedFileCount == 1)
+        #expect(consistent.errorSummary == nil)
+        #expect(RemoteBackupStatusPresentation.make(summary: consistent).isFullyBackedUp == (terminalState == .verified))
+    }
+
+    @Test func zeroByteRemoteReadbackRemainsValid() throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let entry = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["empty.txt"]),
+            byteCount: 0, sha256: String(repeating: "a", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [entry], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var item = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: entry, state: .verified, uploadedBytes: 0
+        )
+        item.verificationEvidence = .readBackSHA256(entry.sha256)
+
+        makeViewModel(store: store).refreshRemoteBackupSummary(for: cardID, items: [item])
+
+        let summary = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(summary.state == .verified)
+        #expect(summary.totalByteCount == 0)
+        #expect(RemoteBackupStatusPresentation.make(summary: summary).isFullyBackedUp)
+    }
+
+    @Test func overflowingPersistedRemoteTotalsFailClosedWithoutTrapping() throws {
+        let store = InMemoryPhotographerJobStore()
+        let jobID = UUID()
+        let cardID = UUID()
+        let targetID = UUID()
+        try store.save(summaryJob(id: jobID, cardID: cardID, updatedAt: eventDate))
+        let first = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["A.mov"]),
+            byteCount: Int64.max, sha256: String(repeating: "a", count: 64)
+        )
+        let second = RemoteManifestEntry(
+            id: UUID(), relativePath: try RemoteRelativePath(components: ["B.mov"]),
+            byteCount: 1, sha256: String(repeating: "b", count: 64)
+        )
+        let manifest = try RemoteManifest(
+            id: UUID(), jobID: jobID, cardIngestID: cardID,
+            destinationProfileID: targetID,
+            packageRelativePath: RemoteRelativePath(components: ["Jobs", "Background"]),
+            entries: [first, second], createdAt: eventDate
+        )
+        try store.save(manifest)
+        var itemA = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: first, state: .verified, uploadedBytes: Int64.max
+        )
+        itemA.verificationEvidence = .readBackSHA256(first.sha256)
+        var itemB = summaryItem(
+            jobID: jobID, cardID: cardID, targetID: targetID,
+            manifest: manifest, entry: second, state: .verified, uploadedBytes: 1
+        )
+        itemB.verificationEvidence = .readBackSHA256(second.sha256)
+
+        makeViewModel(store: store).refreshRemoteBackupSummary(for: cardID, items: [itemA, itemB])
+
+        let summary = try #require(store.storedJobs.first?.cardIngests.first?.remoteBackupSummaries[targetID])
+        #expect(summary.state == .failed)
+        #expect(summary.totalByteCount == Int64.max)
+        #expect(summary.uploadedByteCount == Int64.max)
+        #expect(summary.errorSummary?.contains("inconsistent") == true)
+        #expect(!RemoteBackupStatusPresentation.make(summary: summary).isFullyBackedUp)
     }
 
     @Test func terminalCardsCannotBeginAgainAndRequireNextCardSetup() throws {

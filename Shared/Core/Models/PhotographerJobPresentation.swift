@@ -169,13 +169,15 @@ struct RemoteBackupStatusPresentation: Equatable, Sendable {
         case .uploadedUnverified:
             return Self(title: "Uploaded · Unverified", symbol: "exclamationmark.shield", isFullyBackedUp: false, isWarning: true, state: state)
         case .verifying:
-            return Self(title: "Remote Verifying", symbol: "checkmark.shield", isFullyBackedUp: false, isWarning: false, state: state)
+            // The queue also uses this state while publishing an upload-only
+            // file. Do not imply a remote readback has begun in that mode.
+            return Self(title: "Finishing off-site backup", symbol: "arrow.up.circle", isFullyBackedUp: false, isWarning: false, state: state)
         case .verified where evidence.digest != nil:
             // This value describes one remote destination, not source health
             // or a whole-card safe-to-erase verdict. Preserve older server-side
             // evidence without claiming it was a downloaded readback.
             let title: String
-            if case .readBackSHA256 = evidence { title = "Remote readback verified" }
+            if case .readBackSHA256 = evidence { title = "Uploaded · Downloaded and checked" }
             else { title = "Remote checksum verified" }
             return Self(title: title, symbol: "checkmark.icloud.fill", isFullyBackedUp: true, isWarning: false, state: state)
         case .verified:

@@ -82,7 +82,7 @@ A few things to know:
 - The server needs SFTP **and SSH shell access**, with standard file utilities and hard-link support. An SFTP-only account won't do.
 - **SHA-256 read-back** downloads the remote file to check it. That costs extra bandwidth and local temporary space.
 - **Upload only** means **Uploaded · Unverified**. Getting it onto the server isn't proof that the contents match.
-- **Remote readback verified** describes the remote file matching the verified local backup. Older server-checksum evidence says **Remote checksum verified**. Neither label establishes a new source-card reread or a whole-card safe-to-erase verdict; the local transfer retains its own verification mode, coverage and outcome.
+- **Uploaded · Downloaded and checked** means BitMatch downloaded the remote file and confirmed it matches the verified local backup. Older server-checksum evidence says **Remote checksum verified**. Neither label establishes a new source-card reread or a whole-card safe-to-erase verdict; the local transfer retains its own verification mode, coverage and outcome.
 - iPad can keep the project's remote settings, but uploads run on Mac. S3 and WebDAV aren't available yet.
 
 You can ignore SFTP entirely and keep everything local. No app analytics uploads. If you set up remote backup, your selected data goes to the server you chose.
