@@ -30,13 +30,18 @@ case "$JOB" in
   engine-test)
     # Keep independent disk fixtures from racing short setup deadlines. Each
     # test still exercises its own concurrent copy/verify workers.
-    # Match the Apple Silicon test host to the package's arm64 bundle. Newer
-    # Xcode hosts may otherwise choose arm64e and refuse to load XCTest.
-    if [[ "$(uname -m)" == arm64 ]]; then
-      arch -arm64 swift test --package-path "$ROOT/Packages/BitMatchEngine" --build-system native --no-parallel
-    else
-      swift test --package-path "$ROOT/Packages/BitMatchEngine" --build-system native --no-parallel
-    fi
+    # Xcode 27 can choose an arm64e host for a mixed SwiftPM test run and fail
+    # to load the package's arm64-only XCTest bundle, while Swift Testing still
+    # runs. Run each test framework explicitly so neither can be omitted.
+    run_engine_tests() {
+      if [[ "$(uname -m)" == arm64 ]]; then
+        arch -arm64 swift test --package-path "$ROOT/Packages/BitMatchEngine" --build-system native --no-parallel "$@"
+      else
+        swift test --package-path "$ROOT/Packages/BitMatchEngine" --build-system native --no-parallel "$@"
+      fi
+    }
+    run_engine_tests --disable-swift-testing
+    run_engine_tests --disable-xctest
     ;;
   release-builds)
     run_xcodebuild mac-release build -scheme BitMatch -configuration Release -destination 'platform=macOS'
