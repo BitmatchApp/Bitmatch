@@ -89,6 +89,10 @@ struct TransferExitGuardPolicyTests {
             backing: .buffered,
             defer: false
         )
+        // AppKit defaults this to true. The test keeps `window` in a Swift
+        // local after the final close; letting AppKit release it as well
+        // over-releases the object when that local goes out of scope.
+        window.isReleasedWhenClosed = false
         window.delegate = delegate
         delegate.registerContentWindow(window)
         window.makeKeyAndOrderFront(nil)
