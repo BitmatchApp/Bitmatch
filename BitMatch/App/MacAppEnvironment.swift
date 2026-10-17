@@ -5,7 +5,40 @@
 // copy of its state: SFTP off-site backups (the thesis's named Mac
 // exception), volume access and backup-drive discovery, and choosing a
 // detected camera card as the source.
+import Foundation
 import SwiftUI
+
+#if DEBUG
+/// App-hosted unit tests launch BitMatch.app before their own fixtures exist.
+/// Keep that host away from the user's drives and saved transfer state. This
+/// predicate is compiled out of Release builds.
+enum MacUnitTestHost {
+    static func isRunning(environment: [String: String] = ProcessInfo.processInfo.environment) -> Bool {
+        environment["XCTestConfigurationFilePath"] != nil
+            || environment["XCTestBundlePath"] != nil
+    }
+
+    // Parallel XCTest app hosts have different process IDs. Reuse these
+    // locations within one host and clear them at launch and normal exit.
+    static var defaultsSuiteName: String {
+        "BitMatch.UnitTestHost.\(ProcessInfo.processInfo.processIdentifier)"
+    }
+
+    private static var scratchDirectory: URL {
+        FileManager.default.temporaryDirectory
+            .appendingPathComponent("BitMatchUnitTestHost-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+    }
+
+    static var journalURL: URL {
+        scratchDirectory.appendingPathComponent("history.json")
+    }
+
+    static func clearState() {
+        UserDefaults(suiteName: defaultsSuiteName)?.removePersistentDomain(forName: defaultsSuiteName)
+        try? FileManager.default.removeItem(at: scratchDirectory)
+    }
+}
+#endif
 
 @MainActor
 final class MacAppEnvironment: ObservableObject {
@@ -65,6 +98,23 @@ final class MacAppEnvironment: ObservableObject {
             monitorsVolumes: false
         )
     }
+
+    #if DEBUG
+    /// The XCTest app host needs a window, but no live drive discovery,
+    /// persisted projects, transfer history or remote queue scheduler.
+    static func makeForUnitTestHost() -> MacAppEnvironment {
+        let persistence = BitMatchPersistenceController(inMemory: true)
+        let store = CoreDataPhotographerJobStore(persistence: persistence)
+        let defaults = UserDefaults(suiteName: MacUnitTestHost.defaultsSuiteName)!
+        let coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            transferJournal: LocalTransferJournal(fileURL: MacUnitTestHost.journalURL),
+            photographerJobViewModel: PhotographerJobViewModel(store: store),
+            defaults: defaults
+        )
+        return makeForTesting(coordinator: coordinator)
+    }
+    #endif
 }
 
 extension View {

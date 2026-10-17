@@ -88,14 +88,28 @@ final class VolumeMonitorService: ObservableObject {
     // A singleton: it lives as long as the app, so it never tears monitoring
     // down, and the Disk Arbitration context below never dangles.
     private init() {
+        #if DEBUG
+        // Test models and MacSetupLocations reference this singleton even
+        // when their own monitoring is off. The app-hosted unit-test process
+        // must not enumerate real mounted media before a fixture is set up.
+        guard !MacUnitTestHost.isRunning() else { return }
+        #endif
         startMonitoring()
         // Initial scan of existing volumes
         scanExistingVolumes()
     }
+
+    #if DEBUG
+    private(set) var startedLiveMonitoring = false
+    private(set) var scannedExistingVolumes = false
+    #endif
     
     // MARK: - Volume Monitoring
     
     private func startMonitoring() {
+        #if DEBUG
+        startedLiveMonitoring = true
+        #endif
         #if os(macOS)
         startDiskArbitrationMonitoring()
         startFileSystemMonitoring()
@@ -286,6 +300,9 @@ final class VolumeMonitorService: ObservableObject {
     }
     
     private func scanExistingVolumes() {
+        #if DEBUG
+        scannedExistingVolumes = true
+        #endif
         vlog("🔍 Scanning existing volumes...")
         guard let volumes = Self.mountedVolumes() else { return }
         vlog("📂 Found \(volumes.count) volumes: \(volumes.map { $0.lastPathComponent })")
