@@ -20,6 +20,8 @@ enum SFTPRemoteBackupProviderFactory {
 }
 
 #if os(macOS)
+import Darwin
+
 struct OpenSSHCommand: Equatable, Sendable {
     let executable: String
     let arguments: [String]
@@ -46,6 +48,54 @@ private final class OpenSSHProcessOutput: @unchecked Sendable {
     func setStderr(_ data: Data) { lock.withLock { stderr = data } }
     func result(status: Int32) -> OpenSSHCommandResult {
         lock.withLock { OpenSSHCommandResult(status: status, stdout: stdout, stderr: stderr) }
+    }
+}
+
+/// Owns one launched OpenSSH child until its termination handler has drained
+/// both pipes. Cancellation before launch prevents the child from starting;
+/// cancellation after launch signals it, then forces exit if it ignores TERM.
+private final class OpenSSHProcessLifetime: @unchecked Sendable {
+    private let lock = NSLock()
+    private var process: Process?
+    private var cancelled = false
+    private var finished = false
+    private var forceKill: DispatchWorkItem?
+
+    func launch(_ process: Process) throws {
+        try lock.withLock {
+            guard !cancelled else { throw CancellationError() }
+            try process.run()
+            self.process = process
+        }
+    }
+
+    func cancel() {
+        lock.withLock {
+            guard !finished else { return }
+            cancelled = true
+            guard let process, process.isRunning else { return }
+            _ = Darwin.kill(process.processIdentifier, SIGTERM)
+            let work = DispatchWorkItem { [weak self] in self?.killIfRunning() }
+            forceKill = work
+            DispatchQueue.global().asyncAfter(deadline: .now() + 2, execute: work)
+        }
+    }
+
+    private func killIfRunning() {
+        lock.withLock {
+            guard !finished, let process, process.isRunning else { return }
+            _ = Darwin.kill(process.processIdentifier, SIGKILL)
+        }
+    }
+
+    func complete() -> Bool {
+        lock.withLock {
+            finished = true
+            process = nil
+            forceKill?.cancel()
+            forceKill = nil
+            return cancelled
+        }
     }
 }
 
@@ -284,43 +334,60 @@ actor SFTPRemoteBackupProvider: RemoteBackupProvider {
             : .capabilityUnavailable(.noReplacePromotion)
     }
 
-    private static func runProcess(_ command: OpenSSHCommand) async throws -> OpenSSHCommandResult {
-        try await withCheckedThrowingContinuation { continuation in
-            let process = Process()
-            let output = Pipe(); let error = Pipe(); let input = Pipe()
-            let collected = OpenSSHProcessOutput()
-            let drains = DispatchGroup()
-            process.executableURL = URL(fileURLWithPath: command.executable)
-            process.arguments = command.arguments
-            process.standardOutput = output; process.standardError = error; process.standardInput = input
-            // Reserve both drain completions before the child can terminate.
-            // Otherwise a fast child could notify an empty group before these
-            // readers have been registered.
-            drains.enter()
-            drains.enter()
-            process.terminationHandler = { completed in
-                drains.notify(queue: .global()) {
-                    continuation.resume(returning: collected.result(status: completed.terminationStatus))
+    // Kept internal so the real subprocess lifetime can be exercised by tests.
+    static func runProcess(_ command: OpenSSHCommand) async throws -> OpenSSHCommandResult {
+        let lifetime = OpenSSHProcessLifetime()
+        let result: OpenSSHCommandResult = try await withTaskCancellationHandler(operation: {
+            try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<OpenSSHCommandResult, Error>) in
+                let process = Process()
+                let output = Pipe(); let error = Pipe(); let input = Pipe()
+                let collected = OpenSSHProcessOutput()
+                let drains = DispatchGroup()
+                process.executableURL = URL(fileURLWithPath: command.executable)
+                process.arguments = command.arguments
+                process.standardOutput = output; process.standardError = error; process.standardInput = input
+                // Reserve both drain completions before the child can terminate.
+                // Otherwise a fast child could notify an empty group before these
+                // readers have been registered.
+                drains.enter()
+                drains.enter()
+                process.terminationHandler = { completed in
+                    drains.notify(queue: .global()) {
+                        if lifetime.complete() {
+                            continuation.resume(throwing: CancellationError())
+                        } else {
+                            continuation.resume(returning: collected.result(status: completed.terminationStatus))
+                        }
+                    }
+                }
+                do {
+                    try lifetime.launch(process)
+                    DispatchQueue.global().async {
+                        collected.setStdout(output.fileHandleForReading.readDataToEndOfFile())
+                        drains.leave()
+                    }
+                    DispatchQueue.global().async {
+                        collected.setStderr(error.fileHandleForReading.readDataToEndOfFile())
+                        drains.leave()
+                    }
+                    if let data = command.standardInput { input.fileHandleForWriting.write(data) }
+                    input.fileHandleForWriting.closeFile()
+                } catch {
+                    let wasCancelled = lifetime.complete()
+                    drains.leave()
+                    drains.leave()
+                    if wasCancelled {
+                        continuation.resume(throwing: CancellationError())
+                    } else {
+                        continuation.resume(throwing: error)
+                    }
                 }
             }
-            do {
-                try process.run()
-                DispatchQueue.global().async {
-                    collected.setStdout(output.fileHandleForReading.readDataToEndOfFile())
-                    drains.leave()
-                }
-                DispatchQueue.global().async {
-                    collected.setStderr(error.fileHandleForReading.readDataToEndOfFile())
-                    drains.leave()
-                }
-                if let data = command.standardInput { input.fileHandleForWriting.write(data) }
-                input.fileHandleForWriting.closeFile()
-            } catch {
-                drains.leave()
-                drains.leave()
-                continuation.resume(throwing: error)
-            }
-        }
+        }, onCancel: {
+            lifetime.cancel()
+        })
+        try Task.checkCancellation()
+        return result
     }
 }
 #endif
