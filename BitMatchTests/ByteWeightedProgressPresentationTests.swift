@@ -27,6 +27,23 @@ struct ByteWeightedProgressPresentationTests {
         #expect(withMHL.bytesProcessed == pipeline.bytesProcessed)
     }
 
+    @Test func failedBackupKeepsItsUnfinishedBudgetDuringPartialHandoff() {
+        // Two backups reserved 500 pipeline units + 200 handoff units.
+        // One failed early: only 300 pipeline units and one 100-byte job remain.
+        let partial = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 0, totalBytes: 100,
+            filesProcessed: 0, totalFiles: 1, published: false), precedingWorkBytes: 500,
+            precedingCompletedWorkBytes: 300, reservedHandoffBytes: 200)
+        let onePublished = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 100, totalBytes: 100,
+            filesProcessed: 1, totalFiles: 1, published: true), precedingWorkBytes: 500,
+            precedingCompletedWorkBytes: 300, reservedHandoffBytes: 200)
+        let noJobs = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 0, totalBytes: 0,
+            filesProcessed: 0, totalFiles: 0, published: false), precedingWorkBytes: 500,
+            precedingCompletedWorkBytes: 300, reservedHandoffBytes: 200)
+        #expect(partial.overallProgress == 3.0 / 7.0)
+        #expect(onePublished.overallProgress == 4.0 / 7.0)
+        #expect(noJobs.overallProgress == partial.overallProgress)
+    }
+
     @Test func tinyFinishedCardCannotSpendAHugeWaitingCardsProgress() {
         let tiny = row(state: .safeToErase, work: 1)
         let huge = row(state: .copying(progress: 0), fraction: 0, work: 999)

@@ -1,5 +1,6 @@
 // CopyVerifyExecutor.swift - Handles copy and verify operation execution
 import Foundation
+import Synchronization
 import BitMatchEngine
 
 struct PhotographerFinalizationResult {
@@ -118,6 +119,8 @@ final class CopyVerifyExecutor {
     private var destinationRoots: [URL] = []
     private var highestOverallProgress = 0.0
     private var pipelineWorkBytes = 0.0
+    private var pipelineCompletedWorkBytes = 0.0
+    private var reservedHandoffBytes = 0.0
     private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
     private(set) var completedPerformanceTelemetry = TransferPerformanceTelemetry()
 
@@ -160,6 +163,8 @@ final class CopyVerifyExecutor {
         cancellationRequested = false
         highestOverallProgress = 0
         pipelineWorkBytes = 0
+        pipelineCompletedWorkBytes = 0
+        reservedHandoffBytes = 0
         diagnosticRun = config.operationId
         acceptsPipelineProgress = true
         lastDiagnosticStage = nil
@@ -208,10 +213,15 @@ final class CopyVerifyExecutor {
             try checkCancellation()
             timingService.updateStage(.copying)
 
+            // Capture synchronously before dispatching UI work. The executor
+            // can resume before the MainActor Task for the final callback.
+            let lastPipelineProgress = Mutex<OperationProgress?>(nil)
             let progressCallback: FileOperationsService.ProgressCallback = { [weak self] progressUpdate in
+                lastPipelineProgress.withLock { previous in
+                    if previous.map({ progressUpdate.overallProgress >= $0.overallProgress }) ?? true { previous = progressUpdate }
+                }
                 Task { @MainActor in
                     guard let self, self.acceptsPipelineProgress, self.diagnosticRun == config.operationId else { return }
-                    if let total = progressUpdate.totalWorkBytes { self.pipelineWorkBytes = total }
                     self.handleProgress(Self.pipelineProgress(progressUpdate,
                         destinationCount: config.destinationURLs.count,
                         includeMHL: config.generateASCMHL && config.verificationMode != .quick), callbacks: callbacks)
@@ -275,6 +285,15 @@ final class CopyVerifyExecutor {
             )
 #endif
 
+            if let finalUpdate = lastPipelineProgress.withLock({ $0 }) {
+                pipelineWorkBytes = finalUpdate.totalWorkBytes ?? 0
+                pipelineCompletedWorkBytes = min(pipelineWorkBytes, max(0, finalUpdate.workBytesProcessed ?? 0))
+                reservedHandoffBytes = config.generateASCMHL && config.verificationMode != .quick
+                    ? Double(max(0, finalUpdate.totalBytes ?? 0)) * Double(config.destinationURLs.count) : 0
+                handleProgress(Self.pipelineProgress(finalUpdate,
+                    destinationCount: config.destinationURLs.count,
+                    includeMHL: config.generateASCMHL && config.verificationMode != .quick), callbacks: callbacks)
+            }
             acceptsPipelineProgress = false
             SharedLogger.transferEvent(.pipelineDrained, run: config.operationId)
             SharedLogger.correlatePipeline(run: config.operationId, pipeline: operation.id)
@@ -480,12 +499,15 @@ final class CopyVerifyExecutor {
         let channel = AsyncStream<ASCMHLGenerator.Progress>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let consumer = Task { @MainActor in
             for await update in channel.stream {
-                self.handleProgress(Self.mhlProgress(update, precedingWorkBytes: self.pipelineWorkBytes), callbacks: callbacks)
+                self.handleProgress(Self.mhlProgress(update, precedingWorkBytes: self.pipelineWorkBytes,
+                    precedingCompletedWorkBytes: self.pipelineCompletedWorkBytes, reservedHandoffBytes: self.reservedHandoffBytes), callbacks: callbacks)
             }
         }
         handleProgress(Self.mhlProgress(.init(bytesProcessed: 0, totalBytes: mhlBytes,
                                                     filesProcessed: 0, totalFiles: plan.jobs.flatMap(\.files).count,
-                                                    published: false), precedingWorkBytes: pipelineWorkBytes), callbacks: callbacks)
+                                                    published: false), precedingWorkBytes: pipelineWorkBytes,
+                                                    precedingCompletedWorkBytes: pipelineCompletedWorkBytes,
+                                                    reservedHandoffBytes: reservedHandoffBytes), callbacks: callbacks)
         let sourceURL = config.sourceURL
         let startTime = operation.startTime
         let run = config.operationId
@@ -528,12 +550,13 @@ final class CopyVerifyExecutor {
         return update.replacingOverallProgress(min(0.99, done / (total + handoff)))
     }
 
-    static func mhlProgress(_ update: ASCMHLGenerator.Progress, precedingWorkBytes: Double = 0) -> OperationProgress {
+    static func mhlProgress(_ update: ASCMHLGenerator.Progress, precedingWorkBytes: Double = 0,
+                            precedingCompletedWorkBytes: Double? = nil, reservedHandoffBytes: Double? = nil) -> OperationProgress {
         let fraction = update.totalBytes > 0
             ? min(1, Double(update.bytesProcessed) / Double(update.totalBytes)) : 0
         return OperationProgress(
-            overallProgress: min(0.99, (precedingWorkBytes + Double(max(0, update.bytesProcessed)))
-                / max(1, precedingWorkBytes + Double(max(0, update.totalBytes)))),
+            overallProgress: min(0.99, ((precedingCompletedWorkBytes ?? precedingWorkBytes) + Double(max(0, update.bytesProcessed)))
+                / max(1, precedingWorkBytes + (reservedHandoffBytes ?? Double(max(0, update.totalBytes))))),
             currentFile: update.published ? "ASC MHL records saved" : "Creating ASC MHL — checking destination media…",
             filesProcessed: update.filesProcessed, totalFiles: update.totalFiles,
             currentStage: .generating, speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,

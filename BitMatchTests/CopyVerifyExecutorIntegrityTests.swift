@@ -326,6 +326,20 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertEqual(harness.lastState, .cancelled)
     }
 
+    func testImmediateFinalCallbackReachesAuthoritativeResultsWithoutWaitingForUITask() async throws {
+        let final = OperationProgress(overallProgress: 1, currentFile: nil,
+            filesProcessed: 1, totalFiles: 1, currentStage: .completed, speed: nil,
+            elapsedTime: nil, averageSpeed: nil, peakSpeed: nil, bytesProcessed: 10,
+            totalBytes: 10, workBytesProcessed: 30, totalWorkBytes: 30)
+        let harness = ExecutorHarness(returnedResults: [verifiedResult()], emittedResults: [], terminalProgress: final)
+        harness.onAuthoritativeResults = {
+            XCTAssertEqual(harness.observedProgress.last?.totalWorkBytes, 30)
+            XCTAssertEqual(harness.observedProgress.last?.overallProgress, 0.99)
+        }
+        _ = try await harness.execute()
+        XCTAssertEqual(harness.terminalInfo?.success, true)
+    }
+
     func testMHLReadProgressIsNotFinishedBeforePublication() {
         let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 50, totalBytes: 100,
                                                          filesProcessed: 0, totalFiles: 1, published: false))
@@ -1014,6 +1028,7 @@ private final class ExecutorHarness {
         reportPrefs: ReportPrefs? = nil,
         cameraSettings: CameraLabelSettings = CameraLabelSettings(),
         thrownError: Error? = nil,
+        terminalProgress: OperationProgress? = nil,
         realFileOperations: FileOperationsService? = nil,
         estimatedFiles: Int? = nil,
         estimatedBytes: Int64? = nil,
@@ -1022,7 +1037,8 @@ private final class ExecutorHarness {
         let fileOperations = ExecutorFileOperationsService(
             returnedResults: returnedResults,
             emittedResults: emittedResults,
-            thrownError: thrownError
+            thrownError: thrownError,
+            terminalProgress: terminalProgress
         )
         let platform = ExecutorPlatformManager(fileOperations: realFileOperations ?? fileOperations)
         self.platform = platform
@@ -1089,11 +1105,13 @@ private final class ExecutorFileOperationsService: FileOperationsService {
     private let returnedResults: [FileOperationResult]
     private let emittedResults: [FileOperationResult]
     private let thrownError: Error?
+    private let terminalProgress: OperationProgress?
 
-    init(returnedResults: [FileOperationResult], emittedResults: [FileOperationResult], thrownError: Error? = nil) {
+    init(returnedResults: [FileOperationResult], emittedResults: [FileOperationResult], thrownError: Error? = nil, terminalProgress: OperationProgress? = nil) {
         self.returnedResults = returnedResults
         self.emittedResults = emittedResults
         self.thrownError = thrownError
+        self.terminalProgress = terminalProgress
     }
 
     func performFileOperation(
@@ -1109,6 +1127,7 @@ private final class ExecutorFileOperationsService: FileOperationsService {
             await onFileResult?(result)
         }
         if let thrownError { throw thrownError }
+        if let terminalProgress { progressCallback(terminalProgress) }
         let sourceManifest = returnedResults.reduce(into: [URL]()) { files, result in
             if !files.contains(result.sourceURL) { files.append(result.sourceURL) }
         }
