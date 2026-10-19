@@ -50,7 +50,7 @@ struct QueueSessionPresentationTests {
             records: [running], sessionIDs: [running.id], progress: verifyingProgress,
             mountedSourceIDs: []
         )
-        #expect(verifying.rows.first?.oneLineStatus().contains("Verifying 40%") == true)
+        #expect(verifying.rows.first?.oneLineStatus().contains("Verifying 70%") == true)
     }
 
     @Test func fileWorkAtOneHundredPercentIsStillFinishingWhileRecordRuns() throws {

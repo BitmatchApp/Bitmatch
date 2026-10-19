@@ -127,6 +127,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public let retryOf: UUID?
     /// Selected files per destination, from the engine manifest (exclusions omitted).
     public var plannedFileCounts: [Int]?
+    /// Selection-size estimate for queue progress only. Never copy evidence.
+    public var estimatedSourceBytes: Int64?
     /// True only when Quick's size-only check was the sole reason the attempt
     /// could not be verified. False when reporting, coverage, or another part
     /// of the attempt also failed; nil for journals written before this field.
@@ -160,7 +162,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
-        case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified
+        case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, estimatedSourceBytes
     }
 
     public init(from decoder: Decoder) throws {
@@ -193,6 +195,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         independentDestinationCount = try c.decodeIfPresent(Int.self, forKey: .independentDestinationCount)
         retryOf = try c.decodeIfPresent(UUID.self, forKey: .retryOf)
         plannedFileCounts = try c.decodeIfPresent([Int].self, forKey: .plannedFileCounts)
+        estimatedSourceBytes = try c.decodeIfPresent(Int64.self, forKey: .estimatedSourceBytes)
         quickOnlyUnverified = try c.decodeIfPresent(Bool.self, forKey: .quickOnlyUnverified)
     }
     public var issueCount: Int { results.filter { !$0.isSuccessStatus }.count }
@@ -302,12 +305,13 @@ public final class TransferJournal: Sendable {
     @discardableResult
     public func enqueue(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
                  cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true,
-                 projectID: UUID? = nil, projectCardID: UUID? = nil) throws -> UUID {
+                 projectID: UUID? = nil, projectCardID: UUID? = nil, estimatedSourceBytes: Int64? = nil) throws -> UUID {
         guard !destinationURLs.isEmpty else { throw LocalTransferJournalError.missingDestinations }
-        let record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: sourceURL),
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: sourceURL),
                                          destinations: try destinationURLs.map(LocalTransferResource.init(url:)),
                                          verificationMode: verificationMode, cameraSettings: cameraSettings, reportSettings: reportSettings,
                                          generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID)
+        record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
         try commit { [record] + $0 }
         return record.id
     }
@@ -319,11 +323,12 @@ public final class TransferJournal: Sendable {
               original.state != .queued else { throw LocalTransferJournalError.invalidState }
         let access = try prepareToRun(id: id)
         defer { access.release() }
-        let retry = LocalTransferRecord(id: UUID(), createdAt: Date(), source: original.source,
+        var retry = LocalTransferRecord(id: UUID(), createdAt: Date(), source: original.source,
                                         destinations: original.destinations, verificationMode: original.verificationMode,
                                         cameraSettings: original.cameraSettings, reportSettings: original.reportSettings,
                                         generateASCMHL: generateASCMHL ?? original.generateASCMHL,
                                         projectID: original.projectID, projectCardID: original.projectCardID, retryOf: original.id)
+        retry.estimatedSourceBytes = original.estimatedSourceBytes
         try commit { [retry] + $0 }
         return retry.id
     }
@@ -475,7 +480,7 @@ public final class TransferJournal: Sendable {
     }
 
     /// Save once, before results settle. Unknown counts in older records stay unknown.
-    public func recordPlan(id: UUID, fileCounts: [Int]) throws {
+    public func recordPlan(id: UUID, fileCounts: [Int], selectedSourceBytes: Int64? = nil) throws {
         try update(id: id) { record in
             guard record.state == .running, fileCounts.count == record.destinations.count,
                   fileCounts.allSatisfy({ $0 >= 0 }),
@@ -483,6 +488,11 @@ public final class TransferJournal: Sendable {
                 throw LocalTransferJournalError.invalidState
             }
             record.plannedFileCounts = fileCounts
+            // Keep an existing queue estimate stable throughout this attempt.
+            // A late scan correction must not rewind the whole queue bar.
+            if record.estimatedSourceBytes == nil, let selectedSourceBytes, selectedSourceBytes >= 0 {
+                record.estimatedSourceBytes = selectedSourceBytes
+            }
         }
     }
 
@@ -552,7 +562,8 @@ public final class TransferJournal: Sendable {
         verificationMode: VerificationMode,
         cameraSettings: CameraLabelSettings,
         reportSettings: ReportPrefs,
-        generateASCMHL: Bool
+        generateASCMHL: Bool,
+        estimatedSourceBytes: Int64? = nil
     ) throws {
         guard !destinationURLs.isEmpty else { throw LocalTransferJournalError.missingDestinations }
         let source = try LocalTransferResource(url: sourceURL)
@@ -575,6 +586,7 @@ public final class TransferJournal: Sendable {
                         && source.resourceID == record.source.resourceID
                         && source.creationDate == record.source.creationDate ? record.retryOf : nil
                 )
+                record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
             }
         }
     }

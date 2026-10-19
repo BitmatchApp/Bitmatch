@@ -75,13 +75,9 @@ struct QueueAccessoryPresentation: Equatable, Sendable {
         }
 
         if let running, let index = queue.rows.firstIndex(where: { $0.id == running.id }) {
-            let completed = queue.rows.filter(\.isFinished).count
-            let cardProgress = min(max(running.progressFraction ?? 0, 0), 0.99)
-            let overall = min(
-                max((Double(completed) + cardProgress) / Double(queue.rows.count), 0),
-                0.99
-            )
-            var details = ["\(index + 1) of \(queue.rows.count)", percent(overall)]
+            let overall = weightedProgress(rows: queue.rows)
+            var details = ["\(index + 1) of \(queue.rows.count)"]
+            if let overall { details.append(percent(overall)) }
             if let timeRemaining { details.append("\(timeRemaining) left") }
             return Self(
                 title: running.cardName,
@@ -116,6 +112,16 @@ struct QueueAccessoryPresentation: Equatable, Sendable {
             progressFraction: nil,
             attentionRecordID: nil
         )
+    }
+
+    static func weightedProgress(rows: [QueueSessionRow]) -> Double? {
+        guard !rows.isEmpty, rows.allSatisfy({ $0.estimatedWorkBytes.map { $0.isFinite && $0 > 0 } == true }) else { return nil }
+        let total = rows.reduce(0.0) { $0 + ($1.estimatedWorkBytes ?? 0) }
+        let done = rows.reduce(0.0) { sum, row in
+            let fraction = row.isFinished ? 1.0 : (row.isRunning ? min(0.99, max(0, row.progressFraction ?? 0)) : 0)
+            return sum + (row.estimatedWorkBytes ?? 0) * fraction
+        }
+        return min(0.99, max(0, done / total))
     }
 
     private static func problemPresentation(_ row: QueueSessionRow) -> Self {

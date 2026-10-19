@@ -1,5 +1,6 @@
 // CopyVerifyExecutor.swift - Handles copy and verify operation execution
 import Foundation
+import Synchronization
 import BitMatchEngine
 
 struct PhotographerFinalizationResult {
@@ -116,6 +117,10 @@ final class CopyVerifyExecutor {
     private var acceptsPipelineProgress = false
     private var lastDiagnosticStage: ProgressStage?
     private var destinationRoots: [URL] = []
+    private var highestOverallProgress = 0.0
+    private var pipelineWorkBytes = 0.0
+    private var pipelineCompletedWorkBytes = 0.0
+    private var reservedHandoffBytes = 0.0
     private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
     private(set) var completedPerformanceTelemetry = TransferPerformanceTelemetry()
 
@@ -156,6 +161,10 @@ final class CopyVerifyExecutor {
 
     private func executeRun(config: CopyVerifyConfig, callbacks: CopyVerifyCallbacks) async throws -> FileOperation? {
         cancellationRequested = false
+        highestOverallProgress = 0
+        pipelineWorkBytes = 0
+        pipelineCompletedWorkBytes = 0
+        reservedHandoffBytes = 0
         diagnosticRun = config.operationId
         acceptsPipelineProgress = true
         lastDiagnosticStage = nil
@@ -204,10 +213,18 @@ final class CopyVerifyExecutor {
             try checkCancellation()
             timingService.updateStage(.copying)
 
+            // Capture synchronously before dispatching UI work. The executor
+            // can resume before the MainActor Task for the final callback.
+            let lastPipelineProgress = Mutex<OperationProgress?>(nil)
             let progressCallback: FileOperationsService.ProgressCallback = { [weak self] progressUpdate in
+                lastPipelineProgress.withLock { previous in
+                    if previous.map({ progressUpdate.overallProgress >= $0.overallProgress }) ?? true { previous = progressUpdate }
+                }
                 Task { @MainActor in
                     guard let self, self.acceptsPipelineProgress, self.diagnosticRun == config.operationId else { return }
-                    self.handleProgress(progressUpdate, callbacks: callbacks)
+                    self.handleProgress(Self.pipelineProgress(progressUpdate,
+                        destinationCount: config.destinationURLs.count,
+                        includeMHL: config.generateASCMHL && config.verificationMode != .quick), callbacks: callbacks)
                 }
             }
             let ioProgressCallback: FileOperationsService.IOProgressCallback = { [weak self] update in
@@ -268,6 +285,15 @@ final class CopyVerifyExecutor {
             )
 #endif
 
+            if let finalUpdate = lastPipelineProgress.withLock({ $0 }) {
+                pipelineWorkBytes = finalUpdate.totalWorkBytes ?? 0
+                pipelineCompletedWorkBytes = min(pipelineWorkBytes, max(0, finalUpdate.workBytesProcessed ?? 0))
+                reservedHandoffBytes = config.generateASCMHL && config.verificationMode != .quick
+                    ? Double(max(0, finalUpdate.totalBytes ?? 0)) * Double(config.destinationURLs.count) : 0
+                handleProgress(Self.pipelineProgress(finalUpdate,
+                    destinationCount: config.destinationURLs.count,
+                    includeMHL: config.generateASCMHL && config.verificationMode != .quick), callbacks: callbacks)
+            }
             acceptsPipelineProgress = false
             SharedLogger.transferEvent(.pipelineDrained, run: config.operationId)
             SharedLogger.correlatePipeline(run: config.operationId, pipeline: operation.id)
@@ -294,6 +320,11 @@ final class CopyVerifyExecutor {
     // MARK: - Progress Handling
 
     private func handleProgress(_ progressUpdate: OperationProgress, callbacks: CopyVerifyCallbacks) {
+        // A phase boundary or delayed child callback may not rewind the bar.
+        // 100% belongs to the settled outcome, never this active executor.
+        let fraction = progressUpdate.overallProgress.isFinite ? progressUpdate.overallProgress : highestOverallProgress
+        highestOverallProgress = min(0.99, max(highestOverallProgress, fraction))
+        let progressUpdate = progressUpdate.replacingOverallProgress(highestOverallProgress)
         callbacks.onProgress(progressUpdate)
         if lastDiagnosticStage != progressUpdate.currentStage {
             lastDiagnosticStage = progressUpdate.currentStage
@@ -393,9 +424,9 @@ final class CopyVerifyExecutor {
         let reportIssue: String?
         if config.reportSettings.makeReport && !allResults.isEmpty {
             timingService.updateStage(.generating)
-            callbacks.onProgress(OperationProgress(
-                overallProgress: 0, currentFile: "Writing transfer reports…",
-                filesProcessed: 0, totalFiles: allResults.count, currentStage: .generating, speed: nil))
+            handleProgress(OperationProgress(
+                overallProgress: highestOverallProgress, currentFile: "Writing transfer reports…",
+                filesProcessed: 0, totalFiles: allResults.count, currentStage: .generating, speed: nil), callbacks: callbacks)
             reportIssue = try await generateReport(
                 operation: operation,
                 results: allResults,
@@ -468,12 +499,15 @@ final class CopyVerifyExecutor {
         let channel = AsyncStream<ASCMHLGenerator.Progress>.makeStream(bufferingPolicy: .bufferingNewest(1))
         let consumer = Task { @MainActor in
             for await update in channel.stream {
-                self.handleProgress(Self.mhlProgress(update), callbacks: callbacks)
+                self.handleProgress(Self.mhlProgress(update, precedingWorkBytes: self.pipelineWorkBytes,
+                    precedingCompletedWorkBytes: self.pipelineCompletedWorkBytes, reservedHandoffBytes: self.reservedHandoffBytes), callbacks: callbacks)
             }
         }
-        callbacks.onProgress(Self.mhlProgress(.init(bytesProcessed: 0, totalBytes: mhlBytes,
+        handleProgress(Self.mhlProgress(.init(bytesProcessed: 0, totalBytes: mhlBytes,
                                                     filesProcessed: 0, totalFiles: plan.jobs.flatMap(\.files).count,
-                                                    published: false)))
+                                                    published: false), precedingWorkBytes: pipelineWorkBytes,
+                                                    precedingCompletedWorkBytes: pipelineCompletedWorkBytes,
+                                                    reservedHandoffBytes: reservedHandoffBytes), callbacks: callbacks)
         let sourceURL = config.sourceURL
         let startTime = operation.startTime
         let run = config.operationId
@@ -504,11 +538,25 @@ final class CopyVerifyExecutor {
         }
     }
 
-    static func mhlProgress(_ update: ASCMHLGenerator.Progress) -> OperationProgress {
+    static func pipelineProgress(_ update: OperationProgress, destinationCount: Int, includeMHL: Bool) -> OperationProgress {
+        guard includeMHL, let total = update.totalWorkBytes, total > 0,
+              let done = update.workBytesProcessed, let sourceBytes = update.totalBytes else {
+            return update.replacingOverallProgress(min(0.99, update.overallProgress))
+        }
+        // Every selected byte must either be independently read for ASC MHL or
+        // have its prior readback identity/digests validated. The generator
+        // settles reused evidence immediately; exFAT advances as it rereads.
+        let handoff = Double(max(0, sourceBytes)) * Double(max(0, destinationCount))
+        return update.replacingOverallProgress(min(0.99, done / (total + handoff)))
+    }
+
+    static func mhlProgress(_ update: ASCMHLGenerator.Progress, precedingWorkBytes: Double = 0,
+                            precedingCompletedWorkBytes: Double? = nil, reservedHandoffBytes: Double? = nil) -> OperationProgress {
         let fraction = update.totalBytes > 0
             ? min(1, Double(update.bytesProcessed) / Double(update.totalBytes)) : 0
         return OperationProgress(
-            overallProgress: update.published ? 1 : min(0.99, fraction),
+            overallProgress: min(0.99, ((precedingCompletedWorkBytes ?? precedingWorkBytes) + Double(max(0, update.bytesProcessed)))
+                / max(1, precedingWorkBytes + (reservedHandoffBytes ?? Double(max(0, update.totalBytes))))),
             currentFile: update.published ? "ASC MHL records saved" : "Creating ASC MHL — checking destination media…",
             filesProcessed: update.filesProcessed, totalFiles: update.totalFiles,
             currentStage: .generating, speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,

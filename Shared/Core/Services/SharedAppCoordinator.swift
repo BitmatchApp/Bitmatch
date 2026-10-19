@@ -835,8 +835,8 @@ class SharedAppCoordinator: ObservableObject {
         presentation.setFileCountTotal(prog.totalFiles)
         let destinationCount = presentedDestinationCount ?? activeRunContext?.destinationURLs.count ?? destinationURLs.count
         // Time left is measured against the copy work actually planned: the
-        // scanned source once per backup. The engine's `totalBytes` covers
-        // one backup, and is a 1 GB guess when the source was not scanned.
+        // scanned source once per backup. The engine's `totalBytes` is the
+        // selected source manifest size, even when Setup had no scan yet.
         let plannedTotalBytes: Int64?
         if let context = activeRunContext {
             if context.cameraLabelSettings.excludedAppleDoublePaths?.isEmpty == false,
@@ -1091,7 +1091,10 @@ class SharedAppCoordinator: ObservableObject {
             sourceURL: source, destinationURLs: destinations,
             verificationMode: verificationMode ?? self.verificationMode,
             cameraSettings: settings, reportSettings: reportSettings ?? self.reportSettings,
-            generateASCMHL: generateASCMHL ?? self.generateASCMHL
+            generateASCMHL: generateASCMHL ?? self.generateASCMHL,
+            estimatedSourceBytes: sourceFolderInfo.flatMap {
+                $0.url.standardizedFileURL == source.standardizedFileURL ? $0.totalSize : nil
+            }
         )
         queueSessionEnded = false
         addQueueSessionRecord(id)
@@ -1139,7 +1142,10 @@ class SharedAppCoordinator: ObservableObject {
                 verificationMode: verificationMode,
                 cameraSettings: cameraLabelSettings,
                 reportSettings: reportSettings,
-                generateASCMHL: generateASCMHL
+                generateASCMHL: generateASCMHL,
+                estimatedSourceBytes: sourceFolderInfo.flatMap {
+                    $0.url.standardizedFileURL == sourceURL.standardizedFileURL ? $0.totalSize : nil
+                }
             )
             editingSetupTransferID = nil
             composerBeforeEditing = nil
@@ -2032,7 +2038,7 @@ class SharedAppCoordinator: ObservableObject {
                 self.progress = progressUpdate
                 if !runResults.attemptedPlanSave, let counts = progressUpdate.perDestinationTotals {
                     runResults.attemptedPlanSave = true
-                    do { try self.transferJournal.recordPlan(id: recordID, fileCounts: counts) }
+                    do { try self.transferJournal.recordPlan(id: recordID, fileCounts: counts, selectedSourceBytes: progressUpdate.totalBytes) }
                     catch {
                         runResults.planSaveError = error
                         SharedLogger.warning("Could not save transfer plan: \(error)", category: .transfer)

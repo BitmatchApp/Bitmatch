@@ -73,11 +73,11 @@ final class LocalTransferJournal: ObservableObject {
     @discardableResult
     func enqueue(sourceURL: URL, destinationURLs: [URL], verificationMode: VerificationMode,
                  cameraSettings: CameraLabelSettings, reportSettings: ReportPrefs, generateASCMHL: Bool = true,
-                 projectID: UUID? = nil, projectCardID: UUID? = nil) throws -> UUID {
+                 projectID: UUID? = nil, projectCardID: UUID? = nil, estimatedSourceBytes: Int64? = nil) throws -> UUID {
         defer { refresh() }
         return try store.enqueue(sourceURL: sourceURL, destinationURLs: destinationURLs, verificationMode: verificationMode,
                                  cameraSettings: cameraSettings, reportSettings: reportSettings,
-                                 generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID)
+                                 generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID, estimatedSourceBytes: estimatedSourceBytes)
     }
 
     /// A retry is a new attempt, preserving the previous attempt and its evidence.
@@ -117,10 +117,10 @@ final class LocalTransferJournal: ObservableObject {
                               sourceURL: sourceURL, destinationURLs: destinationURLs, sessionRecordIDs: sessionRecordIDs)
     }
 
-    func recordPlan(id: UUID, fileCounts: [Int]) throws {
+    func recordPlan(id: UUID, fileCounts: [Int], selectedSourceBytes: Int64? = nil) throws {
         defer { refresh() }
         try beforeRecordPlan?(id)
-        try store.recordPlan(id: id, fileCounts: fileCounts)
+        try store.recordPlan(id: id, fileCounts: fileCounts, selectedSourceBytes: selectedSourceBytes)
     }
 
     func fail(id: UUID, summary: String) throws {
@@ -140,7 +140,8 @@ final class LocalTransferJournal: ObservableObject {
         verificationMode: VerificationMode,
         cameraSettings: CameraLabelSettings,
         reportSettings: ReportPrefs,
-        generateASCMHL: Bool
+        generateASCMHL: Bool,
+        estimatedSourceBytes: Int64? = nil
     ) throws {
         defer { refresh() }
         try store.replaceQueued(
@@ -150,7 +151,8 @@ final class LocalTransferJournal: ObservableObject {
             verificationMode: verificationMode,
             cameraSettings: cameraSettings,
             reportSettings: reportSettings,
-            generateASCMHL: generateASCMHL
+            generateASCMHL: generateASCMHL,
+            estimatedSourceBytes: estimatedSourceBytes
         )
     }
 

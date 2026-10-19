@@ -20,6 +20,8 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let outcome: TransferOutcomePresentation?
     let destinationNames: [String]
     let verificationModeName: String
+    /// Progress estimate only; nil for old or unmeasured queue records.
+    var estimatedWorkBytes: Double? = nil
 
     var isEditable: Bool { safetyState == .waiting }
     var isRunning: Bool { safetyState.isActiveQueueState }
@@ -217,7 +219,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             // A completed file-work stage is not a finished transfer. MHL,
             // report writing and journal settlement can still fail or stop.
             let activeFraction = progress.map {
-                min(max($0.stageProgress ?? $0.overallProgress, 0), 0.99)
+                min(max($0.overallProgress, 0), 0.99)
             }
             let percent = activeFraction.map { Int(($0 * 100).rounded(.down)) }
             switch progress?.currentStage {
@@ -261,7 +263,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             destinations: destinationSummary(destinationNames),
             safetyState: state,
             progressFraction: record.state == .running ? progress.map {
-                min(max($0.stageProgress ?? $0.overallProgress, 0), 0.99)
+                min(max($0.overallProgress, 0), 0.99)
             } : nil,
             action: action,
             cause: cause,
@@ -276,8 +278,18 @@ struct QueueSessionPresentation: Equatable, Sendable {
             ),
             outcome: outcome,
             destinationNames: destinationNames,
-            verificationModeName: record.verificationMode.rawValue
+            verificationModeName: record.verificationMode.rawValue,
+            estimatedWorkBytes: estimatedWorkBytes(for: record)
         )
+    }
+
+    static func estimatedWorkBytes(for record: LocalTransferRecord) -> Double? {
+        guard let bytes = record.estimatedSourceBytes, bytes >= 0 else { return nil }
+        let destinations = Double(record.destinations.count)
+        let destinationPasses = record.verificationMode == .quick ? 0.0 : (record.verificationMode == .paranoid ? 2.0 : 1.0)
+        let sourcePasses = record.verificationMode == .thorough ? 2.0 : (record.verificationMode == .paranoid ? 1 + destinations : 1.0)
+        let handoffPasses = record.generateASCMHL && record.verificationMode != .quick ? destinations : 0
+        return max(1, Double(bytes)) * (sourcePasses + destinations * (1 + destinationPasses) + handoffPasses)
     }
 
     private static func finishedOutcome(

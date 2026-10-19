@@ -43,6 +43,10 @@ public struct OperationProgress: Codable, Sendable {
     // Per-destination progress (optional)
     public let perDestinationTotals: [Int]?
     public let perDestinationCompleted: [Int]?
+    /// Presentation work only, distinct from actual copied bytes/evidence.
+    public let workBytesProcessed: Double?
+    public let totalWorkBytes: Double?
+    public let perDestinationProgress: [Double]?
     
     // Convenience initializer for backward compatibility
     public init(overallProgress: Double, currentFile: String?, filesProcessed: Int, totalFiles: Int, currentStage: ProgressStage, speed: Double?, reusedCopies: Int? = nil) {
@@ -62,10 +66,13 @@ public struct OperationProgress: Codable, Sendable {
         self.isASCMHL = nil
         self.perDestinationTotals = nil
         self.perDestinationCompleted = nil
+        self.workBytesProcessed = nil
+        self.totalWorkBytes = nil
+        self.perDestinationProgress = nil
     }
     
     // Full initializer with timing information
-    public init(overallProgress: Double, currentFile: String?, filesProcessed: Int, totalFiles: Int, currentStage: ProgressStage, speed: Double?, elapsedTime: TimeInterval?, averageSpeed: Double?, peakSpeed: Double?, bytesProcessed: Int64?, totalBytes: Int64?, stageProgress: Double? = nil, reusedCopies: Int? = nil, perDestinationTotals: [Int]? = nil, perDestinationCompleted: [Int]? = nil, isASCMHL: Bool? = nil) {
+    public init(overallProgress: Double, currentFile: String?, filesProcessed: Int, totalFiles: Int, currentStage: ProgressStage, speed: Double?, elapsedTime: TimeInterval?, averageSpeed: Double?, peakSpeed: Double?, bytesProcessed: Int64?, totalBytes: Int64?, stageProgress: Double? = nil, reusedCopies: Int? = nil, perDestinationTotals: [Int]? = nil, perDestinationCompleted: [Int]? = nil, isASCMHL: Bool? = nil, workBytesProcessed: Double? = nil, totalWorkBytes: Double? = nil, perDestinationProgress: [Double]? = nil) {
         self.overallProgress = overallProgress
         self.currentFile = currentFile
         self.filesProcessed = filesProcessed
@@ -82,5 +89,20 @@ public struct OperationProgress: Codable, Sendable {
         self.isASCMHL = isASCMHL
         self.perDestinationTotals = perDestinationTotals
         self.perDestinationCompleted = perDestinationCompleted
+        self.workBytesProcessed = workBytesProcessed
+        self.totalWorkBytes = totalWorkBytes
+        self.perDestinationProgress = perDestinationProgress
+    }
+    /// Preserve the engine's measurements while mapping the bar across handoff
+    /// and report work. This changes presentation only.
+    public func replacingOverallProgress(_ fraction: Double) -> OperationProgress {
+        OperationProgress(overallProgress: fraction, currentFile: currentFile,
+            filesProcessed: filesProcessed, totalFiles: totalFiles, currentStage: currentStage,
+            speed: speed, elapsedTime: elapsedTime, averageSpeed: averageSpeed, peakSpeed: peakSpeed,
+            bytesProcessed: bytesProcessed, totalBytes: totalBytes, stageProgress: stageProgress,
+            reusedCopies: reusedCopies, perDestinationTotals: perDestinationTotals,
+            perDestinationCompleted: perDestinationCompleted, isASCMHL: isASCMHL,
+            workBytesProcessed: workBytesProcessed, totalWorkBytes: totalWorkBytes,
+            perDestinationProgress: perDestinationProgress)
     }
 }

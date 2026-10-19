@@ -44,6 +44,10 @@ public struct TransferIOProgress: Equatable, Sendable {
 enum TransferIOPhase: Sendable {
     case writing
     case readingBack
+    case validatingExisting
+    case sourceReading
+    case sourceVerifying
+    case sourceValidatingExisting
 }
 
 /// Counts bytes only after an actual destination I/O call succeeds. A short
@@ -136,8 +140,10 @@ final class TransferIOMeter: Sendable {
             switch phase {
             case .writing:
                 state.destinations[destination].writing.add(bytes: bytes, duration: duration, now: now)
-            case .readingBack:
+            case .readingBack, .validatingExisting:
                 state.destinations[destination].readingBack.add(bytes: bytes, duration: duration, now: now)
+            case .sourceReading, .sourceVerifying, .sourceValidatingExisting:
+                return nil
             }
             guard state.lastPublishUptime.map({ now - $0 >= 0.25 }) ?? true else { return nil }
             state.lastPublishUptime = now

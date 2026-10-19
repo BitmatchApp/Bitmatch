@@ -540,17 +540,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let totalFiles = perSourceFileCount * operation.destinationURLs.count
         SharedLogger.debug("Prep: source files=\(perSourceFileCount), destinations=\(operation.destinationURLs.count), planned total rows=\(totalFiles)", category: .transfer)
         let destinationCount = operation.destinationURLs.count
-        let totalStageUnits = operation.verificationMode == .quick ? 1 : 2
         // Perf 2: time-based throttle on progress callbacks (500ms)
         let ledger = RunLedger(destinationCount: destinationCount, filesPerDestination: perSourceFileCount, throttle: 0.5)
         let ioMeter = TransferIOMeter(destinationCount: destinationCount)
-        let onIOBytes: DestinationWriter.IOByteCallback = { index, phase, bytes, duration, ended in
-            if let snapshot = ioMeter.record(destination: index, phase: phase,
-                                             bytes: bytes, duration: duration, now: ended) {
-                ioProgressCallback(snapshot)
-            }
-        }
-        defer { ioProgressCallback(ioMeter.finalSnapshot()) }
         // Retain an exclusion row for every source/destination pair before any
         // copying, so cancellation and saved history keep the selected scope.
         for (index, destination) in operation.destinationURLs.enumerated() {
@@ -577,44 +569,62 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         SharedLogger.verifyConfiguration(run: diagnosticRun, concurrency: shouldPipelineVerify ? verifyConcurrency : 1)
         let fileOrdinals = Dictionary(uniqueKeysWithValues: sourceManifest.enumerated().map { ($0.element.relativePath, $0.offset + 1) })
 
-        // The one way progress is reported. Total bytes: the caller's
-        // estimate, else the average copied file size times the plan.
-        let makeProgress: @Sendable (ProgressStage, String?, RunLedger.Snapshot, Date, Double?) -> OperationProgress = {
-            stage, file, snapshot, now, stageProgress in
-            let elapsed = now.timeIntervalSince(startTime)
-            let speed = elapsed > 0 ? Double(snapshot.bytesCopied) / elapsed : nil
-            let totalBytes: Int64 = {
-                // The caller's scan includes omitted metadata. For a filtered
-                // run use the measured selected bytes per backup instead.
-                if !excludedPaths.isEmpty { return manifestBytes }
-                if let estimate = operation.estimatedTotalBytes, estimate > 0 { return estimate }
-                if snapshot.filesCopied > 0 {
-                    return safeMultiply(Int64(totalFiles), snapshot.bytesCopied / Int64(snapshot.filesCopied))
+        // Progress uses one stable per-file byte-work plan. Copied-byte
+        // telemetry below remains actual selected copy/reuse coverage only.
+        let workMeter = TransferWorkMeter(files: sourceManifest, destinationCount: destinationCount,
+                                          mode: operation.verificationMode)
+        let progressEmission = Mutex<RunLedger.Snapshot?>(nil)
+        let emitProgress: @Sendable (ProgressStage, String?, RunLedger.Snapshot?, Date, Double?) -> Void = {
+            stage, file, incoming, now, _ in
+            // Serialize callbacks, not merely counter updates: independent
+            // copy and verify tasks must not publish an older percentage last.
+            progressEmission.withLock { cached in
+                if let incoming {
+                    if let previous = cached {
+                        cached = RunLedger.Snapshot(filesCopied: max(previous.filesCopied, incoming.filesCopied),
+                            bytesCopied: max(previous.bytesCopied, incoming.bytesCopied),
+                            filesVerified: max(previous.filesVerified, incoming.filesVerified),
+                            perDestinationTotals: incoming.perDestinationTotals,
+                            perDestinationCompleted: zip(previous.perDestinationCompleted, incoming.perDestinationCompleted).map { max($0, $1) })
+                    } else { cached = incoming }
                 }
-                return safeMultiply(50 * 1024 * 1024, Int64(totalFiles))
-            }()
-            let unitsDone = stage == .copying ? snapshot.filesCopied : snapshot.filesCopied + snapshot.filesVerified
-            return OperationProgress(
-                // Reserve 100% for the terminal event, after coverage checks
-                // and every selected row's outcome are known. A failed final
-                // verify can otherwise briefly display 100% as it finishes.
-                overallProgress: min(0.99, Double(unitsDone) / Double(max(1, totalFiles * totalStageUnits))),
-                currentFile: file,
-                filesProcessed: snapshot.filesCopied,
-                totalFiles: totalFiles,
-                currentStage: stage,
-                speed: speed,
-                elapsedTime: elapsed,
-                averageSpeed: speed,
-                peakSpeed: nil,
-                bytesProcessed: snapshot.bytesCopied,
-                totalBytes: totalBytes,
-                stageProgress: stageProgress.map { min(0.99, $0) },
-                reusedCopies: nil,
-                perDestinationTotals: snapshot.perDestinationTotals,
-                perDestinationCompleted: snapshot.perDestinationCompleted
-            )
+                guard let snapshot = cached else { return }
+                let work = workMeter.snapshot()
+                let elapsed = now.timeIntervalSince(startTime)
+                let speed = elapsed > 0 ? Double(snapshot.bytesCopied) / elapsed : nil
+                let activeStage: ProgressStage = stage == .completed ? .completed
+                    : (snapshot.filesCopied >= totalFiles && operation.verificationMode != .quick ? .verifying : .copying)
+                progressCallback(OperationProgress(
+                    overallProgress: work.fraction,
+                    currentFile: file,
+                    filesProcessed: snapshot.filesCopied,
+                    totalFiles: totalFiles,
+                    currentStage: activeStage,
+                    speed: speed,
+                    elapsedTime: elapsed,
+                    averageSpeed: speed,
+                    peakSpeed: nil,
+                    bytesProcessed: snapshot.bytesCopied,
+                    totalBytes: manifestBytes,
+                    stageProgress: nil,
+                    reusedCopies: nil,
+                    perDestinationTotals: snapshot.perDestinationTotals,
+                    perDestinationCompleted: snapshot.perDestinationCompleted,
+                    workBytesProcessed: work.completed, totalWorkBytes: work.total,
+                    perDestinationProgress: work.perDestination
+                ))
+            }
         }
+        let onIOBytes: DestinationWriter.IOByteCallback = { index, path, phase, bytes, duration, ended in
+            if let snapshot = ioMeter.record(destination: index, phase: phase,
+                                             bytes: bytes, duration: duration, now: ended) {
+                ioProgressCallback(snapshot)
+            }
+            if workMeter.record(path: path, destination: index, phase: phase, bytes: bytes, now: ended) {
+                emitProgress(.copying, nil, nil, Date(), nil)
+            }
+        }
+        defer { ioProgressCallback(ioMeter.finalSnapshot()) }
 
         let sourceFileURLs = sourceManifest.map(\.url)
         let sourceReadEvidence = SourceReadEvidenceStore()
@@ -655,6 +665,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     }
                 }
                 diagnosticOutcome = checked.verification.matches ? .matched : .mismatched
+                if checked.verification.matches { workMeter.verified(path: job.relativePath, destination: job.destinationIndex) }
                 let verificationResult = checked.verification
                 let verified = FileOperationResult(
                     sourceURL: job.source,
@@ -673,10 +684,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     now: Date()
                 )
                 if event.emit {
-                    progressCallback(makeProgress(
+                    emitProgress(
                         .verifying, job.source.lastPathComponent, event.snapshot, Date(),
                         Double(event.snapshot.filesVerified) / Double(max(1, totalFiles))
-                    ))
+                    )
                 }
                 await onFileResult?(verified)
             } catch is CancellationError {
@@ -819,7 +830,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             // first completed-file callback, without advancing any result or
             // percentage. Live destination I/O can then appear immediately.
             if !fanOutDestinations.isEmpty {
-                progressCallback(makeProgress(.copying, nil, await ledger.snapshot(), Date(), nil))
+                emitProgress(.copying, nil, await ledger.snapshot(), Date(), nil)
             }
 
             try await DestinationWriter.copyAllSafelyFanOut(
@@ -851,6 +862,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         processingTime: 0,
                         wasReused: wasReused
                     )
+                    workMeter.copied(path: relativePath, destination: destIndex)
                     let copied = await ledger.recordCopy(
                         copyResult,
                         relativePath: relativePath,
@@ -874,7 +886,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     }
 
                     if copied.emit {
-                        progressCallback(makeProgress(.copying, relativePath, copied.snapshot, Date(), nil))
+                        emitProgress(.copying, relativePath, copied.snapshot, Date(), nil)
                     }
                 },
                 onError: { destIndex, relativePath, error in
@@ -930,10 +942,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                 // directory descriptor; this URL is report metadata only.
                                 let event = await ledger.beginSequentialVerify(now: Date())
                                 if event.emit {
-                                    progressCallback(makeProgress(
+                                    emitProgress(
                                         .verifying, fileURL.lastPathComponent, event.snapshot, Date(),
                                         Double(event.snapshot.filesVerified) / Double(max(1, totalFiles))
-                                    ))
+                                    )
                                 }
                                 let checked = try await TransferDiagnostics.$runID.withValue(diagnosticRun) {
                                     try await TransferDiagnostics.$verifyOrdinal.withValue(ordinal) {
@@ -952,6 +964,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     }
                                 }
                                 diagnosticOutcome = checked.verification.matches ? .matched : .mismatched
+                                if checked.verification.matches { workMeter.verified(path: relativePath, destination: destIndex) }
                                 let verificationResult = checked.verification
 
                                 let fileSize = sizeForVerify
@@ -971,6 +984,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     destination: destIndex
                                 )
                                 await onFileResult?(result)
+                                emitProgress(.verifying, fileURL.lastPathComponent, await ledger.snapshot(), Date(), nil)
 
                             } catch is CancellationError {
                                 diagnosticOutcome = .cancelled
@@ -1204,7 +1218,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // one selected copy or verification row failed or is missing.
         if selectedFilesSucceeded {
             let final = await ledger.snapshot()
-            let finalProgress = makeProgress(.completed, nil, final, Date(), nil)
+            let finalWork = workMeter.snapshot()
             progressCallback(OperationProgress(
                 overallProgress: 1.0,
                 currentFile: nil,
@@ -1212,14 +1226,16 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 totalFiles: totalFiles,
                 currentStage: .completed,
                 speed: nil,
-                elapsedTime: finalProgress.elapsedTime,
+                elapsedTime: Date().timeIntervalSince(startTime),
                 averageSpeed: nil,
                 peakSpeed: nil,
                 bytesProcessed: final.bytesCopied,
-                totalBytes: finalProgress.totalBytes,
+                totalBytes: manifestBytes,
                 stageProgress: nil,
                 perDestinationTotals: final.perDestinationTotals,
-                perDestinationCompleted: final.perDestinationCompleted
+                perDestinationCompleted: final.perDestinationCompleted,
+                workBytesProcessed: finalWork.completed, totalWorkBytes: finalWork.total,
+                perDestinationProgress: finalWork.perDestination
             ))
         }
 
