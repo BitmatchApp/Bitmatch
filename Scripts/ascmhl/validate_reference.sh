@@ -34,6 +34,7 @@ PY
 # This subset also runs on Linux without Swift. Includes unchanged originals,
 # unsupported formats, block-boundary vectors and disposable negative controls.
 "$cli/python" "$project/Scripts/ascmhl/validate_corpus.py" "$reference"
+"$cli/python" "$project/Scripts/ascmhl/validate_fat_chain_fixture.py" "$reference"
 
 # Corruption must be detected by the independent reference verifier.
 printf 'corrupted' > "$workspace/media/Camera A/clip & café.txt"

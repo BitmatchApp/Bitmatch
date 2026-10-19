@@ -1,5 +1,6 @@
 // SavedChecksumCheck.swift - Re-checks a folder against recorded evidence.
 import Foundation
+import CryptoKit
 #if canImport(FoundationXML)
 import FoundationXML
 #endif
@@ -26,11 +27,13 @@ public struct SavedChecksumCheck: Sendable {
         public let url: URL
         public let date: Date
         public let kind: RecordKind
+        public let generation: Int?
 
-        public init(url: URL, date: Date, kind: RecordKind) {
+        public init(url: URL, date: Date, kind: RecordKind, generation: Int? = nil) {
             self.url = url
             self.date = date
             self.kind = kind
+            self.generation = generation
         }
     }
 
@@ -53,6 +56,7 @@ public struct SavedChecksumCheck: Sendable {
         public let expectedFiles: [String: ExpectedFile]
         public let records: [Record]
         public let publicationStatuses: [URL]
+        var chainEvidence: [ASCMHLChainValidator.Snapshot] = []
 
         public init(root: URL, expectedFiles: [String: ExpectedFile], records: [Record], publicationStatuses: [URL] = []) {
             self.root = root
@@ -71,6 +75,8 @@ public struct SavedChecksumCheck: Sendable {
         public let missingPaths: [String]
         public let newPaths: [String]
         public let records: [Record]
+        /// Validated inventory-byte chains only; no authenticity or directory/root hashes.
+        public let validatedHistoryDirectories: [URL]
 
         public init(
             root: URL,
@@ -78,7 +84,8 @@ public struct SavedChecksumCheck: Sendable {
             changedPaths: [String],
             missingPaths: [String],
             newPaths: [String],
-            records: [Record]
+            records: [Record],
+            validatedHistoryDirectories: [URL] = []
         ) {
             self.root = root
             self.matchingPaths = matchingPaths
@@ -86,6 +93,7 @@ public struct SavedChecksumCheck: Sendable {
             self.missingPaths = missingPaths
             self.newPaths = newPaths
             self.records = records
+            self.validatedHistoryDirectories = validatedHistoryDirectories
         }
 
         public var isIntact: Bool { changedPaths.isEmpty && missingPaths.isEmpty }
@@ -135,16 +143,23 @@ public struct SavedChecksumCheck: Sendable {
         }
 
         let histories = files.filter { Self.isMHLHistory($0, under: canonicalRoot) }
+        let chains = try Self.validateHistoryChains(in: Self.chainCandidates(in: files, under: canonicalRoot))
+        let ranks = Dictionary(uniqueKeysWithValues: chains.flatMap { chain in
+            chain.names.enumerated().map { (chain.directory.appendingPathComponent($0.element), $0.offset + 1) }
+        })
         var mhlEntries: [ExpectedFile] = []
         for historyURL in histories {
             try Task.checkCancellation()
             // macOS may materialize extended attributes as ._manifest.mhl on
             // exFAT. Prove it is metadata; a ._ name alone is not enough.
             if try Self.isMHLMetadataCompanion(historyURL) { continue }
-            mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot))
+            let chain = chains.first { $0.directory == historyURL.deletingLastPathComponent() }
+            mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot, generation: ranks[historyURL], expectedDigest: chain?.evidence[historyURL.lastPathComponent]?.sha256))
         }
         guard !mhlEntries.isEmpty else { throw CheckError.notFound }
-        return Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries, publicationStatuses: statuses)
+        var discovery = Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries, publicationStatuses: statuses)
+        discovery.chainEvidence = chains
+        return discovery
     }
 
     /// Re-reads every recorded file, reports ordered progress, and identifies
@@ -163,6 +178,7 @@ public struct SavedChecksumCheck: Sendable {
         guard statuses == discovery.publicationStatuses else {
             throw CheckError.unreadableEvidence
         }
+        try Self.requireUnchangedChains(discovery, files: files)
         let resolver = RelativePathResolver(base: root)
         var actual: [String: URL] = [:]
         actual.reserveCapacity(files.count)
@@ -208,6 +224,7 @@ public struct SavedChecksumCheck: Sendable {
         guard try Self.validPublicationStatuses(in: finalFiles, under: root) == discovery.publicationStatuses else {
             throw CheckError.unreadableEvidence
         }
+        try Self.requireUnchangedChains(discovery, files: finalFiles)
         let newPaths = Set(actual.keys).subtracting(expected.keys).sorted()
         let used = Set(expected.values.map(\.record.url))
         return Result(
@@ -216,7 +233,8 @@ public struct SavedChecksumCheck: Sendable {
             changedPaths: changed,
             missingPaths: missing,
             newPaths: newPaths,
-            records: discovery.records.filter { used.contains($0.url) }
+            records: discovery.records.filter { used.contains($0.url) },
+            validatedHistoryDirectories: discovery.chainEvidence.map(\.directory)
         )
     }
 
@@ -413,6 +431,41 @@ public struct SavedChecksumCheck: Sendable {
         return statuses
     }
 
+    private static func chainCandidates(in files: [URL], under root: URL) -> [URL] {
+        files.filter { isMHLHistory($0, under: root) || ($0.lastPathComponent.caseInsensitiveCompare("ascmhl_chain.xml") == .orderedSame
+            && $0.deletingLastPathComponent().lastPathComponent.caseInsensitiveCompare("ascmhl") == .orderedSame) }
+    }
+
+    private static func validateHistoryChains(in histories: [URL]) throws -> [ASCMHLChainValidator.Snapshot] {
+        let directories = Set(histories.map { $0.deletingLastPathComponent() }).sorted { $0.path < $1.path }
+        var chains: [ASCMHLChainValidator.Snapshot] = []
+        for directory in directories {
+            try Task.checkCancellation()
+            // A case variant on a case-sensitive volume must not downgrade a
+            // damaged chain into legacy content-only evidence.
+            let chainNames = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.caseInsensitiveCompare("ascmhl_chain.xml") == .orderedSame }
+            guard chainNames.count <= 1, chainNames.allSatisfy({ $0.lastPathComponent == "ascmhl_chain.xml" }) else {
+                throw CheckError.unsupportedEvidence
+            }
+            // Legacy inventories without a chain remain content-only evidence.
+            let chain = directory.appendingPathComponent("ascmhl_chain.xml")
+            var info = stat()
+            if lstat(chain.path, &info) == 0 {
+                chains.append(try ASCMHLChainValidator.validate(directory: directory))
+            } else if errno != ENOENT { throw CheckError.unreadableEvidence }
+        }
+        return chains
+    }
+
+    private static func requireUnchangedChains(_ discovery: Discovery, files: [URL]) throws {
+        // Report-only discovery does not acquire an ASC-chain claim. FAT
+        // publication status is still validated separately before reports.
+        guard discovery.records.contains(where: { $0.kind == .ascMHL }) else { return }
+        let histories = chainCandidates(in: files, under: discovery.root)
+        guard try validateHistoryChains(in: histories) == discovery.chainEvidence else { throw CheckError.unreadableEvidence }
+    }
+
     private static func isMHLMetadataCompanion(_ url: URL) throws -> Bool {
         guard url.lastPathComponent.hasPrefix("._") else { return false }
         guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
@@ -422,17 +475,22 @@ public struct SavedChecksumCheck: Sendable {
         return try !AppleDoubleSelection.companions(in: [entry]).isEmpty
     }
 
-    private static func readMHL(_ url: URL, root: URL) throws -> [ExpectedFile] {
-        let parser = XMLParser(data: try boundedEvidenceData(url))
+    private static func readMHL(_ url: URL, root: URL, generation: Int? = nil, expectedDigest: String? = nil) throws -> [ExpectedFile] {
+        let bytes = try boundedEvidenceData(url)
+        if let expectedDigest {
+            guard SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == expectedDigest else { throw CheckError.unreadableEvidence }
+        }
+        let parser = XMLParser(data: bytes)
         let delegate = MHLParser()
         parser.shouldProcessNamespaces = true
         parser.shouldResolveExternalEntities = false
         parser.delegate = delegate
         let parsed = parser.parse()
+        try Task.checkCancellation()
         if let failure = delegate.failure { throw failure }
         guard parsed else { throw CheckError.unreadableEvidence }
         let fallbackDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-        let record = Record(url: url, date: delegate.creationDate ?? fallbackDate, kind: .ascMHL)
+        let record = Record(url: url, date: delegate.creationDate ?? fallbackDate, kind: .ascMHL, generation: generation)
         // ASC paths belong to the folder containing ascmhl/, not whichever
         // ancestor the user selected in Check.
         let historyRoot = url.deletingLastPathComponent().deletingLastPathComponent()
@@ -474,6 +532,7 @@ public struct SavedChecksumCheck: Sendable {
         }
 
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+            if Task.isCancelled { parser.abortParsing(); return }
             let name = elementName.lowercased()
             if stack.isEmpty && (name != "hashlist" || namespaceURI != namespace || attributeDict["version"] != "2.0") {
                 reject(parser, .unsupportedEvidence)
@@ -482,8 +541,9 @@ public struct SavedChecksumCheck: Sendable {
             // A later ASC generation can move a file or whole directory and
             // record the old location in previousPath. Until Check interprets
             // that history, treating each generation as unrelated file paths
-            // would incorrectly call valid renamed media "missing".
-            if name == "previouspath" {
+            // would incorrectly call valid renamed media "missing". Child-history
+            // references also require lineage semantics outside this flat slice.
+            if ["previouspath", "references", "hashlistreference"].contains(name) {
                 reject(parser, .unsupportedEvidence)
                 return
             }
@@ -552,7 +612,22 @@ public struct SavedChecksumCheck: Sendable {
     }
 
     private static func makeDiscovery(root: URL, entries: [ExpectedFile], publicationStatuses: [URL]) -> Discovery {
-        let sorted = entries.sorted {
+        // Resolve generations within each history in chain order, independent
+        // of timestamps supplied by a different computer's clock. Then retain
+        // the existing date precedence between separate evidence roots.
+        let groups = Dictionary(grouping: entries) { $0.record.url.deletingLastPathComponent() }
+        var selected: [ExpectedFile] = []
+        for group in groups.values {
+            let sorted = group.sorted {
+                if let left = $0.record.generation, let right = $1.record.generation, left != right { return left < right }
+                if $0.record.date != $1.record.date { return $0.record.date < $1.record.date }
+                return $0.record.url.path < $1.record.url.path
+            }
+            var latest: [String: ExpectedFile] = [:]
+            for entry in sorted { latest[entry.relativePath] = entry }
+            selected.append(contentsOf: latest.values)
+        }
+        let sorted = selected.sorted {
             if $0.record.date != $1.record.date { return $0.record.date < $1.record.date }
             return $0.record.url.path < $1.record.url.path
         }

@@ -100,6 +100,17 @@ struct ComparePresentationTests {
         #expect(verdict.detail.contains("File contents checked; MHL history and directory structure were not verified."))
     }
 
+    @Test func validatedASCChainDoesNotClaimDirectoryOrAuthenticityVerification() {
+        let history = Self.card.appendingPathComponent("ascmhl")
+        let result = SavedChecksumCheck.Result(root: Self.card, matchingPaths: ["a.mov"], changedPaths: [],
+            missingPaths: [], newPaths: [], records: [.init(url: history.appendingPathComponent("one.mhl"),
+                date: Date(), kind: .ascMHL)], validatedHistoryDirectories: [history])
+        let verdict = CompareVerdictPresentation.makeSaved(result)
+        #expect(verdict.tone == .verified)
+        #expect(verdict.detail.contains("File contents and MHL inventory chains checked"))
+        #expect(verdict.detail.contains("directory structure and history authenticity were not verified"))
+    }
+
     @Test func zeroByteFolderUsesEmptyWording() {
         let slot = CompareFolderSlot.make(
             url: Self.card, infoURL: Self.card, fileCount: 1, totalSize: 0, isFetching: false

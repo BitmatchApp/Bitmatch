@@ -19,6 +19,19 @@ public enum ASCMHLGenerator: Sendable {
         return Data("COMPLETE \(name) \(manifest.count) \(manifestHash) \(chain.count) \(chainHash)\n".utf8)
     }
 
+    /// Exact v1 writer bytes, also used to verify the original FAT completion
+    /// witness after a different tool appends supported generations. Equivalent
+    /// XML is insufficient: size and SHA-256 must match the original witness.
+    static func initialChain(name: String, manifest: Data) -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
+          <hashlist sequencenr="1"><path>\(name)</path><c4>\(c4(manifest))</c4></hashlist>
+        </ascmhldirectory>
+
+        """
+    }
+
     private static func isGeneratedFATManifestName(_ name: String) -> Bool {
         let match = name.range(
             of: #"^0001_BitMatch_FAT_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}Z\.mhl$"#,
@@ -295,13 +308,7 @@ public enum ASCMHLGenerator: Sendable {
         timestamp.dateFormat = "yyyy-MM-dd_HHmmss'Z'"
         let fatFamily = ["exfat", "msdos"].contains(destinationFileSystemType?.lowercased() ?? "")
         let name = "\(fatFamily ? fatManifestPrefix : "0001_BitMatch_")\(timestamp.string(from: Date())).mhl"
-        let chain = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
-          <hashlist sequencenr="1"><path>\(name)</path><c4>\(c4(Data(xml.utf8)))</c4></hashlist>
-        </ascmhldirectory>
-
-        """
+        let chain = initialChain(name: name, manifest: Data(xml.utf8))
         try Task.checkCancellation()
         try rejectExistingHistory(root)
         var currentIdentity = stat()
@@ -516,9 +523,20 @@ public enum ASCMHLGenerator: Sendable {
             let manifestName = String(fields[1])
             guard let manifest = try boundedFile(manifestName, directoryFD: directoryFD, maxBytes: EvidenceReader.maxReportBytes),
                   let chain = try boundedFile("ascmhl_chain.xml", directoryFD: directoryFD, maxBytes: EvidenceReader.maxReportBytes),
-                  manifest.count == manifestSize, chain.count == chainSize else { return false }
-            return hex(SHA256.hash(data: manifest)) == fields[3].lowercased()
-                && hex(SHA256.hash(data: chain)) == fields[5].lowercased()
+                  manifest.count == manifestSize,
+                  hex(SHA256.hash(data: manifest)) == fields[3].lowercased() else { return false }
+            if chain.count == chainSize && hex(SHA256.hash(data: chain)) == fields[5].lowercased() { return true }
+            let original = Data(initialChain(name: manifestName, manifest: manifest).utf8)
+            guard original.count == chainSize, hex(SHA256.hash(data: original)) == fields[5].lowercased() else { return false }
+            let validated = try ASCMHLChainValidator.validate(directory: statusURL.deletingLastPathComponent())
+            var pinnedDirectory = stat()
+            guard fstat(directoryFD, &pinnedDirectory) == 0,
+                  validated.device == pinnedDirectory.st_dev, validated.inode == UInt64(pinnedDirectory.st_ino),
+                  validated.evidence[manifestName]?.size == Int64(manifestSize),
+                  validated.evidence[manifestName]?.sha256 == fields[3].lowercased(),
+                  validated.evidence["ascmhl_chain.xml"]?.sha256 == hex(SHA256.hash(data: chain)),
+                  validated.evidence[publicationStatusName]?.sha256 == hex(SHA256.hash(data: status)) else { return false }
+            return validated.names.count > 1 && validated.names.first == manifestName
         } catch is CancellationError {
             throw CancellationError()
         } catch {

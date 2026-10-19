@@ -287,9 +287,17 @@ struct CompareVerdictPresentation: Equatable, Sendable {
         )
         let fileWord = result.recordedFileCount == 1 ? "file" : "files"
         let reports = result.records.map { $0.url.lastPathComponent }.joined(separator: ", ")
-        let scope = result.records.contains { $0.kind == .ascMHL }
-            ? " File contents checked; MHL history and directory structure were not verified."
-            : ""
+        let ascDirectories = Set(result.records.filter { $0.kind == .ascMHL }.map { $0.url.deletingLastPathComponent() })
+        let scope: String
+        if ascDirectories.isEmpty {
+            scope = ""
+        } else if ascDirectories.isSubset(of: Set(result.validatedHistoryDirectories)) {
+            scope = " File contents and MHL inventory chains checked; directory structure and history authenticity were not verified."
+        } else if result.validatedHistoryDirectories.isEmpty {
+            scope = " File contents checked; MHL history and directory structure were not verified."
+        } else {
+            scope = " File contents and supported MHL inventory chains checked; other history chains, directory structure and authenticity were not verified."
+        }
         if result.isIntact {
             let age = SavedChecksumCheck.agePhrase(since: result.newestRecordDate, now: now, calendar: calendar)
             let newFiles = result.newPaths.isEmpty

@@ -122,6 +122,12 @@ struct EvidenceCompatibilityTests {
         #expect(modified != original)
         #expect(modified.contains("<previousPath>Reel B</previousPath>"))
         try modified.write(to: manifest, atomically: true, encoding: .utf8)
+        // Keep the derived chain self-consistent: this targets unsupported
+        // directory lineage, rather than the now-checked inventory C4.
+        let chain = history.appendingPathComponent("ascmhl_chain.xml")
+        let chainXML = try String(contentsOf: chain, encoding: .utf8)
+            .replacingOccurrences(of: ASCMHLGenerator.c4(Data(original.utf8)), with: ASCMHLGenerator.c4(Data(modified.utf8)))
+        try chainXML.write(to: chain, atomically: true, encoding: .utf8)
         await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
             _ = try await checker.discover(under: root)
         }

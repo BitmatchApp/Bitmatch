@@ -1,0 +1,3 @@
+BitMatch ASC MHL publication v1
+INCOMPLETE until a valid COMPLETE record follows. Keep the source.
+COMPLETE 0001_BitMatch_FAT_2026-10-19_234711Z.mhl 781 85fd64993ae2cff7f8e1cbf4d31ca802aabf011ada03f8355f7972313190251f 302 866cca686fe4fc78bccd860473e75b01bbe61c5d5ff9ba6456c663367c99e74f
