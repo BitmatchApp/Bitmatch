@@ -204,7 +204,11 @@ final class SharedProjectFixture {
         )
         fixture.coordinator.destinationURLs = [folders.primary, folders.secondary]
         fixture.coordinator.sourceURL = folders.source
-        await fixture.waitUntilSourceScanned()
+        guard await fixture.waitUntilSourceScanned() else {
+            folders.cleanup()
+            throw NSError(domain: "SharedProjectFixture", code: 1,
+                          userInfo: [NSLocalizedDescriptionKey: "Fixture source analysis did not settle before setup."])
+        }
         if prepareCard { try fixture.prepareCard() }
         return fixture
     }
@@ -236,10 +240,11 @@ final class SharedProjectFixture {
 
     @discardableResult
     func waitUntilSourceScanned() async -> Bool {
-        await waitUntil(timeout: .seconds(5)) {
+        await waitUntil(timeout: .seconds(30)) {
             coordinator.sourceFolderInfo?.url == folders.source
                 && !coordinator.isFolderInfoLoading(for: folders.source)
                 && !coordinator.appleDoubleSelection.isReviewing
+                && !coordinator.isAnalysingSource
         }
     }
 

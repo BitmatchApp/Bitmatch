@@ -597,6 +597,18 @@ struct TransferQueueSection: View {
             finishedDetails(row, outcome: outcome)
         }
         if row.isFinished, let record = coordinator.transferJournal.records.first(where: { $0.id == row.id }) {
+            DisclosureGroup("Verification details") {
+                let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
+                    results: record.results, includeModePlan: record.plannedFileCounts != nil)
+                VStack(alignment: .leading, spacing: 6) {
+                    Text(scope.selectedModeLine)
+                    Text(scope.recordedResultsLine)
+                    if let exclusion = scope.exclusionLine { Text(exclusion) }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            .font(.caption)
             TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
         }
     }

@@ -56,4 +56,18 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         guard recordedExcludedSourceFiles > 0 else { return nil }
         return "\(recordedExcludedSourceFiles) AppleDouble source files intentionally excluded; the whole card was not backed up."
     }
+
+    /// Counts decoded from another report are claims, not trusted counters.
+    /// Compare them with that report's totals before accepting its verdict.
+    public var hasConsistentRecordedCounts: Bool {
+        countsBasis == "recorded-results-only"
+            && recordedSelectedSourceFiles >= 0
+            && recordedSelectedResults >= 0
+            && recordedVerifiedResults >= 0
+            && recordedExcludedSourceFiles >= 0
+            && recordedSelectedSourceFiles <= recordedSelectedResults
+            && (recordedSelectedSourceFiles == 0) == (recordedSelectedResults == 0)
+            && recordedVerifiedResults <= recordedSelectedResults
+            && (selectedMode != .quick || recordedVerifiedResults == 0)
+    }
 }

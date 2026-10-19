@@ -10,7 +10,8 @@ struct TransferMetadata: Codable {
     let endTime: Date?
     let totalFiles: Int
     let totalSize: Int64
-    let verificationMode: VerificationMode
+    /// Nil for older generic checksum reports that did not record a mode.
+    let verificationMode: VerificationMode?
     let cameraSettings: CameraLabelSettings?
     
     var duration: TimeInterval? {
