@@ -147,7 +147,91 @@ struct ReportScannerTests {
         let cards = await ReportScanner.scan(at: root)
         #expect(cards.count == 1)
         #expect(cards.first?.verified == true)
-        #expect(cards.first?.metadata?.verificationMode == .standard)
+        #expect(cards.first?.metadata?.verificationMode == nil)
+        #expect(cards.first.map { MasterReportPresentation.statusText(for: $0).contains("mode not recorded") } == true)
+    }
+
+    @Test func explicitThoroughScopeSurvivesMasterReportScan() throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var object = try #require(JSONSerialization.jsonObject(with: reportData(mode: .thorough, root: root, finished: Date())) as? [String: Any])
+        var verification = try #require(object["verification"] as? [String: Any])
+        verification["scope"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            VerificationScopeEvidence(selectedMode: .thorough, results: [
+                ResultRow(path: "a", status: "✅ Verified", size: 10, checksum: "a", destination: "Backup"),
+                ResultRow(path: "b", status: "✅ Verified", size: 10, checksum: "b", destination: "Backup")
+            ])))
+        object["verification"] = verification
+        let card = try #require(ReportScanner.transferCard(reportData: JSONSerialization.data(withJSONObject: object),
+            reportURL: root.appendingPathComponent("r.json")))
+        #expect(card.verified)
+        #expect(card.metadata?.verificationMode == .thorough)
+    }
+
+    @Test func legacyMD5ReportDoesNotClaimThorough() throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let data = try reportData(mode: .thorough, root: root, finished: Date())
+        let card = try #require(ReportScanner.transferCard(reportData: data, reportURL: root.appendingPathComponent("r.json")))
+        #expect(card.verified) // Preserve the older report's content-check result.
+        #expect(card.metadata?.verificationMode == nil)
+        #expect(MasterReportPresentation.statusText(for: card).contains("mode not recorded"))
+    }
+
+    @Test func contradictoryQuickScopeCannotBecomeVerified() throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var object = try #require(JSONSerialization.jsonObject(with: reportData(mode: .standard, root: root, finished: Date())) as? [String: Any])
+        var verification = try #require(object["verification"] as? [String: Any])
+        verification["scope"] = try JSONSerialization.jsonObject(with: JSONEncoder().encode(
+            VerificationScopeEvidence(selectedMode: .quick, results: [])))
+        object["verification"] = verification
+        let card = try #require(ReportScanner.transferCard(reportData: JSONSerialization.data(withJSONObject: object),
+            reportURL: root.appendingPathComponent("r.json")))
+        #expect(card.verified == false)
+        #expect(card.metadata?.verificationMode == nil)
+    }
+
+    @Test func savedScopeMustAgreeWithStatisticsBeforeMasterReportShowsVerified() throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var object = try #require(JSONSerialization.jsonObject(with: reportData(mode: .standard, root: root, finished: Date())) as? [String: Any])
+        var verification = try #require(object["verification"] as? [String: Any])
+        verification["scope"] = [
+            "selectedMode": "Standard", "countsBasis": "recorded-results-only",
+            "recordedSelectedSourceFiles": 2, "recordedSelectedResults": 2,
+            "recordedVerifiedResults": 1, "recordedExcludedSourceFiles": 0
+        ] as [String: Any]
+        object["verification"] = verification
+        let card = try #require(ReportScanner.transferCard(reportData: JSONSerialization.data(withJSONObject: object),
+            reportURL: root.appendingPathComponent("r.json")))
+        #expect(card.verified == false)
+    }
+
+    @Test func twoBackupScopeKeepsDistinctSourceCountAndRejectsInconsistentSourceTotals() throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let destinations = [root.appendingPathComponent("A"), root.appendingPathComponent("B")]
+        let rows = destinations.map { ResultRow(path: root.appendingPathComponent("card/clip.mov").path,
+            status: "✅ Verified", size: 10, checksum: "abc", destination: $0.path) }
+        let report: EnhancedJSONReport<String> = try EvidenceWriter.makeEnhancedJSONReport(
+            results: rows, jobID: UUID(), started: Date(), finished: Date(), kind: .copyAndVerify,
+            sourceURL: root.appendingPathComponent("card"), destinationURLs: destinations,
+            fileCount: 2, matchCount: 2, totalBytesProcessed: 20, duration: 1, workers: 1,
+            prefs: ReportPrefs(verificationMode: .standard), project: nil, safeToErase: true)
+        let data = try EvidenceWriter.encodeEnhancedJSONReport(report)
+        let url = root.appendingPathComponent("r.json")
+        let control = try #require(ReportScanner.transferCard(reportData: data, reportURL: url))
+        #expect(control.verified)
+        #expect(control.fileCount == 1)
+        #expect(control.metadata?.verificationMode == .standard)
+
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var source = try #require(object["source"] as? [String: Any])
+        source["fileCount"] = 2
+        object["source"] = source
+        let changed = try #require(ReportScanner.transferCard(reportData: JSONSerialization.data(withJSONObject: object), reportURL: url))
+        #expect(changed.verified == false)
     }
 
     /// A Quick copy checks sizes only; its report must not read as verified.

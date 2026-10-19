@@ -42,4 +42,70 @@ struct VerificationScopeEvidenceTests {
         #expect(VerificationScopeEvidence.checkPlan(for: .thorough).contains("MD5"))
         #expect(VerificationScopeEvidence.checkPlan(for: .paranoid).contains("byte comparison"))
     }
+
+    @Test(arguments: VerificationMode.allCases)
+    func savedModeRoundTripsWithoutInferringItsSourceReadsFromDigests(mode: VerificationMode) throws {
+        let description = EvidenceWriter.verificationDescription(for: ReportPrefs(verificationMode: mode))
+        let written = EnhancedJSONReport<String>.Verification(method: description.method, algorithm: description.algorithm,
+            issuesByType: [:], checksumCache: nil, scope: .init(selectedMode: mode, results: []))
+        let read = try JSONDecoder().decode(EvidenceReader.Snapshot.Verification.self, from: JSONEncoder().encode(written))
+        #expect(read.scope?.selectedMode == mode)
+        #expect(EvidenceReader.verificationMode(method: read.method, algorithm: read.algorithm, scope: read.scope) == mode)
+    }
+
+    @Test(arguments: ["MD5", "SHA-256, MD5"])
+    func legacyCompatibilityDigestsDoNotInventAThoroughSourceReread(algorithm: String) throws {
+        let written = EnhancedJSONReport<String>.Verification(method: "checksum", algorithm: algorithm,
+            issuesByType: [:], checksumCache: nil)
+        let read = try JSONDecoder().decode(EvidenceReader.Snapshot.Verification.self, from: JSONEncoder().encode(written))
+        #expect(read.scope == nil)
+        #expect(EvidenceReader.verificationMode(method: read.method, algorithm: read.algorithm, scope: read.scope) == .standard)
+        #expect(EvidenceReader.recordedVerificationMode(method: read.method, algorithm: read.algorithm, scope: read.scope) == nil)
+    }
+
+    @Test func selectedScopeCannotOverrideContradictoryOrUnsupportedRecordedChecks() {
+        func resolve(_ mode: VerificationMode, _ method: String, _ algorithm: String?) -> VerificationMode? {
+            EvidenceReader.verificationMode(method: method, algorithm: algorithm,
+                scope: .init(selectedMode: mode, results: []))
+        }
+        #expect(resolve(.quick, "checksum", "SHA-256") == nil)
+        #expect(resolve(.standard, "size-only", nil) == nil)
+        #expect(resolve(.standard, "checksum", "MD5") == nil)
+        #expect(resolve(.thorough, "checksum", "SHA-256") == nil)
+        #expect(resolve(.paranoid, "checksum", "SHA-256") == nil)
+        #expect(resolve(.standard, "checksum", "future-hash") == nil)
+        #expect(resolve(.paranoid, "checksum-and-byte-compare", "SHA-256, future-hash") == nil)
+        #expect(resolve(.standard, "future-method", "SHA-256") == nil)
+    }
+
+    @Test(arguments: ["checksum-and-byte-compare", "byte-compare", "byte-to-byte", "byte_compare"])
+    func legacyByteChecksDoNotInventAParanoidCopyPlan(method: String) {
+        #expect(EvidenceReader.verificationMode(method: method, algorithm: nil) == .paranoid)
+        #expect(EvidenceReader.recordedVerificationMode(method: method, algorithm: nil) == nil)
+    }
+
+    @Test(arguments: ["recordedSelectedSourceFiles", "recordedSelectedResults", "recordedVerifiedResults", "recordedExcludedSourceFiles", "countsBasis"])
+    func inconsistentScopeCannotOverrideSavedVerdict(field: String) throws {
+        let rows = [ResultRow(path: "clip", status: "✅ Verified", size: 1, checksum: "a", destination: "Backup")]
+        let scope = VerificationScopeEvidence(selectedMode: .standard, results: rows)
+        #expect(EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: true, scope: scope, sourceFileCount: 1))
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(scope)) as? [String: Any])
+        object[field] = field == "countsBasis" ? "invented-counts" : -1
+        let changed = try JSONDecoder().decode(VerificationScopeEvidence.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(EvidenceReader.verificationMode(method: "checksum", algorithm: "SHA-256", scope: changed) == nil)
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: true, scope: changed, sourceFileCount: 1))
+    }
+
+    @Test func selectedResultCountsMustAgreeWithSavedStatisticsAndExclusionsRemainUnsafe() {
+        let one = ResultRow(path: "clip", status: "✅ Verified", size: 1, checksum: "a", destination: "Backup")
+        let scope = VerificationScopeEvidence(selectedMode: .standard, results: [one])
+        #expect(!EvidenceReader.isVerified(matches: 2, issues: 0, mode: .standard, totalResults: 2, safeToErase: true, scope: scope, sourceFileCount: 1))
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, safeToErase: true, scope: scope, sourceFileCount: 1))
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: false, scope: scope, sourceFileCount: 1))
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: true, scope: scope, sourceFileCount: 2))
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: true, scope: scope))
+        let excluded = ResultRow(path: "._clip", status: ResultOutcome.excludedAppleDouble.statusText, size: 1, checksum: nil, destination: "Backup")
+        let filtered = VerificationScopeEvidence(selectedMode: .standard, results: [one, excluded])
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: true, scope: filtered, sourceFileCount: 2))
+    }
 }

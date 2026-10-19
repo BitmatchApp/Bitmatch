@@ -173,34 +173,74 @@ public enum EvidenceReader: Sendable {
         name.lowercased().hasPrefix("bitmatch")
     }
 
-    /// Reads the verification mode the report recorded. `nil` means the report
-    /// does not say, and such a report is never treated as verified.
-    public static func verificationMode(method: String?, algorithm: String?) -> VerificationMode? {
+    /// Reads an explicit selected mode when present and compatible with the
+    /// recorded method/digests. Legacy generic checksum reports use Standard
+    /// as the weakest content-check classification; MD5 does not prove a
+    /// separate source reread. None of these fields proves completion.
+    public static func verificationMode(method: String?, algorithm: String?, scope: VerificationScopeEvidence? = nil) -> VerificationMode? {
         guard let method else { return nil }
+        let mode: VerificationMode
         switch method.lowercased() {
-        case "size-only", "quick": return .quick
+        case "size-only", "quick": mode = .quick
         case "checksum":
             guard let algorithm else { return nil }
             let names = algorithm.lowercased().split(separator: ",", omittingEmptySubsequences: false)
                 .map { $0.trimmingCharacters(in: .whitespaces) }
             guard !names.isEmpty, names.allSatisfy({ ["sha-256", "sha256", "md5", "xxh64", "xxhash64"].contains($0) }) else { return nil }
-            return names.contains("md5") ? .thorough : .standard
-        case "standard": return .standard
-        case "thorough": return .thorough
+            mode = .standard
+        case "standard": mode = .standard
+        case "thorough": mode = .thorough
         case "checksum-and-byte-compare", "paranoid",
              "byte-compare", "byte-to-byte", "byte_compare":
-            return .paranoid
+            mode = .paranoid
         default: return nil
         }
+        guard let scope else { return mode }
+        guard scope.hasConsistentRecordedCounts else { return nil }
+        // A selected plan cannot override incompatible recorded checks. In
+        // particular, a malformed Quick scope must never become verified.
+        let algorithms = Set((algorithm ?? "").lowercased().split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespaces) })
+        guard algorithms.isSubset(of: ["sha-256", "sha256", "md5", "xxh64", "xxhash64"]) else { return nil }
+        let hasSHA256 = !algorithms.isDisjoint(with: ["sha-256", "sha256"])
+        switch scope.selectedMode {
+        case .quick:
+            guard mode == .quick else { return nil }
+        case .standard:
+            guard mode == .standard, hasSHA256 else { return nil }
+        case .thorough:
+            guard [.standard, .thorough].contains(mode), hasSHA256, algorithms.contains("md5") else { return nil }
+        case .paranoid:
+            guard mode == .paranoid, hasSHA256 else { return nil }
+        }
+        return scope.selectedMode
+    }
+
+    /// The actual selected mode, without inventing a copy plan for a legacy
+    /// report that recorded only generic checksum evidence.
+    public static func recordedVerificationMode(method: String?, algorithm: String?, scope: VerificationScopeEvidence? = nil) -> VerificationMode? {
+        if scope == nil {
+            // Generic byte-comparison evidence also does not prove that the
+            // Paranoid copy plan (including SHA-256) was selected.
+            guard ["size-only", "quick", "standard", "thorough", "paranoid"].contains(method?.lowercased() ?? "") else { return nil }
+        }
+        return verificationMode(method: method, algorithm: algorithm, scope: scope)
     }
 
     /// Verified means every file matched, at least one file was checked, and
     /// the report says contents were compared. A Quick (size-only) copy or a
     /// report with no recorded method is never verified (promise 2).
-    public static func isVerified(matches: Int, issues: Int, mode: VerificationMode?, totalResults: Int? = nil, safeToErase: Bool? = nil) -> Bool {
+    public static func isVerified(matches: Int, issues: Int, mode: VerificationMode?, totalResults: Int? = nil, safeToErase: Bool? = nil, scope: VerificationScopeEvidence? = nil, sourceFileCount: Int? = nil) -> Bool {
         guard let mode, mode != .quick else { return false }
         guard safeToErase != false else { return false }
         if let totalResults { guard totalResults > 0, matches == totalResults else { return false } }
+        if let scope {
+            guard scope.hasConsistentRecordedCounts, scope.selectedMode == mode,
+                  scope.recordedExcludedSourceFiles == 0,
+                  scope.recordedVerifiedResults == matches,
+                  scope.recordedSelectedResults == totalResults,
+                  scope.recordedSelectedSourceFiles == sourceFileCount else { return false }
+        }
         return issues == 0 && matches > 0
     }
 
@@ -293,10 +333,12 @@ public enum EvidenceReader: Sendable {
         public struct Verification: Decodable, Sendable {
             public let method: String
             public let algorithm: String?
+            public let scope: VerificationScopeEvidence?
 
-            public init(method: String, algorithm: String?) {
+            public init(method: String, algorithm: String?, scope: VerificationScopeEvidence? = nil) {
                 self.method = method
                 self.algorithm = algorithm
+                self.scope = scope
             }
         }
 

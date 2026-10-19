@@ -45,10 +45,14 @@ enum ReportScanner {
     }
 
     static func transferCard(from report: Snapshot, reportURL: URL, pdfIsValid: Bool? = nil) -> TransferCard {
-        let mode = EvidenceReader.verificationMode(method: report.verification?.method, algorithm: report.verification?.algorithm)
+        let mode = EvidenceReader.verificationMode(method: report.verification?.method,
+            algorithm: report.verification?.algorithm, scope: report.verification?.scope)
         let verified = EvidenceReader.isVerified(matches: report.statistics.matches, issues: report.statistics.issues, mode: mode,
-            totalResults: report.statistics.totalFiles, safeToErase: report.safeToErase)
+            totalResults: report.statistics.totalFiles, safeToErase: report.safeToErase,
+            scope: report.verification?.scope, sourceFileCount: report.source.fileCount)
             && (report.pdfEvidence == nil || pdfIsValid == true)
+        let recordedMode = EvidenceReader.recordedVerificationMode(method: report.verification?.method,
+            algorithm: report.verification?.algorithm, scope: report.verification?.scope)
         let sourceURL = URL(fileURLWithPath: report.source.path)
         let destinationURLs = report.destinations.map { URL(fileURLWithPath: $0.path) }
         let cameraName = cameraName(for: report)
@@ -80,13 +84,12 @@ enum ReportScanner {
             endTime: finished,
             totalFiles: report.source.fileCount,
             totalSize: report.source.totalSize,
-            // An unrecorded mode is shown as Quick, the weakest claim.
-            verificationMode: mode ?? .quick,
+            verificationMode: recordedMode,
             cameraSettings: nil
         )
         let message: String
         if verified {
-            message = "Verified"
+            message = recordedMode == nil ? "Content check passed · mode not recorded" : "Verified"
         } else if report.safeToErase == false {
             message = mode == .quick ? "Copied, not verified" : "Review required"
         } else if report.pdfEvidence != nil && pdfIsValid != true {
