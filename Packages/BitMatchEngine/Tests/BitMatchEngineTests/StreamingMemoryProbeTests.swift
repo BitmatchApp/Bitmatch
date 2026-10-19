@@ -96,10 +96,10 @@ final class StreamingMemoryProbeTests: XCTestCase {
             checksumService: ChecksumEngine.shared,
             preEnumeratedFiles: [clip],
             hooks: hooks,
-            onIOBytes: { index, phase, count, _, _ in
+            onIOBytes: { index, _, phase, count, _, _ in
                 switch phase {
                 case .writing: samples.wrote(index: index, count: count)
-                case .readingBack: break
+                case .readingBack, .validatingExisting, .sourceReading, .sourceVerifying, .sourceValidatingExisting: break
                 }
             },
             onProgress: { index, _, byteCount, wasReused in

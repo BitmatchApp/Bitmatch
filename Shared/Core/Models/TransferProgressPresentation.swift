@@ -156,7 +156,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
     /// "A001 to 2 backups", or why the run is paused.
     let detail: String?
     let tone: ProgressTone
-    /// The engine's (copied + verified) / (files × stages), capped below 100%
+    /// The engine's selected-byte work budget, capped below 100%
     /// while the journal still owns an active attempt. Nil before the engine
     /// reports, so the bar is indeterminate rather than a false 0%.
     let fraction: Double?
@@ -388,6 +388,10 @@ struct TransferProgressPresentation: Equatable, Sendable {
                 } else if done > 0 {
                     state = .copying
                 }
+            }
+            if let measuredFraction = progress?.perDestinationProgress,
+               measuredFraction.count == destinations.count {
+                fraction = min(0.99, max(0, measuredFraction[index]))
             }
             let name = destinationNames.flatMap { names in
                 names.indices.contains(index) ? names[index] : nil

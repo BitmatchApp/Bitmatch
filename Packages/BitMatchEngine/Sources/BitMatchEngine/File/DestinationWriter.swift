@@ -562,7 +562,7 @@ public final class PinnedDestinationFile: @unchecked Sendable {
 #endif
 
 public final class DestinationWriter {
-    typealias IOByteCallback = @Sendable (Int, TransferIOPhase, Int, TimeInterval, TimeInterval) -> Void
+    typealias IOByteCallback = @Sendable (Int, String, TransferIOPhase, Int, TimeInterval, TimeInterval) -> Void
     struct SourceReadEvidence: Sendable {
         let digests: VerifiedDigests
         let identity: VerifiedFileIdentity
@@ -956,7 +956,10 @@ public final class DestinationWriter {
                         destinationIndex: destination.index,
                         relativePath: relativePath,
                         hooks: hooks,
-                        onIOBytes: onIOBytes
+                        onIOBytes: { index, path, phase, bytes, duration, ended in
+                            let reusePhase: TransferIOPhase = phase == .readingBack ? .validatingExisting : .sourceValidatingExisting
+                            onIOBytes?(index, path, reusePhase, bytes, duration, ended)
+                        }
                     )
                     pendingReuse.append(destination)
                 } else {
@@ -1026,6 +1029,7 @@ public final class DestinationWriter {
                     throw sourceChangedError()
                 }
                 bytesRead += Int64(data.count)
+                onIOBytes?(-1, relativePath, .sourceReading, data.count, 0, ProcessInfo.processInfo.systemUptime)
                 if let sourceDidRead = hooks?.sourceDidRead {
                     let readCount = data.count
                     data = try await sourceDidRead(source, data)
@@ -1058,7 +1062,7 @@ public final class DestinationWriter {
                                     try file.destination.root.requireIncompletePublicationStatus()
                                 }
                                 try writeAll(chunkData, to: file.temporaryFD) { count, seconds, ended in
-                                    onIOBytes?(file.destination.index, .writing, count, seconds, ended)
+                                    onIOBytes?(file.destination.index, relativePath, .writing, count, seconds, ended)
                                 }
                                 return FanOutWriteResult(file: file, error: nil)
                             } catch {
@@ -1109,7 +1113,7 @@ public final class DestinationWriter {
                             source,
                             algorithms: verificationMode.checksumTypes + [.md5],
                             relativePath: relativePath,
-                            hooks: hooks
+                            hooks: hooks, onIOBytes: onIOBytes
                         )
                     )
                 } else if verificationMode != .quick {
@@ -1573,6 +1577,23 @@ public final class DestinationWriter {
     ) async throws -> VerificationResult {
         let startTime = Date()
         var sourceValues: [ChecksumAlgorithm: String] = [:]
+        let sourceSize = try sourceFileSize(source)
+        func sourceChecksum(_ type: ChecksumAlgorithm) async throws -> String {
+            let lastBytes = Mutex<Int64>(0)
+            return try await checksumService.generateChecksum(for: source, type: type) { fraction, _ in
+                guard fraction.isFinite else { return }
+                let current: Int64 = fraction >= 1 ? sourceSize
+                    : max(0, Int64(Double(sourceSize) * max(0, fraction)))
+                let delta = lastBytes.withLock { last -> Int64 in
+                    let delta = max(0, current - last)
+                    last = max(last, current)
+                    return delta
+                }
+                if delta > 0 {
+                    onIOBytes?(destinationIndex, relativePath, .sourceVerifying, Int(delta), 0, ProcessInfo.processInfo.systemUptime)
+                }
+            }
+        }
         if let sourceReadEvidence {
             guard try sourceIdentity(at: source) == sourceReadEvidence.identity else {
                 throw sourceChangedError()
@@ -1581,11 +1602,7 @@ public final class DestinationWriter {
                 if let value = sourceReadEvidence.digests[type] {
                     sourceValues[type] = value
                 } else {
-                    sourceValues[type] = try await checksumService.generateChecksum(
-                        for: source,
-                        type: type,
-                        progressCallback: nil
-                    )
+                    sourceValues[type] = try await sourceChecksum(type)
                 }
             }
             guard try sourceIdentity(at: source) == sourceReadEvidence.identity else {
@@ -1593,11 +1610,7 @@ public final class DestinationWriter {
             }
         } else {
             for type in requiredTypes {
-                sourceValues[type] = try await checksumService.generateChecksum(
-                    for: source,
-                    type: type,
-                    progressCallback: nil
-                )
+                sourceValues[type] = try await sourceChecksum(type)
             }
         }
         // MD5 is collected in the same pass even when SHA-256 is the only
@@ -1700,7 +1713,8 @@ public final class DestinationWriter {
         _ source: URL,
         algorithms: [ChecksumAlgorithm],
         relativePath: String,
-        hooks: FanOutHooks?
+        hooks: FanOutHooks?,
+        onIOBytes: IOByteCallback? = nil
     ) async throws -> SourceReadEvidence {
         let handle = try uncachedSourceHandle(for: source)
         hooks?.verificationSourceDidOpen?(relativePath)
@@ -1726,6 +1740,7 @@ public final class DestinationWriter {
             }
             guard count > 0 else { throw sourceChangedError() }
             hooks?.verificationSourceDidRead?(relativePath, count)
+            onIOBytes?(-1, relativePath, .sourceVerifying, count, 0, ProcessInfo.processInfo.systemUptime)
             bytesRead += Int64(count)
         }
         let trailingData = try handle.read(upToCount: 1) ?? Data()
@@ -1779,7 +1794,7 @@ public final class DestinationWriter {
             }
             if count == 0 { break }
             hooks?.destinationDidRead?(destinationIndex, relativePath, count)
-            onIOBytes?(destinationIndex, .readingBack, count, readSeconds, readEnded)
+            onIOBytes?(destinationIndex, relativePath, .readingBack, count, readSeconds, readEnded)
             bytesRead += Int64(count)
             if ordinal != nil, bytesRead >= nextBreadcrumb {
                 nextBreadcrumb += verifyReadBreadcrumbInterval
@@ -1844,7 +1859,8 @@ public final class DestinationWriter {
             }
             hooks?.verificationSourceDidRead?(relativePath, sourceCount)
             hooks?.destinationDidRead?(destinationIndex, relativePath, destinationCount)
-            onIOBytes?(destinationIndex, .readingBack, destinationCount, readSeconds, readEnded)
+            onIOBytes?(destinationIndex, relativePath, .readingBack, destinationCount, readSeconds, readEnded)
+            onIOBytes?(destinationIndex, relativePath, .sourceVerifying, sourceCount, 0, readEnded)
             if !same { return false }
             bytesRead += Int64(sourceCount)
         }

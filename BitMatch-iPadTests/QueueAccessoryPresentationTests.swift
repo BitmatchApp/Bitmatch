@@ -174,7 +174,8 @@ struct QueueAccessoryPresentationTests {
             id: id, cardName: name, evidence: nil, destinations: "Backup",
             safetyState: state, progressFraction: progress, action: nil, cause: cause,
             copySummary: name, outcome: nil, destinationNames: ["Backup"],
-            verificationModeName: VerificationMode.standard.rawValue
+            verificationModeName: VerificationMode.standard.rawValue,
+            estimatedWorkBytes: 100
         )
     }
 }
