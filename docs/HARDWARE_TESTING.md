@@ -66,6 +66,16 @@ To reuse an existing build directory, set `BITMATCH_DERIVED_DATA_PATH` to an abs
 
 Before sharing evidence, review it for local paths, usernames, device identifiers, and private filenames. Keep full raw records privately and publish a redacted copy. Record the revision and whether the working tree contained changes; a revision alone does not identify uncommitted source changes.
 
+### Physical app workflow and paired measurements
+
+`PhysicalWorkflowEvidenceTests` is an opt-in Mac app test over an already authorized, owner-marked configuration. Its `sd`, `ssdA`, and `ssdB` roles must identify three separate mounted volumes. It creates unique children only, copies a generated playable clip and streaming payload through the real coordinator, then checks MHL, automatic reports, durable History, regenerated reports, embedded preview pixels, and independent destination hashes. It does not format or eject a drive. Failed fixtures remain for inspection; cleanup refuses changed identities and never follows links.
+
+After reserving the hardware and Mac app test slot, supply `TEST_RUNNER_BITMATCH_HARDWARE_APP_WORKFLOW=1`, `TEST_RUNNER_BITMATCH_HARDWARE_CONFIG` (the marked config JSON), and `TEST_RUNNER_BITMATCH_HARDWARE_APP_ARTIFACTS` (a private directory on the host) to `xcodebuild test -scheme BitMatch -destination 'platform=macOS' -jobs 4 -parallel-testing-enabled NO -only-testing:BitMatchTests/PhysicalWorkflowEvidenceTests/testPhysicalCardToTwoBackupsAndSavedEvidence`. Normal test runs skip this case.
+
+`TEST_RUNNER_BITMATCH_HARDWARE_APP_BENCHMARK=1` adds three Standard/Thorough pairs with alternating order and fresh destination folders. The payload defaults to 256 MiB; `TEST_RUNNER_BITMATCH_HARDWARE_APP_MIB` accepts 32–4096 MiB. The private receipt records process CPU/physical footprint, time through automatic reports and journal settlement, pipeline return, phase durations/overlap, and per-destination pipeline bytes. Saved Check and independent test hashes happen after the measured transfer. These are steady-state measurements without cache purging or device-wide I/O attribution; they are not a cable-pull test or a general performance promise.
+
+Before touching hardware, `TEST_RUNNER_BITMATCH_PHYSICAL_APP_HOST_SMOKE=1` runs the same evidence assertions on small host scratch folders through `testHostEvidenceHarnessSmoke`. Two ordinary tests also check that invalid configuration leaves existing files untouched and descriptor cleanup preserves an outside symlink target and a replacement directory.
+
 ## Recording and publishing physical results
 
 Use the [hardware report template](HARDWARE_REPORT_TEMPLATE.md) for each configuration and submit it through the repository's **Hardware test report** issue form. Keep outcomes separate for baseline copy, source removal, one-destination removal, sleep, and cancellation. Mark cases you did not run as **Not tested**. A completed transfer without independent destination hashes is **Inconclusive**, not a verified pass.
