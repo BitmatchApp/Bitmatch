@@ -233,7 +233,7 @@ struct PreferencesWindow: View {
             } header: {
                 Text("Reports")
             } footer: {
-                Text("Reports record what happened and are saved beside each destination.")
+                Text("Transfer reports are saved in Reports on your first destination.")
             }
 
             if coordinator.reportSettings.makeReport {
