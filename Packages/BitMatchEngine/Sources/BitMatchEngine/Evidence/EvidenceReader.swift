@@ -179,18 +179,34 @@ public enum EvidenceReader: Sendable {
     /// separate source reread. None of these fields proves completion.
     public static func verificationMode(method: String?, algorithm: String?, scope: VerificationScopeEvidence? = nil) -> VerificationMode? {
         guard let method else { return nil }
+        let algorithms: Set<String>
+        if let algorithm {
+            let names = algorithm.lowercased().split(separator: ",", omittingEmptySubsequences: false)
+                .map { $0.trimmingCharacters(in: .whitespaces) }
+            guard !names.isEmpty, names.allSatisfy({ ["sha-256", "sha256", "md5", "xxh64", "xxhash64"].contains($0) }) else { return nil }
+            algorithms = Set(names)
+        } else {
+            algorithms = []
+        }
+        let hasSHA256 = !algorithms.isDisjoint(with: ["sha-256", "sha256"])
         let mode: VerificationMode
         switch method.lowercased() {
         case "size-only", "quick": mode = .quick
         case "checksum":
-            guard let algorithm else { return nil }
-            let names = algorithm.lowercased().split(separator: ",", omittingEmptySubsequences: false)
-                .map { $0.trimmingCharacters(in: .whitespaces) }
-            guard !names.isEmpty, names.allSatisfy({ ["sha-256", "sha256", "md5", "xxh64", "xxhash64"].contains($0) }) else { return nil }
+            guard algorithm != nil else { return nil }
             mode = .standard
-        case "standard": mode = .standard
-        case "thorough": mode = .thorough
-        case "checksum-and-byte-compare", "paranoid",
+        // Older named modes may omit the algorithm. A supplied digest list
+        // must support that mode rather than contradict its recorded plan.
+        case "standard":
+            guard algorithm == nil || hasSHA256 else { return nil }
+            mode = .standard
+        case "thorough":
+            guard algorithm == nil || (hasSHA256 && algorithms.contains("md5")) else { return nil }
+            mode = .thorough
+        case "paranoid":
+            guard algorithm == nil || hasSHA256 else { return nil }
+            mode = .paranoid
+        case "checksum-and-byte-compare",
              "byte-compare", "byte-to-byte", "byte_compare":
             mode = .paranoid
         default: return nil
@@ -199,10 +215,6 @@ public enum EvidenceReader: Sendable {
         guard scope.hasConsistentRecordedCounts else { return nil }
         // A selected plan cannot override incompatible recorded checks. In
         // particular, a malformed Quick scope must never become verified.
-        let algorithms = Set((algorithm ?? "").lowercased().split(separator: ",")
-            .map { $0.trimmingCharacters(in: .whitespaces) })
-        guard algorithms.isSubset(of: ["sha-256", "sha256", "md5", "xxh64", "xxhash64"]) else { return nil }
-        let hasSHA256 = !algorithms.isDisjoint(with: ["sha-256", "sha256"])
         switch scope.selectedMode {
         case .quick:
             guard mode == .quick else { return nil }
