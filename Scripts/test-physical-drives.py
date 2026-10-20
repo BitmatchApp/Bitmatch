@@ -318,7 +318,7 @@ class Run:
             require_execution(log, method)
             self.passed.append(method)
 
-    def cleanup(self):
+    def cleanup(self, *, preserve_fixtures=False):
         # An unresponsive test must never race recursive deletion of its files.
         if self.child is not None and self.child.poll() is None:
             self.warnings.append('Test process is still active; all media fixtures retained.')
@@ -350,6 +350,11 @@ class Run:
             except Exception as error:
                 image_safe = False
                 self.warnings.append(str(error))
+        # A failed or interrupted run is evidence. Settle any owned image
+        # attachment above, then retain its backing file and every marked root.
+        # Manual reviewed cleanup still uses the default descriptor-checked path.
+        if preserve_fixtures:
+            return
         for key in ('sd', 'ssdA', 'ssdB'):
             if key not in self.roots or (key == self.image_host and not image_safe):
                 continue
@@ -429,13 +434,15 @@ def main():
             # A second interrupt must not abandon a normal detach attempt.
             signal.signal(signal.SIGINT, signal.SIG_IGN)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
+            preserve_fixtures = status != 0
             try:
-                run.cleanup()
+                run.cleanup(preserve_fixtures=preserve_fixtures)
             except Exception as error:
                 run.warnings.append(str(error))
             if run.warnings:
                 status = 1
             summary = {'exitStatus': status, 'largeRequested': args.large, 'imageSharesHostSSD': bool(image_host),
+                       'fixturePolicy': 'retainFailedValidation' if preserve_fixtures else 'cleanupAfterPassingValidation',
                        'imageSharesLargeSourceSSD': image_host == 'ssdA',
                        'passedXCTests': run.passed, 'cleanupWarnings': run.warnings,
                        'retainedFixtureRoles': sorted(set(run.roots) - run.removed
