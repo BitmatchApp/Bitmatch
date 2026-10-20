@@ -84,6 +84,79 @@ struct OperationStateSingleSourceTests {
         #expect(service.currentState == .inProgress)
     }
 
+    /// Plant: remove the identity guard from the targeted cancel overload.
+    /// An old confirmation must not touch the next attempt or its engine.
+    @Test func staleCancellationConfirmationLeavesReplacementRunning() throws {
+        let engine = PauseRecordingFileOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        let previousID = start(coordinator.stateService)
+        let capturedTarget = try #require(coordinator.cancellationTargetID)
+        #expect(capturedTarget == previousID)
+        coordinator.stateService.completeOperation(
+            operationId: previousID,
+            info: OperationCompletionInfo(success: true, message: "done")
+        )
+        let replacementID = start(coordinator.stateService)
+        let warningCount = coordinator.errorService.currentErrors.count
+
+        let cancelled = coordinator.cancelOperation(ifCurrentTargetID: capturedTarget)
+
+        #expect(!cancelled)
+        #expect(engine.cancelCount == 0)
+        #expect(coordinator.errorService.currentErrors.count == warningCount)
+        #expect(coordinator.cancellationTargetID == replacementID)
+        #expect(coordinator.stateService.currentOperationId == replacementID)
+        #expect(coordinator.operationState == .inProgress)
+    }
+
+    /// Plant: return true without delegating to cancelOperation in the
+    /// targeted overload. A live confirmation must cancel the actual engine.
+    @Test func currentCancellationConfirmationCancelsTheCurrentAttempt() throws {
+        let engine = PauseRecordingFileOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        let currentID = start(coordinator.stateService)
+        let capturedTarget = try #require(coordinator.cancellationTargetID)
+        #expect(capturedTarget == currentID)
+        let warningCount = coordinator.errorService.currentErrors.count
+
+        let cancelled = coordinator.cancelOperation(ifCurrentTargetID: capturedTarget)
+
+        #expect(cancelled)
+        #expect(engine.cancelCount == 1)
+        #expect(coordinator.errorService.currentErrors.count == warningCount + 1)
+        #expect(coordinator.operationState == .cancelled)
+        #expect(coordinator.stateService.currentOperationId == nil)
+        #expect(coordinator.cancellationTargetID == nil)
+    }
+
+    /// Plant: remove the identity guard from the targeted cancel overload.
+    /// With no active target, an arbitrary token must have no side effects.
+    @Test func cancellationConfirmationWithoutCurrentTargetDoesNothing() {
+        let engine = PauseRecordingFileOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        let state = coordinator.operationState
+        let warningCount = coordinator.errorService.currentErrors.count
+        #expect(coordinator.cancellationTargetID == nil)
+
+        let cancelled = coordinator.cancelOperation(ifCurrentTargetID: UUID())
+
+        #expect(!cancelled)
+        #expect(engine.cancelCount == 0)
+        #expect(coordinator.errorService.currentErrors.count == warningCount)
+        #expect(coordinator.operationState == state)
+        #expect(coordinator.stateService.currentOperationId == nil)
+        #expect(coordinator.cancellationTargetID == nil)
+    }
+
     /// Resuming is a brief state; the screen must follow it back to
     /// in-progress. Fails if the coordinator keeps a stale copy.
     @Test func resumingSettlesToInProgressOnScreen() async {
@@ -242,7 +315,9 @@ struct OperationStateSingleSourceTests {
 private final class PauseRecordingFileOperations: FileOperationsService, @unchecked Sendable {
     private let lock = NSLock()
     private var pauses = 0
+    private var cancellations = 0
     var pauseCount: Int { lock.withLock { pauses } }
+    var cancelCount: Int { lock.withLock { cancellations } }
     /// Runs inside the engine pause, to simulate work finishing meanwhile.
     var onPause: (@Sendable () async -> Void)?
 
@@ -257,7 +332,7 @@ private final class PauseRecordingFileOperations: FileOperationsService, @unchec
     ) async throws -> FileOperation {
         throw CancellationError()
     }
-    func cancelOperation() {}
+    func cancelOperation() { lock.withLock { cancellations += 1 } }
     func pauseOperation() async {
         lock.withLock { pauses += 1 }
         await onPause?()

@@ -15,7 +15,8 @@ struct CopyAndVerifyView: View {
     var body: some View {
         CoordinatorSetupScreen(
             coordinator: coordinator,
-            optionsExpanded: $optionsExpanded
+            optionsExpanded: $optionsExpanded,
+            usesBottomActions: true
         ) { context, advanced in
             IOSSetupLocations(coordinator: coordinator, context: context, advanced: advanced)
         } problems: {

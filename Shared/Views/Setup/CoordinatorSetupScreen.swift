@@ -83,6 +83,7 @@ extension SetupPresentation {
 struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelContent: View, ProjectEvidence: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var optionsExpanded: Bool
+    private let usesBottomActions: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let transferTransitionContext: QueueTransferTransitionContext?
     private let locations: (SetupLocationsContext, AnyView) -> Locations
@@ -94,6 +95,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     init(
         coordinator: SharedAppCoordinator,
         optionsExpanded: Binding<Bool>,
+        usesBottomActions: Bool = false,
         transferTransitionContext: QueueTransferTransitionContext? = nil,
         @ViewBuilder locations: @escaping (SetupLocationsContext, AnyView) -> Locations,
         @ViewBuilder problems: () -> Problems,
@@ -103,6 +105,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     ) {
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _optionsExpanded = optionsExpanded
+        self.usesBottomActions = usesBottomActions
         self.transferTransitionContext = transferTransitionContext
         self.locations = locations
         self.problems = problems()
@@ -112,8 +115,10 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     }
 
     var body: some View {
+        let presentation = SetupPresentation.make(coordinator: coordinator)
         SetupScreen(
-            presentation: .make(coordinator: coordinator),
+            presentation: presentation,
+            showsInlineStart: !usesBottomActions || presentation.start.action == .addToQueue,
             options: SetupOptionsBindings(
                 isExpanded: $optionsExpanded,
                 verificationMode: $coordinator.verificationMode,
@@ -138,12 +143,35 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     }
 
     private var actions: SetupActions {
-        let coordinator = self.coordinator
+        CoordinatorSetupActions.make(coordinator: coordinator, performQueueTransition: performQueueTransition)
+    }
+
+    private func performQueueTransition(_ operation: @escaping () -> UUID?) {
+        if let transferTransitionContext {
+            transferTransitionContext.perform(
+                reduceMotion,
+                operation
+            )
+        } else {
+            _ = operation()
+        }
+    }
+}
+
+/// One Start action for inline Mac controls and the mobile bottom bar. Recheck
+/// the current readiness when tapped, including project and queued-card gates.
+@MainActor
+enum CoordinatorSetupActions {
+    static func make(
+        coordinator: SharedAppCoordinator,
+        performQueueTransition: @escaping (@escaping () -> UUID?) -> Void = { _ = $0() }
+    ) -> SetupActions {
         return SetupActions(
             chooseWorkflow: { workflow in
                 coordinator.usesProjectWorkflow = workflow == .project
             },
             start: {
+                guard coordinator.currentMode == .copyAndVerify else { return }
                 // The one Start: the same rule as ⌘R, including S-2.
                 let presentation = SetupPresentation.make(coordinator: coordinator)
                 guard presentation.start.canStart else { return }
@@ -177,14 +205,4 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
         )
     }
 
-    private func performQueueTransition(_ operation: @escaping () -> UUID?) {
-        if let transferTransitionContext {
-            transferTransitionContext.perform(
-                reduceMotion,
-                operation
-            )
-        } else {
-            _ = operation()
-        }
-    }
 }

@@ -8,7 +8,7 @@ struct ModularContentView: View {
     let navigationPresentation: AdaptiveNavigationPresentation
     @Binding var showingQueueInspector: Bool
     @State private var showingSettings = false
-    @State private var showingTransfers = false
+    @Binding var showingTransfers: Bool
     @State private var showingVolumeSelector = false
     @State private var showCancelToast = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion

@@ -116,13 +116,8 @@ struct ProgressScreen: View {
         #if os(macOS)
         headerRow
         #else
-        ViewThatFits(in: .horizontal) {
-            headerRow
-            VStack(alignment: .leading, spacing: 10) {
-                heading
-                controls
-            }
-        }
+        heading
+            .frame(maxWidth: .infinity, alignment: .leading)
         #endif
     }
 

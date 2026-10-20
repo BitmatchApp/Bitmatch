@@ -473,9 +473,10 @@ enum QueueRunningNoticePolicy {
     static func sectionNote(
         isRunning: Bool,
         isMobile: Bool,
-        progress: TransferProgressPresentation
+        progress: TransferProgressPresentation,
+        showsExpandedRunningProgress: Bool = false
     ) -> ProgressDeviceNote? {
-        guard isRunning, isMobile else { return nil }
+        guard isRunning, isMobile, !showsExpandedRunningProgress else { return nil }
         return progress.deviceNotes.first { $0.text == TransferProgressPresentation.iOSBackgroundLimit }
     }
 }

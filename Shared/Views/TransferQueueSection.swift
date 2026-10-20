@@ -33,12 +33,14 @@ struct TransferQueueSection: View {
         coordinator: SharedAppCoordinator,
         offersAddCard: Bool = false,
         showsHeaderTitle: Bool = true,
+        initiallyExpandedIDs: Set<UUID> = [],
         ejectSource: ((UUID) async -> String?)? = nil,
         transferTransitionContext: QueueTransferTransitionContext? = nil
     ) {
         self.coordinator = coordinator
         self.offersAddCard = offersAddCard
         self.showsHeaderTitle = showsHeaderTitle
+        _expandedIDs = State(initialValue: initiallyExpandedIDs)
         self.ejectSource = ejectSource
         self.transferTransitionContext = transferTransitionContext
         _progress = ObservedObject(wrappedValue: coordinator.liveProgress)
@@ -534,7 +536,8 @@ struct TransferQueueSection: View {
         if let note = QueueRunningNoticePolicy.sectionNote(
             isRunning: presentation.rows.contains(where: \.isRunning),
             isMobile: true,
-            progress: liveProgressPresentation
+            progress: liveProgressPresentation,
+            showsExpandedRunningProgress: presentation.rows.contains { $0.isRunning && expandedIDs.contains($0.id) }
         ) {
             Label(note.text, systemImage: note.symbol)
                 .font(.caption)

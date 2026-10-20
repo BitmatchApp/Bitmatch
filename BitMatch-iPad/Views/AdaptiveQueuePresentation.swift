@@ -52,14 +52,17 @@ struct CompactQueuePresentation<Content: View>: View {
     @ObservedObject private var background: IOSBackgroundTaskService
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let content: Content
+    private let showsTransferActions: Bool
 
     init(
         coordinator: SharedAppCoordinator,
         state: CompactQueuePresentationState,
+        showsTransferActions: Bool = false,
         @ViewBuilder content: () -> Content
     ) {
         self.coordinator = coordinator
         self.state = state
+        self.showsTransferActions = showsTransferActions
         _progress = ObservedObject(wrappedValue: coordinator.liveProgress)
         _background = ObservedObject(wrappedValue: IOSBackgroundTaskService.shared)
         self.content = content()
@@ -68,19 +71,25 @@ struct CompactQueuePresentation<Content: View>: View {
     var body: some View {
         content
             .safeAreaInset(edge: .bottom, spacing: 0) {
-                if accessory.isVisible {
-                    QueueAccessoryButton(
-                        presentation: accessory,
-                        reduceMotion: reduceMotion,
-                        successEffectValue: state.successFeedbackCount,
-                        action: openQueue
-                    )
-                    .padding(.horizontal, 10)
-                    .padding(.vertical, 7)
-                    .background(.bar)
-                    .transition(reduceMotion
-                        ? .opacity
-                        : .move(edge: .bottom).combined(with: .opacity))
+                VStack(spacing: 0) {
+                    if accessory.isVisible {
+                        QueueAccessoryButton(
+                            presentation: accessory,
+                            reduceMotion: reduceMotion,
+                            successEffectValue: state.successFeedbackCount,
+                            action: openQueue
+                        )
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 7)
+                        .background(.bar)
+                        .transition(reduceMotion
+                            ? .opacity
+                            : .move(edge: .bottom).combined(with: .opacity))
+                    }
+                    if showsTransferActions && !state.showingQueue {
+                        MobileTransferActionBar(coordinator: coordinator,
+                            showsRunningContext: !accessory.isVisible)
+                    }
                 }
             }
             .animation(
@@ -191,22 +200,34 @@ struct RegularQueuePresentation<Content: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var isInspectorPresented: Bool
     private let content: Content
+    private let showsTransferActions: Bool
+    private let initiallyExpandedQueueRows: Set<UUID>
 
     init(
         coordinator: SharedAppCoordinator,
         isInspectorPresented: Binding<Bool>,
+        showsTransferActions: Bool = false,
+        initiallyExpandedQueueRows: Set<UUID> = [],
         @ViewBuilder content: () -> Content
     ) {
         self.coordinator = coordinator
+        self.showsTransferActions = showsTransferActions
+        self.initiallyExpandedQueueRows = initiallyExpandedQueueRows
         _isInspectorPresented = isInspectorPresented
         self.content = content()
     }
 
     var body: some View {
         content
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                if showsTransferActions {
+                    MobileTransferActionBar(coordinator: coordinator)
+                }
+            }
             .inspector(isPresented: $isInspectorPresented) {
                 ScrollView {
-                    TransferQueueSection(coordinator: coordinator, offersAddCard: true)
+                    TransferQueueSection(coordinator: coordinator, offersAddCard: true,
+                        initiallyExpandedIDs: initiallyExpandedQueueRows)
                         .padding()
                 }
                 .inspectorColumnWidth(
