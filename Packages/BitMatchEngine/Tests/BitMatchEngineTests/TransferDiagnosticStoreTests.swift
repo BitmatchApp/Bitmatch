@@ -199,17 +199,20 @@ final class TransferDiagnosticStoreTests: XCTestCase {
     func testLoggerExcludesFootageNamesPathsAndErrorDescriptions() throws {
         let marker = "SECRET_FOOTAGE_" + UUID().uuidString
         let run = UUID()
-        SharedLogger.transferError(NSError(domain: marker, code: 45,
-            userInfo: [NSLocalizedDescriptionKey: marker]), run: run)
-        SharedLogger.transferConfiguration(run: run,
-            source: URL(fileURLWithPath: "/" + marker),
-            destinations: [URL(fileURLWithPath: "/" + marker + "/backup")],
-            mhl: true, report: true, mode: .standard)
-        SharedLogger.transferProgress(OperationProgress(overallProgress: 0.5,
-            currentFile: marker, filesProcessed: 2, totalFiles: 4,
-            currentStage: .verifying, speed: nil), run: run)
-        SharedLogger.info(marker) // Free-form logs must never enter the export.
-        let data = try TransferDiagnosticStore.shared.exportData()
+        let store = TransferDiagnosticStore(directory: try fixture())
+        TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+            SharedLogger.transferError(NSError(domain: marker, code: 45,
+                userInfo: [NSLocalizedDescriptionKey: marker]), run: run)
+            SharedLogger.transferConfiguration(run: run,
+                source: URL(fileURLWithPath: "/" + marker),
+                destinations: [URL(fileURLWithPath: "/" + marker + "/backup")],
+                mhl: true, report: true, mode: .standard)
+            SharedLogger.transferProgress(OperationProgress(overallProgress: 0.5,
+                currentFile: marker, filesProcessed: 2, totalFiles: 4,
+                currentStage: .verifying, speed: nil), run: run)
+            SharedLogger.info(marker) // Free-form logs must never enter the export.
+        }
+        let data = try store.exportData()
         XCTAssertFalse(String(decoding: data, as: UTF8.self).contains(marker))
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         let events = try XCTUnwrap(object["events"] as? [[String: Any]])
@@ -220,9 +223,12 @@ final class TransferDiagnosticStoreTests: XCTestCase {
     }
     func testVerifyBreadcrumbsCarryNumbersAndMemoryFootprintOnly() throws {
         let run = UUID()
-        SharedLogger.verifyEvent(.verifyStarted, run: run, ordinal: 8, destinationIndex: 0, bytes: 45_344_117_808)
-        SharedLogger.verifyEvent(.verifyRead, run: run, ordinal: 8, destinationIndex: 0, bytes: 8 * 1024 * 1024 * 1024)
-        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: TransferDiagnosticStore.shared.exportData()) as? [String: Any])
+        let store = TransferDiagnosticStore(directory: try fixture())
+        TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+            SharedLogger.verifyEvent(.verifyStarted, run: run, ordinal: 8, destinationIndex: 0, bytes: 45_344_117_808)
+            SharedLogger.verifyEvent(.verifyRead, run: run, ordinal: 8, destinationIndex: 0, bytes: 8 * 1024 * 1024 * 1024)
+        }
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: store.exportData()) as? [String: Any])
         let events = try XCTUnwrap(object["events"] as? [[String: Any]])
             .filter { ($0["run"] as? String) == run.uuidString }
         XCTAssertEqual(events.map { $0["event"] as? String }, ["verifyStarted", "verifyRead"])

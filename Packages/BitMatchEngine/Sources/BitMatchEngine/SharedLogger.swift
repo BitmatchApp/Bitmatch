@@ -51,7 +51,7 @@ extension SharedLogger {
     }
     public static func transferEvent(_ event: TransferEvent, run: UUID?, code: Int = 0,
                                      taskCancelled: Bool = false, explicit: Bool = false) {
-        TransferDiagnosticStore.shared.record(event, run: run) {
+        TransferDiagnostics.recordingStore.record(event, run: run) {
             $0.code = code; $0.taskCancelled = taskCancelled; $0.explicit = explicit
         }
         logger(for: .transfer).notice("event=\(event.rawValue, privacy: .public) run=\(run?.uuidString ?? "none", privacy: .public) code=\(code, privacy: .public) task_cancelled=\(taskCancelled, privacy: .public) explicit=\(explicit, privacy: .public)")
@@ -63,11 +63,11 @@ extension SharedLogger {
     /// or bytes read so far, and the destination index. Never a name or path.
     public enum VerifyOutcome: String, Codable, Sendable { case matched, mismatched, failed, cancelled }
     public static func verifyConfiguration(run: UUID?, concurrency: Int) {
-        TransferDiagnosticStore.shared.record(.verifyConfiguration, run: run) { $0.verifyConcurrency = concurrency }
+        TransferDiagnostics.recordingStore.record(.verifyConfiguration, run: run) { $0.verifyConcurrency = concurrency }
     }
     public static func verifyEvent(_ event: TransferEvent, run: UUID?, ordinal: Int?,
                                    destinationIndex: Int, bytes: Int64?, totalBytes: Int64? = nil, outcome: VerifyOutcome? = nil) {
-        TransferDiagnosticStore.shared.record(event, run: run) {
+        TransferDiagnostics.recordingStore.record(event, run: run) {
             $0.ordinal = ordinal; $0.destinationIndex = destinationIndex; $0.bytesProcessed = bytes; $0.totalBytes = totalBytes; $0.verifyOutcome = outcome
         }
         logger(for: .transfer).notice("event=\(event.rawValue, privacy: .public) run=\(run?.uuidString ?? "none", privacy: .public) ordinal=\(ordinal ?? -1, privacy: .public) destination=\(destinationIndex, privacy: .public) bytes=\(bytes ?? -1, privacy: .public) outcome=\(outcome?.rawValue ?? "pending", privacy: .public)")
@@ -76,7 +76,7 @@ extension SharedLogger {
 
 extension SharedLogger {
     public static func transferPhase(_ phase: ProgressStage, run: UUID?) {
-        TransferDiagnosticStore.shared.record(.phase, run: run) { $0.phase = phase }
+        TransferDiagnostics.recordingStore.record(.phase, run: run) { $0.phase = phase }
         logger(for: .transfer).notice("event=phase run=\(run?.uuidString ?? "none", privacy: .public) phase=\(phase.displayName, privacy: .public)")
     }
 }
@@ -91,7 +91,7 @@ public enum TransferCancelOrigin: String, Codable, Sendable {
 
 extension SharedLogger {
     public static func cancelEvent(_ origin: TransferCancelOrigin, run: UUID?) {
-        TransferDiagnosticStore.shared.record(.cancelOrigin, run: run) { $0.origin = origin }
+        TransferDiagnostics.recordingStore.record(.cancelOrigin, run: run) { $0.origin = origin }
         logger(for: .transfer).notice("event=explicit_cancel run=\(run?.uuidString ?? "none", privacy: .public) origin=\(origin.rawValue, privacy: .public)")
     }
 }
@@ -103,13 +103,13 @@ extension SharedLogger {
         // expose only this fixed classification, never localized descriptions.
         let kind: TransferDiagnosticStore.ErrorKind = error is CancellationError ? .cancellation : error is TransferInterruption ? .identityGuard :
             ns.domain == NSPOSIXErrorDomain ? .posix : ns.domain == NSCocoaErrorDomain ? .cocoa : .other
-        TransferDiagnosticStore.shared.record(.error, run: run) {
+        TransferDiagnostics.recordingStore.record(.error, run: run) {
             $0.kind = kind; $0.code = ns.code; $0.taskCancelled = Task.isCancelled; $0.explicit = explicit
         }
         logger(for: .transfer).error("event=error run=\(run?.uuidString ?? "none", privacy: .public) kind=\(kind.rawValue, privacy: .public) code=\(ns.code, privacy: .public) task_cancelled=\(Task.isCancelled, privacy: .public) explicit=\(explicit, privacy: .public)")
     }
     public static func correlatePipeline(run: UUID, pipeline: UUID) {
-        TransferDiagnosticStore.shared.record(.pipelineResult, run: run) { $0.pipeline = pipeline }
+        TransferDiagnostics.recordingStore.record(.pipelineResult, run: run) { $0.pipeline = pipeline }
         logger(for: .transfer).notice("event=pipeline_result run=\(run.uuidString, privacy: .public) pipeline=\(pipeline.uuidString, privacy: .public)")
     }
     public static func transferConfiguration(run: UUID, source: URL, destinations: [URL], mhl: Bool, report: Bool, mode: VerificationMode? = nil) {
@@ -122,11 +122,11 @@ extension SharedLogger {
             return TransferDiagnosticStore.Filesystem(rawValue: value) ?? .other
         }
         let sourceType = fsType(source)
-        TransferDiagnosticStore.shared.record(.config, run: run) { $0.filesystem = sourceType; $0.mhl = mhl; $0.report = report; $0.verificationMode = mode }
+        TransferDiagnostics.recordingStore.record(.config, run: run) { $0.filesystem = sourceType; $0.mhl = mhl; $0.report = report; $0.verificationMode = mode }
         logger(for: .transfer).notice("event=config run=\(run.uuidString, privacy: .public) source_fs=\(sourceType.rawValue, privacy: .public) mhl=\(mhl, privacy: .public) report=\(report, privacy: .public)")
         for (index, url) in destinations.enumerated() {
             let type = fsType(url)
-            TransferDiagnosticStore.shared.record(.destination, run: run) { $0.destinationIndex = index; $0.filesystem = type }
+            TransferDiagnostics.recordingStore.record(.destination, run: run) { $0.destinationIndex = index; $0.filesystem = type }
             logger(for: .transfer).notice("event=destination run=\(run.uuidString, privacy: .public) index=\(index, privacy: .public) fs=\(type.rawValue, privacy: .public)")
         }
     }
@@ -135,6 +135,11 @@ extension SharedLogger {
 /// Inherited by the engine's scoped/unstructured run tasks; detached handoff
 /// tasks receive the same UUID explicitly. Never carries source metadata.
 public enum TransferDiagnostics {
+    /// Internal isolation seam for deterministic engine tests. Production uses
+    /// the shared bounded store; scoped child tasks inherit an override, while
+    /// detached tasks and separate processes must not be assumed to inherit it.
+    @TaskLocal static var recordingStoreOverride: TransferDiagnosticStore?
+    static var recordingStore: TransferDiagnosticStore { recordingStoreOverride ?? .shared }
     @TaskLocal public static var runID: UUID?
     /// The pipelined verify job running in this task, for read breadcrumbs.
     @TaskLocal public static var verifyOrdinal: Int?
@@ -143,7 +148,7 @@ public enum TransferDiagnostics {
 extension SharedLogger {
     /// Select only numerical progress. `currentFile` is deliberately excluded.
     public static func transferProgress(_ progress: OperationProgress, run: UUID?) {
-        TransferDiagnosticStore.shared.record(.progress, run: run) {
+        TransferDiagnostics.recordingStore.record(.progress, run: run) {
             $0.phase = progress.currentStage
             $0.filesProcessed = progress.filesProcessed; $0.totalFiles = progress.totalFiles
             $0.bytesProcessed = progress.bytesProcessed; $0.totalBytes = progress.totalBytes
@@ -165,7 +170,7 @@ extension SharedLogger {
                                        mode: VerificationMode? = nil, phase: ComparisonPhase? = nil,
                                        outcome: ComparisonOutcome? = nil, stats: CompareStats? = nil,
                                        checked: Int? = nil, total: Int? = nil) {
-        TransferDiagnosticStore.shared.record(event, run: run) {
+        TransferDiagnostics.recordingStore.record(event, run: run) {
             $0.verificationMode = mode; $0.comparisonPhase = phase; $0.comparisonOutcome = outcome
             $0.filesProcessed = checked; $0.totalFiles = total; $0.taskCancelled = Task.isCancelled
             $0.onlyInSourceCount = stats?.onlyInLeftCount
