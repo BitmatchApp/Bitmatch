@@ -76,6 +76,55 @@ After reserving the hardware and Mac app test slot, supply `TEST_RUNNER_BITMATCH
 
 Before touching hardware, `TEST_RUNNER_BITMATCH_PHYSICAL_APP_HOST_SMOKE=1` runs the same evidence assertions on small host scratch folders through `testHostEvidenceHarnessSmoke`. Two ordinary tests also check that invalid configuration leaves existing files untouched and descriptor cleanup preserves an outside symlink target and a replacement directory.
 
+### Selected-device OS I/O observer
+
+`Scripts/sample-device-io.swift` is a separate, read-only Mac observer for the
+already authorized `sd`, `ssdA` and `ssdB` roots in that marked configuration.
+It checks the nonce, exact owner marker, pinned directory identity and volume
+UUID privately. Disk Arbitration supplies the actual selected volume's IOMedia;
+bounded ancestor traversal must identify one unique `IOBlockStorageDriver`.
+It never guesses a disk number or sums host-wide I/O. Missing/ambiguous counters,
+shared drivers, replacement devices and resets stay explicit, rather than
+becoming zero bytes. It reads only the config/owner markers and OS metadata;
+it does not start a transfer, open media devices, purge caches, format or eject.
+
+Build on the host, then keep output in a private host directory:
+
+```sh
+xcrun swiftc -swift-version 6 -parse-as-library -O \
+  -module-cache-path /tmp/bitmatch-device-io-cache \
+  Scripts/sample-device-io.swift -o /tmp/bitmatch-device-io
+/tmp/bitmatch-device-io --self-test
+/tmp/bitmatch-device-io --config "$private_hardware_config" \
+  --samples 60 --interval 1 > "$private_observation_log"
+```
+
+The self-test uses mocked counters/mappings and tiny host scratch files, including
+FIFO/symlink/oversized config controls; it does not access physical volumes.
+Sampling accepts 1–600 snapshots, intervals of 0.2–60 seconds, and a requested
+window no longer than one hour. Output is bounded to those snapshots. OS calls
+themselves can still block on an unhealthy system; this is not a hard deadline
+or an unplug watchdog. Exit 2 means invalid arguments/configuration or a fatal
+read/export error; exit 3 means at least one unavailable/reset sample. Exit 0
+describes observer availability, never transfer success.
+
+JSONL contains only generic roles, counters, controlled status/reason codes,
+UTC timestamps and monotonic `uptimeSeconds`. The first sample is a baseline;
+later rows include deltas and their elapsed interval. Sampling is sequential,
+not a simultaneous hardware timestamp. Align windows to the app receipt's
+transfer-start/settled uptime so later independent hashes, Saved Check and
+regenerated reports are not attributed to the measured transfer.
+
+Apple documents these [read counters](https://developer.apple.com/documentation/iokit/kioblockstoragedriverstatisticsbytesreadkey)
+and [write counters](https://developer.apple.com/documentation/iokit/kioblockstoragedriverstatisticsbyteswrittenkey)
+as cumulative since the block driver was instantiated. Deltas include **all
+processes and partitions using that driver**, filesystem metadata, background
+work and any other tests on the same selected device. They are OS storage-stack
+observations, not app-only accounting or proof of NAND/platter traffic. The
+app's `F_NOCACHE` request does not prove a cold controller/bridge/device cache.
+No cache-purge, power-loss, durability or integrity claim follows from these
+counters; copy evidence and independent readback remain separate.
+
 ## Recording and publishing physical results
 
 Use the [hardware report template](HARDWARE_REPORT_TEMPLATE.md) for each configuration and submit it through the repository's **Hardware test report** issue form. Keep outcomes separate for baseline copy, source removal, one-destination removal, sleep, and cancellation. Mark cases you did not run as **Not tested**. A completed transfer without independent destination hashes is **Inconclusive**, not a verified pass.
