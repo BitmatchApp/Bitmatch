@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Fixed crashes caused by Unicode-equivalent filenames. Conflicting source names are refused before copying; conflicting existing backup names prevent a successful result.
+
 - Check no longer reports preserved Finder metadata as missing when it is listed in the saved checksums.
 - Mac: Corrected physical-drive checks for selected subfolders, so two folders on one drive count as one backup.
 - Cleaned up long names and page breaks in PDFs; metadata companions no longer inflate the clip-preview count. Job details now share the page footer instead of creating a nearly empty last page.
