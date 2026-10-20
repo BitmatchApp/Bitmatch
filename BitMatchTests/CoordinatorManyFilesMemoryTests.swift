@@ -76,7 +76,7 @@ final class CoordinatorManyFilesMemoryTests: XCTestCase {
         }
         let monitor = memory.monitor {
             worker.cancel(); pipeline.cancelOperation()
-            Task { @MainActor in coordinator.cancelOperation() }
+            Task { @MainActor in if coordinator.isOperationInProgress { coordinator.cancelOperation() } }
         }
         let layout = Task { @MainActor in
             while !Task.isCancelled {

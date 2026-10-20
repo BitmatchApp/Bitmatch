@@ -105,6 +105,24 @@ separately. A 20,000-file PDF was not run. The queue presentation currently grou
 completed records' result rows on repeated renders; caching that immutable
 summary is a separate possible performance improvement, not part of this patch.
 
+A matched 2,000-file two-pass run after the queue's transition-only observer
+change passed again: one XCTest, no skips or failures; 8,000 persisted verified
+rows across two completed attempts; every original/copy hash preserved; and the
+same 144-page PDF with exactly 4,000 expected manifest entries. Across 10,417
+samples, physical footprint was 47 MiB initially, 303 MiB at peak and 95 MiB after
+settling. Both the structured Xcode warning list and a full raw-log scan were
+clear. The raw scan covered any `onChange`, multiple-updates-per-frame,
+modifying/publishing-during-view-update and AttributeGraph cycle messages, so it
+does not merely rely on the old warning's array type disappearing. This confirms
+the observed warning is absent for the matched workload, not every possible UI
+path. The report-off/on passes took 19.921/89.934 seconds on the shared host;
+those observations are not a controlled performance benchmark.
+
+The final test-only cleanup also avoids sending a user-cancel action after the
+coordinator has already completed if its independent memory guard trips during
+post-run hash/PDF validation. Existing successful receipts had no guard trigger;
+this preserves their assertions while keeping future failure breadcrumbs honest.
+
 The Release test build uses normal optimizations plus the command-line
 `ENABLE_TESTABILITY=YES` override; it is an app-test host, not the signed shipping
 app. Xcode log capture, XCTest, live views and the test's own inventories all share
