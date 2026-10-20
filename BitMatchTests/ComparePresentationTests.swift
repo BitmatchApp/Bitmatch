@@ -78,7 +78,7 @@ struct ComparePresentationTests {
 
         #expect(verdict.title == "card matches recorded checksums: 2 files")
         #expect(verdict.tone == .verified)
-        #expect(verdict.detail.contains("Used classic-md5-sha1.mhl."))
+        #expect(!verdict.detail.contains("classic-md5-sha1.mhl"))
         #expect(verdict.detail.contains("File contents checked against classic MHL; copy history and authenticity were not verified."))
         #expect(!verdict.title.contains("copied"))
         #expect(!verdict.title.contains("after copying"))
@@ -106,7 +106,7 @@ struct ComparePresentationTests {
         #expect(verdict.tone == .differ)
         #expect(verdict.detail.contains("changed"))
         #expect(verdict.detail.contains("1 missing"))
-        #expect(verdict.detail.contains("1 new files not in the record"))
+        #expect(verdict.detail.contains("1 new file not in the record"))
         #expect(verdict.detail.contains("File contents checked against classic MHL; copy history and authenticity were not verified."))
         #expect(!verdict.detail.contains("after copying"))
         #expect(!verdict.detail.contains("inventory chains checked"))
@@ -130,7 +130,8 @@ struct ComparePresentationTests {
 
         #expect(verdict.title == "card matches recorded checksums: 2 files")
         #expect(verdict.tone == .verified)
-        #expect(verdict.detail.contains("classic.mhl, 0001.mhl"))
+        #expect(!verdict.detail.contains("classic.mhl"))
+        #expect(!verdict.detail.contains("0001.mhl"))
         #expect(verdict.detail.contains("File contents checked against classic MHL; copy history and authenticity were not verified."))
         #expect(!verdict.title.contains("after copying"))
         #expect(!verdict.detail.contains("full history verified"))
@@ -141,6 +142,44 @@ struct ComparePresentationTests {
             #expect(verdict.detail.contains("MHL history and directory structure were not verified"))
             #expect(!verdict.detail.contains("inventory chains checked"))
         }
+    }
+
+    /// Plant: replace the singular/plural file word with "files" in makeSaved.
+    /// A changed file may have a size mismatch, so do not label every change
+    /// as a hash mismatch; the engine retains the exact changed paths.
+    @Test(arguments: [1, 2])
+    func savedChecksumDifferenceCountsAreConciseAndAccurate(count: Int) {
+        let paths = (0..<count).map { "clip-\($0).mov" }
+        let record = SavedChecksumCheck.Record(url: Self.card.appendingPathComponent("report.json"),
+            date: Date(), kind: .bitMatchReport)
+        let result = SavedChecksumCheck.Result(root: Self.card,
+            matchingPaths: [], changedPaths: paths, missingPaths: paths, newPaths: paths, records: [record])
+
+        let verdict = CompareVerdictPresentation.makeSaved(result)
+
+        let fileWord = count == 1 ? "file" : "files"
+        #expect(verdict.detail == "\(count) \(fileWord) changed, \(count) missing, \(count) new \(fileWord) not in the record.")
+        #expect(verdict.tone == .differ)
+        #expect(!verdict.detail.contains("hash mismatch"))
+        #expect(result.records == [record])
+    }
+
+    /// Plant: prepend the record filenames to makeSaved's detail again.
+    /// The screen exposes the complete record list once, in its disclosure.
+    @Test func savedChecksumRecordNamesStayInEvidenceInsteadOfRepeatingInTheVerdict() {
+        let records = ["first-report.json", "second-report.json"].map {
+            SavedChecksumCheck.Record(url: Self.card.appendingPathComponent($0),
+                date: Date(), kind: .bitMatchReport)
+        }
+        let result = SavedChecksumCheck.Result(root: Self.card, matchingPaths: ["clip.mov"],
+            changedPaths: [], missingPaths: [], newPaths: [], records: records)
+
+        let verdict = CompareVerdictPresentation.makeSaved(result)
+
+        #expect(verdict.detail.isEmpty)
+        #expect(verdict.title.contains("1 file intact"))
+        #expect(verdict.tone == .verified)
+        #expect(result.records == records)
     }
 
     /// Plant: report failed discovery as .notFound in SharedAppCoordinator.

@@ -6,6 +6,23 @@ import Vision
 import BitMatchEngine
 import CryptoKit
 
+/// SwiftUI preference callbacks and the capture helper share this one bound.
+/// No app state or global preference is used to locate the composer in pixels.
+private final class ComposerCaptureBounds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var frame: CGRect?
+    func update(_ frame: CGRect?) {
+        lock.lock()
+        defer { lock.unlock() }
+        self.frame = frame
+    }
+    func current() -> CGRect? {
+        lock.lock()
+        defer { lock.unlock() }
+        return frame
+    }
+}
+
 /// Opt-in production-view captures and always-on fixture routing checks.
 ///
 /// Capture the workbench, expanded progress content and expanded History
@@ -216,8 +233,68 @@ final class WorkflowSnapshotTests: XCTestCase {
                     size: CGSize(width: width, height: 1150),
                     name: "mobile-classic-mhl-\(differences ? "differences" : "intact")-\(Int(width))",
                     expectedText: [differences ? "found differences" : "matches recorded checksums",
-                        "classic MHL", "authenticity were not verified", "Record used", "Check again"])
+                        "classic MHL", "authenticity were not verified", "Records used", "Check again"],
+                    textOccurrences: ["classic-md5-sha1.mhl": 0, "hash mismatch": 0,
+                        "1 file changed": differences ? 1 : 0, "1 new file": 1])
             }
+        }
+    }
+
+    /// Actual shared progress content. The ASC MHL stage status must not be
+    /// repeated as a pretend current filename beneath the explanation.
+    /// Plant: remove phaseDetail's Text from ProgressScreen; OCR must fail.
+    func testCaptureMHLProgressExplanation() throws {
+        try requireCaptureConfiguration()
+        let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 1_024,
+            totalBytes: 4_096, filesProcessed: 1, totalFiles: 3, published: false))
+        let presentation = TransferProgressPresentation.make(state: .inProgress,
+            isRunning: true, progress: update, sourceName: "CameraCard",
+            destinations: [URL(fileURLWithPath: "/fixture/Backup A"), URL(fileURLWithPath: "/fixture/Backup B")],
+            destinationNames: ["Backup A", "Backup B"], speed: nil, timeRemaining: nil,
+            elapsed: "2 min", issueCount: 0,
+            device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
+        for width in [375.0, 760.0] {
+            try capture(ScrollView {
+                ProgressScreen(presentation: presentation,
+                    actions: ProgressActions(pause: {}, resume: {}, cancel: {}),
+                    confirmingCancel: .constant(false)).padding()
+            }, size: CGSize(width: width, height: 700), name: "mobile-mhl-progress-\(Int(width))",
+                expectedText: ["Creating ASC MHL for CameraCard", "Cancel", "Checking destination media", "saving handoff records",
+                    "Keep source media intact", "Backup A", "Backup B", "elapsed"],
+                textOccurrences: ["Checking destination media": 1, "Current file": 0])
+        }
+    }
+
+    /// OCR is restricted to the actual source/destination boxes. The summary
+    /// below repeats these names and must not hide truncation in the composer.
+    /// Plant: lower the composer breakpoint to 600; CameraCard truncates.
+    func testCaptureReadableSetupComposer() throws {
+        try requireCaptureConfiguration()
+        let source = URL(fileURLWithPath: "/Volumes/CameraCard")
+        let backups = ["Backup A", "Backup B"].map { URL(fileURLWithPath: "/Volumes/\($0)/Offload") }
+        let actions = SetupLocationsActions(pickSource: {}, clearSource: {}, addAnotherCard: { nil },
+            chooseConnectedSource: { _ in }, chooseFolderOnSource: { _ in },
+            chooseConnectedBackup: { _ in }, chooseFolderOnBackup: { _ in },
+            editStagedCard: { _ in false }, cancelEdit: {}, moveStagedCard: { _, _ in },
+            removeStagedCard: { _ in }, pickBackups: {}, removeBackup: { _ in })
+        for width in [375.0, 760.0] {
+            let bounds = ComposerCaptureBounds()
+            let presentation = SetupLocationsPresentation.make(sourceURL: source,
+                sourceFileCount: 12, sourceBytes: 4_096, isAnalysingSource: false,
+                cameraName: "Camera", destinationURLs: backups,
+                capacity: { _ in .init(availableBytes: 50_000_000_000, totalBytes: 100_000_000_000) },
+                isOperationInProgress: false, nextStep: nil,
+                layout: AdaptiveNavigationPolicy.presentation(for: width))
+            try capture(ScrollView {
+                SetupLocationsView(presentation: presentation, actions: actions,
+                    verificationMode: .constant(.standard), connectedSources: [],
+                    connectedDestinations: [], editingID: nil, stacksVertically: false,
+                    advanced: AnyView(EmptyView())).padding()
+            }
+            .coordinateSpace(name: QueueFlightSpace.name)
+            .onPreferenceChange(ComposerFrameKey.self, perform: bounds.update),
+                size: CGSize(width: width, height: 800), name: "mobile-readable-composer-\(Int(width))",
+                expectedComposerText: ["CameraCard", "Backup A", "Backup B"], composerBounds: bounds)
         }
     }
 
@@ -239,7 +316,9 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
-    private func capture<V: View>(_ view: V, size: CGSize, name: String, expectedText: [String] = []) throws {
+    private func capture<V: View>(_ view: V, size: CGSize, name: String,
+                                 expectedText: [String] = [], textOccurrences: [String: Int] = [:],
+                                 expectedComposerText: [String] = [], composerBounds: ComposerCaptureBounds? = nil) throws {
         let host = UIHostingController(rootView: view
             .frame(width: size.width, height: size.height)
             .transaction { $0.disablesAnimations = true })
@@ -264,7 +343,7 @@ final class WorkflowSnapshotTests: XCTestCase {
         let image = renderer.image { _ in
             host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
         }
-        if !expectedText.isEmpty {
+        if !expectedText.isEmpty || !textOccurrences.isEmpty {
             let cgImage = try XCTUnwrap(image.cgImage)
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
@@ -272,6 +351,25 @@ final class WorkflowSnapshotTests: XCTestCase {
             let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
             for expected in expectedText {
                 XCTAssertTrue(text.contains(expected.lowercased()), "\(name) did not render \(expected). Recognized: \(text)")
+            }
+            for (phrase, count) in textOccurrences {
+                let occurrences = text.components(separatedBy: phrase.lowercased()).count - 1
+                XCTAssertEqual(occurrences, count, "\(name) should render \(phrase) \(count) time(s). Recognized: \(text)")
+            }
+        }
+        if !expectedComposerText.isEmpty {
+            let frame = try XCTUnwrap(composerBounds?.current(), "Composer geometry was not reported")
+            XCTAssertGreaterThan(frame.width, 0)
+            XCTAssertGreaterThan(frame.height, 0)
+            XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame), "Composer must fit in its capture")
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            request.regionOfInterest = CGRect(x: frame.minX / size.width,
+                y: 1 - frame.maxY / size.height, width: frame.width / size.width, height: frame.height / size.height)
+            try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
+            let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
+            for expected in expectedComposerText {
+                XCTAssertTrue(text.contains(expected.lowercased()), "\(name) composer did not render \(expected). Recognized: \(text)")
             }
         }
         guard let data = image.pngData() else {

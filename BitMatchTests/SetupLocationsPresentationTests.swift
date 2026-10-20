@@ -55,13 +55,41 @@ struct SetupLocationsPresentationTests {
         #expect(make(source: card, backups: [raid]).canEdit)
     }
 
-    /// Width decides the arrangement, not the device.
+    /// A toolbar can fit long before three composer columns can. The same
+    /// toolbar layout must adapt when an iPad split view or Mac is resized.
+    /// Plant: in `usesSideBySideComposer`, lower `820` to `600`.
+    @Test(arguments: [580.0, 680.0, 760.0, 819.0])
+    func narrowComposerKeepsCardAndDriveNamesInStackedRows(width: Double) {
+        let presentation = make(source: card, backups: [raid], layout: .toolbar)
+        #expect(!presentation.usesSideBySideComposer(
+            availableWidth: CGFloat(width), stacksVertically: false
+        ))
+        #expect(presentation.source?.title == "DCIM")
+        #expect(presentation.backups.first?.title == "RAID_A")
+        #expect(presentation.backups.first?.capacity == "842 GB free")
+    }
+
     /// Plant: in `SetupLocationsPresentation.make`, set
-    /// `sideBySide: layout == .sidebar`.
-    @Test func sideBySideFromToolbarWidth() {
-        #expect(!make(layout: .compact).sideBySide)
-        #expect(make(layout: .toolbar).sideBySide)
-        #expect(make(layout: .sidebar).sideBySide)
+    /// `sideBySide: layout == .sidebar` (a wide toolbar can use columns too).
+    @Test(arguments: [820.0, 900.0, 1_100.0])
+    func roomyComposerCanUseColumnsWithoutChangingNavigation(width: Double) {
+        #expect(make(layout: .toolbar).usesSideBySideComposer(
+            availableWidth: CGFloat(width), stacksVertically: false
+        ))
+        #expect(make(layout: .sidebar).usesSideBySideComposer(
+            availableWidth: CGFloat(width), stacksVertically: false
+        ))
+    }
+
+    /// The platform can retain a vertical composer even on a wide display.
+    /// Plant: remove `!stacksVertically` from `usesSideBySideComposer`.
+    @Test func explicitVerticalComposerStaysStackedAtWideWidths() {
+        #expect(!make(layout: .sidebar).usesSideBySideComposer(
+            availableWidth: 1_100, stacksVertically: true
+        ))
+        #expect(!make(layout: .compact).usesSideBySideComposer(
+            availableWidth: 375, stacksVertically: false
+        ))
     }
 
     /// Plant: in `SetupLocationsPresentation.sourceDetail`, drop the

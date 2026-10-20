@@ -51,6 +51,12 @@ struct ProgressScreen: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             header
+            if let detail = presentation.phaseDetail {
+                Text(detail)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             progressBar
             stats
             currentFile
@@ -59,9 +65,10 @@ struct ProgressScreen: View {
             deviceNotes
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
-        .onChange(of: presentation.phase) { _, phase in
-            // Audit C3: phase changes of a long run are spoken.
-            AccessibilityNotification.Announcement(TransferProgressPresentation.title(for: phase)).post()
+        .onChange(of: presentation.title) { _, title in
+            // Speak the visible stage, including MHL → report transitions
+            // that share the same writingReports phase.
+            AccessibilityNotification.Announcement(title).post()
         }
         .onChange(of: presentation.controls.canCancel) { _, canCancel in
             if !canCancel { confirmingCancel = false }
@@ -130,11 +137,11 @@ struct ProgressScreen: View {
 
     private var heading: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("\(presentation.title) \(presentation.displaySourceName)")
+            Text(presentation.displayHeading)
                 .font(.title2.weight(.semibold))
-                .lineLimit(1)
+                .lineLimit(presentation.phase == .writingReports ? 2 : 1)
                 .truncationMode(.middle)
-                .help("\(presentation.title) \(presentation.sourceName)")
+                .help(presentation.fullHeading)
             if let subtitle = progressSubtitle {
                 Text(subtitle)
                     .font(.subheadline)
@@ -145,7 +152,7 @@ struct ProgressScreen: View {
             }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(presentation.title) \(presentation.sourceName). \(fullProgressSubtitle)")
+        .accessibilityLabel("\(presentation.fullHeading). \(fullProgressSubtitle)")
         .accessibilityAddTraits(.isHeader)
     }
 

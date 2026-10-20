@@ -2542,7 +2542,7 @@ class SharedAppCoordinator: ObservableObject {
     }
     
     func pauseOperation(reason: PauseInfo.PauseReason = .userRequested) async {
-        guard stateService.currentState.canPause else { return }
+        guard canPause, let operationID = stateService.currentOperationId else { return }
         
         // Pause the active engine operation.
         if currentMode == .compareFolders {
@@ -2551,9 +2551,9 @@ class SharedAppCoordinator: ObservableObject {
             await platformManager.fileOperations.pauseOperation()
         }
 
-        // The run may have finished while the engine paused; a finished run
-        // stays finished and offers no Resume.
-        guard stateService.currentState.canPause else { return }
+        // Media work may have drained or a new queued attempt may have
+        // started while the engine paused. Neither inherits this request.
+        guard stateService.currentOperationId == operationID, canPause else { return }
 
         // Update state service with current progress
         stateService.pauseOperation(reason: reason, currentProgress: progress)
@@ -2967,7 +2967,10 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Pause/Resume Computed Properties
     
     var canPause: Bool {
-        return stateService.currentState.canPause
+        TransferProgressPresentation.canPause(
+            state: stateService.currentState,
+            stage: progress?.currentStage
+        )
     }
     
     var canResume: Bool {
