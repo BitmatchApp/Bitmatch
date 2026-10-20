@@ -23,7 +23,7 @@ Start a Standard transfer to two destinations, wait until active copying is visi
 
 ### One-destination removal
 
-Start a Standard transfer to two destinations and remove one throwaway destination while leaving the other connected. The removed destination must report failures; the remaining destination must finish and every successful output must match the manifest. Inspect both destinations for `.bitmatch.tmp.*` files after reconnecting the removed device.
+Start a Standard transfer to two destinations and remove one throwaway destination while leaving the other connected. The removed destination must report failures; the remaining destination must finish and every successful output must match the manifest. Inspect retained files and incomplete-status warnings after reconnecting the removed device. A retained partial file must never be presented as verified.
 
 ### Sleep and backgrounding
 
@@ -31,7 +31,7 @@ During copy and again during verification, put the Mac to sleep and wake it afte
 
 ### Cancel and relaunch
 
-Cancel during copy, confirm activity stops, then quit and relaunch BitMatch. Repeat cancellation during verification. Confirm no temporary files remain and no canceled or failed row is classified as successful. A relaunch must not silently convert an incomplete transfer into success.
+Cancel during copy, confirm activity stops, then quit and relaunch BitMatch. Repeat cancellation during verification. Confirm no canceled or failed row is classified as successful. On exFAT/FAT, an interrupted copy deliberately retains its partial bytes and incomplete-status warning; check that recovery refuses to treat them as complete. A relaunch must not silently convert an incomplete transfer into success.
 
 ### Low-power hubs
 
@@ -39,7 +39,7 @@ Repeat the one-destination-removal and sleep cases through the approved low-powe
 
 ## Evidence to retain
 
-For every run, retain the seed or source manifest, BitMatch result export, independent post-run hashes, exact fault timing, expected outcome, actual outcome, and photos or topology notes that identify the devices. Treat a hang, silent retry, stale success row, unexpected overwrite, or leftover temporary file as a failure even if another destination completes.
+For every run, retain the seed or source manifest, BitMatch result export, independent post-run hashes, exact fault timing, expected outcome, actual outcome, and photos or topology notes that identify the devices. Treat a hang, silent retry, stale success row, unexpected overwrite, or partial file without its required warning as a failure even if another destination completes. Retained incomplete output is evidence to inspect, not a successful copy.
 
 The automated APFS image test in `Scripts/run_apfs_fault_tests.sh` is a safer first step, but it does not simulate cable, bridge firmware, power-loss, or exFAT behavior. Passing it is not evidence that physical removal is safe.
 

@@ -49,7 +49,7 @@ This moves options, not a job: it leaves out backup locations, camera labels, fo
 
 Choose **Check**, then pick the folder or drive you want to check. Use **Its saved checksums** when BitMatch finds supported records, such as a BitMatch JSON report or an ASC MHL inventory. It reads the files again and compares them with those records; the original card does not need to be connected.
 
-For ASC MHL, this checks recorded file contents, including inventories inside card subfolders. It does not verify the history chain or directory hashes. If a record is damaged or includes file checksums BitMatch cannot read, Check says so instead of silently checking only part of it. Standalone classic MHL and C4-only file checksums aren't supported yet.
+For ASC MHL, this checks recorded file contents, including inventories inside card subfolders. When an inventory chain is present, Check also validates its supported records. Older inventories without a chain get a contents-only check. Directory hashes, recorded renames and chain of custody aren't verified. If a record is damaged or includes checksums BitMatch cannot read, Check says so instead of silently checking only part of it. Standalone classic MHL and C4-only file checksums aren't supported yet.
 
 Use **Another folder** to compare two copies instead. Standard compares contents with SHA-256; Quick checks sizes only. The results separate changed files from files missing or extra in the other folder. An extra file alone does not mean the matching files are damaged. Check does not copy, delete, or repair anything.
 
@@ -58,6 +58,8 @@ The differences export includes filenames and paths. For a bug report without th
 ## Reports
 
 Transfer reports record the results for each destination. PDF, CSV, and JSON exports are available on Mac, iPad, and iPhone. **Master Report** scans a selected folder or drive for saved transfer reports for a chosen day and combines them into a PDF and JSON summary. It summarizes those records; it does not re-verify the media. Use **Check** for that.
+
+Automatic transfer reports go in **Reports** on the first destination. Each destination keeps its own ASC MHL record when enabled.
 
 **Advanced → Transfer details** has optional operator and notes fields. They're remembered for the next card; use **Clear details** when the job changes. Each queued card keeps the details it had when you added it. PDF, CSV, JSON and ASC MHL carry those saved details, including exports from History. They stay out of diagnostic logs.
 
@@ -103,7 +105,7 @@ You can ignore SFTP entirely and keep everything local. No app analytics uploads
 
 ## Before You Trust It With Your Footage
 
-BitMatch reads the source without writing to it. It copies through temporary files and refuses destination files it finds already in place. Checksum modes reuse an existing file only after verifying that it matches.
+BitMatch reads the source without writing to it and never overwrites existing destination files. Checksum modes reuse an existing file only after verifying that it matches. On exFAT and FAT, unfinished copies keep their partial bytes and a visible incomplete-transfer warning.
 
 Source scanning rejects unreadable metadata, unsafe paths, and portable filename collisions. Apart from the AppleDouble setting and designated macOS metadata folders at a volume root, hidden files and empty folders are preserved; symlink entries are skipped. Verification rejects files that change size or identity while being read. Completion screens and reports count failures and sidecars too.
 
