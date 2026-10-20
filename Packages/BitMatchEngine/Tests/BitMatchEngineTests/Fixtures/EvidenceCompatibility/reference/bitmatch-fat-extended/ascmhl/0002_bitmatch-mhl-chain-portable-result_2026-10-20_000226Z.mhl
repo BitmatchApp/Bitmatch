@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-10-19T20:02:26-04:00</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="1.2">ascmhl</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>in-place</process>
+    <roothash>
+      <content>
+        <md5 hashdate="2026-10-19T20:02:26.714092-04:00">1b1de8d4e26d1853e8bff50b8e429d3c</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-19T20:02:26.714092-04:00">f08e3a83aab94b13776ce775b678241c</md5>
+      </structure>
+    </roothash>
+    <ignore>
+      <pattern>.DS_Store</pattern>
+      <pattern>ascmhl</pattern>
+      <pattern>ascmhl/</pattern>
+      <pattern>._*</pattern>
+    </ignore>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="31" lastmodificationdate="2026-10-19T20:02:26-04:00">Camera A/clip.txt</path>
+      <md5 action="verified" hashdate="2026-10-19T20:02:26.713412-04:00">d5c4370f48d86076c9c0ba937db6f1a3</md5>
+    </hash>
+    <directoryhash>
+      <path lastmodificationdate="2026-10-19T20:02:26-04:00">Camera A</path>
+      <content>
+        <md5 hashdate="2026-10-19T20:02:26.713636-04:00">323880c79e9e12e1ab922e86ec30e0d6</md5>
+      </content>
+      <structure>
+        <md5 hashdate="2026-10-19T20:02:26.713636-04:00">f36945abd5b2e95cf00fdedb97d65452</md5>
+      </structure>
+    </directoryhash>
+    <hash>
+      <path size="61" lastmodificationdate="2026-10-19T20:02:26-04:00">added.txt</path>
+      <md5 action="original" hashdate="2026-10-19T20:02:26.713880-04:00">18ef47a11e477414c21679f4be4ea8f5</md5>
+    </hash>
+  </hashes>
+</hashlist>

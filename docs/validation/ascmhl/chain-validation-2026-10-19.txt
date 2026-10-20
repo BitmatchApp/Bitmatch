@@ -1,0 +1,59 @@
+Read-only ASC inventory-chain slice — 2026-10-19
+
+Reference: ascmitc/mhl@0fb61f1e4c7c1c3ff422449aa6f091ce0d3b7687
+Python: isolated 3.12 environment; official reference tracked tree unchanged.
+
+Mounted-driver probe:
+- Disposable mounted volume confirmed FilesystemType=exfat.
+- Actual ASCMHLFixture executable generated initial FAT-v1 history.
+- Official create -h md5 -i '._*' appended generation two on that volume.
+- Official byte verifier and diff accepted the result.
+- Initial completion status remained byte-identical through append.
+- Probe detached and removed; this is synthetic-driver evidence, not physical
+  drive/dock reliability or sudden-power-loss evidence.
+
+Public fixture:
+- Sanitized derivative of that initial engine output; not a byte-for-byte
+  mounted-volume capture. Synthetic hostname replaces machine hostname; synthetic clip path is ASCII
+  to avoid exFAT/Git Unicode-composition portability differences.
+- Initial chain/status rebuilt during fixture creation only, before the
+  official CLI append. Check never writes or reseals histories.
+- Reproducible create_fat_chain_fixture.py run accepted the known synthetic
+  media and preserved its newly constructed witness through official append.
+- validate_fat_chain_fixture.py: PASS schemas; two ordered generation C4s;
+  exact v1 witness; official media verification; official diff; rejected
+  modified appended inventory; original public fixture unchanged.
+- Existing validate_corpus.py: 82 independent checks passed.
+
+Local focused tests:
+- Swift Testing: ASCMHLChainValidationTests, EvidenceCompatibilityTests,
+  SavedChecksumCheckTests — 49 test functions passed, zero issues, including
+  their parameterized positive/adversarial cases.
+- XCTest: ASCMHLGeneratorTests — 28 executed, zero failures.
+- git diff --check: clean.
+- Full engine, Mac app and iOS validation are separate integration gates.
+
+Discriminating negative controls in an isolated package copy:
+- Remove only C4 check: valid-XML modified-inventory assertion fails.
+- Remove only ordered sequence check: gap/reordered assertions fail.
+- Remove only Discovery snapshot comparison: same-byte evidence replacement
+  assertions fail.
+Each was an observed assertion failure, not a compiler failure or timeout.
+The working implementation was never mutated by these controls.
+
+Scope:
+C4/sequence/path/coverage checks bind current inventory bytes. They do not
+verify directory/root hashes, interpret rename or child-history references,
+authenticate custody, or prove that an unanchored historical tail was never
+removed. Unsupported evidence is explicit; legacy no-chain evidence retains
+its file-content-only scope. No source or history writes were added.
+
+Final follow-up:
+- Original and extended FAT completion paths both recheck the final named
+  directory against the original open descriptor before returning success.
+- Deterministic replacement-directory tests pass for both paths and preserve
+  the displaced evidence plus replacement writer's marker.
+- Removing only that identity comparison in an isolated copy caused both
+  assertions to fail; the positive implementation was untouched.
+- New fixture validated from a fresh Git archive to expose checkout-dependent
+  filename behavior; production Unicode handling was unchanged.

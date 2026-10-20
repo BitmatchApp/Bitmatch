@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist xmlns="urn:ASC:MHL:v2.0" version="2.0">
+  <creatorinfo>
+    <creationdate>2026-10-19T23:47:11Z</creationdate>
+    <hostname>bitmatch-fixture-host</hostname>
+    <tool version="compatibility-fixture">BitMatch</tool>
+    <comment>Initial destination inventory. MD5 computed after checking destination bytes against the transfer SHA-256. Includes listed files only; no inherited history or directory hashes.</comment>
+  </creatorinfo>
+  <processinfo><process>in-place</process></processinfo>
+  <hashes>
+    <hash><path size="31" lastmodificationdate="2026-10-19T23:47:11Z">Camera A/clip.txt</path><md5 action="original" hashdate="2026-10-19T23:47:11Z">d5c4370f48d86076c9c0ba937db6f1a3</md5></hash>
+  </hashes>
+</hashlist>

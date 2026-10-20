@@ -19,6 +19,19 @@ public enum ASCMHLGenerator: Sendable {
         return Data("COMPLETE \(name) \(manifest.count) \(manifestHash) \(chain.count) \(chainHash)\n".utf8)
     }
 
+    /// Exact v1 writer bytes, also used to verify the original FAT completion
+    /// witness after a different tool appends supported generations. Equivalent
+    /// XML is insufficient: size and SHA-256 must match the original witness.
+    static func initialChain(name: String, manifest: Data) -> String {
+        """
+        <?xml version="1.0" encoding="UTF-8"?>
+        <ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
+          <hashlist sequencenr="1"><path>\(name)</path><c4>\(c4(manifest))</c4></hashlist>
+        </ascmhldirectory>
+
+        """
+    }
+
     private static func isGeneratedFATManifestName(_ name: String) -> Bool {
         let match = name.range(
             of: #"^0001_BitMatch_FAT_[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{6}Z\.mhl$"#,
@@ -295,13 +308,7 @@ public enum ASCMHLGenerator: Sendable {
         timestamp.dateFormat = "yyyy-MM-dd_HHmmss'Z'"
         let fatFamily = ["exfat", "msdos"].contains(destinationFileSystemType?.lowercased() ?? "")
         let name = "\(fatFamily ? fatManifestPrefix : "0001_BitMatch_")\(timestamp.string(from: Date())).mhl"
-        let chain = """
-        <?xml version="1.0" encoding="UTF-8"?>
-        <ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
-          <hashlist sequencenr="1"><path>\(name)</path><c4>\(c4(Data(xml.utf8)))</c4></hashlist>
-        </ascmhldirectory>
-
-        """
+        let chain = initialChain(name: name, manifest: Data(xml.utf8))
         try Task.checkCancellation()
         try rejectExistingHistory(root)
         var currentIdentity = stat()
@@ -496,8 +503,12 @@ public enum ASCMHLGenerator: Sendable {
 
     /// Check's reader uses the same exact status format as the writer. A
     /// missing, truncated, replaced or mismatching completion stays unsafe.
-    static func publicationIsComplete(at statusURL: URL) throws -> Bool {
-        let directoryFD = open(statusURL.deletingLastPathComponent().path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    static func publicationIsComplete(
+        at statusURL: URL,
+        beforeFinalIdentityCheck: (@Sendable () throws -> Void)? = nil
+    ) throws -> Bool {
+        let directory = statusURL.deletingLastPathComponent()
+        let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard directoryFD >= 0 else { return false }
         defer { close(directoryFD) }
         do {
@@ -516,9 +527,32 @@ public enum ASCMHLGenerator: Sendable {
             let manifestName = String(fields[1])
             guard let manifest = try boundedFile(manifestName, directoryFD: directoryFD, maxBytes: EvidenceReader.maxReportBytes),
                   let chain = try boundedFile("ascmhl_chain.xml", directoryFD: directoryFD, maxBytes: EvidenceReader.maxReportBytes),
-                  manifest.count == manifestSize, chain.count == chainSize else { return false }
-            return hex(SHA256.hash(data: manifest)) == fields[3].lowercased()
-                && hex(SHA256.hash(data: chain)) == fields[5].lowercased()
+                  manifest.count == manifestSize,
+                  hex(SHA256.hash(data: manifest)) == fields[3].lowercased() else { return false }
+            if chain.count != chainSize || hex(SHA256.hash(data: chain)) != fields[5].lowercased() {
+                let original = Data(initialChain(name: manifestName, manifest: manifest).utf8)
+                guard original.count == chainSize, hex(SHA256.hash(data: original)) == fields[5].lowercased() else { return false }
+                let validated = try ASCMHLChainValidator.validate(directory: directory)
+                var pinnedDirectory = stat()
+                guard fstat(directoryFD, &pinnedDirectory) == 0,
+                      validated.device == pinnedDirectory.st_dev, validated.inode == UInt64(pinnedDirectory.st_ino),
+                      validated.evidence[manifestName]?.size == Int64(manifestSize),
+                      validated.evidence[manifestName]?.sha256 == fields[3].lowercased(),
+                      validated.evidence["ascmhl_chain.xml"]?.sha256 == hex(SHA256.hash(data: chain)),
+                      validated.evidence[publicationStatusName]?.sha256 == hex(SHA256.hash(data: status)),
+                      validated.names.count > 1, validated.names.first == manifestName else { return false }
+            }
+            // Test seam only: production never supplies a hook. Both the
+            // original-chain and extended-chain paths must still name the
+            // directory whose descriptors supplied this completion evidence.
+            try beforeFinalIdentityCheck?()
+            var pinnedDirectory = stat()
+            var namedDirectory = stat()
+            guard fstat(directoryFD, &pinnedDirectory) == 0, lstat(directory.path, &namedDirectory) == 0,
+                  (namedDirectory.st_mode & S_IFMT) == S_IFDIR,
+                  pinnedDirectory.st_dev == namedDirectory.st_dev,
+                  pinnedDirectory.st_ino == namedDirectory.st_ino else { return false }
+            return true
         } catch is CancellationError {
             throw CancellationError()
         } catch {

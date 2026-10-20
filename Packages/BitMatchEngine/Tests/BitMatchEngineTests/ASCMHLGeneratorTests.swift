@@ -390,7 +390,7 @@ final class ASCMHLGeneratorTests: XCTestCase {
         }
     }
 
-    func testExternalChainExtensionMakesBitMatchCheckFailClosed() async throws {
+    func testSupportedExternalChainExtensionPreservesInitialCompletionWitness() async throws {
         let (root, file) = try fixture()
         let manifest = try ASCMHLGenerator.generateInitialHistory(
             destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
@@ -409,15 +409,16 @@ final class ASCMHLGeneratorTests: XCTestCase {
         XCTAssertNotEqual(extendedChain, originalChain)
         try extendedChain.write(to: chainURL, atomically: false, encoding: .utf8)
         let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
-        XCTAssertFalse(try ASCMHLGenerator.publicationIsComplete(at: status),
-                       "The status binds generation one; a later chain needs its own validation")
+        XCTAssertTrue(try ASCMHLGenerator.publicationIsComplete(at: status))
         let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
-        do {
-            _ = try await checker.discover(under: root)
-            XCTFail("BitMatch Check must not claim an unvalidated external chain is intact")
-        } catch let error as SavedChecksumCheck.CheckError {
-            XCTAssertEqual(error, .unreadableEvidence)
-        }
+        let discovery = try await checker.discover(under: root)
+        let result = try await checker.check(discovery) { _ in }
+        XCTAssertTrue(result.isIntact)
+        XCTAssertEqual(result.validatedHistoryDirectories, [history])
+        // The original status remains an exact witness, not a resealed history.
+        let expectedStatus = ASCMHLGenerator.publicationOpening + ASCMHLGenerator.publicationCompletion(
+            name: manifest.lastPathComponent, manifest: manifestBytes, chain: Data(originalChain.utf8))
+        XCTAssertEqual(try Data(contentsOf: status), expectedStatus)
     }
 
     func testNestedHistoryAndUnsafePathsAreRejected() throws {
