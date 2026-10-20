@@ -14,3 +14,9 @@ macOS, iPad, and iPhone are core product targets. New features and UI improvemen
 - Validate shared changes with the Mac tests and iOS build as appropriate. For UI changes, check iPhone and iPad layouts as well as Mac; distinguish simulator/build validation from physical-device testing.
 
 Keep the product simple on every platform: choose a source, choose backups, copy and verify, review the outcome.
+
+## Local validation
+
+GitHub Actions CI is intentionally disabled. Run the required engine, Mac and iPhone/iPad checks locally and record their exact results and limits. Local validation remains required before merging or releasing.
+
+Do not repair GitHub runners, spend Actions credits or re-enable CI unless Mike explicitly asks. Preserve the local test scripts and release process.

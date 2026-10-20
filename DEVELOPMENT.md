@@ -7,7 +7,7 @@ Read [docs/THESIS.md](docs/THESIS.md) for what BitMatch promises and the current
 ## Building
 
 - The 0.2.10 release is built and tested locally with Xcode 27.1 (27A9275), Swift 6.4. Open `BitMatch.xcodeproj`.
-- CI still selects Xcode 26.3. That toolchain currently aborts while compiling Mac Settings and rejects some engine-test isolation patterns; those jobs do not establish a runtime test result. Older-toolchain build compatibility remains open. This does not change the app's macOS 15.5 minimum.
+- GitHub Actions CI is intentionally disabled; validation runs locally. The older Xcode 26.3 jobs failed before tests, and an abandoned Xcode 26.6 trial did not establish compatibility. Neither changes the app's macOS 15.5 minimum.
 - Schemes:
   - `BitMatch`: the macOS app (macOS 15.5 or newer).
   - `BitMatch-iPad`: the iPhone and iPad app (iOS/iPadOS 18.5 or newer). Despite the name it targets both device families.
@@ -57,7 +57,7 @@ bash test.sh release-builds  # macOS and iOS simulator Release builds
 
 If the Mac test host stalls in `dyld` while opening Sparkle from a checkout under Desktop, try a build folder outside Desktop: `DERIVED_DATA_ROOT=/private/tmp/bitmatch-local-tests bash test.sh mac-test`. On Xcode 27.0 this allowed tests to execute without changing signing, sandbox or privacy settings. A loader stall is not a test pass; keep its log separate from the successful rerun.
 
-`.github/workflows/ci.yml` defines Mac tests, the iPad/iPhone build and engine tests on push and pull request. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests.
+GitHub Actions CI was disabled on October 20, 2026. The workflow file is retained, but automatic jobs are not part of the project’s validation or release process. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests. Do not repair or re-enable GitHub CI unless Mike asks.
 
 ### Change workflow
 
