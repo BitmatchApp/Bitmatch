@@ -95,17 +95,23 @@ struct PreferencesWindow: View {
     }
 
     private func settingsPane<Content: View>(_ content: Content, pane: PreferencesPane) -> some View {
-        content
-            .frame(width: 680, alignment: .topLeading)
-            .fixedSize(horizontal: false, vertical: true)
-            .background {
-                GeometryReader { proxy in
-                    Color.clear.preference(
-                        key: SettingsPaneHeightKey.self,
-                        value: [pane.rawValue: proxy.size.height]
-                    )
+        // Measure the complete form for window sizing, but give capped panes
+        // a real viewport. A fixed-height TabView otherwise centers and clips
+        // an intrinsically taller form, leaving its first/last rows unreachable.
+        ScrollView {
+            content
+                .frame(width: 680, alignment: .topLeading)
+                .fixedSize(horizontal: false, vertical: true)
+                .background {
+                    GeometryReader { proxy in
+                        Color.clear.preference(
+                            key: SettingsPaneHeightKey.self,
+                            value: [pane.rawValue: proxy.size.height]
+                        )
+                    }
                 }
-            }
+        }
+        .frame(width: 680, alignment: .topLeading)
     }
 
     // MARK: - General
