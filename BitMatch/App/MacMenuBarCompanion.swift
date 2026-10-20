@@ -128,28 +128,83 @@ struct MacMenuBarStatusLabel: View {
     }
 
     var body: some View {
-        Group {
-            if coordinator.isOperationInProgress && coordinator.currentMode == .copyAndVerify {
-                let presentation = TransferProgressPresentation.make(coordinator: coordinator)
-                ZStack {
-                    Circle().stroke(Color.secondary.opacity(0.4), lineWidth: 2.5)
-                    if let fraction = presentation.fraction {
-                        Circle()
-                            .trim(from: 0, to: fraction)
-                            .stroke(Color.primary, style: StrokeStyle(lineWidth: 2.5, lineCap: .round))
-                            .rotationEffect(.degrees(-90))
-                    } else {
-                        Circle().fill(Color.primary).frame(width: 4, height: 4)
-                    }
-                }
-                .accessibilityLabel("BitMatch, \(presentation.title), \(presentation.percentText ?? "progress not yet measured")")
-            } else {
-                MenuBarBrandMark()
-                    .stroke(Color.primary, style: StrokeStyle(lineWidth: 1.7, lineCap: .round, lineJoin: .round))
-                    .accessibilityLabel("BitMatch")
-            }
+        let isActive = coordinator.isOperationInProgress && coordinator.currentMode == .copyAndVerify
+        let presentation = isActive ? TransferProgressPresentation.make(coordinator: coordinator) : nil
+        Image(nsImage: MenuBarStatusIcon.image(isActive: isActive, fraction: presentation?.fraction))
+            .frame(width: 18, height: 18)
+            .accessibilityLabel(presentation.map {
+                "BitMatch, \($0.title), \($0.percentText ?? "progress not yet measured")"
+            } ?? "BitMatch")
+    }
+}
+
+/// Supply an image for the system menu bar, rather than relying on a hosted
+/// Shape hierarchy. At most 102 small vector images are retained.
+@MainActor
+enum MenuBarStatusIcon {
+    private nonisolated enum State: Hashable, Sendable {
+        case idle
+        case indeterminate
+        case progress(Int)
+    }
+
+    private static var images: [State: NSImage] = [:]
+
+    static func image(isActive: Bool, fraction: Double?) -> NSImage {
+        let state: State
+        if !isActive {
+            state = .idle
+        } else if let fraction, fraction.isFinite {
+            // Finishing work must not draw a completed progress ring.
+            state = .progress(Int(min(max(fraction, 0), 0.99) * 100))
+        } else {
+            state = .indeterminate
         }
-        .frame(width: 18, height: 18)
+        if let image = images[state] { return image }
+
+        let brandPath = state == .idle
+            ? MenuBarBrandMark().path(in: CGRect(x: 0, y: 0, width: 18, height: 18)).cgPath
+            : nil
+        // AppKit may draw on another thread; capture only immutable values,
+        // with no actor-isolated SwiftUI work inside the callback.
+        let image = NSImage(size: NSSize(width: 18, height: 18), flipped: true) { @Sendable rect in
+            guard let context = NSGraphicsContext.current?.cgContext else { return false }
+            context.setLineCap(.round)
+            context.setLineJoin(.round)
+
+            if let brandPath {
+                context.setStrokeColor(CGColor(gray: 0, alpha: 1))
+                context.setLineWidth(1.7)
+                context.addPath(brandPath)
+                context.strokePath()
+            } else {
+                let ring = rect.insetBy(dx: 2, dy: 2)
+                context.setLineWidth(2.5)
+                context.setStrokeColor(CGColor(gray: 0, alpha: 0.4))
+                context.strokeEllipse(in: ring)
+
+                switch state {
+                case .progress(let percent) where percent > 0:
+                    context.setStrokeColor(CGColor(gray: 0, alpha: 1))
+                    context.addArc(center: CGPoint(x: ring.midX, y: ring.midY),
+                                   radius: ring.width / 2,
+                                   startAngle: -.pi / 2,
+                                   endAngle: -.pi / 2 + 2 * .pi * CGFloat(percent) / 100,
+                                   clockwise: false)
+                    context.strokePath()
+                case .indeterminate:
+                    context.setFillColor(CGColor(gray: 0, alpha: 1))
+                    context.fillEllipse(in: CGRect(x: rect.midX - 2, y: rect.midY - 2,
+                                                  width: 4, height: 4))
+                default:
+                    break
+                }
+            }
+            return true
+        }
+        image.isTemplate = true
+        images[state] = image
+        return image
     }
 }
 
