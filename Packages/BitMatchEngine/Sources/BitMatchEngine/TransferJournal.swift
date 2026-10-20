@@ -284,15 +284,22 @@ public final class TransferJournal: Sendable {
             }
             lockDescriptor = descriptor
             if FileManager.default.fileExists(atPath: fileURL.path) {
-                var recovered = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: fileURL))
+                let migrations = JournalDecodingMigrations()
+                let decoder = JSONDecoder()
+                decoder.userInfo[JournalDecodingMigrations.userInfoKey] = migrations
+                var recovered = try decoder.decode([LocalTransferRecord].self, from: Data(contentsOf: fileURL))
+                var recoveredInterruption = false
                 for index in recovered.indices where recovered[index].state == .running {
                     recovered[index].state = .interrupted
                     recovered[index].summary = "Interrupted. Reconnect the original folders and retry to check the copies."
                     recovered[index].endedAt = Date()
+                    recoveredInterruption = true
                 }
                 // Publish interruption even if the recovery write fails; never display a stale running claim.
                 initial.records = recovered
-                try Self.persist(recovered, to: fileURL)
+                if recoveredInterruption || migrations.requiresPersistence {
+                    try Self.persist(recovered, to: fileURL)
+                }
             }
         } catch {
             initial.loadFailed = true
