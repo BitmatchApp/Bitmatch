@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - Check no longer reports preserved Finder metadata as missing when it is listed in the saved checksums.
-- Corrected physical-drive checks for selected subfolders, so two folders on one drive count as one backup.
+- Mac: Corrected physical-drive checks for selected subfolders, so two folders on one drive count as one backup.
 - Cleaned up long names and page breaks in PDFs; metadata companions no longer inflate the clip-preview count. Job details now share the page footer instead of creating a nearly empty last page.
 - Long Master Report details and notes now continue onto another page instead of being cut off.
 - Reduced extra work when tracking transfers with lots of files.
