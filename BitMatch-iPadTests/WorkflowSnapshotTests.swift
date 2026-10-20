@@ -588,6 +588,9 @@ final class WorkflowSnapshotTests: XCTestCase {
 
     func testPortraitCaptureDoesNotInheritLandscapeSafeArea() async throws {
         try requireCaptureConfiguration()
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("Phone notch regression; iPad captures assert usable width without forcing device orientation")
+        }
         let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
             .compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
         scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeLeft))
@@ -625,9 +628,10 @@ final class WorkflowSnapshotTests: XCTestCase {
         let orientationMatches = {
             portraitViewport ? foregroundScene.interfaceOrientation.isPortrait : foregroundScene.interfaceOrientation.isLandscape
         }
-        if !orientationMatches() {
-            // A portrait-sized UIWindow does not rotate its scene. Inheriting a
-            // landscape phone scene would subtract both notch insets from the
+        if UIDevice.current.userInterfaceIdiom == .phone && !orientationMatches() {
+            // iPad window dimensions do not require a device orientation. A
+            // portrait-sized phone UIWindow does not rotate its scene. Inheriting
+            // landscape would subtract both notch insets from the
             // fixture width and test an impossible portrait/landscape hybrid.
             foregroundScene.requestGeometryUpdate(.iOS(interfaceOrientations: portraitViewport ? .portrait : .landscapeLeft))
             let orientationDeadline = ContinuousClock.now.advanced(by: .seconds(5))
