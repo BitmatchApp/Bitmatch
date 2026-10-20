@@ -89,8 +89,8 @@ struct TransferQueueSection: View {
             reduceMotion ? .easeInOut(duration: 0.18) : .spring(duration: 0.4, bounce: 0.18),
             value: presentation.rows.map(\.id)
         )
-        .onChange(of: presentation.rows) { oldRows, newRows in
-            handleRowChanges(from: oldRows, to: newRows)
+        .onChange(of: presentation.rows.map(QueueRowTransitionState.init)) { oldRows, _ in
+            handleRowChanges(from: oldRows, to: presentation.rows)
         }
         .onDisappear {
             heroDismissTask?.cancel()
@@ -772,7 +772,7 @@ struct TransferQueueSection: View {
         else { withAnimation(.easeInOut(duration: 0.22)) { expandedIDs.insert(id) } }
     }
 
-    private func handleRowChanges(from oldRows: [QueueSessionRow], to newRows: [QueueSessionRow]) {
+    private func handleRowChanges(from oldRows: [QueueRowTransitionState], to newRows: [QueueSessionRow]) {
         if let heroID, newRows.contains(where: { $0.id != heroID && $0.isRunning }) {
             settleHero(heroID)
         }
@@ -786,7 +786,10 @@ struct TransferQueueSection: View {
             ) {
                 eject(row.id)
             }
-            if QueueHeroPolicy.shouldExpand(row: row, previousRows: oldRows, currentRows: newRows) {
+            if QueueHeroPolicy.shouldExpand(
+                row: row, wasSafe: !isNewlySafe,
+                otherCardIsRunning: newRows.contains { $0.id != row.id && $0.isRunning }
+            ) {
                 showHero(for: row)
             }
         }
