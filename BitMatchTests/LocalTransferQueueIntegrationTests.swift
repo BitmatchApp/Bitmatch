@@ -1615,6 +1615,146 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         ), 0)
     }
 
+    private func seedQueueAppleDouble(_ source: URL) throws -> CameraLabelSettings {
+        var bytes = [UInt8](repeating: 0, count: 42)
+        func put(_ value: UInt32, _ offset: Int) {
+            for index in 0..<4 { bytes[offset + index] = UInt8(truncatingIfNeeded: value >> (24 - 8 * index)) }
+        }
+        put(0x00051607, 0); put(0x00020000, 4); bytes[25] = 1
+        put(2, 26); put(38, 30); put(4, 34)
+        try Data(bytes).write(to: source.appendingPathComponent("._clip.mov"))
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = try AppleDoubleSelection.review(source: source)
+        XCTAssertEqual(settings.excludedAppleDoublePaths, ["._clip.mov"])
+        return settings
+    }
+
+    func testExpectedAppleDoubleQueueContinuesToNextCardWithoutSafePromotion() async throws {
+        try await runExpectedExclusionQueueScenario(failure: nil)
+    }
+
+    func testExpectedAppleDoubleQueueStillPausesForMHLFailure() async throws {
+        try await runExpectedExclusionQueueScenario(failure: "mhl")
+    }
+
+    func testExpectedAppleDoubleQueueStillPausesForReportFailure() async throws {
+        try await runExpectedExclusionQueueScenario(failure: "report")
+    }
+
+    func testExpectedAppleDoubleQueueStillPausesForSelectedConflict() async throws {
+        try await runExpectedExclusionQueueScenario(failure: "selected")
+    }
+
+    func testExpectedAppleDoubleQueueStillPausesForJournalFailure() async throws {
+        try await runExpectedExclusionQueueScenario(failure: "journal")
+    }
+
+    private func runExpectedExclusionQueueScenario(failure: String?) async throws {
+        let f = try QueueFixture()
+        let startingFailures = testRun?.failureCount ?? 0
+        var settled = true
+        defer {
+            if settled && (testRun?.failureCount ?? 0) == startingFailures { f.cleanup() }
+            else { print("Retained expected-exclusion queue fixture: \(f.root.path)") }
+        }
+        let settings = try seedQueueAppleDouble(f.source)
+        let original = try Data(contentsOf: f.source.appendingPathComponent("clip.mov"))
+        let metadata = try Data(contentsOf: f.source.appendingPathComponent("._clip.mov"))
+        let second = f.root.appendingPathComponent("second")
+        try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+        try Data("next card".utf8).write(to: second.appendingPathComponent("clip.mov"))
+        var firstID: UUID?
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { id in
+            if failure == "journal" && id == firstID { throw NSError(domain: "ExpectedExclusionJournalFailure", code: 1) }
+        })
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults
+        )
+        let output = SafetyValidator.resolvedDestinationRoot(source: f.source, destination: f.destination, settings: settings)
+        let reports = f.destination.appendingPathComponent("Reports")
+        if failure == "mhl" {
+            try FileManager.default.createDirectory(at: output.appendingPathComponent("ascmhl"), withIntermediateDirectories: true)
+            try Data("preserved history".utf8).write(to: output.appendingPathComponent("ascmhl/existing.txt"))
+        } else if failure == "report" {
+            try Data("preserved conflict".utf8).write(to: reports)
+        } else if failure == "selected" {
+            try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
+            try Data("preserved conflict".utf8).write(to: output.appendingPathComponent("clip.mov"))
+        }
+        firstID = try coordinator.enqueue(source: f.source, destinations: [f.destination], verificationMode: .standard,
+            cameraSettings: settings, generateASCMHL: failure == nil || failure == "mhl", reportSettings: ReportPrefs(makeReport: failure == nil || failure == "report"))
+        let nextID = try coordinator.enqueue(source: second, destinations: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), generateASCMHL: false, reportSettings: ReportPrefs(makeReport: false))
+        settled = false
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(25)) { @MainActor in
+            !coordinator.isOperationInProgress
+                && (failure == nil
+                    ? coordinator.queueSessionEnded || coordinator.queuePausedRecordID == firstID
+                    : coordinator.queuePausedRecordID == firstID)
+        }
+        if !ended {
+            // This origin is a synthetic test cleanup only, never a field-user cancellation claim.
+            try? await coordinator.cancelOperationAndWaitForSettlement(origin: .user)
+            XCTFail("Expected queue scenario did not settle")
+            return
+        }
+        settled = true
+        let first = try XCTUnwrap(journal.records.first { $0.id == firstID })
+        let next = try XCTUnwrap(journal.records.first { $0.id == nextID })
+        XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("clip.mov")), original)
+        XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("._clip.mov")), metadata)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: first), .safeToErase)
+        XCTAssertFalse(coordinator.queuePresentation.ejectableCardIDs.contains(first.id))
+        if failure == nil {
+            XCTAssertEqual(first.state, .issues)
+            XCTAssertEqual(first.expectedExclusionQueueQualification, .ordinaryTransfer)
+            XCTAssertEqual(next.state, .completed)
+            XCTAssertNil(coordinator.queuePausedRecordID)
+            XCTAssertTrue(first.results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.allSatisfy(\.isVerifiedStatus))
+            let exported = try TransferHistoryDocument(record: first, asCSV: false)
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: exported.data) as? [String: Any])
+            XCTAssertEqual(object["savedSafeToErase"] as? Bool, false)
+            XCTAssertTrue(first.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })
+            XCTAssertTrue(FileManager.default.fileExists(atPath: output.appendingPathComponent("ascmhl/ascmhl_chain.xml").path))
+            let reportFiles = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+            for suffix in ["pdf", "json", "csv"] {
+                let file = try XCTUnwrap(reportFiles.first { $0.pathExtension == suffix })
+                XCTAssertFalse(try Data(contentsOf: file).isEmpty, "Requested \(suffix) report must be written")
+            }
+        } else {
+            XCTAssertNil(first.expectedExclusionQueueQualification)
+            XCTAssertEqual(coordinator.queuePausedRecordID, first.id)
+            XCTAssertEqual(next.state, .queued)
+            if failure == "mhl" { XCTAssertEqual(try String(contentsOf: output.appendingPathComponent("ascmhl/existing.txt"), encoding: .utf8), "preserved history") }
+            if failure == "report" { XCTAssertEqual(try String(contentsOf: reports, encoding: .utf8), "preserved conflict") }
+            if failure == "selected" { XCTAssertEqual(try String(contentsOf: output.appendingPathComponent("clip.mov"), encoding: .utf8), "preserved conflict") }
+        }
+    }
+
+    func testLegacyExpectedExclusionRestoreStillRequiresReview() throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let settings = try seedQueueAppleDouble(f.source)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: settings, reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
+        let output = SafetyValidator.resolvedDestinationRoot(source: f.source, destination: f.destination, settings: settings)
+        try journal.finish(id: id, results: [
+            ResultRow(path: f.source.appendingPathComponent("clip.mov").path, status: ResultOutcome.verified.statusText,
+                size: 4, checksum: "fixture", destination: "backup", destinationPath: output.appendingPathComponent("clip.mov").path),
+            ResultRow(path: f.source.appendingPathComponent("._clip.mov").path, status: ResultOutcome.excludedAppleDouble.statusText,
+                size: 42, checksum: nil, destination: "backup", destinationPath: output.appendingPathComponent("._clip.mov").path)
+        ], summary: "Selected files verified; expected metadata excluded", hadIssues: true, sourceFingerprint: "fixture")
+        try journal.saveQueueSession(PersistedQueueSession(recordIDs: [id], skippedRecordIDs: [], pausedRecordID: id, ended: false, started: true))
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()), transferJournal: journal, defaults: f.defaults)
+        XCTAssertEqual(coordinator.queuePausedRecordID, id)
+        XCTAssertTrue(coordinator.hasUnresolvedQueueRecords)
+        XCTAssertNil(journal.records.first?.expectedExclusionQueueQualification)
+    }
+
     /// Plant: include `.copiedNotVerified` in the pausing branch of
     /// `handleAttemptTerminal`; the first Quick card then stops this queue.
     func testQuickQueueContinuesAndDoesNotAddAttentionBadge() async throws {

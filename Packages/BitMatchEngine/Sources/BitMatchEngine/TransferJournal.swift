@@ -133,6 +133,9 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     /// could not be verified. False when reporting, coverage, or another part
     /// of the attempt also failed; nil for journals written before this field.
     public var quickOnlyUnverified: Bool? = nil
+    /// Final handoffs settled; only reviewed metadata was omitted. This permits
+    /// queue advancement, never a whole-card safe-to-erase verdict.
+    public var expectedExclusionQueueQualification: ExpectedExclusionQueueQualification? = nil
     /// Physical drives represented by `destinations`. Nil for older records
     /// whose disk independence was never assessed.
     public var independentDestinationCount: Int?
@@ -163,6 +166,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, estimatedSourceBytes
+        case expectedExclusionQueueQualification
     }
 
     public init(from decoder: Decoder) throws {
@@ -197,6 +201,10 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         plannedFileCounts = try c.decodeIfPresent([Int].self, forKey: .plannedFileCounts)
         estimatedSourceBytes = try c.decodeIfPresent(Int64.self, forKey: .estimatedSourceBytes)
         quickOnlyUnverified = try c.decodeIfPresent(Bool.self, forKey: .quickOnlyUnverified)
+        // Unknown future qualifications are not permission to advance.
+        expectedExclusionQueueQualification = try? c.decodeIfPresent(
+            ExpectedExclusionQueueQualification.self, forKey: .expectedExclusionQueueQualification
+        )
     }
     public var issueCount: Int { results.filter { !$0.isSuccessStatus }.count }
 }
@@ -475,6 +483,7 @@ public final class TransferJournal: Sendable {
                 // plan is not evidence for the new attempt.
                 record.plannedFileCounts = nil
                 record.quickOnlyUnverified = nil
+                record.expectedExclusionQueueQualification = nil
             }
         }
     }
@@ -627,6 +636,7 @@ public final class TransferJournal: Sendable {
         summary: String,
         hadIssues: Bool,
         quickOnlyUnverified: Bool? = nil,
+        expectedExclusionQueueQualification: ExpectedExclusionQueueQualification? = nil,
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
@@ -681,7 +691,32 @@ public final class TransferJournal: Sendable {
                 record.summary = truthfulSummary
             }
             record.endedAt = Date()
+            record.expectedExclusionQueueQualification = expectedExclusionQueueQualification
+            if !Self.permitsExpectedExclusionQueueContinuation(record) {
+                record.expectedExclusionQueueQualification = nil
+            }
         }
+    }
+
+    /// Recheck durable selected-file scope without opening old source media.
+    /// Legacy, interrupted, cancelled and Quick records never qualify.
+    public static func permitsExpectedExclusionQueueContinuation(_ record: LocalTransferRecord) -> Bool {
+        guard let qualification = record.expectedExclusionQueueQualification,
+              record.state == .issues, record.verificationMode != .quick,
+              record.startedAt != nil, record.endedAt != nil,
+              record.sourceFingerprint?.isEmpty == false,
+              let counts = record.plannedFileCounts else { return false }
+        switch qualification {
+        case .ordinaryTransfer:
+            guard record.projectID == nil, record.projectCardID == nil else { return false }
+        case .projectTransfer(let projectID, let cardID):
+            guard record.projectID == projectID, record.projectCardID == cardID else { return false }
+        }
+        return TransferCompletion.exactExpectedExclusionRows(
+            rows: record.results, source: record.source.url,
+            destinations: record.destinations.map(\.url), settings: record.cameraSettings,
+            plannedFileCounts: counts
+        )
     }
 
     /// Most recent proof that this exact manifest completed with verified
@@ -748,6 +783,7 @@ public final class TransferJournal: Sendable {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.state = .interrupted
+            record.expectedExclusionQueueQualification = nil
             record.summary = summary
             if let results { record.results = results }
             record.endedAt = Date()
@@ -758,6 +794,7 @@ public final class TransferJournal: Sendable {
         try update(id: id) { record in
             guard record.state != .completed else { throw LocalTransferJournalError.invalidState }
             record.state = .cancelled
+            record.expectedExclusionQueueQualification = nil
             record.summary = summary
             if let results { record.results = results }
             record.endedAt = Date()

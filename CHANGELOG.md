@@ -5,6 +5,7 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 - Fixed crashes caused by Unicode-equivalent filenames. Conflicting source names are refused before copying; conflicting existing backup names prevent a successful result.
+- Queued transfers can move on to the next card when every selected file verified and only the AppleDouble metadata files you chose to ignore were excluded. Exclusions stay in the report, and other problems still stop the queue for review.
 
 - Check no longer reports preserved Finder metadata as missing when it is listed in the saved checksums.
 - Mac: Corrected physical-drive checks for selected subfolders, so two folders on one drive count as one backup.

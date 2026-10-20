@@ -1252,7 +1252,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             ))
         }
 
-        return FileOperation(
+        var completed = FileOperation(
             sourceURL: operation.sourceURL,
             destinationURLs: operation.destinationURLs,
             startTime: operation.startTime,
@@ -1264,5 +1264,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             settings: operation.settings,
             estimatedTotalBytes: operation.estimatedTotalBytes
         )
+        completed.reviewedAppleDoubleExclusionPaths = excluded.map(\.relativePath)
+        return completed
     }
 }
