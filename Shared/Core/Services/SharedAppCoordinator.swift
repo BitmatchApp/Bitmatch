@@ -1594,8 +1594,7 @@ class SharedAppCoordinator: ObservableObject {
             #endif
             return record.id
         })
-        return QueueSessionPresentation.make(
-            records: transferJournal.records,
+        return transferJournal.queuePresentation(
             sessionIDs: queueSessionRecordIDs,
             sessionRecordIDsInOrder: queueSessionRecordOrder,
             progress: progress,

@@ -14,7 +14,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let destinations: String
     let safetyState: CardSafetyState
     let progressFraction: Double?
-    let action: QueueRowAction?
+    private(set) var action: QueueRowAction?
     let cause: String?
     let copySummary: String
     let outcome: TransferOutcomePresentation?
@@ -66,6 +66,18 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         }
         if let outcome { return outcome.finishTitle }
         return "\(waitingText) · Waiting"
+    }
+
+    /// A cached finish describes evidence, never whether the card is still
+    /// connected. Reapply that live capability on every presentation.
+    fileprivate func showingSource(isMounted: Bool, isEjected: Bool) -> Self {
+        var row = self
+        if isEjected && safetyState.canEject { row.action = .ejected }
+        else if safetyState.canEject && isMounted { row.action = .eject }
+        else if safetyState == .copiedNotVerified || safetyState == .needsAttention
+            || safetyState == .failed || safetyState == .interrupted { row.action = .review }
+        else { row.action = nil }
+        return row
     }
 }
 
@@ -136,7 +148,11 @@ struct QueueSessionPresentation: Equatable, Sendable {
         mountedSourceIDs: Set<UUID>,
         ejectedSourceIDs: Set<UUID> = [],
         pausedRecordID: UUID? = nil,
-        now: Date = Date()
+        now: Date = Date(),
+        /// Terminal rows derived from this exact journal snapshot. The journal
+        /// owns invalidation; ordinary callers keep the pure uncached path.
+        completedRows: [UUID: QueueSessionRow] = [:],
+        onCompletedRowBuilt: (() -> Void)? = nil
     ) -> Self {
         // A restored queue uses its persisted order. Legacy callers and old
         // sessions fall back to the journal's inverse order because the
@@ -150,7 +166,17 @@ struct QueueSessionPresentation: Equatable, Sendable {
         }
         let runningID = session.first(where: { $0.state == .running })?.id
         let rows = session.map { record in
-            makeRow(
+            if record.state != .queued, record.state != .running,
+               let completed = completedRows[record.id] {
+                return completed.showingSource(
+                    isMounted: mountedSourceIDs.contains(record.id),
+                    isEjected: ejectedSourceIDs.contains(record.id)
+                )
+            }
+            if record.state != .queued, record.state != .running {
+                onCompletedRowBuilt?()
+            }
+            return makeRow(
                 record: record,
                 progress: record.id == runningID ? progress : nil,
                 isMounted: mountedSourceIDs.contains(record.id),
@@ -222,6 +248,13 @@ struct QueueSessionPresentation: Equatable, Sendable {
         )
     }
 
+    /// The cached value contains only presentation fields, not the source
+    /// record or its potentially large result array.
+    static func completedRow(for record: LocalTransferRecord) -> QueueSessionRow? {
+        guard record.state != .queued, record.state != .running else { return nil }
+        return makeRow(record: record, progress: nil, isMounted: false, isEjected: false)
+    }
+
     private static func makeRow(
         record: LocalTransferRecord,
         progress: OperationProgress?,
@@ -265,11 +298,6 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let allFilesReused = state == .safeToErase
             && !record.results.isEmpty
             && record.results.allSatisfy { $0.isVerifiedStatus && $0.wasReused }
-        let action: QueueRowAction?
-        if isEjected && state.canEject { action = .ejected }
-        else if state.canEject && isMounted { action = .eject }
-        else if state == .copiedNotVerified || state == .needsAttention || state == .failed || state == .interrupted { action = .review }
-        else { action = nil }
         return QueueSessionRow(
             id: record.id,
             cardName: record.title,
@@ -279,7 +307,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             progressFraction: record.state == .running ? progress.map {
                 min(max($0.overallProgress, 0), 0.99)
             } : nil,
-            action: action,
+            action: nil,
             cause: cause,
             copySummary: TransferOutcomePresentation.makeCopySummary(
                 safetyState: state,
@@ -294,7 +322,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             destinationNames: destinationNames,
             verificationModeName: record.verificationMode.rawValue,
             estimatedWorkBytes: estimatedWorkBytes(for: record)
-        )
+        ).showingSource(isMounted: isMounted, isEjected: isEjected)
     }
 
     static func estimatedWorkBytes(for record: LocalTransferRecord) -> Double? {
