@@ -15,6 +15,7 @@ final class StressTests: XCTestCase {
     }
 
     func testManyTinyFilesAndPathologicalNamesRemainCompleteAndVerified() async throws {
+        try FileHandle.standardOutput.write(contentsOf: Data("STRESS workerPID=\(getpid())\n".utf8))
         let currentScale = scale
         try await FileOperationsTestLock.shared.run {
             let fixture = try StressFixture(destinationCount: 1)
@@ -77,6 +78,7 @@ final class StressTests: XCTestCase {
 #endif
 
             XCTAssertTrue(verdict(for: operation).success, describe(operation))
+            print("STRESS manyTiny files=\(expected) resultRows=\(operation.results.count) scale=\(currentScale)")
         }
     }
 
@@ -782,6 +784,9 @@ private final class StressFixture: @unchecked Sendable {
             try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
         }
         try Data().write(to: root.appendingPathComponent(".bitmatch-stress-fixture"))
+        if ProcessInfo.processInfo.environment["BITMATCH_STRESS_KEEP_FIXTURES"] == "1" {
+            try FileHandle.standardOutput.write(contentsOf: Data("STRESS fixtureRoot=\(root.path)\n".utf8))
+        }
     }
 
     func write(_ data: Data, to relativePath: String) throws {
@@ -791,6 +796,10 @@ private final class StressFixture: @unchecked Sendable {
     }
 
     func cleanup() {
+        if ProcessInfo.processInfo.environment["BITMATCH_STRESS_KEEP_FIXTURES"] == "1" {
+            print("STRESS retainedFixture=\(root.path)")
+            return
+        }
         let temporaryRoot = FileManager.default.temporaryDirectory.standardizedFileURL.path
         guard root.standardizedFileURL.path.hasPrefix(temporaryRoot),
               FileManager.default.fileExists(atPath: root.appendingPathComponent(".bitmatch-stress-fixture").path) else { return }

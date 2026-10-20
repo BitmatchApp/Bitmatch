@@ -7,10 +7,22 @@ final class DisposableTransferFixture: Sendable {
     let manifest: [String: String]
 
     private let root: URL
+    private let cleanupBase: URL
 
-    init(seed: UInt64, fileCount: Int, bytesPerFile: Int) throws {
+    init(seed: UInt64, fileCount: Int, bytesPerFile: Int, baseDirectory: URL? = nil) throws {
         let fileManager = FileManager.default
-        let root = fileManager.temporaryDirectory
+        let base = baseDirectory ?? fileManager.temporaryDirectory
+        if baseDirectory != nil {
+            let resolved = base.standardizedFileURL.resolvingSymlinksInPath().path
+            let temporary = fileManager.temporaryDirectory.standardizedFileURL.resolvingSymlinksInPath().path
+            let marker = base.appendingPathComponent(".bitmatch-disposable-fixture")
+            let attributes = try fileManager.attributesOfItem(atPath: marker.path)
+            guard (resolved.hasPrefix(temporary + "/") || resolved.hasPrefix("/private/tmp/")),
+                  attributes[.type] as? FileAttributeType == .typeRegular else {
+                throw CocoaError(.fileReadNoPermission)
+            }
+        }
+        let root = base
             .appendingPathComponent("bitmatch-disposable-\(UUID().uuidString)", isDirectory: true)
         let source = root.appendingPathComponent("SOURCE", isDirectory: true)
         let mediaDirectory = source.appendingPathComponent("DCIM/100MEDIA", isDirectory: true)
@@ -44,15 +56,14 @@ final class DisposableTransferFixture: Sendable {
         }
 
         self.root = root
+        self.cleanupBase = base
         self.source = source
         self.destinations = destinations
         self.manifest = manifest
     }
 
     func cleanup() {
-        guard root.standardizedFileURL.path.hasPrefix(
-            FileManager.default.temporaryDirectory.standardizedFileURL.path
-        ), FileManager.default.fileExists(
+        guard root.deletingLastPathComponent().standardizedFileURL.path == cleanupBase.standardizedFileURL.path, FileManager.default.fileExists(
             atPath: root.appendingPathComponent(".bitmatch-disposable-fixture").path
         ) else { return }
 
