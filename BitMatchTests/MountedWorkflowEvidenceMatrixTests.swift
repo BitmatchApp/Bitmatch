@@ -291,6 +291,14 @@ final class MountedWorkflowEvidenceMatrixTests: XCTestCase {
     }
 
     private func makeMovie(_ url: URL) async throws {
+        // Synthetic codec setup performs synchronous Security/encoder work.
+        // Keep fixture preparation off the actor used to drive the app.
+        try await Task.detached {
+            try await Self.writeMovie(url)
+        }.value
+    }
+
+    nonisolated private static func writeMovie(_ url: URL) async throws {
         let writer = try AVAssetWriter(outputURL: url, fileType: .mov)
         let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264, AVVideoWidthKey: 64, AVVideoHeightKey: 64])
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input, sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB, kCVPixelBufferWidthKey as String: 64, kCVPixelBufferHeightKey as String: 64])
