@@ -57,8 +57,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     private let session = UUID()
     private let lock = NSLock()
     private var writeFailed = false
-    private var current: URL { directory.appendingPathComponent("current.jsonl") }
-    private var previous: URL { directory.appendingPathComponent("previous.jsonl") }
+    private static let failureMarker = ".recording-error"
 
     private enum InputFile: String, Encodable { case previous, current }
     private enum InputRejection: String, Encodable { case unreadable, oversized, unsupportedFileType }
@@ -75,13 +74,13 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     init(directory: URL, limit: Int = 256 * 1024,
          systemEvidenceStore: LocalCrashEvidenceStore = .shared) {
         self.directory = directory
-        self.limit = limit
+        // Production instances share the default cap; smaller limits exist for
+        // rotation tests. Writers sharing a folder should use the same cap.
+        self.limit = min(max(0, limit), 256 * 1024)
         self.systemEvidenceStore = systemEvidenceStore
     }
 
     func record(_ event: SharedLogger.TransferEvent, run: UUID?, configure: (inout Event) -> Void = { _ in }) {
-        lock.lock()
-        defer { lock.unlock() }
         var entry = Event(timestamp: Date(), session: session,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
@@ -93,31 +92,9 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             encoder.dateEncodingStrategy = .iso8601
             var line = try encoder.encode(entry)
             line.append(0x0A)
-            guard line.count <= limit else { writeFailed = true; return }
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let size = (try? current.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-            if size + line.count + 1 > limit {
-                if FileManager.default.fileExists(atPath: previous.path) { try FileManager.default.removeItem(at: previous) }
-                if FileManager.default.fileExists(atPath: current.path) { try FileManager.default.moveItem(at: current, to: previous) }
-            }
-            if !FileManager.default.fileExists(atPath: current.path) {
-                guard FileManager.default.createFile(atPath: current.path, contents: nil,
-                    attributes: [.posixPermissions: 0o600]) else { writeFailed = true; return }
-            }
-            let handle = try FileHandle(forUpdating: current)
-            defer { try? handle.close() }
-            let end = try handle.seekToEnd()
-            if end > 0 {
-                try handle.seek(toOffset: end - 1)
-                let last = try handle.read(upToCount: 1)
-                try handle.seek(toOffset: end)
-                if last?.first != 0x0A { try handle.write(contentsOf: Data([0x0A])) }
-            }
-            try handle.write(contentsOf: line)
-            // Phase events are sparse. Flush them before returning so an abrupt
-            // app exit does not depend on a pending dispatch queue being drained.
-            try handle.synchronize()
-        } catch { writeFailed = true } // Diagnostics must never fail a transfer.
+            guard line.count <= limit else { throw POSIXError(.EFBIG) }
+            try withDirectoryLock { fd in try append(line, directoryFD: fd) }
+        } catch { noteRecordingFailure() } // Diagnostics must never fail a transfer.
     }
 
     /// Physical footprint is a resource-pressure clue, not a diagnosis of
@@ -141,22 +118,35 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     /// Only our typed records are exported. Never includes unified logs or the
     /// transfer journal, both of which can hold private production information.
     public func exportData() throws -> Data {
-        lock.lock()
-        defer { lock.unlock() }
         let decoder = JSONDecoder()
         decoder.dateDecodingStrategy = .iso8601
         var events: [Event] = []
         var incompleteRecords = 0
         var rejectedInputs: [RejectedInput] = []
-        for (slot, url) in [(InputFile.previous, previous), (.current, current)] {
-            let data: Data
-            switch readInput(url) {
-            case .missing: continue
-            case .rejected(let reason):
-                rejectedInputs.append(RejectedInput(file: slot, reason: reason))
-                continue
-            case .data(let contents): data = contents
+        var inputs: [Data] = []
+        var snapshotUnavailable = false
+        var sharedRecordingFailure = false
+        do {
+            try withDirectoryLock { fd in
+                var markerInfo = stat()
+                let markerStatus = fstatat(fd, Self.failureMarker, &markerInfo, AT_SYMLINK_NOFOLLOW)
+                sharedRecordingFailure = markerStatus == 0 || errno != ENOENT
+                for slot in [InputFile.previous, .current] {
+                    let data: Data
+                    switch readInput(slot, directoryFD: fd) {
+                    case .missing: continue
+                    case .rejected(let reason):
+                        rejectedInputs.append(RejectedInput(file: slot, reason: reason))
+                        continue
+                    case .data(let contents): data = contents
+                    }
+                    inputs.append(data)
+                }
             }
+        } catch { snapshotUnavailable = true }
+        // Decode the bounded snapshot after releasing the folder lock, so an
+        // export does not hold up writers while JSON records are interpreted.
+        for data in inputs {
             for line in data.split(separator: 0x0A) {
                 do { events.append(try decoder.decode(Event.self, from: Data(line))) }
                 catch { incompleteRecords += 1 }
@@ -169,6 +159,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             let appVersion: String
             let build: String
             let recordingHadErrors: Bool
+            let snapshotUnavailable: Bool
             let incompleteRecords: Int
             let rejectedInputs: [RejectedInput]
             let events: [Event]
@@ -178,6 +169,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             let systemEvidenceNote: String
             let systemEvidence: [LocalCrashEvidence]
         }
+        // Do not hold the ring's filesystem lock while taking another store's lock.
         let systemEvidence = systemEvidenceStore.snapshot()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
@@ -186,7 +178,8 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-            recordingHadErrors: writeFailed || incompleteRecords > 0 || !rejectedInputs.isEmpty,
+            recordingHadErrors: didFailRecording || sharedRecordingFailure || snapshotUnavailable || incompleteRecords > 0 || !rejectedInputs.isEmpty,
+            snapshotUnavailable: snapshotUnavailable,
             incompleteRecords: incompleteRecords, rejectedInputs: rejectedInputs, events: events,
             systemEvidenceEnabled: systemEvidence.enabled,
             systemEvidenceRecordingHadErrors: systemEvidence.recordingHadErrors,
@@ -198,9 +191,9 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     /// Bound allocation even if a local file was damaged, replaced or grew
     /// outside the writer's rotation lock. Nonblocking/no-follow open prevents
     /// a FIFO or link from turning Export diagnostics into an unrelated read.
-    private func readInput(_ url: URL) -> InputRead {
+    private func readInput(_ slot: InputFile, directoryFD: Int32) -> InputRead {
 #if canImport(Darwin) || canImport(Glibc)
-        let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        let fd = openat(directoryFD, slot.rawValue + ".jsonl", O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else {
             if errno == ENOENT { return .missing }
             return .rejected(errno == ELOOP ? .unsupportedFileType : .unreadable)
@@ -226,5 +219,87 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
 #else
         return .rejected(.unreadable)
 #endif
+    }
+
+    /// Cooperating instances and processes lock the same directory inode. The
+    /// directory is never rotated or removed by the store, so path aliases share
+    /// the lock without a process-wide registry or a replaceable lock file.
+    /// Old app versions and unrelated writers do not participate in this lock.
+    private func withDirectoryLock<T>(_ body: (Int32) throws -> T) throws -> T {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        defer { close(fd) }
+        let deadline = DispatchTime.now().uptimeNanoseconds + 250_000_000
+        while flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            guard errno == EWOULDBLOCK || errno == EAGAIN || errno == EINTR else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            guard DispatchTime.now().uptimeNanoseconds < deadline else { throw POSIXError(.EWOULDBLOCK) }
+            var delay = timespec(tv_sec: 0, tv_nsec: 2_000_000)
+            _ = nanosleep(&delay, nil)
+        }
+        defer { _ = flock(fd, LOCK_UN) }
+        return try body(fd)
+    }
+
+    private func append(_ line: Data, directoryFD: Int32) throws {
+        func openCurrent(exclusive: Bool) throws -> FileHandle {
+            let fd = openat(directoryFD, "current.jsonl",
+                            O_RDWR | O_CREAT | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC | (exclusive ? O_EXCL : 0), 0o600)
+            guard fd >= 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+            var info = stat()
+            guard fstat(fd, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+                close(fd)
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        }
+        var handle = try openCurrent(exclusive: false)
+        defer { try? handle.close() }
+        var end = try handle.seekToEnd()
+        if end + UInt64(line.count) + 1 > UInt64(max(0, limit)) {
+            try handle.close()
+            guard renameat(directoryFD, "current.jsonl", directoryFD, "previous.jsonl") == 0 else {
+                throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO)
+            }
+            handle = try openCurrent(exclusive: true)
+            end = 0
+        }
+        if end > 0 {
+            try handle.seek(toOffset: end - 1)
+            let last = try handle.read(upToCount: 1)
+            try handle.seek(toOffset: end)
+            if last?.first != 0x0A { try handle.write(contentsOf: Data([0x0A])) }
+        }
+        try handle.write(contentsOf: line)
+        // Flush sparse phase events before returning, including after rotation.
+        try handle.synchronize()
+    }
+
+    private var didFailRecording: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return writeFailed
+    }
+
+    /// This zero-byte marker survives another instance or relaunch exporting the
+    /// ring. It contains no production information and is deliberately sticky:
+    /// a dropped event must not later look like a complete diagnostic history.
+    private func noteRecordingFailure() {
+        lock.lock()
+        writeFailed = true
+        lock.unlock()
+        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard directoryFD >= 0 else { return }
+        defer { close(directoryFD) }
+        let fd = openat(directoryFD, Self.failureMarker,
+                        O_WRONLY | O_CREAT | O_EXCL | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0o600)
+        guard fd >= 0 else { return }
+        _ = fsync(fd)
+        close(fd)
     }
 }

@@ -70,9 +70,15 @@ The default evidence root is `${TMPDIR:-/tmp}/bitmatch-evidence`; set `BITMATCH_
 
 Before sharing evidence, review it for local paths, usernames, device identifiers, and private filenames. Keep full raw records privately and publish a redacted copy. Record the revision and whether the working tree contained changes; a revision alone does not identify uncommitted source changes.
 
+### Physical engine matrix
+
+`Scripts/test-physical-drives.py` provisions fresh, owner-marked folders on three explicitly selected physical volumes. It runs Quick, Standard, Thorough and Paranoid with pipelining off/on, plus a Standard retry that preserves existing MHL histories. It never formats or ejects those drives or selects existing footage.
+
+After a failed or interrupted run, the runner retains its marked folders, backing image if used, and build for inspection. It detaches an owned image only after the child process ends and its identity and attachment checks pass. A live child or uncertain attachment leaves everything in place. `summary.json` records the retention policy and remaining roles; inspect that evidence before requesting ownership-checked cleanup. Passing runs keep the existing descriptor-checked cleanup. Never remove a volume's contents to clean a test fixture.
+
 ### Physical app workflow and paired measurements
 
-`PhysicalWorkflowEvidenceTests` is an opt-in Mac app test over an already authorized, owner-marked configuration. Its `sd`, `ssdA`, and `ssdB` roles must identify three separate mounted volumes. It creates unique children only, copies a generated playable clip and streaming payload through the real coordinator, then checks MHL, automatic reports, durable History, regenerated reports, embedded preview pixels, and independent destination hashes. It does not format or eject a drive. Failed fixtures remain for inspection; cleanup refuses changed identities and never follows links.
+`PhysicalWorkflowEvidenceTests` is an opt-in Mac app test over an already authorized, owner-marked configuration. Its `sd`, `ssdA`, and `ssdB` roles must identify three separate mounted volumes. It creates unique children only, copies a generated playable clip, streaming payload and empty sidecar through the real coordinator, then checks MHL, automatic reports, durable History, regenerated reports, embedded preview pixels, and independent destination hashes. It does not format or eject a drive. Failed fixtures remain for inspection; cleanup refuses changed identities and never follows links.
 
 After reserving the hardware and Mac app test slot, supply `TEST_RUNNER_BITMATCH_HARDWARE_APP_WORKFLOW=1`, `TEST_RUNNER_BITMATCH_HARDWARE_CONFIG` (the marked config JSON), and `TEST_RUNNER_BITMATCH_HARDWARE_APP_ARTIFACTS` (a private directory on the host) to `xcodebuild test -scheme BitMatch -destination 'platform=macOS' -jobs 4 -parallel-testing-enabled NO -only-testing:BitMatchTests/PhysicalWorkflowEvidenceTests/testPhysicalCardToTwoBackupsAndSavedEvidence`. Normal test runs skip this case.
 

@@ -155,6 +155,14 @@ struct TransferProgressPresentation: Equatable, Sendable {
     let symbol: String
     /// "A001 to 2 backups", or why the run is paused.
     let detail: String?
+    private let isASCMHL: Bool
+
+    /// Explain the destination-media work while creating handoff records.
+    /// Paused/resuming progress and ordinary copy/report work have their own
+    /// heading and subtitle, so they do not need another explanatory line.
+    var phaseDetail: String? {
+        isASCMHL && phase == .writingReports ? detail : nil
+    }
     let tone: ProgressTone
     /// The engine's selected-byte work budget, capped below 100%
     /// while the journal still owns an active attempt. Nil before the engine
@@ -179,6 +187,14 @@ struct TransferProgressPresentation: Equatable, Sendable {
 
     var displaySourceName: String {
         Self.compactSourceName(sourceName)
+    }
+
+    var displayHeading: String { heading(for: displaySourceName) }
+    var fullHeading: String { heading(for: sourceName) }
+
+    private func heading(for source: String) -> String {
+        let separator = isASCMHL && phase == .writingReports ? " for " : " "
+        return title + separator + source
     }
 
     /// What VoiceOver reads for the bar.
@@ -229,24 +245,27 @@ struct TransferProgressPresentation: Equatable, Sendable {
     ) -> Self {
         let phase = Self.phase(state: state, stage: progress?.currentStage)
         let isPaused = phase == .paused
+        let isASCMHL = isRunning && progress?.isASCMHL == true
+        let isCreatingASCMHL = isASCMHL && phase == .writingReports
         // The engine can finish file work before ASC MHL, report writing and
         // the saved verdict settle. A running transfer must never show 100%.
         let fraction = progress.map { min(isRunning ? 0.99 : 1, max(0, $0.overallProgress)) }
         let controls = ProgressControls(
-            canPause: state.canPause,
+            canPause: Self.canPause(state: state, stage: progress?.currentStage),
             canResume: state.canResume,
             canCancel: isRunning || state.canCancel
         )
         let tone: ProgressTone = isPaused ? .paused : (issueCount > 0 ? .attention : .active)
         return Self(
             phase: phase,
-            title: progress?.isASCMHL == true ? "Creating ASC MHL" : Self.title(for: phase),
+            title: isCreatingASCMHL ? "Creating ASC MHL" : Self.title(for: phase),
             sourceName: sourceName.flatMap { $0.isEmpty ? nil : $0 } ?? "the card",
             destinationNames: destinationNames ?? destinations.map { DestinationVolumeLabel.name(for: $0) },
             symbol: Self.symbol(for: phase),
-            detail: progress?.isASCMHL == true
+            detail: isCreatingASCMHL
                 ? "Checking destination media and saving handoff records. Keep source media intact."
                 : Self.detail(state: state, sourceName: sourceName, backupCount: destinations.count),
+            isASCMHL: isASCMHL,
             tone: tone,
             fraction: fraction,
             percentText: fraction.map { "\(Int(($0 * 100).rounded(.down)))%" },
@@ -255,7 +274,9 @@ struct TransferProgressPresentation: Equatable, Sendable {
             speed: isPaused ? nil : Self.speedText(phase: phase, measured: speed),
             timeRemaining: Self.timeLeft(phase: phase, measured: timeRemaining),
             elapsed: elapsed,
-            currentFile: progress?.currentFile.flatMap { $0.isEmpty ? nil : $0 },
+            // ASC MHL uses this field for a stage message, not a media path.
+            // The phase explanation above already describes that work.
+            currentFile: isASCMHL ? nil : progress?.currentFile.flatMap { $0.isEmpty ? nil : $0 },
             issueLine: Self.issueLine(issueCount),
             destinations: Self.rows(
                 destinations: destinations,
@@ -271,6 +292,12 @@ struct TransferProgressPresentation: Equatable, Sendable {
     }
 
     // MARK: Rules
+
+    /// The copy engine can pause media work. Once it drains, ASC MHL,
+    /// reporting and final settlement run outside that pause gate.
+    static func canPause(state: OperationState, stage: ProgressStage?) -> Bool {
+        state.canPause && stage != .generating && stage != .completed
+    }
 
     /// Time left as the screen shows it. `measured` comes from observed copy
     /// speed (`ProgressPresentationModel.formattedTimeRemaining`). Before

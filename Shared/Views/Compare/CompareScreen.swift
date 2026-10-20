@@ -270,22 +270,17 @@ private struct SavedChecksumResultsView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             CompareVerdictHeader(verdict: CompareVerdictPresentation.makeSaved(result))
-            if !result.isIntact {
-                Text("\(result.changedPaths.count) files changed (hash mismatch)")
-                Text("\(result.missingPaths.count) missing")
-                Text("\(result.newPaths.count) new files not in the record")
-            }
             pathSection(title: "Changed", paths: result.changedPaths)
             pathSection(title: "Missing", paths: result.missingPaths)
             pathSection(title: "New files", paths: result.newPaths)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(result.records.count == 1 ? "Report used" : "Reports used")
-                    .font(.subheadline.weight(.semibold))
-                ForEach(result.records, id: \.url) { record in
-                    Text(record.url.lastPathComponent)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
+            DisclosureGroup("Records used (\(result.records.count))") {
+                VStack(alignment: .leading, spacing: 4) {
+                    ForEach(result.records, id: \.url) { record in
+                        Text(record.url.lastPathComponent)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
                 }
             }
         }
@@ -522,10 +517,12 @@ struct CompareVerdictHeader: View {
             Label(verdict.title, systemImage: verdict.symbol)
                 .font(.headline)
                 .foregroundStyle(verdict.tone.color)
-            Text(verdict.detail)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+            if !verdict.detail.isEmpty {
+                Text(verdict.detail)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)

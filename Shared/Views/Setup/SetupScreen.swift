@@ -45,6 +45,7 @@ struct SetupOptionsBindings {
 /// no scroll view of its own: every shell already scrolls.
 struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelContent: View, ProjectEvidence: View>: View {
     let presentation: SetupPresentation
+    let showsInlineStart: Bool
     let options: SetupOptionsBindings
     let actions: SetupActions
     private let locations: (SetupLocationsContext, AnyView) -> Locations
@@ -58,6 +59,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     init(
         presentation: SetupPresentation,
+        showsInlineStart: Bool = true,
         options: SetupOptionsBindings,
         actions: SetupActions,
         @ViewBuilder locations: @escaping (SetupLocationsContext, AnyView) -> Locations,
@@ -67,6 +69,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
         @ViewBuilder projectEvidence: () -> ProjectEvidence
     ) {
         self.presentation = presentation
+        self.showsInlineStart = showsInlineStart
         self.options = options
         self.actions = actions
         self.locations = locations
@@ -281,7 +284,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     private var controls: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if presentation.showsStartArea { startArea }
+            if presentation.showsStartArea && showsInlineStart { startArea }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -289,42 +292,9 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
     // MARK: Start
 
     private var startArea: some View {
-        let start = presentation.start
-        return VStack(alignment: .center, spacing: 8) {
-            Button(action: actions.start) {
-                Label(start.title, systemImage: start.symbol)
-                    .frame(maxWidth: .infinity, minHeight: 32)
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-            .buttonBorderShape(.roundedRectangle(radius: 8))
-            // Grey while waiting on a step or a problem: a button that
-            // cannot be pressed should not look pressable.
-            .tint(start.canStart ? Color.accentColor : Color.gray)
-            .disabled(!start.canStart)
-            // The glow lives in its own layer with its own state: a
-            // repeating animation on the button itself swept every layout
-            // change (the queue appearing) into it, and the button bobbed.
-            .background { StartGlow(isActive: start.canStart, reduceMotion: reduceMotion) }
-            .accessibilityLabel(start.title)
-            .accessibilityHint(start.accessibilityHint)
-            if let blocker = start.blocker {
-                Text(blocker)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if let ready = start.readyLine {
-                Text(ready)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .frame(maxWidth: 380)
-        .frame(maxWidth: .infinity, alignment: .center)
+        SetupStartControl(start: presentation.start, action: actions.start)
     }
+
 }
 
 extension TransferPlanStatusTone {
@@ -365,5 +335,51 @@ private struct StartGlow: View {
         }
         bright = false
         withAnimation(.easeInOut(duration: 1.6).repeatForever(autoreverses: true)) { bright = true }
+    }
+}
+
+/// The same readiness and action label in either the inline Mac placement or
+/// the mobile viewport bar. Real blockers remain visible in both placements.
+struct SetupStartControl: View {
+    let start: StartButtonPresentation
+    let action: () -> Void
+    var usesBottomBar = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    var body: some View {
+        VStack(alignment: .center, spacing: 8) {
+            Button(action: action) {
+                Label(start.title, systemImage: start.symbol)
+                    .frame(maxWidth: .infinity, minHeight: usesBottomBar ? 52 : 32)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.regular)
+            .buttonBorderShape(.roundedRectangle(radius: usesBottomBar ? 12 : 8))
+            // Grey while waiting on a step or a problem: a button that
+            // cannot be pressed should not look pressable.
+            .tint(start.canStart ? Color.accentColor : Color.gray)
+            .disabled(!start.canStart)
+            // The glow lives in its own layer with its own state: a
+            // repeating animation on the button itself swept every layout
+            // change (the queue appearing) into it, and the button bobbed.
+            .background { StartGlow(isActive: start.canStart, reduceMotion: reduceMotion) }
+            .accessibilityLabel(start.title)
+            .accessibilityHint(start.accessibilityHint)
+            .workflowActionBounds(.primary, enabled: usesBottomBar)
+            if let blocker = start.blocker {
+                Text(blocker)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if !usesBottomBar, let ready = start.readyLine {
+                Text(ready)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .frame(maxWidth: usesBottomBar ? 640 : 380)
+        .frame(maxWidth: .infinity, alignment: .center)
     }
 }

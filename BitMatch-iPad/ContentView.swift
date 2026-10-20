@@ -33,12 +33,28 @@ extension Color {
 // MARK: - Main ContentView using Modular Architecture
 struct ContentView: View {
     @StateObject private var coordinator: SharedAppCoordinator
-    @StateObject private var compactQueueState = CompactQueuePresentationState()
+    @StateObject private var compactQueueState: CompactQueuePresentationState
     @State private var showingQueueInspector = false
+    @State private var showingTransfers = false
+    @State private var queueDetent: PresentationDetent = .medium
+    private let initiallyExpandedQueueRows: Set<UUID>
     @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
-    init(coordinator: SharedAppCoordinator? = nil) {
+    init(coordinator: SharedAppCoordinator? = nil,
+         initiallyShowingTransfers: Bool = false,
+         initiallyShowingQueue: Bool = false,
+         initiallyShowingInspector: Bool = false,
+         initiallyExpandedQueueRows: Set<UUID> = []) {
         _coordinator = StateObject(wrappedValue: coordinator ?? SharedAppCoordinator())
+        let queueState = CompactQueuePresentationState()
+        queueState.showingQueue = initiallyShowingQueue
+        _compactQueueState = StateObject(wrappedValue: queueState)
+        _showingTransfers = State(initialValue: initiallyShowingTransfers)
+        _showingQueueInspector = State(initialValue: initiallyShowingInspector)
+        self.initiallyExpandedQueueRows = initiallyExpandedQueueRows
+        // Capture/navigation seeds can show an already-expanded queue row.
+        // Plain launches retain the existing medium sheet and collapsed rows.
+        _queueDetent = State(initialValue: initiallyExpandedQueueRows.isEmpty ? .medium : .large)
     }
     
     var body: some View {
@@ -53,8 +69,9 @@ struct ContentView: View {
                 - (usesInspector && showingQueueInspector ? inspectorWidth : 0)
             let navigation = AdaptiveNavigationPolicy.presentation(for: setupWidth)
             if !usesInspector {
-                CompactQueuePresentation(coordinator: coordinator, state: compactQueueState) {
-                    PhoneContentView(coordinator: coordinator)
+                CompactQueuePresentation(coordinator: coordinator, state: compactQueueState,
+                    showsTransferActions: !showingTransfers && coordinator.currentMode == .copyAndVerify) {
+                    PhoneContentView(coordinator: coordinator, showingTransfers: $showingTransfers)
                 }
                 // Screenshot helper: -BitMatchDemoOpenQueue opens the queue
                 // sheet automatically after seeding. The flag is DEBUG-only
@@ -67,12 +84,16 @@ struct ContentView: View {
             } else {
                 RegularQueuePresentation(
                     coordinator: coordinator,
-                    isInspectorPresented: $showingQueueInspector
+                    isInspectorPresented: $showingQueueInspector,
+                    showsTransferActions: !showingTransfers && !compactQueueState.showingQueue
+                        && coordinator.currentMode == .copyAndVerify,
+                    initiallyExpandedQueueRows: initiallyExpandedQueueRows
                 ) {
                     ModularContentView(
                         coordinator: coordinator,
                         navigationPresentation: navigation,
-                        showingQueueInspector: $showingQueueInspector
+                        showingQueueInspector: $showingQueueInspector,
+                        showingTransfers: $showingTransfers
                     )
                 }
                 // Screenshot helper: -BitMatchDemoOpenQueue shows the
@@ -90,15 +111,19 @@ struct ContentView: View {
                     TransferQueueSection(
                         coordinator: coordinator,
                         offersAddCard: true,
-                        showsHeaderTitle: false
+                        showsHeaderTitle: false,
+                        initiallyExpandedIDs: initiallyExpandedQueueRows
                     )
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding()
                 }
+                .safeAreaInset(edge: .bottom, spacing: 0) {
+                    MobileTransferActionBar(coordinator: coordinator, showsSetupAction: false)
+                }
                 .navigationTitle("Transfers")
                 .navigationBarTitleDisplayMode(.inline)
             }
-            .presentationDetents([.medium, .large])
+            .presentationDetents([.medium, .large], selection: $queueDetent)
             .presentationDragIndicator(.visible)
         }
         .onChange(of: coordinator.queuePresentation.rows) { oldRows, newRows in

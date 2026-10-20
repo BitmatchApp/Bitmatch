@@ -286,38 +286,53 @@ struct CompareVerdictPresentation: Equatable, Sendable {
             number: .decimal
         )
         let fileWord = result.recordedFileCount == 1 ? "file" : "files"
-        let reports = result.records.map { $0.url.lastPathComponent }.joined(separator: ", ")
-        let ascDirectories = Set(result.records.filter { $0.kind == .ascMHL }.map { $0.url.deletingLastPathComponent() })
-        let scope: String
+        let ascDirectories = Set(result.records.filter { $0.kind == .ascMHL }
+            .map { $0.url.deletingLastPathComponent().standardizedFileURL.path })
+        let hasClassic = result.records.contains { $0.kind == .classicMHL }
+        var scope: String
         if ascDirectories.isEmpty {
             scope = ""
-        } else if ascDirectories.isSubset(of: Set(result.validatedHistoryDirectories)) {
-            scope = " File contents and MHL inventory chains checked; directory structure and history authenticity were not verified."
+        } else if ascDirectories.isSubset(of: Set(result.validatedHistoryDirectories.map { $0.standardizedFileURL.path })) {
+            scope = " File contents and supported MHL inventory chains checked; directory structure and authenticity were not verified."
         } else if result.validatedHistoryDirectories.isEmpty {
             scope = " File contents checked; MHL history and directory structure were not verified."
         } else {
             scope = " File contents and supported MHL inventory chains checked; other history chains, directory structure and authenticity were not verified."
         }
+        if hasClassic {
+            scope += " File contents checked against classic MHL; copy history and authenticity were not verified."
+        }
         if result.isIntact {
-            let age = SavedChecksumCheck.agePhrase(since: result.newestRecordDate, now: now, calendar: calendar)
             let newFiles = result.newPaths.isEmpty
                 ? ""
                 : " \(result.newPaths.count) new \(result.newPaths.count == 1 ? "file is" : "files are") not in the record."
+            let title: String
+            if hasClassic {
+                // Manifest/hash dates do not establish that a copy occurred.
+                title = "\(result.root.lastPathComponent) matches recorded checksums: \(fileCount) \(fileWord)"
+            } else {
+                let age = SavedChecksumCheck.agePhrase(since: result.newestRecordDate, now: now, calendar: calendar)
+                title = "\(result.root.lastPathComponent) still matches: \(fileCount) \(fileWord) intact, \(age)"
+            }
             return Self(
-                title: "\(result.root.lastPathComponent) still matches: \(fileCount) \(fileWord) intact, \(age)",
-                detail: "Used \(reports).\(newFiles)\(scope)",
+                title: title,
+                detail: "\(newFiles)\(scope)".trimmingCharacters(in: .whitespacesAndNewlines),
                 symbol: "checkmark.seal.fill",
                 tone: .verified
             )
         }
 
         var parts: [String] = []
-        if !result.changedPaths.isEmpty { parts.append("\(result.changedPaths.count) files changed") }
+        if !result.changedPaths.isEmpty {
+            parts.append("\(result.changedPaths.count) \(result.changedPaths.count == 1 ? "file" : "files") changed")
+        }
         if !result.missingPaths.isEmpty { parts.append("\(result.missingPaths.count) missing") }
-        if !result.newPaths.isEmpty { parts.append("\(result.newPaths.count) new files not in the record") }
+        if !result.newPaths.isEmpty {
+            parts.append("\(result.newPaths.count) new \(result.newPaths.count == 1 ? "file" : "files") not in the record")
+        }
         return Self(
             title: "Saved checksum check found differences",
-            detail: parts.joined(separator: ", ") + ". Used \(reports)." + scope,
+            detail: parts.joined(separator: ", ") + "." + scope,
             symbol: "xmark.octagon.fill",
             tone: .differ
         )

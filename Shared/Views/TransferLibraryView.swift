@@ -17,7 +17,7 @@ struct TransferLibraryView: View {
     @State private var reauthorizeRecord: LocalTransferRecord?
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
-    @State private var searchIndex: TransferLibraryPresentation.SearchIndex
+    @StateObject private var historySearch = TransferHistorySearchModel()
     private let initialRecordID: UUID?
     private let onBack: (() -> Void)?
 
@@ -32,16 +32,23 @@ struct TransferLibraryView: View {
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _journal = ObservedObject(wrappedValue: journal)
         _expandedIDs = State(initialValue: initialRecordID.map { Set([$0]) } ?? [])
-        _searchIndex = State(initialValue: TransferLibraryPresentation.SearchIndex(records: journal.records))
     }
 
     private var visibleMatches: [TransferLibraryPresentation.SearchMatch] {
-        TransferLibraryPresentation.visibleMatches(
-            journal.records,
-            showHistory: true,
-            search: search,
-            index: searchIndex
-        )
+        if search.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return journal.records.compactMap { record in
+                guard TransferLibraryPresentation.isVisible(state: record.state, showHistory: true) else { return nil }
+                return TransferLibraryPresentation.SearchMatch(record: record, clipLine: nil)
+            }
+        }
+        return historySearch.matches
+    }
+
+    private var searchBinding: Binding<String> {
+        Binding(get: { search }, set: { query in
+            search = query
+            historySearch.updateQuery(query)
+        })
     }
 
     private var visibleRecords: [LocalTransferRecord] {
@@ -67,11 +74,15 @@ struct TransferLibraryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
             #endif
-            .modifier(OptionalSearchable(isActive: searchIsAvailable, text: $search))
+            .modifier(OptionalSearchable(isActive: searchIsAvailable, text: searchBinding))
+            .onAppear { historySearch.resume(records: journal.records, query: search) }
             .onReceive(journal.$records) { records in
-                searchIndex = TransferLibraryPresentation.SearchIndex(records: records)
+                historySearch.replaceRecords(records)
             }
-            .onDisappear { pdfTask?.cancel() }
+            .onDisappear {
+                pdfTask?.cancel()
+                historySearch.cancel()
+            }
             .sheet(item: $reauthorizeRecord) { record in
                 ReauthorizeLocationsView(coordinator: coordinator, journal: journal, recordID: record.id)
             }
@@ -102,13 +113,10 @@ struct TransferLibraryView: View {
                 .padding(.vertical, 12)
             }
 
-            if visibleRecords.isEmpty {
-                ContentUnavailableView(
-                    "No finished transfers yet",
-                    systemImage: "clock",
-                    description: Text("Finished transfers show up here.")
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            if let placeholder = searchPlaceholder {
+                TransferHistorySearchPlaceholderView(state: placeholder) {
+                    historySearch.resume(records: journal.records, query: search)
+                }
             } else {
                 ScrollViewReader { proxy in
                     List {
@@ -152,6 +160,13 @@ struct TransferLibraryView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
         }
+    }
+
+    private var searchPlaceholder: TransferHistorySearchPlaceholder? {
+        if historySearch.isSearching { return .searching }
+        if historySearch.searchFailed { return .failed }
+        guard visibleRecords.isEmpty else { return nil }
+        return searchIsAvailable ? .noMatches : .emptyHistory
     }
 
     private var reviewTargetID: UUID? {

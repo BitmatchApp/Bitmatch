@@ -65,7 +65,7 @@ For new copies, Standard does not independently reread the source: a wrong sourc
 - **Careful about "safe to erase"**: a card or folder that changes during the copy, or online-only iCloud/Dropbox files, won't earn a safe verdict. Two folders on the same physical drive count as one backup, not two independent ones. Recognized AppleDouble `._` metadata companions are skipped by default; other hidden files and camera sidecars stay in the copy. Turn off **Ignore AppleDouble metadata files** in **Settings → File handling** to preserve them. When files are excluded, BitMatch can verify the selected files, but it won't mark the whole card safe to erase.
 - **Photographer jobs** for shoots with several photographers, cameras, and cards. Save the setup instead of rebuilding it every time.
 - **Camera detection** for Sony, Canon, ARRI, RED, Blackmagic, Panasonic, Fujifilm, GoPro, DJI, Insta360, and generic DCIM.
-- **Check** for stuff you already copied: compare two folders, or check a backup against its saved checksums.
+- **Check** for stuff you already copied: compare two folders, or check a backup against its saved checksums, including supported ASC MHL and classic MHL 1.1 inventories.
 - **ASC MHL inventories** to hand over with your backups, so someone else can check them too.
 - **PDF, CSV, and JSON reports** for producers who want documentation, or you when you want to check what happened.
 - **Transfer queue and history** on Mac, iPad, and iPhone. Interrupted attempts can be reviewed and retried. Copying a card you already backed up tells you so.

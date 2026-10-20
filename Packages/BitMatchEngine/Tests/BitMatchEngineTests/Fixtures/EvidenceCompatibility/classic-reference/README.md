@@ -1,9 +1,9 @@
 # Original-format MHL reference fixture
 
 This tiny corpus is an independently generated **classic MHL 1.1** inventory.
-It does not add classic-MHL support to BitMatch. Check currently discovers ASC
-inventories under `ascmhl/`; standalone classic inventories are not discovered,
-and classic records inside that evidence tree are explicitly unsupported.
+Check reads standalone UTF-8 classic MHL 1.1 inventories for file-content checks.
+Classic records inside `ascmhl/` remain explicitly unsupported: they cannot
+substitute for an ASC history.
 
 The three media files are original synthetic text, under BitMatch's MIT license.
 The inventory came from the original-format [reference CLI](https://github.com/pomfort/mhl-tool)
@@ -61,12 +61,17 @@ separate `<hash>` entry for each algorithm on each path. Same-size corruption
 must return 16, missing media 3 and truncated XML 11. All negative controls use
 disposable copies; permanent fixture bytes must stay unchanged.
 
-Swift tests independently check all six digests with CryptoKit and assert the
-current unsupported/not-found boundary, including a valid ASC neighbour and
-disposable SHA-1-only, size-only, future-version, truncated and traversal cases.
+Swift tests independently check all six digests with CryptoKit and exercise
+root/nested standalone discovery, all supplied digests, conflicting inventories,
+interrupted reads and evidence/media replacement. Size-only, history references,
+signatures, unknown hashes, future versions, traversal and malformed XML remain
+unsupported or unreadable. The reader accepts non-negative sizes (including
+empty media), a deliberate content-check extension to the old schema's
+positive-integer size restriction; it is not a full XSD validator.
 Generic hashes do not establish a BitMatch verification tier or safe-to-erase
-verdict. This corpus does not cover classic history references, signatures,
-XXHash encoding variants, empty files or every filename encoding. The older
+verdict. This reference corpus does not cover classic history references, signatures,
+XXHash encoding variants, empty files or every filename encoding. Separate
+original synthetic reader tests cover empty files and UTF-8 whitespace/Unicode. The older
 reference CLI trimmed leading/trailing filename whitespace in an exploratory
 sample; that sample is excluded from the passing corpus. Existing ASC fixtures
 cover whitespace and Unicode independently. No history is extended or rewritten.

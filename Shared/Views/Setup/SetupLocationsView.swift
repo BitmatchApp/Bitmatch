@@ -51,6 +51,7 @@ struct SetupLocationsView: View {
     @State private var targetedBackup: Int?
     @State private var isSourcePickerPresented = false
     @State private var isDestinationPickerPresented = false
+    @State private var composerWidth: CGFloat = 0
     @State private var selectedQueueID: UUID?
     @State private var transitioningQueueID: UUID?
     @State private var transitionClearTask: Task<Void, Never>?
@@ -82,6 +83,11 @@ struct SetupLocationsView: View {
 
     private var composer: some View {
         composerLayout
+            .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.width
+            } action: { newWidth in
+                composerWidth = newWidth
+            }
             .background {
                 GeometryReader { proxy in
                     Color.clear.preference(
@@ -94,7 +100,10 @@ struct SetupLocationsView: View {
 
     @ViewBuilder
     private var composerLayout: some View {
-        if presentation.sideBySide && !stacksVertically {
+        if presentation.usesSideBySideComposer(
+            availableWidth: composerWidth,
+            stacksVertically: stacksVertically
+        ) {
             HStack(alignment: .top, spacing: 0) {
                 sourceBox.frame(minWidth: 180, maxWidth: .infinity)
                 verificationConnector(vertical: false)
@@ -149,6 +158,7 @@ struct SetupLocationsView: View {
                 Button(action: actions.clearSource) {
                     Image(systemName: "xmark.circle.fill")
                         .frame(width: 24, height: 24)
+                        .setupLocationTouchTarget()
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
@@ -185,6 +195,7 @@ struct SetupLocationsView: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .layoutPriority(1)
             .disabled(!presentation.canEdit)
             .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
             .accessibilityHint("Lists connected cards and drives or opens a folder picker")
@@ -317,6 +328,7 @@ struct SetupLocationsView: View {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
                     .frame(width: 22, height: 22)
+                    .setupLocationTouchTarget()
             }
             .buttonStyle(.plain)
             .disabled(!presentation.canEditBackups)
@@ -343,6 +355,7 @@ struct SetupLocationsView: View {
                 }
             }
             .help(backup.path)
+            .layoutPriority(1)
             Spacer(minLength: 4)
             chooseSubfolderButton(
                 help: "Choose a folder on \(backup.title)",
@@ -370,6 +383,7 @@ struct SetupLocationsView: View {
                 Image(systemName: "folder.badge.plus")
                     .frame(width: 24, height: 24)
             }
+            .setupLocationTouchTarget()
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
@@ -383,6 +397,7 @@ struct SetupLocationsView: View {
             Label("Add destination", systemImage: "plus")
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
+                .setupLocationTouchTarget()
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
@@ -665,6 +680,18 @@ struct SetupLocationsView: View {
 }
 
 private extension View {
+    /// Keep the Mac's compact controls while giving each separate touch
+    /// action its own target on iPhone and iPad.
+    @ViewBuilder
+    func setupLocationTouchTarget() -> some View {
+        #if os(iOS)
+        frame(minWidth: 44, minHeight: 44)
+            .contentShape(Rectangle())
+        #else
+        self
+        #endif
+    }
+
     @ViewBuilder
     func transferTransition<ID: Hashable>(
         id: ID,

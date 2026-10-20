@@ -83,6 +83,8 @@ struct TransferProgressPresentationTests {
         #expect(p.title != "Preparing")
         #expect((p.fraction ?? 0) > 0)
         #expect(p.percentText == "25%")
+        #expect(p.controls.canPause)
+        #expect(p.displayHeading == "Copying A001")
         #expect(p.countText == "3 of 8")
     }
 
@@ -95,6 +97,89 @@ struct TransferProgressPresentationTests {
         #expect(p.percentText == "99%")
         #expect(p.accessibilityValue.contains("Finishing, 99%"))
         #expect(p.tone != .attention)
+    }
+
+    /// Plant: make phaseDetail return nil, or stop suppressing the synthetic
+    /// ASC MHL stage message in currentFile.
+    @Test func mhlProgressExplainsTheReadWithoutInventingACurrentMediaFile() {
+        let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 1_024,
+            totalBytes: 4_096, filesProcessed: 1, totalFiles: 3, published: false))
+        let p = make(state: .inProgress, progress: update)
+
+        #expect(p.title == "Creating ASC MHL")
+        #expect(p.phaseDetail == "Checking destination media and saving handoff records. Keep source media intact.")
+        #expect(p.currentFile == nil)
+        #expect(p.phase == .writingReports)
+        #expect(p.fraction == 0.25)
+        #expect(p.controls.canCancel)
+        #expect(!p.controls.canPause)
+        #expect(!p.controls.canResume)
+        #expect(p.controls.primary == nil)
+        #expect(p.displayHeading == "Creating ASC MHL for A001")
+        #expect(p.fullHeading == "Creating ASC MHL for A001")
+    }
+
+    /// Plant: let canPause return state.canPause without checking the stage.
+    /// Report generation and final settlement cannot pause the drained copy.
+    @Test(arguments: [ProgressStage.generating, .completed])
+    func handoffAndFinishingOfferCancelWithoutPause(stage: ProgressStage) {
+        let p = make(state: .verifying, progress: progress(stage: stage, overall: 1))
+
+        #expect(!p.controls.canPause)
+        #expect(!p.controls.canResume)
+        #expect(p.controls.primary == nil)
+        #expect(p.controls.canCancel)
+    }
+
+    /// Plant: exclude .verifying along with the handoff stages in canPause.
+    @Test(arguments: [ProgressStage.copying, .verifying])
+    func mediaWorkKeepsPauseAvailable(stage: ProgressStage) {
+        let p = make(state: .inProgress, progress: progress(stage: stage, overall: 0.5))
+
+        #expect(p.controls.canPause)
+        #expect(p.controls.primary == .pause)
+        #expect(p.controls.canCancel)
+    }
+
+    /// Plant: return detail unconditionally from phaseDetail.
+    /// Regular progress keeps the destination/elapsed subtitle and real file
+    /// name, without an additional generic explanation.
+    @Test(arguments: [ProgressStage.copying, .verifying, .generating, .completed])
+    func ordinaryProgressDoesNotGainAnExtraPhaseExplanation(stage: ProgressStage) {
+        let p = make(state: .inProgress, progress: progress(stage: stage, overall: 0.5))
+
+        #expect(p.phaseDetail == nil)
+        #expect(p.currentFile == "A001.MOV")
+    }
+
+    /// Plant: let the MHL flag override the paused title/detail, or show its
+    /// phaseDetail despite pause. A retained tick must not hide why work stopped.
+    @Test func pausedMHLKeepsThePauseReasonInsteadOfClaimingActiveWork() {
+        let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 1_024,
+            totalBytes: 4_096, filesProcessed: 1, totalFiles: 3, published: false))
+        let p = make(state: .paused(PauseInfo(pausedAt: Date(), currentFile: nil,
+            filesProcessed: 1, totalFiles: 3, bytesProcessed: 1_024, reason: .lowBattery)),
+            progress: update)
+
+        #expect(p.title == "Paused")
+        #expect(p.detail?.contains("battery") == true)
+        #expect(p.phaseDetail == nil)
+        #expect(p.currentFile == nil)
+        #expect(p.controls.canResume)
+        #expect(p.controls.primary == .resume)
+    }
+
+    /// Plant: derive the MHL explanation solely from the retained progress
+    /// flag, ignoring the current running state.
+    @Test func completedAttemptDoesNotKeepAnActiveMHLExplanation() {
+        let update = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 4_096,
+            totalBytes: 4_096, filesProcessed: 3, totalFiles: 3, published: true))
+        let p = make(state: .completed(OperationCompletionInfo(success: true, message: "Done")),
+            isRunning: false, progress: update)
+
+        #expect(p.phaseDetail == nil)
+        #expect(p.title != "Creating ASC MHL")
+        #expect(!p.controls.canCancel)
     }
 
     /// Plant: in `TransferProgressPresentation.make`, pass

@@ -61,6 +61,16 @@ struct ProgressPresentationIOSTests {
         ) == nil)
     }
 
+    // Plant: ignore showsExpandedRunningProgress. The actual expanded row
+    // already owns the platform limit; the queue header must not repeat it.
+    @Test
+    func expandedRunningProgressOwnsThePlatformLimit() {
+        let progress = make(device: .iOS(keepsScreenAwake: true, backgroundSecondsLeft: nil))
+        #expect(QueueRunningNoticePolicy.sectionNote(
+            isRunning: true, isMobile: true, progress: progress, showsExpandedRunningProgress: true) == nil)
+        #expect(progress.deviceNotes.filter { $0.text == TransferProgressPresentation.iOSBackgroundLimit }.count == 1)
+    }
+
     // Plant: in `TransferProgressPresentation.phase`, return `.preparing`
     // for every stage while the state is `.inProgress`.
     @Test
