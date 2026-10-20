@@ -7,6 +7,8 @@ All notable changes to this project will be documented in this file.
 - Check no longer reports preserved Finder metadata as missing when it is listed in the saved checksums.
 - Corrected physical-drive checks for selected subfolders, so two folders on one drive count as one backup.
 - Cleaned up long names and page breaks in PDFs; metadata companions no longer inflate the clip-preview count. Job details now share the page footer instead of creating a nearly empty last page.
+- Long Master Report details and notes now continue onto another page instead of being cut off.
+- Reduced extra work when tracking transfers with lots of files.
 - Mac: Advanced points out a selected backup using a reported USB 2 connection.
 - Diagnostics exports reject oversized or unreadable local records, keep the usable events, and say when the record is incomplete.
 - Destination progress no longer resets to Waiting while ASC MHL and transfer reports are being saved. Processed counts and measured progress stay visible without implying the transfer is complete.

@@ -1,6 +1,6 @@
 # Overnight validation — October 19–20, 2026
 
-**Draft checkpoint.** This records local validation and its limits, not a release approval or proof that a field issue is fixed. The work started from `d6096442`; integration was at `4106a48a` when this draft was prepared. Several long-running tests were compiled earlier, as qualified below. Final integration and cleanup results still need to be recorded.
+**Draft checkpoint.** This records local validation and its limits, not a release approval or proof that a field issue is fixed. The work started from `d6096442`; individual gate revisions and earlier long-running binaries are qualified below. Final integration and cleanup results still need to be recorded.
 
 [Issue #10](https://github.com/BitmatchApp/Bitmatch/issues/10) and [issue #23](https://github.com/BitmatchApp/Bitmatch/issues/23) remain open. These runs do not establish the reporters' exact failure mechanism.
 
@@ -52,6 +52,18 @@ The [process-death matrix](validation/PROCESS_DEATH_RECOVERY_20261019.md) passed
 
 The focused run scheduled three XCTest methods: two passed and one internal helper skipped. The 20 scenarios are not 20 additional XCTest passes. Ordinary discovery passed the ownership guard and skipped the two opt-in methods. Final images and disposable source payloads were cleaned after normal detach.
 
+## Repeated transfers and many-file workloads
+
+The [seeded host soak](validation/SEEDED_SOAK_20261020.md) passed 256 iterations using all 256 low-byte payload patterns, with 2,304 source hashes before, 2,304 after and 4,608 destination hashes. Its corrected runner requires one actual passing XCTest and retains partial or failed evidence. A separate engine case passed with 20,009 files; independent post-run source and destination hashes matched the declared fixture bytes. That case had no independent pre-transfer hash pass. These are host-filesystem engine tests, without MHL or app UI.
+
+A separate production-coordinator/SwiftUI-host probe completed 20,000 files to two backups through MHL and journal settlement. Debug passed with 40,000 verified rows and matching source/destination hashes; its 874 MiB sampled peak included the test's post-transfer hash helper. After pooling that helper's per-file Foundation work, Release also passed: 40,000 verified rows, a 438 MiB sampled process peak and 393 MiB settled footprint. These figures include the test host and retained history, not just the shipping app's transfer buffers. The Release test host enables test visibility; it is not an identical shipping binary.
+
+The [PDF-enabled follow-up](validation/COORDINATOR_MANY_FILES_MEMORY_20261020.md) passed two sequential 2,000-file transfers in one process, including all 4,000 entries across both destinations in each 144-page PDF. Source and destination hashes and persisted results matched. The initial corrected run passed seven tests without skips or failures and peaked at 327 MiB. Its raw log contained a SwiftUI queue `onChange` warning even though structured runtime warnings were empty. The queue observer now tracks completion transitions rather than every progress update; 24 focused presentation tests passed. A matched real-workflow rerun passed, peaked at 303 MiB and had no matches in either structured warnings or the broader raw-console scan. That establishes warning removal for this case, not every possible UI workload. Neither run proves constant memory use or the cause of issue #23.
+
+Long Master Report summaries, notes and oversized file rows now paginate instead of clipping. Seven actual-service controls passed; six stress cases failed against the earlier renderer. The normal one-page case stayed one page, and Unicode notes retained their text across page breaks. These checks are separate from the transfer-PDF preview cases.
+
+The probe exposed a separate [quadratic result lookup](validation/RUN_RESULT_LOOKUP_20261020.md). Its indexed replacement preserves arrival order, exact source/destination matching and first-duplicate behavior. Four semantic tests passed. This removes measured bookkeeping work; it does not establish a memory leak or explain issue #23.
+
 ## First buffer-benchmark read
 
 The selected SSD's opt-in raw benchmark completed **one XCTest, zero failures and zero skips**: 25 hash passes and 25 raw-copy passes, each over a 2 GiB fixture. This is a raw I/O/hash benchmark, not a verified application transfer.
@@ -64,20 +76,20 @@ Before that run, the benchmark harness was corrected so each FileHandle read and
 
 ## App, engine and simulator gates
 
-The engine gates were rerun after the buffer-harness additions at `4106a48a`; the full Mac, iPad and iPhone suites passed again at `84445c21`, including the high-resolution probe guards and final PDF footer regressions. Logical test counts and parameterized case counts are kept separate.
+The engine gates passed again at `79f07486`, including the soak and private diagnostic-scope additions. Fresh integrated Mac, iPad and iPhone suites passed at `2c3ac909`; the only commit during that app run changed the TODO document. Logical test counts and parameterized case counts are kept separate.
 
 | Gate | Completed result |
 | --- | --- |
-| Engine Debug, XCTest | 223 scheduled: 186 passed, 37 opt-in/platform skips, zero failures |
-| Engine Release, XCTest | 223 scheduled: 186 passed, 37 opt-in/platform skips, zero failures |
-| Engine Debug, Swift Testing | 219 declarations in 39 suites: 213 passed, six opt-in skips, zero failures |
-| Engine Release, Swift Testing | 219 declarations in 39 suites: 213 passed, six opt-in skips, zero failures |
-| Full Mac app suite | 1,291 logical tests: 1,269 passed, 22 skipped, zero failures; no reported runtime warnings |
-| iPad simulator | 81 tests: 71 passed, ten skipped, zero failures; no reported runtime warnings |
-| iPhone simulator | 81 tests: 71 passed, ten skipped, zero failures; no reported runtime warnings |
+| Engine Debug, XCTest | 227 scheduled: 188 passed, 39 opt-in/platform skips, zero failures |
+| Engine Release, XCTest | 227 scheduled: 188 passed, 39 opt-in/platform skips, zero failures |
+| Engine Debug, Swift Testing | 223 declarations in 40 suites: 217 passed, six opt-in skips, zero failures |
+| Engine Release, Swift Testing | 223 declarations in 40 suites: 217 passed, six opt-in skips, zero failures |
+| Full Mac app suite | 1,305 logical tests: 1,282 passed, 23 skipped, zero failures; structured and raw UI-warning scans clear |
+| iPad simulator | 85 tests: 75 passed, ten skipped, zero failures; structured and raw UI-warning scans clear |
+| iPhone simulator | 85 tests: 75 passed, ten skipped, zero failures; structured and raw UI-warning scans clear |
 | Shared mobile build | Universal iOS simulator build passed |
-| Release builds | Universal Mac and iOS-device builds passed |
-| Local signed Mac archive | `5fb59a64`: x86_64 and arm64, deep/strict signature verification passed; no install, notarization or release |
+| Release builds | `2c3ac909`: universal Mac and iOS-device builds passed with signing disabled |
+| Local signed Mac archive | `2c3ac909`: x86_64 and arm64, deep/strict signature verification passed; no install, notarization or release |
 
 Skipped opt-in tests are not counted as passes. Some were enabled in separate runs above; those runs do not turn the whole-suite skip count into zero.
 
@@ -85,11 +97,17 @@ A separate signed-app walkthrough completed a Standard transfer to two physical 
 
 The diagnostics-export hardening had its own **32 passing XCTest cases**, zero skips and a universal mobile build. An oversized-input regression was observed failing before the fix. The tests cover malformed, oversized, unreadable, symlink and FIFO inputs, preserving valid events from the other input and reporting incomplete evidence honestly. This does not identify the cause of issue #23.
 
+Separate Thread Sanitizer and Address Sanitizer builds at `3c284702` exercised the selected diagnostics, recorded-metadata, disk-resolution and publication tests: each scheduled 24 XCTest methods, with 22 passed, two opt-in physical tests skipped and zero failures. Each sanitizer also passed 13 Swift Testing declarations covering the pipeline and byte-weighted progress. The test binaries contained the respective sanitizer initialization symbols, and neither run reported sanitizer findings. An initial receipt parser rejected the successful Swift Testing summary because it included a suite count; the retained logs were revalidated after correcting the parser. These checks cover the executed paths, not every possible race, memory leak or resource termination.
+
+The later diagnostic-scope changes also passed Thread Sanitizer: 15 XCTest methods and six Swift Testing declarations, with four declarations passed and two opt-in large-file cases skipped. Instrumentation was confirmed and no findings were reported. Scope tests cover child-task inheritance, nested throwing scopes and concurrent isolation; the override does not propagate to detached tasks or other processes.
+
+A preceding post-soak Release run failed two diagnostic-ordering assertions while reading the shared ring. A separate private-directory reproduction confirmed silent record loss between independent store instances; it does not establish which process affected the original test. The regression fixtures now use private diagnostic stores, and the fresh full Debug/Release engine gates above pass. This fixes test isolation, not independent-process writes to one diagnostics file; the failed logs remain retained.
+
 ## Pending finalization
 
 - **Large physical transfer:** the corrected 119.6 GB SSD A → SSD B case was still running at this checkpoint. Do not count it as a pass, infer its eventual verdict, or use an earlier flawed-harness attempt as a substitute.
 - **Application performance:** isolated repeated Standard/Thorough application trials and their counter-aligned measurements need a settled receipt. Raw buffer throughput is not application performance evidence.
-- **4K report-preview memory:** the [reviewed host-only probe](validation/report-preview-memory-2026-10-19.md) passed at 20 and 200 paths, each with three executed XCTest methods, zero skips/failures and no reported runtime warnings. Sampled process footprint peaked at 103 MiB. Its fixture repeats one two-frame H.264 pattern across distinct paths; it does not cover codec diversity, long GOPs, large encoded files or distinct camera clips. All preview pixels, source/destination hashes and PDF image placements were checked. The [separate footer fix](validation/report-pdf-footer-2026-10-19.md) passed its regressions and the integrated app suites: normal 20/200-clip reports retain all previews across 2/14 pages instead of 3/15. Oversized identity text remains fully paginated rather than truncated.
+- **4K report-preview memory:** the [initial host-only probe](validation/report-preview-memory-2026-10-19.md) passed at 20 and 200 H.264 paths, peaking at 103 MiB. The [explicit-codec extension](validation/report-preview-codecs-2026-10-20.md) also passed actual 4K HEVC and ProRes 422 at 20 paths, plus ten H.264 reports in one process. Those three invocations each passed three methods without skips/failures; their peaks were 103, 143 and 102 MiB. All preview pixels, source/destination hashes and PDF placements were checked. Each codec still repeats one short generated pattern; there is no claim of long-GOP, large encoded-file or camera-footage coverage. The [footer fix](validation/report-pdf-footer-2026-10-19.md) retains normal 20/200-clip reports across 2/14 pages instead of 3/15; oversized identity text remains paginated rather than truncated.
 - **Intel:** [translated x86_64 engine tests](validation/ROSETTA_ENGINE_20261019.md) passed: XCTest 186 passed/37 skipped, Swift Testing 213 declarations passed/six skipped, zero final failures. Initial unsigned-loader bookmark setup failures remain documented. This is Rosetta coverage, not execution on a physical Intel Mac or older macOS.
 - **Final revision and cleanup:** update this document after the remaining jobs settle, final combined gates complete, and owned media fixtures, images, caches and simulators are accounted for. Retain compact receipts; preserve uncertain or failed evidence rather than deleting it prematurely.
 
