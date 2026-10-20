@@ -47,6 +47,8 @@ if [[ "$SHORT_VERSION" != "$VERSION" ]]; then
   exit 65
 fi
 
+MINIMUM_SYSTEM_VERSION=$(/usr/bin/python3 "$ROOT_DIR/Scripts/appcast_minimum.py" "$APP_PLIST")
+
 resolved_sparkle_version() {
   /usr/bin/python3 - "$@" <<'PY'
 import json
@@ -136,6 +138,7 @@ PUB_DATE=$(LC_ALL=C date -u "+%a, %d %b %Y %H:%M:%S +0000")
 APPCAST_VERSION="$VERSION" \
 APPCAST_BUNDLE_VERSION="$BUNDLE_VERSION" \
 APPCAST_SHORT_VERSION="$SHORT_VERSION" \
+APPCAST_MINIMUM_SYSTEM_VERSION="$MINIMUM_SYSTEM_VERSION" \
 APPCAST_PUB_DATE="$PUB_DATE" \
 APPCAST_SIGNATURE="$ED_SIGNATURE" \
 APPCAST_LENGTH="$FILE_LENGTH" \
@@ -180,7 +183,7 @@ ET.SubElement(item, "pubDate").text = os.environ["APPCAST_PUB_DATE"]
 ET.SubElement(item, f"{{{SPARKLE_NS}}}releaseNotesLink").text = (
     f"https://github.com/BitmatchApp/Bitmatch/releases/tag/v{version}"
 )
-ET.SubElement(item, f"{{{SPARKLE_NS}}}minimumSystemVersion").text = "15.5"
+ET.SubElement(item, f"{{{SPARKLE_NS}}}minimumSystemVersion").text = os.environ["APPCAST_MINIMUM_SYSTEM_VERSION"]
 ET.SubElement(
     item,
     "enclosure",

@@ -157,7 +157,9 @@ After publishing the GitHub release, publish its signed appcast entry:
 Scripts/publish_appcast.sh 0.1.7
 ```
 
-The script reads the archived app's build and short versions, signs the matching DMG with Sparkle's `sign_update` and the `bitmatch` key in the login Keychain, updates `appcast.xml` in [BitmatchApp/bitmatchapp.github.io](https://github.com/BitmatchApp/bitmatchapp.github.io), then commits and pushes the newest entry. It uses the resolved Sparkle package's tool when available and downloads the matching Sparkle release tools otherwise. It never exports the private key.
+The script reads the archived app's build, short version and minimum macOS version, signs the matching DMG with Sparkle's `sign_update` and the `bitmatch` key in the login Keychain, updates `appcast.xml` in [BitmatchApp/bitmatchapp.github.io](https://github.com/BitmatchApp/bitmatchapp.github.io), then commits and pushes the newest entry. Missing or incompatible minimum-version metadata stops the script before signing or network access. It uses the resolved Sparkle package's tool when available and downloads the matching Sparkle release tools otherwise. It never exports the private key.
+
+Run `python3 Scripts/test_appcast_minimum.py` for offline metadata and script checks. These use disposable fixtures and stub every signing, GitHub, Git and Xcode command; they do not publish an update or change the app's deployment target.
 
 Then run `Scripts/bump_cask.sh <version>`. It checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
 
