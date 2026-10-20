@@ -186,7 +186,10 @@ public struct SavedChecksumCheck: Sendable {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
             let path = try resolver.resolve(file)
-            if Self.isEvidenceOrMetadata(path) { continue }
+            // Unrecorded Finder state is noise. A preserved companion named in
+            // the evidence is part of the transfer set and must be checked.
+            if Self.isReservedEvidence(path)
+                || (FolderComparer.isFinderMetadata(path) && discovery.expectedFiles[path] == nil) { continue }
             #if canImport(Darwin)
             if discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }
@@ -668,8 +671,7 @@ public struct SavedChecksumCheck: Sendable {
         return path
     }
 
-    private static func isEvidenceOrMetadata(_ path: String) -> Bool {
-        if FolderComparer.isFinderMetadata(path) { return true }
+    private static func isReservedEvidence(_ path: String) -> Bool {
         let parts = path.split(separator: "/")
         guard !parts.isEmpty else { return true }
         return parts.contains { $0.caseInsensitiveCompare("Reports") == .orderedSame }
