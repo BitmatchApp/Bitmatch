@@ -17,31 +17,34 @@ enum TransferHistoryResultPresentation {
 /// Pure values, so every platform shows the same state the same way.
 enum TransferLibraryPresentation {
 
-    struct SearchMatch: Identifiable {
+    struct SearchMatch: Identifiable, Sendable {
         let record: LocalTransferRecord
         let clipLine: String?
 
         var id: UUID { record.id }
     }
 
-    /// Lowercased clip names and card-relative paths, built once when History
-    /// changes instead of once per result row on every search keystroke.
-    struct SearchIndex {
-        private enum DestinationState: Int {
+    /// Derived clip text and destination states. The History model builds this
+    /// only for a nonempty search and reuses it within that journal snapshot.
+    struct SearchIndex: Sendable {
+        private enum BuildError: Error { case duplicateRecordID }
+
+        private enum DestinationState: Int, Sendable {
             case verified
             case notVerified
             case excluded
             case failed
 
-            init(_ row: ResultRow) {
+            init(_ row: ResultRow, mode: VerificationMode) {
                 if ResultOutcome(statusText: row.status) == .excludedAppleDouble { self = .excluded }
                 else if !row.isSuccessStatus { self = .failed }
+                else if mode == .quick { self = .notVerified }
                 else if row.isVerifiedStatus { self = .verified }
                 else { self = .notVerified }
             }
         }
 
-        private struct Clip {
+        private struct Clip: Sendable {
             let name: String
             let lowercaseName: String
             let lowercaseRelativePath: String
@@ -52,7 +55,45 @@ enum TransferLibraryPresentation {
         private let clipsByRecordID: [UUID: [Clip]]
 
         init(records: [LocalTransferRecord]) {
-            clipsByRecordID = Dictionary(uniqueKeysWithValues: records.map { record in
+            clipsByRecordID = Self.buildClips(records: records, checkCancellation: {}, onRowVisited: nil)
+        }
+
+        /// The History worker never publishes a partial index. The optional
+        /// checkpoint lets tests suspend inside the real loop without sleeps.
+        static func cancellable(
+            records: [LocalTransferRecord],
+            onRowVisited: (@Sendable () -> Void)? = nil
+        ) throws -> SearchIndex {
+            var recordIDs: Set<UUID> = []
+            for record in records {
+                try Task.checkCancellation()
+                guard recordIDs.insert(record.id).inserted else {
+                    // A malformed journal must not attach one attempt's clip
+                    // text to another attempt sharing its identifier.
+                    throw BuildError.duplicateRecordID
+                }
+            }
+            let clips = try buildClips(
+                records: records,
+                checkCancellation: { try Task.checkCancellation() },
+                onRowVisited: onRowVisited
+            )
+            return SearchIndex(clipsByRecordID: clips)
+        }
+
+        private init(clipsByRecordID: [UUID: [Clip]]) {
+            self.clipsByRecordID = clipsByRecordID
+        }
+
+        private static func buildClips(
+            records: [LocalTransferRecord],
+            checkCancellation: () throws -> Void,
+            onRowVisited: (@Sendable () -> Void)?
+        ) rethrows -> [UUID: [Clip]] {
+            try checkCancellation()
+            var indexed: [UUID: [Clip]] = [:]
+            for record in records {
+                try checkCancellation()
                 let destinationNames = DestinationIdentityPresentation.nameMap(
                     for: record.destinations.map(\.url)
                 )
@@ -60,13 +101,15 @@ enum TransferLibraryPresentation {
                 var order: [String] = []
 
                 for row in record.results {
+                    try checkCancellation()
+                    onRowVisited?()
                     let relativePath = Self.relativePath(row.path, under: record.source.url)
                     let key = relativePath.lowercased()
                     let destination = DestinationIdentityPresentation.resultDriveName(
                         for: row,
                         destinationNames: destinationNames
                     ) ?? "Destination"
-                    let state = DestinationState(row)
+                    let state = DestinationState(row, mode: record.verificationMode)
                     if clips[key] == nil {
                         clips[key] = Clip(
                             name: row.fileName,
@@ -83,11 +126,40 @@ enum TransferLibraryPresentation {
                     let existing = clips[key]?.destinationStates[destination] ?? .verified
                     clips[key]?.destinationStates[destination] = existing.rawValue >= state.rawValue ? existing : state
                 }
-                return (record.id, order.compactMap { clips[$0] })
-            })
+                var ordered: [Clip] = []
+                for key in order {
+                    try checkCancellation()
+                    if let clip = clips[key] { ordered.append(clip) }
+                }
+                indexed[record.id] = ordered
+            }
+            try checkCancellation()
+            return indexed
         }
 
         func match(for record: LocalTransferRecord, search: String) -> SearchMatch? {
+            match(for: record, search: search, checkCancellation: {}, onClipVisited: nil)
+        }
+
+        func cancellableMatch(
+            for record: LocalTransferRecord,
+            search: String,
+            onClipVisited: (@Sendable () -> Void)? = nil
+        ) throws -> SearchMatch? {
+            try match(
+                for: record, search: search,
+                checkCancellation: { try Task.checkCancellation() },
+                onClipVisited: onClipVisited
+            )
+        }
+
+        private func match(
+            for record: LocalTransferRecord,
+            search: String,
+            checkCancellation: () throws -> Void,
+            onClipVisited: (@Sendable () -> Void)?
+        ) rethrows -> SearchMatch? {
+            try checkCancellation()
             let query = search.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             guard !query.isEmpty else { return SearchMatch(record: record, clipLine: nil) }
             if TransferLibraryPresentation.matchesMetadata(
@@ -100,10 +172,18 @@ enum TransferLibraryPresentation {
                 return SearchMatch(record: record, clipLine: nil)
             }
 
-            let matches = (clipsByRecordID[record.id] ?? []).filter {
-                $0.lowercaseName.contains(query) || $0.lowercaseRelativePath.contains(query)
+            var first: Clip?
+            var count = 0
+            for clip in clipsByRecordID[record.id] ?? [] {
+                try checkCancellation()
+                onClipVisited?()
+                if clip.lowercaseName.contains(query) || clip.lowercaseRelativePath.contains(query) {
+                    if first == nil { first = clip }
+                    count += 1
+                }
             }
-            guard let first = matches.first else { return nil }
+            try checkCancellation()
+            guard let first else { return nil }
             let destinations = first.destinationOrder.map { destination in
                 switch first.destinationStates[destination] ?? .failed {
                 case .verified: destination
@@ -114,7 +194,7 @@ enum TransferLibraryPresentation {
             }
             let destinationText = Self.naturalList(destinations)
             let firstLine = destinationText.isEmpty ? first.name : "\(first.name) on \(destinationText)"
-            let remaining = matches.count - 1
+            let remaining = count - 1
             let line: String
             if remaining == 1 { line = "\(firstLine) and 1 more clip" }
             else if remaining > 1 { line = "\(firstLine) and \(remaining) more clips" }
@@ -319,6 +399,23 @@ enum TransferLibraryPresentation {
             guard isVisible(state: record.state, showHistory: showHistory) else { return nil }
             return index.match(for: record, search: search)
         }
+    }
+
+    static func cancellableVisibleMatches(
+        _ records: [LocalTransferRecord],
+        search: String,
+        index: SearchIndex
+    ) throws -> [SearchMatch] {
+        var matches: [SearchMatch] = []
+        for record in records {
+            try Task.checkCancellation()
+            guard isVisible(state: record.state, showHistory: true) else { continue }
+            if let match = try index.cancellableMatch(for: record, search: search) {
+                matches.append(match)
+            }
+        }
+        try Task.checkCancellation()
+        return matches
     }
 
     static func visibleRecords(_ records: [LocalTransferRecord], showHistory: Bool, search: String) -> [LocalTransferRecord] {
