@@ -368,6 +368,63 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.issueLines == ["1 file copied, not verified"])
     }
 
+    /// Plant: omit the selected mode when building counts/destination lines,
+    /// or remove the Quick-specific interrupted destination wording.
+    @Test(arguments: [VerificationMode.quick, .standard, .thorough, .paranoid],
+          ["completed", "cancelled", "failed"])
+    func legacyQuickOutcomeSummariesDoNotClaimVerification(mode: VerificationMode, terminal: String) {
+        let rows = [backupA, backupB].map { backup in
+            ResultRow(path: "/Card/clip.mov", status: "✅ Match", size: 100, checksum: "retained-digest",
+                destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("clip.mov").path,
+                wasReused: true)
+        }
+        let state: OperationState
+        switch terminal {
+        case "cancelled": state = .cancelled
+        case "failed": state = .failed
+        default: state = .completed(.init(success: false, message: "Review saved results"))
+        }
+        let outcome = TransferOutcomePresentation.make(state: state, rows: rows, destinations: [backupA, backupB],
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0, duration: 3,
+            verificationMode: mode, canRetry: true, canExport: true)
+
+        #expect(outcome.counts.verified == (mode == .quick ? 0 : 2))
+        #expect(outcome.counts.copiedNotVerified == (mode == .quick ? 2 : 0))
+        #expect(outcome.bytesVerified == (mode == .quick ? nil : 200))
+        #expect(outcome.safetyState != .safeToErase)
+        #expect(!outcome.canEject)
+        #expect(outcome.destinations.count == 2)
+        for destination in outcome.destinations {
+            if mode == .quick {
+                #expect(destination.detail.contains("not verified"))
+                #expect(!destination.detail.contains("Checksums matched"))
+                #expect(!destination.detail.contains("1 of 1 files verified"))
+            } else {
+                #expect(destination.detail == (terminal == "cancelled"
+                    ? "Interrupted: 1 of 1 files verified before the stop" : "Checksums matched for 1 of 1 files"))
+            }
+        }
+        #expect(rows.allSatisfy { $0.status == "✅ Match" && $0.checksum == "retained-digest" && $0.wasReused })
+    }
+
+    /// Plant: make Quick classification precede failure/exclusion checks.
+    @Test func quickOutcomeCountsPreserveFailureAndExclusionPrecedence() {
+        let rows = [row("copied.mov", .verified, backup: backupA),
+            row("failed.mov", .failed, backup: backupA),
+            row("._copied.mov", .excludedAppleDouble, backup: backupA),
+            row("copied.mov", .copiedUnverified, backup: backupB)]
+        let outcome = TransferOutcomePresentation.make(state: .completed(.init(success: false, message: "Review")),
+            rows: rows, destinations: [backupA, backupB], hasErrors: false, hasCriticalErrors: false,
+            errorCount: 0, warningCount: 0, duration: nil, verificationMode: .quick, canRetry: true, canExport: true)
+        #expect(outcome.counts.verified == 0)
+        #expect(outcome.counts.copiedNotVerified == 2)
+        #expect(outcome.counts.needsAttention == 1)
+        #expect(outcome.counts.excluded == 1)
+        #expect(outcome.bytesVerified == nil)
+        #expect(outcome.destinations[0].detail == "1 file failed")
+        #expect(outcome.destinations[1].detail.contains("not verified"))
+    }
+
     // MARK: Actions
 
     // Plant: `primaryAction: needsRetry ? .retry : .newTransfer` (drop `canRetry &&`).

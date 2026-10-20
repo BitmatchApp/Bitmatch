@@ -397,27 +397,32 @@ struct DestinationResultSummary: Identifiable {
     let id: String
     let title: String
     let rows: [ResultRow]
+    var verificationMode: VerificationMode? = nil
 
     var issueCount: Int { rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count }
     var excludedCount: Int { rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count }
-    var unverifiedCount: Int { rows.filter { $0.isSuccessStatus && ($0.checksum?.isEmpty != false || $0.status.contains("Copied")) }.count }
+    var unverifiedCount: Int {
+        rows.filter {
+            $0.isSuccessStatus && (verificationMode == .quick || !$0.isVerifiedStatus || $0.checksum?.isEmpty != false)
+        }.count
+    }
     var needsAttention: Bool { rows.isEmpty || issueCount > 0 || unverifiedCount > 0 || excludedCount > 0 }
     var detail: String {
         guard !rows.isEmpty else { return "No files recorded" }
         if issueCount > 0 { return issueCount == 1 ? "1 file failed" : "\(issueCount) files failed" }
         if excludedCount > 0 {
-            let verified = rows.filter(\.isVerifiedStatus).count
+            let verified = rows.count - issueCount - excludedCount - unverifiedCount
             return "\(verified) verified, \(unverifiedCount) unverified, \(excludedCount) intentionally excluded"
         }
         if unverifiedCount > 0 {
             return unverifiedCount == rows.count
-                ? "Sizes matched for \(rows.count) \(rows.count == 1 ? "file" : "files"), not verified"
+                ? "\(rows.count) \(rows.count == 1 ? "file" : "files") copied, contents not verified"
                 : "\(unverifiedCount) of \(rows.count) files not verified"
         }
         return "Checksums matched for \(rows.count) of \(rows.count) files"
     }
 
-    static func make(rows: [ResultRow], destinations: [URL]) -> [Self] {
+    static func make(rows: [ResultRow], destinations: [URL], verificationMode: VerificationMode? = nil) -> [Self] {
         // Compare resolved paths: `/var/...` and `/private/var/...` are the
         // same folder, and a mismatch would list the backup's rows elsewhere.
         let resolved = ResultPathMatch.comparablePath
@@ -435,11 +440,11 @@ struct DestinationResultSummary: Identifiable {
             }
         }
         var summaries = destinations.map { root in
-            Self(id: root.path, title: root.lastPathComponent, rows: assigned[root.path] ?? [])
+            Self(id: root.path, title: root.lastPathComponent, rows: assigned[root.path] ?? [], verificationMode: verificationMode)
         }
         let groups = Dictionary(grouping: remaining) { $0.destination ?? "Other results" }
         summaries += groups.keys.sorted().map { name in
-            Self(id: "reported:" + name, title: name, rows: groups[name] ?? [])
+            Self(id: "reported:" + name, title: name, rows: groups[name] ?? [], verificationMode: verificationMode)
         }
         return summaries
     }
@@ -468,7 +473,7 @@ struct TransferRecoverySummary: Identifiable {
                     excluded += 1
                 } else if !rows.allSatisfy(\.isSuccessStatus) {
                     failed += 1
-                } else if !rows.allSatisfy(\.isVerifiedStatus) {
+                } else if record.verificationMode == .quick || !rows.allSatisfy(\.isVerifiedStatus) {
                     unverified += 1
                 } else if rows.allSatisfy(\.wasReused) {
                     reused += 1
