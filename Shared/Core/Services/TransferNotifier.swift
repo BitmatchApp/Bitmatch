@@ -46,6 +46,8 @@ final class TransferNotifier: ObservableObject {
     private let settings: GeneralSettings
     private let authorizationClient: any NotificationAuthorizationClient
     @Published private(set) var authorization = NotificationAuthorizationPresentation.notAsked
+    @Published private(set) var isRequestingAuthorization = false
+    @Published private(set) var authorizationRequestFailed = false
 
     init(
         settings: GeneralSettings,
@@ -63,10 +65,29 @@ final class TransferNotifier: ObservableObject {
     /// explicit Enable Notifications action, never during launch or Start.
     @discardableResult
     func enable() async -> Bool {
-        let granted = (try? await authorizationClient
-            .requestAuthorization(options: [.alert, .sound, .badge])) ?? false
-        await refreshAuthorizationStatus()
-        return granted
+        guard !isRequestingAuthorization else { return false }
+        isRequestingAuthorization = true
+        authorizationRequestFailed = false
+        defer { isRequestingAuthorization = false }
+        do {
+            let granted = try await authorizationClient
+                .requestAuthorization(options: [.alert, .sound, .badge])
+            await refreshAuthorizationStatus()
+            // Some system failures return false without changing permission.
+            authorizationRequestFailed = !granted && authorization == .notAsked
+            return granted
+        } catch is CancellationError {
+            return false
+        } catch {
+            await refreshAuthorizationStatus()
+            authorizationRequestFailed = authorization == .notAsked
+            let failure = error as NSError
+            SharedLogger.warning(
+                "Notification permission request failed (\(failure.domain), code \(failure.code))",
+                category: .transfer
+            )
+            return false
+        }
     }
 
     func disable() {
@@ -77,6 +98,7 @@ final class TransferNotifier: ObservableObject {
         authorization = NotificationAuthorizationPresentation.make(
             status: await authorizationClient.authorizationStatus()
         )
+        if authorization != .notAsked { authorizationRequestFailed = false }
     }
 
     func post(_ notice: TransferFinishNotice) {

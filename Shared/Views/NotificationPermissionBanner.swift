@@ -21,6 +21,7 @@ struct NotificationPermissionBanner: View {
                     Task { await coordinator.enableNotificationsFromPrompt() }
                 }
                 .buttonStyle(.borderedProminent)
+                .disabled(coordinator.transferNotifier.isRequestingAuthorization)
             }
             .padding(12)
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))

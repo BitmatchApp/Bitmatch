@@ -2,7 +2,7 @@
 
 ## Queue, Recovery, and Handoff
 
-Choose the next source, backups, and settings, then use **Add to queue** while another transfer is running, right on the main screen. Open **History** from the toolbar to see what happened earlier. Each queued transfer keeps its own source, backups, and settings. The queue stops when something needs attention. A retry keeps the old attempt in history and checks the original folders before starting again; verified existing files can be reused after checking them.
+Choose the next source, backups, and settings, then use **Add to queue** while another transfer is running, right on the main screen. Open **History** from the toolbar to see what happened earlier. Each queued transfer keeps its own source, backups, and settings. The queue stops when something needs attention. Reviewed AppleDouble exclusions can let it continue when every selected file verified; the exclusions stay in the report, and the whole card stays unsafe to erase. A retry keeps the old attempt in history and checks the original folders before starting again; verified existing files can be reused after checking them.
 
 On iPhone and iPad, keep BitMatch open while it works. iOS can interrupt a transfer; the saved attempt will be marked interrupted when you reopen the app. Project cards stay with their project and need review there before another ingest.
 

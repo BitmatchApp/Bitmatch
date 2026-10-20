@@ -150,9 +150,12 @@ enum GeneralSettingsPresentation {
     static let autoEject = "Eject cards automatically when safe to erase"
     static let soundsSection = "Sounds"
     static let playSounds = "Play sounds"
-    static let macNotificationSettingsURL = URL(
-        string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=BitMatchApp.BitMatch"
-    )!
+    static let notificationRequestFailed = "Couldn’t request permission. Try again or open Notification Settings."
+    static func macNotificationSettingsURL(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> URL {
+        let base = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!
+        guard let bundleIdentifier, !bundleIdentifier.isEmpty else { return base }
+        return base.appending(queryItems: [URLQueryItem(name: "id", value: bundleIdentifier)])
+    }
 }
 
 enum TransferNotificationKind: Equatable, Sendable {

@@ -42,6 +42,7 @@ struct BitMatchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var environment: MacAppEnvironment
     @StateObject private var updater: UpdaterController
+    @State private var menuBarExtraIsInserted = true
     #if DEBUG
     @ObservedObject private var devModeManager = DevModeManager.shared
     #endif
@@ -176,7 +177,7 @@ struct BitMatchApp: App {
             #endif
         }
 
-        MenuBarExtra {
+        MenuBarExtra(isInserted: $menuBarExtraIsInserted) {
             MacMenuBarCompanion(
                 coordinator: environment.coordinator,
                 appDelegate: appDelegate

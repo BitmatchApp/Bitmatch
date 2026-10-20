@@ -6,7 +6,8 @@ Read [docs/THESIS.md](docs/THESIS.md) for what BitMatch promises and the current
 
 ## Building
 
-- Use Xcode 26.3 or newer for the app concurrency settings; CI selects Xcode 26.3. Open `BitMatch.xcodeproj`.
+- The 0.2.10 release is built and tested locally with Xcode 27.1 (27A9275), Swift 6.4. Open `BitMatch.xcodeproj`.
+- CI still selects Xcode 26.3. That toolchain currently aborts while compiling Mac Settings and rejects some engine-test isolation patterns; those jobs do not establish a runtime test result. Older-toolchain build compatibility remains open. This does not change the app's macOS 15.5 minimum.
 - Schemes:
   - `BitMatch`: the macOS app (macOS 15.5 or newer).
   - `BitMatch-iPad`: the iPhone and iPad app (iOS/iPadOS 18.5 or newer). Despite the name it targets both device families.
@@ -151,7 +152,7 @@ To restore on a new Mac, copy the backup into a temporary file, run `generate_ke
 
 Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card to two destinations, check "safe to erase", Eject, and relaunch. Debug builds and tests do not exercise the sandboxed release paths.
 
-After publishing the GitHub release, publish its signed appcast entry:
+After publishing the GitHub release, run `Scripts/bump_cask.sh <version>` for Homebrew, then publish the signed appcast entry last:
 
 ```bash
 Scripts/publish_appcast.sh 0.1.7
@@ -161,7 +162,7 @@ The script reads the archived app's build, short version and minimum macOS versi
 
 Run `python3 Scripts/test_appcast_minimum.py` for offline metadata and script checks. These use disposable fixtures and stub every signing, GitHub, Git and Xcode command; they do not publish an update or change the app's deployment target.
 
-Then run `Scripts/bump_cask.sh <version>`. It checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
+`Scripts/bump_cask.sh <version>` checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
 
 ## Conventions
 
