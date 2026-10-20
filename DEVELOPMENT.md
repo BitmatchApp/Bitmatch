@@ -55,6 +55,8 @@ bash test.sh release-builds  # macOS and iOS simulator Release builds
 
 `ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to reuse a build folder (default `.derived-data/`).
 
+The Mac and iOS test jobs request serial execution with `-parallel-testing-enabled NO`; the engine uses `--no-parallel`. This reduces contention between independent tests that share the main actor or use real temporary files. Tests still exercise their own concurrent copy, verification and cancellation work. Keep assertion deadlines unchanged, and record failed runs separately from passing reruns.
+
 If the Mac test host stalls in `dyld` while opening Sparkle from a checkout under Desktop, try a build folder outside Desktop: `DERIVED_DATA_ROOT=/private/tmp/bitmatch-local-tests bash test.sh mac-test`. On Xcode 27.0 this allowed tests to execute without changing signing, sandbox or privacy settings. A loader stall is not a test pass; keep its log separate from the successful rerun.
 
 GitHub Actions CI was disabled on October 20, 2026. The workflow file is retained, but automatic jobs are not part of the project’s validation or release process. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests. Do not repair or re-enable GitHub CI unless Mike asks.

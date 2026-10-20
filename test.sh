@@ -15,7 +15,7 @@ run_xcodebuild() {
 
 case "$JOB" in
   mac-test)
-    run_xcodebuild mac-test test -scheme BitMatch -destination 'platform=macOS' -only-testing:BitMatchTests
+    run_xcodebuild mac-test test -scheme BitMatch -destination 'platform=macOS' -parallel-testing-enabled NO -only-testing:BitMatchTests
     ;;
   mac-build)
     run_xcodebuild mac-build build -scheme BitMatch -configuration Debug -destination 'platform=macOS'
@@ -25,7 +25,7 @@ case "$JOB" in
     ;;
   ipad-test)
     : "${IOS_SIMULATOR_DESTINATION:?Set IOS_SIMULATOR_DESTINATION, for example platform=iOS Simulator,name=iPad (A16)}"
-    run_xcodebuild ipad-test test -scheme BitMatch-iPad -destination "$IOS_SIMULATOR_DESTINATION" -only-testing:BitMatch-iPadTests
+    run_xcodebuild ipad-test test -scheme BitMatch-iPad -destination "$IOS_SIMULATOR_DESTINATION" -parallel-testing-enabled NO -only-testing:BitMatch-iPadTests
     ;;
   engine-test)
     # Keep independent disk fixtures from racing short setup deadlines. Each
