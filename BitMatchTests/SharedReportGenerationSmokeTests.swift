@@ -68,6 +68,13 @@ struct SharedReportGenerationSmokeTests {
             if count > 1 { #expect(document.pageCount > 1) }
             #expect(document.string?.contains("ENDSOURCE") == true)
             #expect(document.string?.contains("ENDBACKUP") == true)
+            let text = try #require(document.string)
+            let largest = try #require(text.components(separatedBy: "Largest Transfer:").dropFirst().first)
+                .components(separatedBy: "Most Used Destination:")[0]
+            #expect(largest.contains("ENDSOURCE"))
+            let destination = try #require(text.components(separatedBy: "Most Used Destination:").dropFirst().first)
+                .components(separatedBy: "Unknown Camera")[0]
+            #expect(destination.contains("ENDBACKUP"))
             for pageIndex in 0..<document.pageCount {
                 let page = try #require(document.page(at: pageIndex))
                 for index in 0..<page.numberOfCharacters {

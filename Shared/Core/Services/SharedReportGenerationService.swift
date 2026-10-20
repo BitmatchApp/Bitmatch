@@ -463,7 +463,9 @@ class SharedReportGenerationService: ObservableObject {
     /// the same wrapped text that is drawn, rather than drawing past the page.
     private func wrappedText(_ text: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()
-        paragraph.lineBreakMode = .byWordWrapping
+        // Filenames can be a single long token. Word wrapping can measure it
+        // as one line while drawing clips the rest of the name.
+        paragraph.lineBreakMode = .byCharWrapping
         var attributes = attributes
         attributes[.paragraphStyle] = paragraph
         return NSAttributedString(string: text, attributes: attributes)
@@ -478,7 +480,9 @@ class SharedReportGenerationService: ObservableObject {
     @discardableResult
     private func drawWrapped(_ text: String, in rect: CGRect, at y: CGFloat, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
         let height = wrappedHeight(text, width: rect.width, attributes: attributes)
-        wrappedText(text, attributes: attributes).draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: height))
+        wrappedText(text, attributes: attributes).draw(
+            with: CGRect(x: rect.minX, y: y, width: rect.width, height: height),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
         return height
     }
 
