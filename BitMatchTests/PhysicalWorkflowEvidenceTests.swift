@@ -351,6 +351,9 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
                 try autoreleasepool { try handle.write(contentsOf: Data(repeating: UInt8(truncatingIfNeeded: chunk + 17), count: 1_048_576)) }
             }
             try handle.synchronize()
+            // Empty sidecars still belong to the verified transfer set and
+            // must survive the same handoff, saved Check and report workflow.
+            try Data().write(to: source.appendingPathComponent("empty-sidecar.bin"), options: .withoutOverwriting)
             try Data("<clip>café 日本語</clip>".utf8).write(to: source.appendingPathComponent("camera-sidecar.xml"), options: .withoutOverwriting)
             try Data("legitimate hidden file".utf8).write(to: source.appendingPathComponent("._notes.txt"), options: .withoutOverwriting)
             try await Self.movie(source.appendingPathComponent("preview.mov"))

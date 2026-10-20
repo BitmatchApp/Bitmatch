@@ -9,6 +9,70 @@ import XCTest
 /// Explicit opt-in only. The caller provisions marked folders on authorized
 /// volumes; these tests never format, detach, or erase a physical volume.
 final class PhysicalDriveTransferTests: XCTestCase {
+    // Plant: discard a reused file's destination-read identity before the
+    // final coverage guard; the retry must never be reported as verified.
+    func testSmallStandardRetryPreservesEmptyFilesAndPriorHistories() async throws {
+        let fixture = try PhysicalFixture.load()
+        let attempt = UUID().uuidString
+        let source = try fixture.child("sd", "SmallCard-\(attempt)")
+        var files: [(String, Int64)] = [("empty.bin", 0), ("one.bin", 1),
+            ("nested/café & 'take'.bin", 4_097), ("boundary.bin", 4_194_321),
+            ("clip01.bin", 4_194_321), ("clip02.bin", 4_194_321)]
+        files += (0..<128).map { ("sidecars/deep/level/sidecar-\($0).txt", Int64($0 * 13 + 1)) }
+        let original = try seed(source, files: files)
+        let targets = try [fixture.child("ssdA", "small-retry-\(attempt)"),
+                           fixture.child("ssdB", "small-retry-\(attempt)")]
+        try await transfer(source, expected: original, targets: targets, mode: .standard,
+                           pipelined: true, label: "small-retry-initial")
+        let roots = targets.map {
+            SafetyValidator.resolvedDestinationRoot(source: source, destination: $0, settings: .init())
+        }
+        let histories = try roots.map { try snapshot($0.appendingPathComponent("ascmhl")) }
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = try AppleDoubleSelection.review(source: source)
+        let excluded = Set(settings.excludedAppleDoublePaths ?? [])
+        let selected = original.filter { !excluded.contains($0.key) }
+        let verifiedEmpty = Mutex<[String: VerificationResult]>([:])
+        let operation = try await TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+            pipelinedVerification: true, verificationConcurrency: 2).performFileOperation(
+                sourceURL: source, destinationURLs: targets, verificationMode: .standard, settings: settings,
+                estimatedTotalBytes: original.values.reduce(0) { $0 + $1.size }, progressCallback: { _ in },
+                onFileResult: { row in
+                    if row.sourceURL.lastPathComponent == "empty.bin", let verification = row.verificationResult {
+                        verifiedEmpty.withLock { $0[row.destinationURL.path] = verification }
+                    }
+                })
+        let rows = operation.results.filter { !$0.excludedAppleDouble }
+        XCTAssertEqual(rows.count, selected.count * targets.count)
+        for (index, root) in roots.enumerated() {
+            let verification = verifiedEmpty.withLock { $0[root.appendingPathComponent("empty.bin").path] }
+            let pinned = try PinnedDestinationDirectory.open(destination: root, rootComponents: [])
+            let current: VerifiedFileIdentity?
+            do {
+                current = try pinned.currentRegularFileIdentity(at: "empty.bin")
+                print("PHYSICAL_EMPTY_RETRY destination=\(index) savedIdentityPresent=\(verification?.destinationReadIdentity != nil) currentLookup=returned savedIdentity=\(String(reflecting: verification?.destinationReadIdentity)) currentIdentity=\(String(reflecting: current))")
+            } catch {
+                let failure = error as NSError
+                print("PHYSICAL_EMPTY_RETRY destination=\(index) savedIdentityPresent=\(verification?.destinationReadIdentity != nil) currentLookup=failed errorDomain=\(failure.domain) errorCode=\(failure.code)")
+                throw error
+            }
+            XCTAssertNotNil(verification?.destinationReadIdentity)
+            XCTAssertEqual(current, verification?.destinationReadIdentity)
+            XCTAssertEqual(try snapshot(root.appendingPathComponent("ascmhl")), histories[index], "Retry changed prior MHL history")
+        }
+        for row in rows {
+            let path = row.sourceURL.relativePath(to: source)
+            XCTAssertTrue(row.success, "\(path): \(String(describing: row.error))")
+            XCTAssertTrue(row.wasReused, path)
+            XCTAssertEqual(row.verificationResult?.isValid, true, path)
+            XCTAssertEqual(row.verificationResult?.sourceChecksum, selected[path]?.sha256, path)
+            XCTAssertEqual(row.verificationResult?.destinationChecksum, selected[path]?.sha256, path)
+        }
+        XCTAssertEqual(try snapshot(source), original, "The physical card changed")
+        try requirePassingAssertions()
+        print("PHYSICAL_SMALL_RETRY_SUMMARY transfers=2 backups=2 zeroByteFile=true priorHistoryUnchanged=true sourceSnapshotCompared=true")
+    }
+
     func testCardToTwoPhysicalBackupsAcrossModesAndReuse() async throws {
         let fixture = try PhysicalFixture.load()
         let attempt = UUID().uuidString

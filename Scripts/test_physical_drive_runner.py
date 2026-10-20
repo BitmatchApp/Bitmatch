@@ -3,6 +3,7 @@
 import contextlib
 import importlib.util
 import io
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -269,6 +270,128 @@ class PhysicalFixtureCleanupTests(unittest.TestCase):
                     runner.remove_tree_at(parent_fd, root.name, (info.st_dev, info.st_ino), info.st_dev)
             self.assertTrue(replaced)
             self.assertEqual((root / 'sentinel').read_bytes(), b'replacement stays')
+
+
+class PhysicalFailureRetentionTests(unittest.TestCase):
+    @contextlib.contextmanager
+    def owned_run(self, image=False):
+        with tempfile.TemporaryDirectory(prefix='bitmatch-retention-test-', dir='/private/tmp') as temporary:
+            workspace = Path(temporary)
+            root = workspace / 'owned-volume-root'
+            root.mkdir()
+            (root / '.bitmatch-validation-owned.json').write_bytes(b'tiny owned host marker')
+            (root / 'evidence.bin').write_bytes(b'failed bytes retained')
+            item = root.stat()
+            run = runner.Run.__new__(runner.Run)
+            run.workspace, run.build = workspace, workspace / 'build'
+            run.child = run.image = run.image_host = None
+            run.roots = {'ssdA': root}
+            run.identities = {'ssdA': (item.st_dev, item.st_ino)}
+            run.config = {'volumes': {}}
+            run.warnings, run.removed = [], set()
+            run.validate_root = MagicMock()
+            run.command = MagicMock()
+            run.image_attachments = MagicMock(return_value=[])
+            if image:
+                run.image_host = 'ssdA'
+                run.image = root / 'Owned.sparseimage'
+                run.image.write_bytes(b'tiny fake image; no actual filesystem')
+                info = run.image.stat()
+                run.image_identity = (info.st_dev, info.st_ino)
+                run.image_mount = workspace / 'owned-image-mount'
+                run.image_mount.mkdir()
+                run.attach_started = run.attach_confirmed = True
+            yield run, root
+
+    # Plant: remove cleanup's preserve_fixtures return; failed bytes must remain.
+    def test_failed_run_preserves_marker_payload_and_build(self):
+        with self.owned_run() as (run, root), patch.object(runner, 'mounted_paths', return_value=[Path('/')]):
+            run.build.mkdir()
+            (run.build / 'inspection.bin').write_bytes(b'owned test build')
+            run.cleanup(preserve_fixtures=True)
+            self.assertTrue((root / '.bitmatch-validation-owned.json').is_file())
+            self.assertEqual((root / 'evidence.bin').read_bytes(), b'failed bytes retained')
+            self.assertEqual((run.build / 'inspection.bin').read_bytes(), b'owned test build')
+            self.assertEqual(run.removed, set())
+            self.assertEqual(run.warnings, [])
+
+    def test_passing_run_keeps_descriptor_checked_cleanup(self):
+        with self.owned_run() as (run, root), patch.object(runner, 'mounted_paths', return_value=[Path('/')]):
+            run.cleanup()
+            self.assertFalse(root.exists())
+            self.assertEqual(run.removed, {'ssdA'})
+            self.assertEqual(run.warnings, [])
+
+    def test_live_child_retains_everything_without_querying_or_detaching_image(self):
+        with self.owned_run(image=True) as (run, root):
+            run.child = MagicMock()
+            run.child.poll.return_value = None
+            run.cleanup(preserve_fixtures=True)
+            run.validate_root.assert_not_called()
+            run.image_attachments.assert_not_called()
+            run.command.assert_not_called()
+            self.assertTrue(run.image.is_file())
+            self.assertTrue((root / 'evidence.bin').is_file())
+            self.assertEqual(run.removed, set())
+            self.assertIn('still active', run.warnings[0])
+
+    def test_settled_failure_detaches_only_owned_image_and_preserves_backing_evidence(self):
+        with self.owned_run(image=True) as (run, root):
+            run.image_attachments.side_effect = [[{'system-entities': [{'mount-point': str(run.image_mount)}]}], []]
+            with patch.object(runner, 'mounted_paths', side_effect=[[Path('/'), run.image_mount], [Path('/')]]):
+                run.cleanup(preserve_fixtures=True)
+            run.command.assert_called_once_with(
+                ['/usr/bin/hdiutil', 'detach', '-quiet', str(run.image_mount)],
+                run.workspace / 'image-detach.log', timeout=120)
+            self.assertEqual(run.image.read_bytes(), b'tiny fake image; no actual filesystem')
+            self.assertTrue((root / '.bitmatch-validation-owned.json').is_file())
+            self.assertTrue((root / 'evidence.bin').is_file())
+            self.assertEqual(run.removed, set())
+            self.assertEqual(run.warnings, [])
+
+    def test_unrelated_image_attachment_is_never_detached_or_removed(self):
+        with self.owned_run(image=True) as (run, root):
+            run.image_attachments.return_value = [{'system-entities': [{'mount-point': '/unrelated-mount'}]}]
+            run.cleanup(preserve_fixtures=True)
+            run.command.assert_not_called()
+            self.assertTrue(run.image.is_file())
+            self.assertTrue((root / 'evidence.bin').is_file())
+            self.assertEqual(run.removed, set())
+            self.assertIn('unexpected mountpoints', run.warnings[0])
+
+    def test_replaced_backing_image_is_never_detached_or_removed(self):
+        with self.owned_run(image=True) as (run, root):
+            run.image_identity = (run.image_identity[0], run.image_identity[1] + 1)
+            run.cleanup(preserve_fixtures=True)
+            run.command.assert_not_called()
+            run.image_attachments.assert_not_called()
+            self.assertTrue(run.image.is_file())
+            self.assertTrue((root / 'evidence.bin').is_file())
+            self.assertEqual(run.removed, set())
+            self.assertIn('identity changed', run.warnings[0])
+
+    def test_main_retains_failed_and_interrupted_runs_but_cleans_after_passing_validation(self):
+        for failure in (None, runner.UnsafeFixture('synthetic test failure'), KeyboardInterrupt()):
+            with self.subTest(failure=type(failure).__name__), tempfile.TemporaryDirectory(prefix='bitmatch-main-retention-') as temporary:
+                fake = MagicMock()
+                fake.workspace = Path(temporary)
+                fake.warnings, fake.passed, fake.roots, fake.removed = [], [], {}, set()
+                fake.execute.side_effect = failure
+                volumes = [{'path': Path('/Volumes/' + role), 'uuid': role, 'parent': 'disk-' + role,
+                            'filesystem': 'exfat'} for role in ('sd', 'ssdA', 'ssdB')]
+                arguments = ['physical-runner', '--source-volume', '/Volumes/sd',
+                             '--backup-volume', '/Volumes/ssdA', '--backup-volume', '/Volumes/ssdB']
+                with patch.object(sys, 'argv', arguments), patch.object(runner.platform, 'system', return_value='Darwin'), \
+                     patch.object(runner, 'physical_volume', side_effect=volumes), \
+                     patch.object(runner.shutil, 'disk_usage', return_value=MagicMock(free=100 * 1024**3)), \
+                     patch.object(runner, 'Run', return_value=fake), patch.object(runner.signal, 'signal'), \
+                     contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                    status = runner.main()
+                fake.cleanup.assert_called_once_with(preserve_fixtures=failure is not None)
+                self.assertEqual(status, 0 if failure is None else 1)
+                summary = json.loads((fake.workspace / 'summary.json').read_text())
+                self.assertEqual(summary['fixturePolicy'],
+                                 'cleanupAfterPassingValidation' if failure is None else 'retainFailedValidation')
 
 
 if __name__ == '__main__':
