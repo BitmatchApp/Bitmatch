@@ -6,7 +6,7 @@ Read [docs/THESIS.md](docs/THESIS.md) for what BitMatch promises and the current
 
 ## Building
 
-- The 0.2.10 release is built and tested locally with Xcode 27.1 (27A9275), Swift 6.4. Open `BitMatch.xcodeproj`.
+- Release validation uses local Xcode 27.1 (27A9275), Swift 6.4. Record the exact candidate and results in `docs/validation/RELEASE_<version>.md`. Open `BitMatch.xcodeproj`.
 - GitHub Actions CI is intentionally disabled; validation runs locally. The older Xcode 26.3 jobs failed before tests, and an abandoned Xcode 26.6 trial did not establish compatibility. Neither changes the app's macOS 15.5 minimum.
 - Schemes:
   - `BitMatch`: the macOS app (macOS 15.5 or newer).
@@ -28,9 +28,10 @@ Safety checks belong in the shared engine, not only in views. Readiness on Setup
 Required behavior (see `Packages/BitMatchEngine/Sources/BitMatchEngine/File/SafetyValidator.swift`, `DestinationWriter.swift`, `BackupTargetPolicy.swift`, and `Packages/BitMatchEngine/Sources/BitMatchEngine/TransferPipeline.swift`):
 
 - never write to the source; never overwrite an existing destination file
-- copy to a temporary file and publish it only after sync, a size check and a source-stability check, without replacing anything (hard link, or an exclusive name claim on exFAT/FAT)
+- never replace an existing destination name; the hard-link path publishes a synced temporary file, while the exFAT/FAT path durably marks the attempt incomplete before exclusively creating the final name
+- keep interrupted or failed output incomplete; only independent readback and the final source, destination and root checks can advance its status
 - refuse output roots that collide with the source, each other, symlinks, files or nested folders
-- include hidden files and empty folders; skip symlink entries
+- include hidden files and empty folders; apply only the recorded AppleDouble exclusion policy and skip symlink entries
 - use uncached checksums for live verification and evidence
 - write result status only through `ResultOutcome`; a Quick copy is never "verified"
 
@@ -136,7 +137,7 @@ xcrun notarytool store-credentials bitmatch-notary \
   --team-id "AUJW7AGG26" \
   --password "APP_SPECIFIC_PASSWORD"
 
-Scripts/release_mac.sh 0.1.7
+Scripts/release_mac.sh 0.2.11
 ```
 
 The script builds, signs, notarizes, staples and checksums `dist/BitMatch-<version>.dmg` with a matching `.sha256`. `SKIP_NOTARIZE=1 Scripts/release_mac.sh <version>` checks signing and DMG creation without submitting to Apple. iPhone and iPad are build-from-source for now.
@@ -152,12 +153,12 @@ The matching public key is `SUPublicEDKey` in `Config/BitMatch-Info.plist`. Neve
 
 To restore on a new Mac, copy the backup into a temporary file, run `generate_keys --account bitmatch -f <file>` from Sparkle's resolved package artifacts, then delete the file. To make a fresh backup export, run `generate_keys --account bitmatch -x <file>`. BitMatch uses its own Keychain account, `bitmatch`, separate from any other app's Sparkle key. Never commit an exported key.
 
-Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card to two destinations, check "safe to erase", Eject, and relaunch. Debug builds and tests do not exercise the sandboxed release paths.
+Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card through verification, ASC MHL and reports, inspect its saved result, and relaunch. Check cancellation and any changed controls. A two-backup safe-to-erase walkthrough needs two independently identified destinations; two folders on one SSD do not qualify. Record unavailable hardware, skipped steps and earlier-revision results explicitly. Debug builds and tests do not exercise the sandboxed release paths.
 
 After publishing the GitHub release, run `Scripts/bump_cask.sh <version>` for Homebrew, then publish the signed appcast entry last:
 
 ```bash
-Scripts/publish_appcast.sh 0.1.7
+Scripts/publish_appcast.sh 0.2.11
 ```
 
 The script reads the archived app's build, short version and minimum macOS version, signs the matching DMG with Sparkle's `sign_update` and the `bitmatch` key in the login Keychain, updates `appcast.xml` in [BitmatchApp/bitmatchapp.github.io](https://github.com/BitmatchApp/bitmatchapp.github.io), then commits and pushes the newest entry. Missing or incompatible minimum-version metadata stops the script before signing or network access. It uses the resolved Sparkle package's tool when available and downloads the matching Sparkle release tools otherwise. It never exports the private key.

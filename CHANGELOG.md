@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-10-20
+
+- iPhone and iPad keep Start, Pause, Resume and Cancel at the bottom of the screen. The source name has more room when using larger accessibility text.
+- History opens with less repeated work and searches clip names only when you ask. Saved transfers and their evidence stay intact.
+- Check can read supported classic MHL 1.1 checksum files. It checks file contents, without claiming to validate their history or authenticity.
+- Fixed a case where cancelling a queued card during preparation could let copying start afterward.
+- Older Quick transfers keep their “not verified” counts in recovery and results, even when an old record used a verified label.
+- Diagnostics handle overlapping writers more reliably and explain which final backup check stopped a transfer, without including footage names or paths.
+- Improved Standard retries for empty files on exFAT, with a fresh read before accepting a changed file identifier. Other file changes still stop the transfer.
+
 ## [0.2.10] - 2026-10-20
 
 - Notification permission requests show when they are waiting or fail, with a link to the running app’s system settings. iPhone and iPad Settings also offer Enable Notifications.
