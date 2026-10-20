@@ -29,6 +29,16 @@ struct QueueSessionPresentationTests {
         #expect(!outcome.canEject && !row.safetyState.isSafe)
         #expect(queue.ejectableCardIDs.isEmpty)
         #expect(queue.tally.selectedFilesVerified == 1 && queue.tally.needsAttention == 0)
+        #expect(QueueDockBadgePolicy.unresolvedCount(rows: queue.rows, reviewedIDs: []) == 0)
+        #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: []) == 0)
+        #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [UUID()]) == 1)
+        #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Selected files verified")),
+            record: record, fraction: 1) == .appIcon)
+        #expect(DockTileState.makeTransfer(state: .copying, record: record, fraction: 0.4) == .running(percent: 40))
+        #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
+            record: nil, fraction: 1) == .needsReview)
         #expect(outcome.destinations.count == 1)
         #expect(outcome.destinations.first?.needsAttention == false)
         #expect(outcome.destinations.first?.detail == "Checksums matched for 1 of 1 files")
@@ -88,6 +98,8 @@ struct QueueSessionPresentationTests {
         handoffFailure.expectedExclusionQueueQualification = nil
         handoffFailure.summary = "ASC MHL could not be saved"
         let quick = try fixture.metadataExclusionRecord(mode: .quick)
+        #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Copied")),
+            record: quick, fraction: 1) == .needsReview)
         for record in [missingProof, missingPlan, missingFingerprint, mismatchedProject, missingRow, duplicate, failed, unverified,
                        noDigest, emptyDigest, cancelled, interrupted, handoffFailure, quick] {
             #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
@@ -98,6 +110,15 @@ struct QueueSessionPresentationTests {
             #expect(row.outcome?.canEject == false)
             #expect(TransferLibraryPresentation.stateLabel(for: record).title != "Selected files verified")
             #expect(MenuBarRecentTransfer.status(for: record)?.needsAttention == true)
+        }
+        for record in [missingProof, failed, handoffFailure, noDigest, emptyDigest] {
+            let row = try #require(QueueSessionPresentation.completedRow(for: record))
+            #expect(row.safetyState == .needsAttention)
+            #expect(QueueDockBadgePolicy.unresolvedCount(rows: [row], reviewedIDs: []) == 1)
+            #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+                rows: [row], reviewedIDs: [], standaloneAttentionIDs: []) == 1)
+            #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
+                record: record, fraction: 1) == .needsReview)
         }
         for state in [LocalTransferState.queued, .running, .failed] {
             var record = original
@@ -120,6 +141,10 @@ struct QueueSessionPresentationTests {
         #expect(accessory.attentionRecordID == failed.id)
         #expect(accessory.tone == .warning)
         #expect(QueueAccessoryPresentation.attentionTokens(in: queue.rows).count == 1)
+        #expect(QueueDockBadgePolicy.unresolvedCount(rows: queue.rows, reviewedIDs: []) == 1)
+        #expect(QueueDockBadgePolicy.unresolvedCount(rows: queue.rows, reviewedIDs: [selected.id]) == 1)
+        #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [failed.id]) == 1)
     }
 
     @Test func liveErrorsAndUnknownModeCannotUseTheQuietPresentation() throws {

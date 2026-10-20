@@ -549,6 +549,7 @@ enum QueueDockBadgePolicy {
 
     private static func unresolvedIDs(rows: [QueueSessionRow], reviewedIDs: Set<UUID>) -> Set<UUID> {
         Set(rows.enumerated().compactMap { index, row in
+            guard !row.selectedFilesVerified else { return nil }
             let laterSafeRetry = rows.dropFirst(index + 1).contains {
                 $0.cardName == row.cardName && $0.safetyState == .safeToErase
             }

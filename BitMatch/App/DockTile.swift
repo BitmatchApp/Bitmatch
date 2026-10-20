@@ -49,6 +49,7 @@ enum DockTileState: Equatable {
     ) -> DockTileState {
         guard case .completed = state else { return make(state: state, fraction: fraction) }
         guard let record else { return .needsReview }
+        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) { return .appIcon }
         switch TransferLibraryPresentation.safetyState(for: record) {
         case .safeToErase: return .verified
         case .failed: return .failed
