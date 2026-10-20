@@ -79,45 +79,47 @@ struct TransferSettingsReviewView: View {
     var errorMessage: String? = nil
     let apply: () -> Void
     let cancel: () -> Void
+    #if os(macOS)
+    @State private var contentHeight: CGFloat = 440
+    #endif
 
     var body: some View {
-        NavigationStack {
-            Form {
-                if review.changes.isEmpty {
-                    Section { Text("These transfer settings already match.") }
-                } else {
-                    Section("Changes") {
-                        ForEach(review.changes) { change in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(change.title)
-                                Text("\(change.before) → \(change.after)")
-                                    .font(.subheadline).foregroundStyle(.secondary)
-                            }
-                            .padding(.vertical, 2)
-                            .accessibilityElement(children: .combine)
+        #if os(macOS)
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Import settings")
+                .font(.title2.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
+                .padding(.bottom, 4)
+            ScrollView {
+                macReviewContent
+                    .background {
+                        GeometryReader { proxy in
+                            Color.clear.preference(key: TransferSettingsReviewHeightKey.self, value: proxy.size.height)
                         }
                     }
-                }
-                if review.proposed.verificationMode == .quick {
-                    Section {
-                        Label("Quick checks file sizes. It does not verify contents.", systemImage: "exclamationmark.triangle")
-                            .foregroundStyle(.orange)
-                    }
-                }
-                if let errorMessage {
-                    Section { Text(errorMessage).foregroundStyle(.red) }
-                }
-                Section {
-                    Text("Changes apply to future transfers. Backups, project details and saved transfers stay as they are.")
-                        .font(.footnote).foregroundStyle(.secondary)
-                }
             }
-            #if os(iOS)
+            // Size short reviews to their content; keep long lists and errors
+            // in a bounded viewport while the actions remain visible.
+            .frame(height: min(440, contentHeight))
+            Divider()
+            HStack {
+                Spacer()
+                Button("Cancel", action: cancel).keyboardShortcut(.cancelAction)
+                Button("Apply", action: apply).keyboardShortcut(.defaultAction)
+                    .disabled(review.changes.isEmpty)
+            }
+            .padding(.horizontal, 24)
+            .padding(.vertical, 16)
+        }
+        .frame(width: 480)
+        .onPreferenceChange(TransferSettingsReviewHeightKey.self) { contentHeight = $0 }
+        #else
+        NavigationStack {
+            Form { reviewFields }
             .navigationTitle("Import")
             .navigationBarTitleDisplayMode(.inline)
-            #else
-            .navigationTitle("Import settings")
-            #endif
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel", action: cancel) }
                 ToolbarItem(placement: .confirmationAction) {
@@ -125,11 +127,79 @@ struct TransferSettingsReviewView: View {
                 }
             }
         }
-        #if os(macOS)
-        .frame(width: 480, height: 600)
         #endif
     }
+
+    #if os(macOS)
+    private var macReviewContent: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if review.changes.isEmpty {
+                Text("These transfer settings already match.")
+            } else {
+                GroupBox("Changes") {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(review.changes) { change in
+                            changeRow(change)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.vertical, 8)
+                            if change.id != review.changes.last?.id { Divider() }
+                        }
+                    }
+                    .padding(.horizontal, 8)
+                }
+            }
+            if review.proposed.verificationMode == .quick { quickWarning.fixedSize(horizontal: false, vertical: true) }
+            if let errorMessage { Text(errorMessage).foregroundStyle(.red) }
+            preservationNote.fixedSize(horizontal: false, vertical: true)
+        }
+        .fixedSize(horizontal: false, vertical: true)
+        .padding(.horizontal, 24)
+        .padding(.vertical, 16)
+    }
+    #endif
+
+    @ViewBuilder
+    private var reviewFields: some View {
+        if review.changes.isEmpty {
+            Section { Text("These transfer settings already match.") }
+        } else {
+            Section("Changes") {
+                ForEach(review.changes) { change in
+                    changeRow(change).padding(.vertical, 2)
+                }
+            }
+        }
+        if review.proposed.verificationMode == .quick { Section { quickWarning } }
+        if let errorMessage { Section { Text(errorMessage).foregroundStyle(.red) } }
+        Section { preservationNote }
+    }
+
+    private func changeRow(_ change: PortableTransferSettings.Change) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(change.title)
+            Text("\(change.before) → \(change.after)")
+                .font(.subheadline).foregroundStyle(.secondary)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private var quickWarning: some View {
+        Label("Quick checks file sizes. It does not verify contents.", systemImage: "exclamationmark.triangle")
+            .foregroundStyle(.orange)
+    }
+
+    private var preservationNote: some View {
+        Text("Changes apply to future transfers. Backups, project details and saved transfers stay as they are.")
+            .font(.footnote).foregroundStyle(.secondary)
+    }
 }
+
+#if os(macOS)
+private struct TransferSettingsReviewHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+#endif
 
 private struct TransferSettingsDocument: FileDocument {
     static var readableContentTypes: [UTType] { [.json] }

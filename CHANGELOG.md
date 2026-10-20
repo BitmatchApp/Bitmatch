@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 - Destination progress no longer resets to Waiting while ASC MHL and transfer reports are being saved. Processed counts and measured progress stay visible without implying the transfer is complete.
 - Mac Settings now scroll when a pane is taller than the window, keeping the first and last controls reachable.
+- Importing transfer settings on Mac uses a compact review sheet, with longer change lists scrollable above Cancel and Apply.
 - Move reusable transfer settings between Mac, iPad and iPhone from Settings. Imports show the changes before Apply and leave backup locations, camera labels, private report details and saved transfers alone.
 - Older History entries without a saved selected-file plan now stay visible but do not claim the whole card is safe to erase, even if their saved rows say verified. They also no longer trigger the “Backed up before…” hint. Quick entries without that plan show Needs attention instead of a clean size-only copy. History exports keep the original message and add the saved safety verdict.
 - If a new transfer cannot save its selected-file plan, BitMatch stops before creating a completion report or marking a project card safe. The final record keeps the source unsafe. Finish, queue, menu bar, Dock and notifications follow the saved verdict. A later History-save failure also shows an interruption; any separately saved report or project evidence remains available for review.
