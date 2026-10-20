@@ -6,6 +6,8 @@ The working list for BitMatch, reprioritized on October 16 and reviewed on Octob
 
 Follow evidence and actual user reports. The AppleDouble request [#16](https://github.com/BitmatchApp/Bitmatch/issues/16) is closed; the [Guide](GUIDE.md) describes the current setting, and [the investigation](ISSUE16_APPLEDOUBLE.md) retains its earlier validation. Preserve source protection, no-overwrite guarantees, complete verification and honest verdicts. Core workflows apply to Mac, iPad and iPhone; keep platform limits explicit. See the [thesis](THESIS.md) and [architecture](../ARCHITECTURE.md).
 
+Unreleased review work from October 19–20 is recorded in the [overnight validation](OVERNIGHT_VALIDATION_20261019.md): saved-evidence and report fixes, portable preferences, broader filesystem/physical tests, a reproduced filename crash, and queue continuation after reviewed metadata exclusions. These changes are in draft PRs, with the native release walkthrough and active user reports still open.
+
 ## Ranked work queue
 
 This is the order to **investigate or start a bounded slice**, not a promise to ship in this order. It weighs everyday usefulness and safety against implementation difficulty, the blast radius of a mistake, and whether the result can ship and be tested independently. These are judgments, not measured scores. **Quick** means a contained change with local regression coverage; **scoped** means a defined feature or audit; **long** needs design, physical tests, or multiple stages; **demand** needs stronger user evidence. Blast radius means the potential effect on transfers, evidence or platform behavior, not the number of files edited. The detailed acceptance criteria remain in the sections below.
