@@ -141,6 +141,31 @@ final class WorkflowSnapshotTests: XCTestCase {
         try? await Task.sleep(nanoseconds: 100_000_000)
     }
 
+    /// Presentation fixture only: retained legacy wording must not turn a
+    /// known Quick attempt into verified recovery counts.
+    func testCaptureQuickRecoverySummaries() throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(),
+            source: try LocalTransferResource(url: fixture.source),
+            destinations: try [fixture.backup, fixture.secondBackup].map(LocalTransferResource.init(url:)),
+            verificationMode: .quick, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .cancelled
+        record.plannedFileCounts = [1, 1]
+        record.results = [fixture.backup, fixture.secondBackup].map { backup in
+            ResultRow(path: "DCIM/clip.txt", status: "✅ Match", size: 11,
+                checksum: "synthetic-legacy-digest", destination: backup.lastPathComponent,
+                destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path, wasReused: true)
+        }
+        for width in [580.0, 1_100.0] {
+            try capture(TransferRecoveryDetails(record: record, history: [record]).padding()
+                .frame(maxHeight: .infinity, alignment: .top),
+                size: CGSize(width: width, height: 360), name: "mac-quick-recovery-\(Int(width))",
+                expectedText: ["0 reused", "0 copied", "1 copied, unverified"])
+        }
+    }
+
     private func requireCaptureConfiguration() throws {
         let environment = ProcessInfo.processInfo.environment
         let enabled = environment["BITMATCH_CAPTURE_WORKFLOW_SNAPSHOTS"] == "1"

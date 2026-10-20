@@ -52,6 +52,65 @@ final class ResultPresentationTests: XCTestCase {
         XCTAssertTrue(summary.detail.contains("not verified"))
     }
 
+    /// Plant: omit verificationMode from DestinationResultSummary.make, or
+    /// remove its Quick check; old match text must not imply a content check.
+    func testQuickDestinationSummaryDoesNotTrustLegacyMatchText() {
+        let destination = URL(fileURLWithPath: "/Backup")
+        for mode in VerificationMode.allCases {
+            for status in [ResultOutcome.verified.statusText, "✅ Match", "✅ SHA-256 verified"] {
+                let row = ResultRow(path: "clip.mov", status: status, size: 10, checksum: "recorded-digest",
+                    destination: "Backup", destinationPath: "/Backup/clip.mov")
+                let summary = DestinationResultSummary.make(rows: [row], destinations: [destination], verificationMode: mode)[0]
+                XCTAssertEqual(summary.unverifiedCount, mode == .quick ? 1 : 0)
+                XCTAssertEqual(summary.needsAttention, mode == .quick)
+                XCTAssertEqual(summary.detail, mode == .quick
+                    ? "1 file copied, contents not verified" : "Checksums matched for 1 of 1 files")
+                XCTAssertEqual(summary.rows.first?.status, status)
+                XCTAssertEqual(summary.rows.first?.checksum, "recorded-digest")
+                XCTAssertEqual(summary.rows.first?.id, row.id)
+            }
+        }
+    }
+
+    /// Plant: use only checksum presence or a case-sensitive "Copied" test
+    /// when deciding whether successful rows were verified.
+    func testExplicitlyUnverifiedLegacyRowsNeverClaimChecksumsMatched() {
+        for mode in [VerificationMode.standard, .thorough, .paranoid] {
+            for status in ["✅ copied, not verified", "✅ Match (unverified)"] {
+                let row = ResultRow(path: "clip.mov", status: status, size: 10, checksum: "recorded-digest",
+                    destination: "Backup", destinationPath: "/Backup/clip.mov")
+                let summary = DestinationResultSummary.make(rows: [row], destinations: [URL(fileURLWithPath: "/Backup")], verificationMode: mode)[0]
+                XCTAssertEqual(summary.unverifiedCount, 1)
+                XCTAssertTrue(summary.needsAttention)
+                XCTAssertFalse(summary.detail.contains("Checksums matched"))
+            }
+        }
+    }
+
+    /// Plant: classify all Quick rows as unverified before checking failure
+    /// and exclusions, hiding the reason a destination needs attention.
+    func testQuickDestinationFailuresAndExclusionsKeepTheirMeaning() {
+        let destination = URL(fileURLWithPath: "/Backup")
+        func result(_ status: String, name: String = "clip.mov") -> ResultRow {
+            ResultRow(path: name, status: status, size: 10, checksum: "recorded-digest",
+                destination: "Backup", destinationPath: destination.appendingPathComponent(name).path)
+        }
+        let rows = [result("✅ Match"), result(ResultOutcome.excludedAppleDouble.statusText, name: "._clip.mov")]
+        let summary = DestinationResultSummary.make(rows: rows, destinations: [destination], verificationMode: .quick)[0]
+        XCTAssertEqual(summary.unverifiedCount, 1)
+        XCTAssertEqual(summary.excludedCount, 1)
+        XCTAssertEqual(summary.detail, "0 verified, 1 unverified, 1 intentionally excluded")
+        let failed = DestinationResultSummary.make(rows: rows + [result(ResultOutcome.failed.statusText)],
+            destinations: [destination], verificationMode: .quick)[0]
+        XCTAssertEqual(failed.issueCount, 1)
+        XCTAssertEqual(failed.detail, "1 file failed")
+
+        let missingDigest = result(ResultOutcome.verified.statusText)
+        let noDigest = ResultRow(id: missingDigest.id, path: missingDigest.path, status: missingDigest.status,
+            size: missingDigest.size, checksum: nil, destination: missingDigest.destination, destinationPath: missingDigest.destinationPath)
+        XCTAssertEqual(DestinationResultSummary.make(rows: [noDigest], destinations: [destination], verificationMode: .standard)[0].unverifiedCount, 1)
+    }
+
     func testDestinationWithoutEvidenceDoesNotClaimSuccess() {
         let summary = DestinationResultSummary.make(rows: [], destinations: [URL(fileURLWithPath: "/Backup")])[0]
         XCTAssertEqual(summary.detail, "No files recorded")

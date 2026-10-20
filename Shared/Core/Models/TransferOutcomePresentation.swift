@@ -18,7 +18,7 @@ struct OutcomeFileCounts: Equatable, Sendable {
 
     var total: Int { verified + copiedNotVerified + needsAttention + excluded }
 
-    static func make(rows: [ResultRow]) -> Self {
+    static func make(rows: [ResultRow], verificationMode: VerificationMode? = nil) -> Self {
         var verified = 0
         var copied = 0
         var attention = 0
@@ -28,7 +28,7 @@ struct OutcomeFileCounts: Equatable, Sendable {
                 excluded += 1
             } else if !row.isSuccessStatus {
                 attention += 1
-            } else if TransferOutcomePresentation.isVerified(row) {
+            } else if verificationMode != .quick && TransferOutcomePresentation.isVerified(row) {
                 verified += 1
             } else {
                 copied += 1
@@ -194,9 +194,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             backupCount: claimedDestinationCount
         )
         let safetyState = CardSafetyState.make(state: state, verdict: resolved)
-        let counts = OutcomeFileCounts.make(rows: rows)
+        let counts = OutcomeFileCounts.make(rows: rows, verificationMode: verificationMode)
 
-        let verifiedBytes = rows.filter(Self.isVerified).reduce(into: Int64(0)) { total, row in
+        let verifiedBytes = rows.filter { verificationMode != .quick && Self.isVerified($0) }.reduce(into: Int64(0)) { total, row in
             let (sum, overflow) = total.addingReportingOverflow(max(0, row.size))
             total = overflow ? .max : sum
         }
@@ -273,7 +273,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             counts: counts,
             bytesVerified: counts.verified > 0 ? verifiedBytes : nil,
             verificationModeLabel: algorithm,
-            destinations: makeDestinationLines(rows: rows, destinations: destinations, interrupted: safetyState == .interrupted),
+            destinations: makeDestinationLines(rows: rows, destinations: destinations,
+                interrupted: safetyState == .interrupted, verificationMode: verificationMode),
             rowCount: rows.count,
             rowsTruncated: rows.count > fileListLimit,
             canRetry: allowsRetry,
@@ -424,8 +425,10 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         return String(format: "%d:%02d", minutes, secs)
     }
 
-    private static func makeDestinationLines(rows: [ResultRow], destinations: [URL], interrupted: Bool) -> [OutcomeDestinationLine] {
-        DestinationResultSummary.make(rows: rows, destinations: destinations).map { summary in
+    private static func makeDestinationLines(
+        rows: [ResultRow], destinations: [URL], interrupted: Bool, verificationMode: VerificationMode?
+    ) -> [OutcomeDestinationLine] {
+        DestinationResultSummary.make(rows: rows, destinations: destinations, verificationMode: verificationMode).map { summary in
             guard interrupted else {
                 return OutcomeDestinationLine(
                     id: summary.id,
@@ -434,10 +437,16 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                     needsAttention: summary.needsAttention
                 )
             }
-            let verified = summary.rows.filter(Self.isVerified).count
-            let detail = summary.rows.isEmpty
-                ? "Interrupted before any files were recorded"
-                : "Interrupted: \(verified) of \(summary.rows.count) files verified before the stop"
+            let verified = summary.rows.filter { verificationMode != .quick && Self.isVerified($0) }.count
+            let detail: String
+            if summary.rows.isEmpty {
+                detail = "Interrupted before any files were recorded"
+            } else if verificationMode == .quick {
+                let copied = summary.rows.filter(\.isSuccessStatus).count
+                detail = "Interrupted: \(copied) copied, contents not verified"
+            } else {
+                detail = "Interrupted: \(verified) of \(summary.rows.count) files verified before the stop"
+            }
             return OutcomeDestinationLine(
                 id: summary.id,
                 title: destinationLabel(URL(fileURLWithPath: summary.id, isDirectory: true)),
