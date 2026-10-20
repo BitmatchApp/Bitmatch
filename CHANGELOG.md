@@ -12,8 +12,11 @@ All notable changes to this project will be documented in this file.
 - Remote backups now claim a new filename before upload and recover only files BitMatch can still identify as its own. Existing remote files are left alone; unsupported server setups stop with an issue.
 - Cancelling a remote backup now stops the SSH work it started, including child processes.
 - Camera hints skip oversized XML metadata instead of loading it all into memory. This does not change the transfer file list.
-- The finish screen describes the checks actually performed and acknowledges files that did verify even when the transfer as a whole needs attention.
-- Keep copy and verification failures below 100% in live progress; the engine emits “Complete” only when all selected files pass the chosen mode. The final safety verdict still includes later ASC MHL and report steps.
+- Finish, History and reports separate the selected verification plan from the results actually recorded. Older checksum reports no longer get labeled as a mode they did not record, and unknown or conflicting checksum algorithms stay unverified. Partial results stay visible without claiming the transfer completed.
+- Interrupted exFAT copies leave a visible incomplete-transfer warning on the destination. Existing files stay untouched, and unfinished copies cannot earn a safe verdict.
+- Made saving ASC MHL histories on exFAT safer: unfinished or damaged histories stay unverified, and an existing history is never replaced.
+- Check can validate supported ASC MHL inventory chains, including intact histories extended by another tool, without rewriting them. Directory hashes and recorded renames remain unsupported.
+- Large clips now move progress as their bytes are copied and checked. Queue cards are weighted by estimated work, and the bar stays below 100% while reports and final transfer records finish. Failed or interrupted work never appears complete.
 - Ignore a disappearing root `.fseventsd` metadata directory during card scans without hiding ordinary files. A regular source file with that name now contributes to the source fingerprint.
 - Bound saved JSON, MHL and adjacent checksum-manifest reads during loading. Damaged, oversized, conflicting or empty adjacent records are reported instead of silently falling back to partial evidence, including when another companion looks valid.
 - Keep a retained remote verification timestamp from claiming a photographer card is fully backed up when its local evidence is rejected. Remote status labels distinguish downloaded readback from older server-checksum evidence, including backups with mixed evidence. Refreshing a saved backup no longer changes its completion time.
