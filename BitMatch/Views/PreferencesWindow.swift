@@ -127,16 +127,27 @@ struct PreferencesWindow: View {
                 LabeledContent(GeneralSettingsPresentation.systemPermission) {
                     HStack(spacing: 10) {
                         Text(notifier.authorization.title).foregroundStyle(.secondary)
-                        if notifier.authorization.showsSettingsButton {
-                            Button(GeneralSettingsPresentation.openNotificationSettings) {
-                                openURL(GeneralSettingsPresentation.macNotificationSettingsURL)
-                            }
-                        } else if notifier.authorization.showsEnableButton {
-                            Button("Enable Notifications") {
+                        if notifier.isRequestingAuthorization {
+                            ProgressView().controlSize(.small)
+                                .accessibilityLabel("Requesting notification permission")
+                        }
+                        if notifier.authorization.showsEnableButton {
+                            Button(NotificationPermissionPromptPresentation.enableTitle) {
                                 Task { await coordinator.enableNotificationsFromPrompt() }
+                            }
+                            .disabled(notifier.isRequestingAuthorization)
+                        }
+                        if notifier.authorization.showsSettingsButton || notifier.authorizationRequestFailed {
+                            Button(GeneralSettingsPresentation.openNotificationSettings) {
+                                openURL(GeneralSettingsPresentation.macNotificationSettingsURL())
                             }
                         }
                     }
+                }
+                if notifier.authorizationRequestFailed {
+                    Text(GeneralSettingsPresentation.notificationRequestFailed)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
             }
 

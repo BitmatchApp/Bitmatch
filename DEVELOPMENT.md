@@ -151,7 +151,7 @@ To restore on a new Mac, copy the backup into a temporary file, run `generate_ke
 
 Before tagging, run the signed app from `dist/BitMatch-<version>.xcarchive` against real or disk-image volumes: allow drive access, copy a card to two destinations, check "safe to erase", Eject, and relaunch. Debug builds and tests do not exercise the sandboxed release paths.
 
-After publishing the GitHub release, publish its signed appcast entry:
+After publishing the GitHub release, run `Scripts/bump_cask.sh <version>` for Homebrew, then publish the signed appcast entry last:
 
 ```bash
 Scripts/publish_appcast.sh 0.1.7
@@ -161,7 +161,7 @@ The script reads the archived app's build, short version and minimum macOS versi
 
 Run `python3 Scripts/test_appcast_minimum.py` for offline metadata and script checks. These use disposable fixtures and stub every signing, GitHub, Git and Xcode command; they do not publish an update or change the app's deployment target.
 
-Then run `Scripts/bump_cask.sh <version>`. It checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
+`Scripts/bump_cask.sh <version>` checks the published DMG against the local checksum, updates `Casks/bitmatch.rb` in [BitmatchApp/homebrew-tap](https://github.com/BitmatchApp/homebrew-tap), pushes it, and runs `brew audit`. `brew upgrade bitmatch` sees the release from then on.
 
 ## Conventions
 

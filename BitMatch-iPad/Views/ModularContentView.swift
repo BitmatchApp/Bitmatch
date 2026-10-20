@@ -324,7 +324,21 @@ struct SettingsSheetView: View {
                     Text("\(GeneralSettingsPresentation.systemPermission): \(notifier.authorization.title)")
                         .font(.footnote)
                         .foregroundColor(.secondary)
-                    if notifier.authorization.showsSettingsButton,
+                    if notifier.isRequestingAuthorization {
+                        ProgressView("Requesting notification permission")
+                    }
+                    if notifier.authorization.showsEnableButton {
+                        Button(NotificationPermissionPromptPresentation.enableTitle) {
+                            Task { await coordinator.enableNotificationsFromPrompt() }
+                        }
+                        .disabled(notifier.isRequestingAuthorization)
+                    }
+                    if notifier.authorizationRequestFailed {
+                        Text(GeneralSettingsPresentation.notificationRequestFailed)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
+                    if notifier.authorization.showsSettingsButton || notifier.authorizationRequestFailed,
                        let settingsURL = URL(string: UIApplication.openSettingsURLString) {
                         Button(GeneralSettingsPresentation.openNotificationSettings) {
                             openURL(settingsURL)

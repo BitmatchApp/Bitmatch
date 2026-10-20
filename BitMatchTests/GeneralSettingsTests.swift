@@ -7,6 +7,10 @@ import UserNotifications
 struct GeneralSettingsTests {
     private final class FakeAuthorizationClient: NotificationAuthorizationClient {
         let granted: Bool
+        var status: UNAuthorizationStatus?
+        var failure: Error?
+        var pendingRequest: CheckedContinuation<Bool, Error>?
+        var suspendRequest = false
         private(set) var requestCount = 0
 
         init(granted: Bool) {
@@ -15,11 +19,15 @@ struct GeneralSettingsTests {
 
         func requestAuthorization(options: UNAuthorizationOptions) async throws -> Bool {
             requestCount += 1
+            if let failure { throw failure }
+            if suspendRequest {
+                return try await withCheckedThrowingContinuation { pendingRequest = $0 }
+            }
             return granted
         }
 
         func authorizationStatus() async -> UNAuthorizationStatus {
-            granted ? .authorized : .denied
+            status ?? (granted ? .authorized : .denied)
         }
     }
 
@@ -136,6 +144,107 @@ struct GeneralSettingsTests {
         #expect(!decide(true, true, true, true, true))
         #expect(!decide(false, false, true, true, true))
         #expect(!decide(true, false, false, false, false))
+    }
+
+    @Test func failedPermissionRequestIsVisibleAndCanBeRetried() async throws {
+        let box = try DefaultsBox()
+        let settings = GeneralSettings(defaults: box.defaults)
+        let before = preferenceValues(settings)
+        let client = FakeAuthorizationClient(granted: true)
+        client.status = .notDetermined
+        client.failure = NSError(domain: UNErrorDomain, code: 1)
+        let notifier = TransferNotifier(settings: settings, authorizationClient: client)
+
+        #expect(await notifier.enable() == false)
+        #expect(notifier.authorization == .notAsked)
+        #expect(notifier.authorizationRequestFailed)
+        #expect(!notifier.isRequestingAuthorization)
+        #expect(preferenceValues(settings) == before)
+
+        client.failure = nil
+        client.status = .authorized
+        #expect(await notifier.enable())
+        #expect(notifier.authorization == .authorized)
+        #expect(!notifier.authorizationRequestFailed)
+        #expect(!notifier.isRequestingAuthorization)
+        #expect(client.requestCount == 2)
+        #expect(preferenceValues(settings) == before)
+    }
+
+    @Test(arguments: [UNAuthorizationStatus.notDetermined, .denied])
+    func declinedPermissionDistinguishesSystemFailureFromUserDenial(status: UNAuthorizationStatus) async throws {
+        let box = try DefaultsBox()
+        let client = FakeAuthorizationClient(granted: false)
+        client.status = status
+        let notifier = TransferNotifier(settings: GeneralSettings(defaults: box.defaults), authorizationClient: client)
+
+        #expect(await notifier.enable() == false)
+        #expect(notifier.authorizationRequestFailed == (status == .notDetermined))
+        #expect(notifier.authorization.showsSettingsButton == (status == .denied))
+        #expect(!notifier.isRequestingAuthorization)
+    }
+
+    @Test func cancelledPermissionRequestClearsBusyState() async throws {
+        let box = try DefaultsBox()
+        let client = FakeAuthorizationClient(granted: false)
+        client.failure = CancellationError()
+        let notifier = TransferNotifier(settings: GeneralSettings(defaults: box.defaults), authorizationClient: client)
+
+        #expect(await notifier.enable() == false)
+        #expect(!notifier.authorizationRequestFailed)
+        #expect(!notifier.isRequestingAuthorization)
+    }
+
+    @Test(arguments: [UNAuthorizationStatus.authorized, .denied])
+    func returningFromSystemSettingsClearsStaleRequestFailure(status: UNAuthorizationStatus) async throws {
+        let box = try DefaultsBox()
+        let client = FakeAuthorizationClient(granted: false)
+        client.failure = NSError(domain: UNErrorDomain, code: 1)
+        client.status = .notDetermined
+        let notifier = TransferNotifier(settings: GeneralSettings(defaults: box.defaults), authorizationClient: client)
+        #expect(await notifier.enable() == false)
+        #expect(notifier.authorizationRequestFailed)
+
+        client.status = status
+        await notifier.refreshAuthorizationStatus()
+        #expect(notifier.authorization == NotificationAuthorizationPresentation.make(status: status))
+        #expect(!notifier.authorizationRequestFailed)
+    }
+
+    @Test func repeatedEnableDoesNotStartAnotherSystemRequest() async throws {
+        let box = try DefaultsBox()
+        let client = FakeAuthorizationClient(granted: true)
+        client.suspendRequest = true
+        let notifier = TransferNotifier(settings: GeneralSettings(defaults: box.defaults), authorizationClient: client)
+        let first = Task { await notifier.enable() }
+        let deadline = ContinuousClock.now + .seconds(2)
+        while client.pendingRequest == nil && ContinuousClock.now < deadline { await Task.yield() }
+        guard let pending = client.pendingRequest else {
+            first.cancel()
+            Issue.record("The permission request did not start")
+            return
+        }
+        #expect(notifier.isRequestingAuthorization)
+        #expect(await notifier.enable() == false)
+        #expect(client.requestCount == 1)
+        client.pendingRequest = nil
+        pending.resume(returning: true)
+        #expect(await first.value)
+        #expect(!notifier.isRequestingAuthorization)
+    }
+
+    @Test(arguments: ["BitMatchApp.BitMatch", "BitMatchApp.BitMatch.Overnight", "test.id&other=value"])
+    func notificationSettingsTargetsTheRunningBundle(bundleIdentifier: String) throws {
+        let url = GeneralSettingsPresentation.macNotificationSettingsURL(bundleIdentifier: bundleIdentifier)
+        let components = try #require(URLComponents(url: url, resolvingAgainstBaseURL: false))
+        #expect(components.scheme == "x-apple.systempreferences")
+        #expect(components.path == "com.apple.Notifications-Settings.extension")
+        #expect(components.queryItems == [URLQueryItem(name: "id", value: bundleIdentifier)])
+    }
+
+    @Test func notificationSettingsWithoutBundleOpensTheGeneralPane() {
+        #expect(GeneralSettingsPresentation.macNotificationSettingsURL(bundleIdentifier: nil).query == nil)
+        #expect(GeneralSettingsPresentation.macNotificationSettingsURL(bundleIdentifier: "").query == nil)
     }
 
     @Test func notificationKindsFollowOnlyTheirOwnSettingsAndNeverPostInFront() {
