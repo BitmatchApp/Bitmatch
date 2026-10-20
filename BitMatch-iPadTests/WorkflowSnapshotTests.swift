@@ -586,6 +586,22 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    func testPortraitCaptureDoesNotInheritLandscapeSafeArea() async throws {
+        try requireCaptureConfiguration()
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeLeft))
+        defer { scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !scene.interfaceOrientation.isLandscape && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertTrue(scene.interfaceOrientation.isLandscape, "The regression must start from a landscape scene")
+        try await capture(Text("Portrait viewport").frame(maxWidth: .infinity, maxHeight: .infinity),
+            size: CGSize(width: 375, height: 852), name: "mobile-portrait-after-landscape",
+            expectedText: ["Portrait viewport"])
+    }
+
     private func capture<V: View>(_ view: V, size: CGSize, name: String,
                                  expectedText: [String] = [], textOccurrences: [String: Int] = [:],
                                  expectedComposerText: [String] = [], composerBounds: ComposerCaptureBounds? = nil,
@@ -604,6 +620,23 @@ final class WorkflowSnapshotTests: XCTestCase {
             if scene == nil { try await Task.sleep(for: .milliseconds(25)) }
         } while scene == nil && ContinuousClock.now < deadline
         let foregroundScene = try XCTUnwrap(scene, "A foreground scene is required for \(name)")
+        let orientationBeforeCapture = foregroundScene.interfaceOrientation
+        let portraitViewport = size.height >= size.width
+        let orientationMatches = {
+            portraitViewport ? foregroundScene.interfaceOrientation.isPortrait : foregroundScene.interfaceOrientation.isLandscape
+        }
+        if !orientationMatches() {
+            // A portrait-sized UIWindow does not rotate its scene. Inheriting a
+            // landscape phone scene would subtract both notch insets from the
+            // fixture width and test an impossible portrait/landscape hybrid.
+            foregroundScene.requestGeometryUpdate(.iOS(interfaceOrientations: portraitViewport ? .portrait : .landscapeLeft))
+            let orientationDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !orientationMatches() && ContinuousClock.now < orientationDeadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            _ = try XCTUnwrap(orientationMatches() ? true : nil,
+                "Scene did not reach the requested capture orientation: \(name)")
+        }
         let oldKeyWindow = foregroundScene.windows.first { $0.isKeyWindow }
         let host = UIHostingController(rootView: view
             .environment(\.workflowActionBoundsObserver, { role, frame in actionBounds?.update(role, frame) })
@@ -628,10 +661,44 @@ final class WorkflowSnapshotTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(75))
         }
 
+        func rect(_ value: CGRect) -> [String: CGFloat] {
+            ["x": value.minX, "y": value.minY, "width": value.width, "height": value.height]
+        }
+        func insets(_ value: UIEdgeInsets) -> [String: CGFloat] {
+            ["top": value.top, "left": value.left, "bottom": value.bottom, "right": value.right]
+        }
+        let geometry: [String: Any] = [
+            "sceneOrientationBeforeCapture": orientationBeforeCapture.rawValue,
+            "sceneOrientation": foregroundScene.interfaceOrientation.rawValue,
+            "sceneBounds": rect(foregroundScene.coordinateSpace.bounds),
+            "requestedSize": ["width": size.width, "height": size.height],
+            "windowFrame": rect(window.frame),
+            "windowBounds": rect(window.bounds),
+            "windowSafeAreaInsets": insets(window.safeAreaInsets),
+            "hostBounds": rect(host.view.bounds),
+            "hostSafeAreaInsets": insets(host.view.safeAreaInsets),
+            "hostSafeAreaLayoutFrame": rect(host.view.safeAreaLayoutGuide.layoutFrame),
+            "horizontalSizeClass": host.traitCollection.horizontalSizeClass.rawValue,
+            "verticalSizeClass": host.traitCollection.verticalSizeClass.rawValue
+        ]
+        if let directory = outputDirectoryURL() {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: geometry, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("\(name)-geometry.json"), options: .atomic)
+        }
+
         XCTAssertEqual(window.bounds.width, size.width, accuracy: 0.5, "Wrong scene capture width: \(name)")
         XCTAssertEqual(window.bounds.height, size.height, accuracy: 0.5, "Wrong scene capture height: \(name)")
         XCTAssertEqual(host.view.bounds.width, size.width, accuracy: 0.5, "Wrong capture width: \(name)")
         XCTAssertEqual(host.view.bounds.height, size.height, accuracy: 0.5, "Wrong capture height: \(name)")
+        if size.height > size.width {
+            XCTAssertEqual(host.view.safeAreaInsets.left, 0, accuracy: 0.5,
+                "Portrait capture inherited a horizontal safe area: \(name)")
+            XCTAssertEqual(host.view.safeAreaInsets.right, 0, accuracy: 0.5,
+                "Portrait capture inherited a horizontal safe area: \(name)")
+            XCTAssertEqual(host.view.safeAreaLayoutGuide.layoutFrame.width, size.width, accuracy: 0.5,
+                "Portrait capture lost usable width: \(name)")
+        }
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { _ in
             window.drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
