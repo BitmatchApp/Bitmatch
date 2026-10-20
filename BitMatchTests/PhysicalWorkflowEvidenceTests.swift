@@ -29,17 +29,61 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         let targets = [root.appendingPathComponent("Backup A"), root.appendingPathComponent("Backup B")]
         let evidence = root.appendingPathComponent("evidence")
         for url in [source, evidence] + targets { try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true) }
-        defer { try? FileManager.default.removeItem(at: root) }
-        try await seed(source, mibOverride: 32)
-        let original = try await Task.detached { try Self.snapshot(source) }.value
-        for mode in [VerificationMode.standard, .thorough] {
-            let destinations = try targets.map { target in
-                let destination = target.appendingPathComponent(mode.rawValue)
-                try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
-                return destination
+        do {
+            try await seed(source, mibOverride: 32)
+            let original = try await Task.detached { try Self.snapshot(source) }.value
+            for mode in [VerificationMode.standard, .thorough] {
+                let destinations = try targets.map { target in
+                    let destination = target.appendingPathComponent(mode.rawValue)
+                    try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+                    return destination
+                }
+                _ = try await run(source: source, original: original, targets: destinations, mode: mode, pair: 1, evidence: evidence)
             }
-            _ = try await run(source: source, original: original, targets: destinations, mode: mode, pair: 1, evidence: evidence)
+            try PhysicalAppHarnessSettlement.withPassingAssertions(testRun?.totalFailureCount) {
+                try FileManager.default.removeItem(at: root)
+                print("PHYSICAL_APP_HOST_SUMMARY transfers=2 cleanup=true")
+            }
+        } catch {
+            print("PHYSICAL_APP_HOST_FAILURE retainedFixture=\(root.path)")
+            throw error
         }
+    }
+
+    func testAssertionFailurePreventsSuccessfulReceiptAndFixtureCleanup() throws {
+        for failures: Int? in [1, 2, nil] {
+            var receiptWritten = false
+            var fixtureDeleted = false
+            XCTAssertThrowsError(try PhysicalAppHarnessSettlement.withPassingAssertions(failures) {
+                receiptWritten = true
+                fixtureDeleted = true
+            })
+            XCTAssertFalse(receiptWritten)
+            XCTAssertFalse(fixtureDeleted)
+        }
+        var receiptWritten = false
+        var fixtureDeleted = false
+        try PhysicalAppHarnessSettlement.withPassingAssertions(0) {
+            receiptWritten = true
+            fixtureDeleted = true
+        }
+        XCTAssertTrue(receiptWritten)
+        XCTAssertTrue(fixtureDeleted)
+    }
+
+    func testCooperativeSettlementCancelsAndDrainsItsWaiter() async {
+        var cancelledWaiter = false
+        let timedOut = await PhysicalAppHarnessSettlement.waitForCooperativeSettlement(.milliseconds(10)) {
+            do { try await Task.sleep(for: .seconds(60)) }
+            catch {
+                cancelledWaiter = error is CancellationError
+                throw error
+            }
+        }
+        XCTAssertFalse(timedOut)
+        XCTAssertTrue(cancelledWaiter)
+        let settled = await PhysicalAppHarnessSettlement.waitForCooperativeSettlement(.seconds(10)) {}
+        XCTAssertTrue(settled)
     }
 
     func testPhysicalConfigRefusesUnmarkedHostDirectoriesWithoutWrites() throws {
@@ -93,6 +137,9 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         do {
             try await seed(source)
             let original = try await Task.detached { try Self.snapshot(source) }.value
+            let manifestEncoder = JSONEncoder()
+            manifestEncoder.outputFormatting = [.sortedKeys]
+            try manifestEncoder.encode(original).write(to: evidence.appendingPathComponent("source-manifest.json"), options: .atomic)
             let benchmark = ProcessInfo.processInfo.environment["BITMATCH_HARDWARE_APP_BENCHMARK"] == "1"
             let trials: [[VerificationMode]] = benchmark
                 ? [[.standard, .thorough], [.thorough, .standard], [.standard, .thorough]] : [[.standard]]
@@ -104,16 +151,20 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
                                        fixture.child(role: "ssdB", name: "app-\(label)")]
                     let receipt = try await run(source: source, original: original, targets: targets,
                                                 mode: mode, pair: pair + 1, evidence: evidence)
-                    receipts.append(receipt)
-                    try JSONEncoder().encode(receipts).write(to: evidence.appendingPathComponent("trials.json"), options: .atomic)
-                    try fixture.removeChild(targets[0]); try fixture.removeChild(targets[1])
+                    try PhysicalAppHarnessSettlement.withPassingAssertions(testRun?.totalFailureCount) {
+                        receipts.append(receipt)
+                        try JSONEncoder().encode(receipts).write(to: evidence.appendingPathComponent("trials.json"), options: .atomic)
+                        try fixture.removeChild(targets[0]); try fixture.removeChild(targets[1])
+                    }
                 }
             }
             XCTAssertEqual(receipts.count, benchmark ? 6 : 1)
             let after = try await Task.detached { try Self.snapshot(source) }.value
             XCTAssertEqual(after, original, "Physical source changed")
-            try fixture.removeChild(source)
-            print("PHYSICAL_APP_SUMMARY trials=\(receipts.count) pairedBenchmark=\(benchmark) backups=2 realJournal=true independentHashes=true previewsEmbedded=true cleanup=true")
+            try PhysicalAppHarnessSettlement.withPassingAssertions(testRun?.totalFailureCount) {
+                try fixture.removeChild(source)
+                print("PHYSICAL_APP_SUMMARY trials=\(receipts.count) pairedBenchmark=\(benchmark) backups=2 realJournal=true independentHashes=true previewsEmbedded=true cleanup=true")
+            }
         } catch {
             // Keep owned children on failure for review; never delete a replaced
             // or disconnected fixture by falling back to a pathname operation.
@@ -156,12 +207,19 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         let ended = await waitUntil(timeout: .seconds(900)) {
             !coordinator.queueIsRunning && !coordinator.isOperationInProgress
         }
-        if !ended { coordinator.cancelOperation() }
+        if !ended {
+            let settled = await PhysicalAppHarnessSettlement.waitForCooperativeSettlement(.seconds(30)) {
+                // The public enum has no test-harness origin. Record the real
+                // caller below; .user here means an explicit cancellation API
+                // request, not evidence that a person clicked Cancel.
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: .user)
+            }
+            print("PHYSICAL_APP_TIMEOUT cancellationRequestedBy=harness originAPI=user executorSettled=\(settled) fixturesRetained=true")
+            throw PhysicalAppError.workflowTimedOut(settled: settled)
+        }
         let queueSettled = ProcessInfo.processInfo.systemUptime - started
         let cpu = try Self.cpuSeconds() - cpuStart
         monitor.cancel(); await monitor.value
-        XCTAssertTrue(ended, "Physical app workflow timed out")
-        guard ended else { throw PhysicalAppError.workflowFailed }
         let records = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: journalURL))
         let record = try XCTUnwrap(records.first { $0.id == id })
         XCTAssertEqual(record.state, excluded.isEmpty ? .completed : .issues, record.summary)
@@ -248,15 +306,17 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         try master.pdfData.write(to: evidence.appendingPathComponent("\(prefix)-master.pdf"))
         let after = try await Task.detached { try Self.snapshot(source) }.value
         XCTAssertEqual(after, original, "Source changed after reports/check")
-        let receipt = PhysicalAppReceipt(pair: pair, mode: mode.rawValue, sourceFiles: original.count,
-            selectedFiles: selected.count, sourceBytes: totalBytes, queueSettledSeconds: queueSettled,
-            pipelineReturnedSeconds: pipelineSamples.pipelineReturnedUptime.map { $0 - started },
-            cpuSeconds: cpu, initialMiB: pipelineSamples.initialMiB, peakMiB: pipelineSamples.peakMiB,
-            telemetry: telemetry, destinations: io.destinations.enumerated().map {
-                .init(index: $0.offset, pipelineWrittenBytes: $0.element.writtenBytes, pipelineReadbackBytes: $0.element.readbackBytes)
-            })
-        print("PHYSICAL_APP_TRIAL pair=\(pair) mode=\(mode.rawValue) sourceFiles=\(original.count) selectedFiles=\(selected.count) bytes=\(totalBytes) queueSettledSeconds=\(queueSettled) cpuSeconds=\(cpu) initialMiB=\(receipt.initialMiB) peakMiB=\(receipt.peakMiB) previews=embedded history=real")
-        return receipt
+        return try PhysicalAppHarnessSettlement.withPassingAssertions(testRun?.totalFailureCount) {
+            let receipt = PhysicalAppReceipt(pair: pair, mode: mode.rawValue, sourceFiles: original.count,
+                selectedFiles: selected.count, sourceBytes: totalBytes, queueSettledSeconds: queueSettled,
+                pipelineReturnedSeconds: pipelineSamples.pipelineReturnedUptime.map { $0 - started },
+                cpuSeconds: cpu, initialMiB: pipelineSamples.initialMiB, peakMiB: pipelineSamples.peakMiB,
+                telemetry: telemetry, destinations: io.destinations.enumerated().map {
+                    .init(index: $0.offset, pipelineWrittenBytes: $0.element.writtenBytes, pipelineReadbackBytes: $0.element.readbackBytes)
+                })
+            print("PHYSICAL_APP_TRIAL pair=\(pair) mode=\(mode.rawValue) sourceFiles=\(original.count) selectedFiles=\(selected.count) bytes=\(totalBytes) queueSettledSeconds=\(queueSettled) cpuSeconds=\(cpu) initialMiB=\(receipt.initialMiB) peakMiB=\(receipt.peakMiB) previews=embedded history=real")
+            return receipt
+        }
     }
 
     private func evidenceDirectory() throws -> URL {
@@ -403,8 +463,37 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
 }
 
 private final class PhysicalPreviewCollector { var images: [Data] = [] }
-private struct PhysicalAppFile: Equatable, Sendable { let size: Int64; let sha256: String }
-private enum PhysicalAppError: Error { case unsafeFixture, fixtureFailed, workflowFailed, invalidPDF, posix(Int32) }
+private struct PhysicalAppFile: Codable, Equatable, Sendable { let size: Int64; let sha256: String }
+private enum PhysicalAppError: Error { case unsafeFixture, fixtureFailed, workflowFailed, workflowTimedOut(settled: Bool), invalidPDF, posix(Int32) }
+
+/// XCTest assertions record failures without throwing. A failing or missing
+/// test context must never authorize a successful receipt or fixture removal.
+private enum PhysicalAppHarnessSettlement {
+    static func withPassingAssertions<Result>(_ failureCount: Int?, operation: () throws -> Result) throws -> Result {
+        guard failureCount == 0 else { throw PhysicalAppError.workflowFailed }
+        return try operation()
+    }
+
+    /// The deadline cancels a cooperative waiter. Structured draining cannot
+    /// force a synchronous filesystem call or a task that ignores cancellation.
+    @MainActor
+    static func waitForCooperativeSettlement(_ timeout: Duration, operation: @escaping @MainActor @Sendable () async throws -> Void) async -> Bool {
+        await withTaskGroup(of: Bool.self) { group in
+            group.addTask {
+                do { try await operation(); return true }
+                catch { return false }
+            }
+            group.addTask {
+                do { try await Task.sleep(for: timeout) }
+                catch { return false }
+                return false
+            }
+            let settled = await group.next() ?? false
+            group.cancelAll()
+            return settled
+        }
+    }
+}
 private struct PhysicalAppReceipt: Encodable {
     struct Destination: Codable { let index: Int; let pipelineWrittenBytes: Int64; let pipelineReadbackBytes: Int64 }
     let pair: Int; let mode: String; let sourceFiles: Int; let selectedFiles: Int; let sourceBytes: Int64
