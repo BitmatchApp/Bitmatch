@@ -40,9 +40,12 @@ for role in source destination; do
  done
 done
 TESTS=("-only-testing:BitMatchTests/CopyVerifyExecutorIntegrityTests/$TEST_NAME")
+EXPECTED_TESTS=1
 if [[ "${MATRIX_FOCUS:-full}" == evidence ]]; then
   TESTS=("-only-testing:BitMatchTests/MountedWorkflowEvidenceMatrixTests")
+  EXPECTED_TESTS=3
 elif [[ "${MATRIX_FOCUS:-full}" == all ]]; then
+  EXPECTED_TESTS=8
   TESTS=(
     "-only-testing:BitMatchTests/CopyVerifyExecutorIntegrityTests/testFullSyntheticFilesystemMatrix"
     "-only-testing:BitMatchTests/CopyVerifyExecutorIntegrityTests/testCameraRenameFilesystemMatrix"
@@ -58,4 +61,13 @@ TEST_RUNNER_BITMATCH_MATRIX_ROOT="$PAIR" \
 xcodebuild -project "$ROOT/BitMatch.xcodeproj" -derivedDataPath "${MATRIX_DERIVED_DATA:-$ROOT/.derived-data/mac-test}" \
  CODE_SIGNING_ALLOWED=NO test -scheme BitMatch -destination 'platform=macOS' \
  -jobs 4 -parallel-testing-enabled NO \
- "${TESTS[@]}"
+ "${TESTS[@]}" | awk -v expected="$EXPECTED_TESTS" '
+ { print }
+ /^Test Case .* passed \(/ { passed++ }
+ END {
+   if (passed != expected) {
+     printf "Matrix execution incomplete: expected %d passing XCTest cases, observed %d.\n", expected, passed > "/dev/stderr"
+     exit 1
+   }
+   printf "MATRIX_EXECUTION_RECEIPT expectedTests=%d passedTests=%d\n", expected, passed
+ }'
