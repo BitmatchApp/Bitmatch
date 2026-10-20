@@ -59,6 +59,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
 
     let verdict: CompletionVerdictPresentation
     let safetyState: CardSafetyState
+    /// The selected-file plan verified with only recognized metadata omitted.
+    /// Presentation only: whole-card safety and eject permission stay unchanged.
+    let selectedFilesVerified: Bool
     /// The one sentence about the source card. Exactly one source of truth.
     let guidance: String
     /// The card's display name ("The card" when unknown), for the eject
@@ -94,16 +97,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     var announcement: String { "\(finishTitle). \(verdict.detail)" }
 
     var canEject: Bool { safetyState.canEject }
+    var tint: CardSafetyTint { selectedFilesVerified ? .gray : safetyState.tint }
     var showsBackupRowsInline: Bool { safetyState == .needsAttention && !destinations.isEmpty }
 
-    /// Guidance that is not already stated in the detail line. This is part
-    /// of the visible banner, so every unsafe finish explicitly tells the
-    /// user to keep the card without repeating the same sentence twice.
+    /// Main-screen guidance for an actual problem or a whole-card verdict.
+    /// An intentional metadata selection keeps its scope in detailed evidence.
     var bannerGuidance: String? {
+        if selectedFilesVerified { return nil }
         // Quick, failed, and interrupted details already carry the warning.
         // Safe and needs-attention states still benefit from one next-step
         // sentence, but never repeat the source name.
-        switch safetyState {
+        return switch safetyState {
         case .safeToErase, .needsAttention: guidance
         default: nil
         }
@@ -126,14 +130,16 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     }
 
     var finishTitlePlacesCardFirst: Bool {
-        switch safetyState {
+        if selectedFilesVerified { return false }
+        return switch safetyState {
         case .failed, .interrupted: false
         default: true
         }
     }
 
     var finishVerdictWords: String {
-        switch safetyState {
+        if selectedFilesVerified { return "Selected files verified" }
+        return switch safetyState {
         case .safeToErase: "is safe to erase"
         case .copiedNotVerified: "copied, not verified"
         case .needsAttention: "needs attention"
@@ -149,6 +155,16 @@ struct TransferOutcomePresentation: Equatable, Sendable {
 
     static func shouldAutoEject(safetyState: CardSafetyState) -> Bool {
         safetyState.canEject
+    }
+
+    /// Reuse the saved classifier, exact selected-plan and final-handoff proof.
+    /// A legacy status string or an empty digest cannot establish this result.
+    static func hasVerifiedSelectedFiles(_ record: LocalTransferRecord) -> Bool {
+        TransferJournal.permitsExpectedExclusionQueueContinuation(record)
+            && record.results.allSatisfy {
+                ResultOutcome(statusText: $0.status) == .excludedAppleDouble
+                    || ($0.isVerifiedStatus && $0.checksum?.isEmpty == false)
+            }
     }
 
     static func make(
@@ -169,7 +185,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         canExport: Bool,
         sourceName: String = "",
         completionReason: String? = nil,
-        independentDestinationCount: Int? = nil
+        independentDestinationCount: Int? = nil,
+        selectedFileVerificationQualified: Bool = false
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
         // owns the empty-name fallback and its "The card" / "the card"
@@ -195,6 +212,20 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         )
         let safetyState = CardSafetyState.make(state: state, verdict: resolved)
         let counts = OutcomeFileCounts.make(rows: rows, verificationMode: verificationMode)
+        // The caller supplies the journal's persisted classifier/coverage/handoff
+        // qualification. Status text alone must never hide a failed transfer.
+        let selectedFilesVerified = selectedFileVerificationQualified
+            && safetyState == .needsAttention && verificationMode != nil && verificationMode != .quick
+            && counts.excluded > 0 && counts.verified > 0
+            && counts.needsAttention == 0 && counts.copiedNotVerified == 0
+            && rows.allSatisfy {
+                ResultOutcome(statusText: $0.status) == .excludedAppleDouble
+                    || $0.checksum?.isEmpty == false
+            }
+            && !hasErrors && !hasCriticalErrors && errorCount == 0 && warningCount == 0
+        let selectedEvidence = Self.sourceEvidence(rows.filter {
+            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+        })
 
         let verifiedBytes = rows.filter { verificationMode != .quick && Self.isVerified($0) }.reduce(into: Int64(0)) { total, row in
             let (sum, overflow) = total.addingReportingOverflow(max(0, row.size))
@@ -220,7 +251,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             rows: rows,
             destinations: destinations
         )
-        let allowsRetry = canRetry && (
+        let allowsRetry = canRetry && !selectedFilesVerified && (
             safetyState == .needsAttention || safetyState == .failed || safetyState == .interrupted
         )
         // Never leave the finish screen without a way forward. Interrupted
@@ -229,8 +260,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         let showsNewTransfer = !allowsRetry || safetyState == .interrupted
 
         let verdict = CompletionVerdictPresentation(
-            title: baseVerdict.title,
-            detail: bannerDetail(
+            title: selectedFilesVerified ? "Selected files verified" : baseVerdict.title,
+            detail: selectedFilesVerified ? "\(selectedEvidence.fileCount) \(selectedEvidence.fileCount == 1 ? "file" : "files") verified on \(destinations.count) \(destinations.count == 1 ? "destination" : "destinations")" : bannerDetail(
                 safetyState: safetyState,
                 sourceFileCount: sourceFileCount ?? sourceEvidence.fileCount,
                 sourceBytes: sourceBytes ?? sourceEvidence.bytes,
@@ -241,10 +272,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 allFilesReused: allFilesReused,
                 fallback: baseVerdict.detail
             ),
-            symbol: safetyState.symbol,
+            symbol: selectedFilesVerified ? "checkmark.circle" : safetyState.symbol,
             // The banner names the card once. All guidance comes from the
             // nameless form, including Quick and needs-attention outcomes.
-            sourceGuidance: CompletionVerdictPresentation.make(
+            sourceGuidance: selectedFilesVerified
+                ? "AppleDouble companions were intentionally excluded; the whole card is not backed up."
+                : CompletionVerdictPresentation.make(
                 state: state,
                 rows: rows,
                 hasErrors: hasErrors,
@@ -256,9 +289,10 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         return Self(
             verdict: verdict,
             safetyState: safetyState,
+            selectedFilesVerified: selectedFilesVerified,
             guidance: verdict.sourceGuidance,
             cardName: card,
-            issueLines: makeIssueLines(
+            issueLines: selectedFilesVerified ? [] : makeIssueLines(
                 safetyState: safetyState, counts: counts, errorCount: errorCount,
                 warningCount: warningCount
             ),
@@ -274,7 +308,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             bytesVerified: counts.verified > 0 ? verifiedBytes : nil,
             verificationModeLabel: algorithm,
             destinations: makeDestinationLines(rows: rows, destinations: destinations,
-                interrupted: safetyState == .interrupted, verificationMode: verificationMode),
+                interrupted: safetyState == .interrupted, verificationMode: verificationMode,
+                selectedFilesVerified: selectedFilesVerified),
             rowCount: rows.count,
             rowsTruncated: rows.count > fileListLimit,
             canRetry: allowsRetry,
@@ -289,7 +324,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 destinations: destinationNames,
                 algorithm: algorithm,
                 reason: reason,
-                allFilesReused: allFilesReused
+                allFilesReused: allFilesReused,
+                selectedFilesVerified: selectedFilesVerified
             )
         )
     }
@@ -426,9 +462,13 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     }
 
     private static func makeDestinationLines(
-        rows: [ResultRow], destinations: [URL], interrupted: Bool, verificationMode: VerificationMode?
+        rows: [ResultRow], destinations: [URL], interrupted: Bool, verificationMode: VerificationMode?,
+        selectedFilesVerified: Bool
     ) -> [OutcomeDestinationLine] {
-        DestinationResultSummary.make(rows: rows, destinations: destinations, verificationMode: verificationMode).map { summary in
+        let displayedRows = selectedFilesVerified ? rows.filter {
+            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+        } : rows
+        return DestinationResultSummary.make(rows: displayedRows, destinations: destinations, verificationMode: verificationMode).map { summary in
             guard interrupted else {
                 return OutcomeDestinationLine(
                     id: summary.id,
@@ -541,9 +581,13 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         destinations: [String],
         algorithm: String?,
         reason: String?,
-        allFilesReused: Bool = false
+        allFilesReused: Bool = false,
+        selectedFilesVerified: Bool = false
     ) -> String {
         if safetyState == .waiting { return "\(cardName) · not started" }
+        if selectedFilesVerified {
+            return "\(cardName) · Selected files verified · \(naturalList(destinations))"
+        }
         if allFilesReused {
             return "\(cardName) · Already on \(naturalList(destinations)) · verified, nothing new copied"
         }

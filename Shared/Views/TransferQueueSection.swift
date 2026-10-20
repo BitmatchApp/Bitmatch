@@ -427,8 +427,8 @@ struct TransferQueueSection: View {
     }
 
     private func statusIcon(_ row: QueueSessionRow) -> some View {
-        Image(systemName: row.safetyState.symbol)
-            .foregroundStyle(row.isRunning ? Color.accentColor : row.safetyState.tint.color)
+        Image(systemName: row.statusSymbol)
+            .foregroundStyle(row.isRunning ? Color.accentColor : row.statusTint.color)
             .frame(width: 24).accessibilityHidden(true)
     }
 
@@ -610,9 +610,14 @@ struct TransferQueueSection: View {
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                if row.selectedFilesVerified {
+                    TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
+                }
             }
             .font(.caption)
-            TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
+            if !row.selectedFilesVerified {
+                TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
+            }
         }
     }
 
@@ -752,13 +757,13 @@ struct TransferQueueSection: View {
     }
 
     private func baseColor(for row: QueueSessionRow) -> Color {
-        if row.isFinished { return row.safetyState.tint.color.opacity(0.08) }
+        if row.isFinished { return row.statusTint.color.opacity(0.08) }
         if selectedWaitingID == row.id { return Color.accentColor.opacity(0.08) }
         return Color.primary.opacity(0.025)
     }
 
     private func borderColor(for row: QueueSessionRow) -> Color {
-        row.isFinished ? row.safetyState.tint.color.opacity(0.28) : Color.primary.opacity(0.07)
+        row.isFinished ? row.statusTint.color.opacity(0.28) : Color.primary.opacity(0.07)
     }
 
     private func toggleExpanded(_ id: UUID) {

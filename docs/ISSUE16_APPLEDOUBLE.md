@@ -1,5 +1,7 @@
 # Issue #16: reviewed AppleDouble exclusions
 
+> This page preserves the 0.2.6 investigation and tests. Issue #16 is closed; see [the current Guide](GUIDE.md#appledouble-companions) for the Settings location, default-on policy and completion wording. Defaults and follow-up requests below are historical.
+
 Validated October 10, 2026 against `main` at `1c5c51ac`, on branch `fix/issue16-appledouble`.
 
 ## What was reproduced

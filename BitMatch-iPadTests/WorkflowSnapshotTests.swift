@@ -182,6 +182,19 @@ final class WorkflowSnapshotTests: XCTestCase {
                     size: CGSize(width: 820, height: 1_100), name: "ipad-staged-setup")
     }
 
+    func testCaptureVerifiedSelectedFilesWithoutMetadataWarnings() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        let id = try fixture.seedSelectedFileCompletion()
+        for width in [375.0, 760.0] {
+            try await capture(TransferQueueSection(coordinator: fixture.coordinator, initiallyExpandedIDs: [id]).padding()
+                .frame(maxHeight: .infinity, alignment: .top), size: CGSize(width: width, height: 800),
+                name: "mobile-selected-files-verified-\(Int(width))", expectedText: ["Selected files verified", "1 file verified on 2 destinations"],
+                textOccurrences: ["needs attention": 0, "excluded": 0, "retry": 0])
+        }
+    }
+
     func testCaptureAppleDoubleControls() async throws {
         try requireCaptureConfiguration()
         let fixture = try SnapshotFixture()
@@ -201,8 +214,13 @@ final class WorkflowSnapshotTests: XCTestCase {
         let review = coordinator.appleDoubleSelection
         review.enabled = true
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while review.paths == nil && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        while (review.paths == nil || coordinator.sourceFolderInfo?.fileCount != 3 || coordinator.isAnalysingSource)
+                && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(review.paths, ["._Camera clip.bin"])
+        XCTAssertEqual(coordinator.sourceFolderInfo?.fileCount, 3)
+        try await capture(ContentView(coordinator: coordinator), size: CGSize(width: 375, height: 1_100),
+            name: "mobile-selected-source-count-375", expectedText: ["2 files"],
+            textOccurrences: ["3 files": 0, "excluded": 0])
         try await capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 320, height: 650), name: "iphone-appledouble-selection")
         try await capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 500, height: 650), name: "narrowpad-appledouble-selection")
         try await capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 820, height: 650), name: "ipad-appledouble-selection")
@@ -864,6 +882,35 @@ private final class SnapshotFixture {
             mismatchedPaths: ["DCIM/clip.txt"]
         )
         coordinator.operationState = .notStarted
+    }
+
+    /// Presentation fixture with an explicit saved qualification, not a transfer.
+    func seedSelectedFileCompletion() throws -> UUID {
+        seedSetup()
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["DCIM/._clip.txt"]
+        let destinations = [backup, secondBackup]
+        let rows = destinations.flatMap { destination in
+            let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: settings)
+            return [ResultRow(path: source.appendingPathComponent("DCIM/clip.txt").path,
+                status: ResultOutcome.verified.statusText, size: 11, checksum: "synthetic-digest",
+                destination: destination.lastPathComponent, destinationPath: output.appendingPathComponent("DCIM/clip.txt").path),
+                ResultRow(path: source.appendingPathComponent("DCIM/._clip.txt").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                destination: destination.lastPathComponent, destinationPath: output.appendingPathComponent("DCIM/._clip.txt").path)]
+        }
+        let id = try coordinator.enqueue(source: source, destinations: destinations,
+            verificationMode: .standard, cameraSettings: settings)
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1, 1], selectedSourceBytes: 11)
+        try journal.finish(id: id, results: rows,
+            summary: "Selected files verified; 1 AppleDouble file intentionally excluded. Keep the source",
+            hadIssues: true, expectedExclusionQueueQualification: .ordinaryTransfer,
+            sourceFingerprint: "synthetic-source-fingerprint")
+        coordinator.reviewQueuedTransfer(id)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        return id
     }
 
     func seedCompletion() throws {

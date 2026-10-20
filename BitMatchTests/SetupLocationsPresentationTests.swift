@@ -101,6 +101,39 @@ struct SetupLocationsPresentationTests {
         #expect(make(source: card).source?.cameraName == nil)
     }
 
+    @Test func sourceCountUsesOnlyTheReviewedSelection() {
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: 12,
+            ignoresAppleDouble: true, reviewedPaths: ["._clip.mov", "DCIM/._second.mov"]) == 10)
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: 12,
+            ignoresAppleDouble: false, reviewedPaths: ["._clip.mov"]) == 12)
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: 12,
+            ignoresAppleDouble: false, reviewedPaths: nil) == 12)
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: 12,
+            ignoresAppleDouble: true, reviewedPaths: nil) == nil)
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: nil,
+            ignoresAppleDouble: true, reviewedPaths: []) == nil)
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: 0,
+            ignoresAppleDouble: true, reviewedPaths: ["._clip.mov"]) == nil)
+        #expect(SetupLocationsPresentation.selectedSourceFileCount(totalFileCount: 12,
+            ignoresAppleDouble: true, reviewedPaths: ["._clip.mov", "._clip.mov"]) == nil)
+    }
+
+    @Test func selectedCountOmitsUnmeasuredSizeButCapacityUsesFullSourceBytes() {
+        let presentation = SetupLocationsPresentation.make(sourceURL: card,
+            sourceFileCount: 10, sourceBytes: 4_200_000_000, isAnalysingSource: false,
+            cameraName: nil, omitsSourceSize: true, destinationURLs: [raid],
+            capacity: { _ in .init(availableBytes: 2_000_000_001, totalBytes: nil) },
+            isOperationInProgress: false, nextStep: nil, layout: .compact)
+        #expect(presentation.source?.detail == "10 files")
+        #expect(presentation.backups.first?.capacity == "Needs 3.2 GB more")
+        let connected = SetupLocationsPresentation.make(sourceURL: card,
+            sourceFileCount: 10, sourceBytes: 4_200_000_000, isAnalysingSource: false,
+            cameraName: nil, connectedSourceDetail: "SD card · 30 GB free", omitsSourceSize: true,
+            destinationURLs: [], capacity: { _ in nil }, isOperationInProgress: false,
+            nextStep: nil, layout: .compact)
+        #expect(connected.source?.detail == "SD card · 30 GB free")
+    }
+
     @Test func emptySourceLeavesTheSingleReasonToTheDisabledStartControl() {
         let presentation = SetupLocationsPresentation.make(
             sourceURL: card,

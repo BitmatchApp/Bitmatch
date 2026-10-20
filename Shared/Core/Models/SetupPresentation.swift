@@ -297,13 +297,16 @@ struct StartButtonPresentation: Equatable, Sendable {
 
     private static func readyLine(fileCount: Int?, bytes: Int64?, destinationCount: Int) -> String {
         let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
-        guard let fileCount, let bytes else {
+        guard let fileCount else {
             return "Copies to \(backups). Source files stay in place."
         }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         let count = formatter.string(from: NSNumber(value: fileCount)) ?? "\(fileCount)"
         let files = fileCount == 1 ? "1 file" : "\(count) files"
+        guard let bytes else {
+            return "Ready to copy \(files) to \(backups). Source files stay in place."
+        }
         let size = ByteCountPresentation.fileSize(bytes)
         return "Ready to copy \(files) (\(size)) to \(backups). Source files stay in place."
     }

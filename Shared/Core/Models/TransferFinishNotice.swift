@@ -21,6 +21,14 @@ struct TransferFinishNotice: Equatable, Sendable {
     static func make(record: LocalTransferRecord, kind: TransferNotificationKind) -> TransferFinishNotice? {
         guard record.state != .queued, record.state != .running,
               let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
+        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+            let names = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
+            return .init(
+                title: "\(record.title): selected files verified",
+                body: "Finished on \(naturalList(names)).",
+                kind: kind
+            )
+        }
         return make(
             state: state,
             sourceName: record.title,

@@ -1,6 +1,6 @@
 # 0.2.11 release validation
 
-**Status: preparation in progress. Not released.** Planned version 0.2.11, build 21. The final integrated candidate, signing and publication results must be recorded below before release. No pending row is a passing check.
+**Status: updated candidate in preparation. Not released.** Planned version 0.2.11, build 21. The initial signed artifact at `ad29248b` is **superseded** by the later user-requested metadata presentation changes. Earlier passes remain evidence for their stated inputs; they do not approve the updated app. Its final integrated tests, rebuilt signed artifact, native walkthrough and publication remain pending. No pending row is a passing check.
 
 Base: `63f248b2be90e0aa9ee30328d24c119bf8198cf0`, containing the changes merged since `v0.2.10`. Local validation uses Xcode 27.1 (27A9275), Swift 6.4. GitHub Actions remains intentionally disabled; its absence is not a test result.
 
@@ -12,6 +12,7 @@ Base: `63f248b2be90e0aa9ee30328d24c119bf8198cf0`, containing the changes merged 
 - Honest Quick-mode recovery/result counts and owned queued-preparation cancellation.
 - Bottom mobile transfer controls and source-name layout at larger accessibility text sizes.
 - Fresh readback for an existing empty file on exFAT, adopted into the engine branch and subject to the integrated gates below.
+- Quiet completion for independently verified selected files when only recognized AppleDouble metadata was deliberately excluded; detailed evidence and conservative whole-card safety remain intact.
 
 The individual merged batches retain their own records: [combined workflows](combined-workflows-2026-10-20.md), [History search](history-search-2026-10-20.md), [queue summaries](queue-summaries-2026-10-20.md), [journal startup](journal-startup-2026-10-20.md), [Quick summaries](quick-summaries-2026-10-20.md), [diagnostic writers](diagnostic-writers-2026-10-20.md), [cancellation readiness](fanout-cancellation-readiness-2026-10-20.md) and [MHL compatibility](../EVIDENCE_COMPATIBILITY_VALIDATION.md). These are earlier-revision results, not substitutes for the integrated release gates.
 
@@ -33,7 +34,7 @@ These results belong to the private candidate, not the final app:
 | Fresh-readback candidate on actual exFAT | 37 cases passed, zero failures or skips, as reported by the implementation owner. The original intermittent failure was not reproduced. |
 | Final-check ordering proof | Moving the prepass below the existing final gates made four selected methods fail with 36 assertions, covering earlier-file, earlier-destination, earlier-refreshed-file and source mutation across the selected pipeline modes. This is an injected mutation test, not a field reproduction. |
 | Restored full candidate suite | 37 passed, zero failures or skips on actual exFAT. The repeated-proof descriptor observation remained 19 → 19. |
-| Adopted source | The adoption receipt confirms only comment changes from the tested private candidate and preserves the earlier diagnostics. Branch validation follows below; integrated app gates remain pending. |
+| Adopted source | The adoption receipt confirms only comment changes from the tested private candidate and preserves the earlier diagnostics. Integrated engine and app validation follows below; the signed walkthrough remains separate. |
 
 Private working receipts are under `/private/tmp/bitmatch-empty-reuse-20261020/DiagnosticProof/` and `/private/tmp/bitmatch-empty-reuse-v3-20261020/`. Preserve the logs, source manifests and failed fixtures; do not commit private fixture paths or raw file identities into public diagnostics.
 
@@ -82,32 +83,72 @@ The final shared view in layout commit `673a1c55fd2d05c7ab04cf574e6e70709e1b5b41
 | Full iPad simulator suite | 97 passed, zero skips or failures. |
 | Full iPhone simulator suite | 97 passed, zero skips or failures. |
 
-The implementation owner inspected 11 actual PNGs, including complete Unicode/long names at 375-point width and accessibility5, 760-point split-view layouts, normal bottom Start, and paused Resume/Cancel. OCR and geometry assertions separately check retained text and nonoverlapping controls. These are test-host renders and simulator suites, not physical touch, VoiceOver or external-storage validation. Full integrated version-21 app gates remain pending.
+The implementation owner inspected 11 actual PNGs, including complete Unicode/long names at 375-point width and accessibility5, 760-point split-view layouts, normal bottom Start, and paused Resume/Cancel. OCR and geometry assertions separately check retained text and nonoverlapping controls. These are test-host renders and simulator suites, not physical touch, VoiceOver or external-storage validation. Final integrated version-21 app gates are recorded below; the signed native walkthrough remains separate.
 
 Receipts: `/private/tmp/bitmatch-source-accessibility-20261020/final-ui-validation.json`, `final-ui-commit.json`, `ResumeAX/receipt.json`, `ResumeMobile/receipt.json` and `final-visual-inspection.json`. Completed test bundles were compacted with their logs, summaries and images retained; the generated build cache was removed and both owned simulators were shut down after testing.
 
-## Final integrated gates
+## Earlier integrated gates — superseded app candidate
 
-Final candidate commit and source manifest: **pending**.
+Frozen earlier integrated candidate: `ad29248bf47e2bfad0fa4447a5d158e3ef381e4a`, version 0.2.11 / build 21, in [draft PR #77](https://github.com/BitmatchApp/Bitmatch/pull/77). Its engine package tree is `856b1e9d3d8cc51499ce0cdef3cf18aac74f7410`. All 687 tracked-file hashes, HEAD and clean status matched before and after the final app gates. Those gates predate the later quiet-metadata runtime changes. The initial signed artifact and partial native results are recorded below; final updated-app gates remain pending. The unchanged engine package retains its separately pinned engine results.
 
 | Check | Result |
 | --- | --- |
 | Engine Debug, XCTest and Swift Testing | Passed on the byte-identical integrated package: XCTest 314 executed, 82 intentional skips, zero failures (232 passed); Swift Testing reported 245 tests/41 suites, six explicit skips, zero failures. |
-| Engine Release, XCTest and Swift Testing | Pending. |
-| Focused new diagnostic and adopted empty-file regressions | Eight diagnostic cases passed; 37 actual-exFAT cases passed on the byte-identical adopted package. Release-configuration repeat pending. |
-| Mac full app suite | Pending. |
-| Mac Debug and Release builds | Pending. |
-| iPhone/iPad shared-code and device Release builds | Pending; identify simulator versus physical device. |
-| iPhone narrow-width unit/rendering checks | Pending; record tested widths, text sizes and source names. |
-| iPad split-view unit/rendering checks | Pending. |
-| Mac source-name and affected workflow captures | Pending. |
-| Offline updater checks | Eight passed as reported by the release owner; final receipt pending. |
+| Engine Release, XCTest and Swift Testing | Passed on the frozen integrated package: XCTest 314 total, 232 passed, 82 intentional opt-in skips, zero failures in 122.685 s. Swift Testing reported 245 tests in 41 suites, six explicit skipped methods and zero failures in 15.459 s; this is not a claim of 245 non-skipped passes. |
+| Focused new diagnostic and adopted empty-file regressions | Eight diagnostic cases passed in the full suite; all 37 fresh-readback cases also passed on actual T9 exFAT in optimized Release, zero skips or failures, in 6.929 s. The full engine run skips those physical opt-ins; this separate opt-in run supplies their actual execution. |
+| Mac full app suite | 1,384 passed, 18 opt-in skips, zero failures; 1,402 total cases. Capture opt-ins account for the different skip count from the earlier branch suite. |
+| Mac Debug and Release builds | Debug app/test host compiled and passed the full suite. An initial signed Release archive later passed for this earlier candidate; it is superseded. Final updated-app build pending. |
+| iPhone/iPad shared-code and device Release builds | Unsigned generic iOS device Release build succeeded for arm64; universal simulator Release succeeded for arm64 and x86_64. Both products record 0.2.11 / build 21. No physical mobile device was installed or tested. |
+| iPhone narrow-width unit/rendering checks | 97 passed, zero skips or failures on the iPhone simulator; includes 375-point normal/large-text workflow and full long/Unicode source-name captures. |
+| iPad split-view unit/rendering checks | 97 passed, zero skips or failures on the iPad simulator; includes 760-point split-view and narrow-width layouts. |
+| Mac source-name and affected workflow captures | Passed within the full suite, including 580-point and wide source-name layouts at accessibility text sizes. Across the combined hosts, 212 PNGs were retained and nine were visually inspected; OCR and geometry checks are separate assertions. |
+| Offline updater checks | Eight tests passed, zero failures, in 11.661 s. The runner stubs external signing, GitHub, Git and Xcode operations; it does not publish an update. |
 | SD → T9 physical transfer, fresh and reused | 18 Standard operations passed on the byte-identical adopted package, with pipelining off/on, MHL, saved Check, independent/source hashes and earlier histories preserved. Separate signed native transfer pending. |
-| Signed Mac app walkthrough | Pending. |
+| Signed Mac app walkthrough | Partial earlier-candidate results below; final updated-app walkthrough pending. |
+
+Final combined app results and cleanup are in `/private/tmp/bitmatch-source-accessibility-20261020/ResumeCombined0211/validation-summary.json`, with exact source manifests, compressed raw logs, compact test results and `visual-inspection.json`. The generated app build cache and the exact owned simulator pair were removed after successful checks; screenshots and failure/mutation evidence remain. Simulator renders and builds do not prove external-storage behavior, direct touch or VoiceOver on a physical iPhone/iPad.
+
+Optimized-engine and offline-updater receipts are under `/private/tmp/bitmatch-release-0211-20261020.3m9d8kwf/`: `engine-release-xctest.json`, `engine-release-swift-testing.json`, `engine-release-actual-exfat-37.json`, their raw logs and `offline-updater-tests.json`. The preserved engine-log SHA-256 values match `engine-release-cleanup.json`; the generated engine build cache was removed afterward without changing the frozen package. These passing engine checks do not replace the updated app-host gates or final signed walkthrough.
 
 The available removable hardware is one T9 SSD and one SD card. The 18-operation matrix used one physical backup, T9. A separate signed native walkthrough may use a disposable internal APFS folder as a second backup only after identifying it as a physically distinct disk; record that topology explicitly. Two folders on T9 must not be reported as independent backups. Earlier two-external-SSD results retain their original revisions and limitations.
 
 Keep all failed attempts, skips, permission stalls and corrected harness mistakes separate from passing reruns. Do not infer a successful result from a build, screenshot, elapsed time or 100% progress alone. Real-device VoiceOver, cable/power loss, mobile external-storage behavior and every possible drive/bridge combination remain outside synthetic coverage.
+
+## Quiet-metadata update — final gates pending
+
+After the initial signed build, the walkthrough exposed repetitive metadata warnings in otherwise verified transfers. The user requested that default ignored companions stay out of the main result. The updated app uses the persisted expected-exclusion qualification, exact selected-file plan and positive verification digests to present a quiet selected-file finish. Failed handoffs, missing/failed/unverified rows, missing proof, Quick and cancellation remain attention outcomes. Queue restore now requires the same positive-checksum proof as live completion, so a saved verified label without a digest cannot release the next card. Raw history, detailed exclusions, whole-card safety and eject permissions are unchanged.
+
+Focused Mac receipts are under `/private/tmp/bitmatch-source-accessibility-20261020/MetadataQuiet0211/`, summarized in `focused-validation-summary.json`, with the later selected-count capture run in `focused-final-preflight-render-green-summary.json`:
+
+| Check | Result and limit |
+| --- | --- |
+| Final focused suite, including selected preflight counts | 238 test definitions passed, zero failures or skips; the device summary reports 259 executions including parameterized cases. Includes real standalone pipeline completion/report-failure routing, nil/empty-checksum journal reload, actual preview/default/preserve adapters, and source/Start captures. |
+| Remove saved-selection proof | 28 cases executed, four failed and 24 passed. Actual assertions caught quieting real/legacy/partial outcomes; this was not a compile failure or empty test selection. |
+| Restore status-only queue proof | 63 cases executed, two failed and 61 passed. Both missing/empty-checksum reload cases lost their saved pause, demonstrating the guard's effect. |
+| Guard restoration and completion wording | Each passed all 193 definitions with zero failures or skips before the later preflight checks were added. The implementation owner inspected the actual 580-point PNG: neutral selected-file result, no metadata warning/count or retry prompt outside closed details. |
+| Selected counts before Start | Passed in the later 238-case focus. Both setup adapters use reviewed selected counts; when selected bytes are unknown they show a count without guessing a byte total. Full inventory bytes remain the conservative capacity/readiness input. Pending or inconsistent reviews do not invent a selected count. |
+| Updated full Mac, iPhone and iPad gates | Pending on the final committed source. Earlier `ad29248b` app passes are not substitutes. |
+| Updated mobile Release builds, signed Mac build and native walkthrough | Pending. |
+| Merge and publication | Pending; no release asset, cask or appcast is approved by these focused checks. |
+
+Two initial focused runs failed because the new tests were not ready. The first started before the asynchronous metadata review settled: both attempts correctly refused changed exclusions before copying, saved zero result rows and an interrupted record, and logged `kind=other`, code 3, `taskCancelled=false`, `explicit=false`. Waiting for the actual reviewed paths corrected the fixtures. The next run tried opening a second journal while the first still held its exclusive lock; releasing the first owner before reopening fixed that genuine reload test. Original logs, records and failures remain retained. Neither correction changed the expected safety outcome or established a production defect.
+
+### Initial signed artifact and partial native walkthrough — superseded
+
+The initial `Scripts/release_mac.sh 0.2.11` run passed for `ad29248b`. Its unmodified app and DMG passed signature verification, notarization, stapling and Gatekeeper; the independent receipt records universal arm64/x86_64 binaries, version 0.2.11, build 21 and minimum macOS 15.5. This artifact predates the quiet-metadata update and must not be distributed as the final candidate.
+
+The unmodified notarized archive launched with the user's existing paused queue and saved settings intact, showed notification authorization, and retained the explicit preserve-metadata preference. The functional fixture app was a separately Developer ID-signed, bundle-ID-isolated copy with matching compiled UUIDs and sandbox entitlements, not a separately notarized or published bundle.
+
+| Earlier native check | Result and limit |
+| --- | --- |
+| Fresh Standard Card transfer | Passed through verification, ASC MHL and PDF/CSV/JSON on the initial QA candidate: SD source, T9 exFAT backup and a physically distinct internal APFS backup. Five selected files and five reviewed exclusions produced ten verified results and ten excluded results across the two destinations. Independent hashes and completion-witness checks passed. Recorded source bytes, names, modes and modification times matched; separately disclosed zero-byte inode changes are not an unchanged-identity claim. |
+| Same-folder existing-file retry with ASC MHL | All selected media reverified and reused; both requested handoffs correctly refused to extend or replace existing histories. Current saved summary and reports retained the exact refusal, no expected-exclusion completion qualification was granted, and prior histories/reports stayed unchanged. The private verifier passed this **refused-handoff** scenario; it is not a successful new MHL publication. |
+| PDF clip preview | The first report contained a 256 × 144 frame from the synthetic clip. The walkthrough log records inspection of both PDF pages without clipping or overlap. This is earlier-candidate preview evidence, not final UI or a new verification of media. |
+| Initial cancellation fixture | The 512 MiB fixture reached completion before cancellation was established. It supplies no Cancel, partial-file or retry-after-cancellation coverage. A final-candidate cancellation and recovery walkthrough remains pending. |
+
+The first native checker incorrectly assumed the publication marker's initial operation UUID must equal the report's returned-operation UUID. The engine constructs those objects separately. The corrected private checker requires their explicit diagnostic correlation to one executor run/session; it also preserves prior evidence snapshots and discloses the narrowly observed empty-file inode changes. The failed checker attempt remains separate from the passing reruns; no runtime policy was relaxed to fit the harness.
+
+Private earlier-candidate receipts are under `/private/tmp/bitmatch-release-0211-20261020.3m9d8kwf/`: `signed-mac-release.json`, `ArtifactVerification-3tejsxo3/receipt.json`, `native-walkthrough-observations.json`, `native-card-checked-rerun/summary.json` and `native-card-handoff-refused-rerun/summary.json`. Their source revision and limits remain attached to those results.
 
 ## Signed walkthrough
 
@@ -127,7 +168,7 @@ Run the existing release process without changing credentials or signing keys. `
 
 | Step | Receipt |
 | --- | --- |
-| All marketing/build versions are 0.2.11 / 21 | Pending. |
+| All marketing/build versions are 0.2.11 / 21 | Confirmed in all 12 marketing-version and 12 build-version project settings at the frozen candidate. Archived metadata remains a separate check below. |
 | `Scripts/release_mac.sh 0.2.11` archive and signing | Pending. |
 | App and DMG notarization, stapling and Gatekeeper | Pending. |
 | Signed app version/build/minimum OS match expected archive | Pending; macOS minimum remains 15.5. |

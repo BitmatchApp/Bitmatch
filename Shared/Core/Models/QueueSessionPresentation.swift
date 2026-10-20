@@ -27,6 +27,9 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     var isRunning: Bool { safetyState.isActiveQueueState }
     var isFinished: Bool { !isEditable && !isRunning }
     var showsSafeHero: Bool { outcome?.safetyState == .safeToErase }
+    var selectedFilesVerified: Bool { outcome?.selectedFilesVerified == true }
+    var statusTint: CardSafetyTint { outcome?.tint ?? safetyState.tint }
+    var statusSymbol: String { selectedFilesVerified ? "checkmark.circle" : safetyState.symbol }
     var waitingDestinationText: String {
         destinationNames.isEmpty ? destinations : destinationNames.joined(separator: " + ")
     }
@@ -36,13 +39,14 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     }
 
     var statusText: String {
-        safetyState == .copiedNotVerified
+        if selectedFilesVerified { return "Selected files verified" }
+        return safetyState == .copiedNotVerified
             ? "Copied, not verified: size check only"
             : safetyState.title
     }
 
     var accessibilityStatus: String {
-        let warning = safetyState.isSafe ? "" : ", not safe to erase"
+        let warning = safetyState.isSafe || selectedFilesVerified ? "" : ", not safe to erase"
         return "\(cardName), \(statusText)\(warning)" + (cause.map { ", \($0)" } ?? "")
     }
 
@@ -72,6 +76,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     /// connected. Reapply that live capability on every presentation.
     fileprivate func showingSource(isMounted: Bool, isEjected: Bool) -> Self {
         var row = self
+        if selectedFilesVerified { row.action = nil; return row }
         if isEjected && safetyState.canEject { row.action = .ejected }
         else if safetyState.canEject && isMounted { row.action = .eject }
         else if safetyState == .copiedNotVerified || safetyState == .needsAttention
@@ -97,6 +102,7 @@ struct QueueRowTransitionState: Equatable, Sendable {
 
 struct QueueTally: Equatable, Sendable {
     var safeToErase = 0
+    var selectedFilesVerified = 0
     var copiedNotVerified = 0
     var needsAttention = 0
     var failed = 0
@@ -106,6 +112,7 @@ struct QueueTally: Equatable, Sendable {
     var text: String {
         var parts: [String] = []
         append(safeToErase, singular: "safe to erase", plural: "safe to erase", to: &parts)
+        append(selectedFilesVerified, singular: "selected transfer verified", plural: "selected transfers verified", to: &parts)
         append(copiedNotVerified, singular: "copied, not verified", plural: "copied, not verified", to: &parts)
         append(needsAttention, singular: "needs attention", plural: "need attention", to: &parts)
         append(failed, singular: "failed", plural: "failed", to: &parts)
@@ -185,6 +192,10 @@ struct QueueSessionPresentation: Equatable, Sendable {
         }
         var tally = QueueTally()
         for row in rows {
+            if row.selectedFilesVerified {
+                tally.selectedFilesVerified += 1
+                continue
+            }
             switch row.safetyState {
             case .safeToErase: tally.safeToErase += 1
             case .copiedNotVerified: tally.copiedNotVerified += 1
@@ -278,7 +289,11 @@ struct QueueSessionPresentation: Equatable, Sendable {
         } else {
             state = TransferLibraryPresentation.safetyState(for: record)
         }
-        let paths = Dictionary(grouping: record.results, by: \.path)
+        let qualifiedSelection = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+        let countedRows = qualifiedSelection ? record.results.filter {
+            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+        } : record.results
+        let paths = Dictionary(grouping: countedRows, by: \.path)
         let recordedBytes = paths.values.compactMap { $0.first }.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
         let count = paths.isEmpty ? max(0, progress?.totalFiles ?? 0) : paths.count
         // Recorded results are authoritative: a zero-byte total names genuinely
@@ -293,7 +308,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             evidence = nil
         }
         let destinationNames = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
-        let cause = cause(for: record, state: state)
+        let cause = qualifiedSelection ? nil : cause(for: record, state: state)
         let outcome = finishedOutcome(for: record, state: state)
         let allFilesReused = state == .safeToErase
             && !record.results.isEmpty
@@ -316,7 +331,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 destinations: destinationNames,
                 algorithm: TransferOutcomePresentation.algorithmLabel(record.verificationMode),
                 reason: cause,
-                allFilesReused: allFilesReused
+                allFilesReused: allFilesReused,
+                selectedFilesVerified: outcome?.selectedFilesVerified == true
             ),
             outcome: outcome,
             destinationNames: destinationNames,
@@ -379,7 +395,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
             canExport: true,
             sourceName: record.title,
             completionReason: displayedReason,
-            independentDestinationCount: record.independentDestinationCount
+            independentDestinationCount: record.independentDestinationCount,
+            selectedFileVerificationQualified: TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
         )
     }
 

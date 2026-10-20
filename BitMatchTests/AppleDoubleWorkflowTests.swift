@@ -49,8 +49,9 @@ final class AppleDoubleWorkflowTests: XCTestCase {
             XCTAssertTrue(completion.message.contains("Selected files verified"))
             let presentation = CompletionVerdictPresentation.make(state: .completed(completion),
                 rows: TransferCompletion.rows(from: operation), hasErrors: false, hasCriticalErrors: false)
-            XCTAssertEqual(presentation.title, "Selected-file transfer")
-            XCTAssertTrue(presentation.sourceGuidance.contains("intentionally excluded"))
+            // Raw rows do not carry the saved classifier/handoff qualification.
+            XCTAssertEqual(presentation.title, "The card needs attention")
+            XCTAssertTrue(presentation.sourceGuidance.contains("Do not erase"))
             let rows = TransferCompletion.rows(from: operation)
             let requestedUnsafeReport: EnhancedJSONReport<String> = try EvidenceWriter.makeEnhancedJSONReport(
                 results: rows, jobID: id, started: operation.startTime, finished: Date(), kind: .copyAndVerify,
@@ -123,6 +124,12 @@ final class AppleDoubleWorkflowTests: XCTestCase {
             XCTAssertEqual(record.cameraSettings.excludedAppleDoublePaths, ["._A.ARW"])
             XCTAssertFalse(coordinator.appleDoubleSelection.enabled)
             XCTAssertFalse(folders.defaults.bool(forKey: "BitMatchExcludeAppleDouble"))
+            let outcome = TransferOutcomePresentation.make(coordinator: coordinator)
+            XCTAssertTrue(outcome.selectedFilesVerified)
+            XCTAssertTrue(outcome.finishTitle.hasPrefix("Selected files verified"))
+            XCTAssertTrue(outcome.issueLines.isEmpty)
+            XCTAssertFalse(outcome.canEject)
+            XCTAssertFalse(outcome.verdict.detail.contains("excluded"))
         }
     }
 
@@ -192,17 +199,30 @@ final class AppleDoubleWorkflowTests: XCTestCase {
     func testPreviewDefaultPersistenceAndClearAreSafe() async throws {
         let folders = try CoordinatorFolders(); defer { folders.cleanup() }
         try seed(folders.source)
-        let review = AppleDoubleReviewModel(defaults: folders.defaults)
+        let coordinator = SharedAppCoordinator(platformManager: MacOSPlatformManager.shared,
+            transferJournal: LocalTransferJournal(fileURL: folders.journalURL), defaults: folders.defaults)
+        coordinator.sourceURL = folders.source
+        coordinator.destinationURLs = [folders.primary]
+        let review = coordinator.appleDoubleSelection
         XCTAssertTrue(review.enabled)
         XCTAssertNil(folders.defaults.object(forKey: "BitMatchExcludeAppleDouble"))
         review.refresh(source: folders.source)
         XCTAssertNotNil(review.readinessIssue)
-        let ready = await waitUntil { review.paths != nil }
+        let ready = await waitUntil {
+            review.paths != nil && coordinator.sourceFolderInfo != nil && !coordinator.isAnalysingSource
+        }
         XCTAssertTrue(ready)
         XCTAssertEqual(review.paths, ["._A.ARW"])
+        XCTAssertEqual(coordinator.sourceFolderInfo?.fileCount, 3)
+        let ignoredSetup = SetupPresentation.make(coordinator: coordinator)
+        XCTAssertTrue(try XCTUnwrap(ignoredSetup.start.readyLine).contains("2 files to 1 destination"))
         XCTAssertTrue(try XCTUnwrap(review.summaryLine).contains("1 AppleDouble"))
+        XCTAssertFalse(SetupPresentation.make(coordinator: coordinator).informationalLines.contains {
+            $0.contains("AppleDouble") || $0.contains("excluded")
+        })
         XCTAssertTrue(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
         review.enabled = false
+        XCTAssertTrue(try XCTUnwrap(SetupPresentation.make(coordinator: coordinator).start.readyLine).contains("3 files ("))
         XCTAssertFalse(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
         review.enabled = true
         review.refresh(source: nil)

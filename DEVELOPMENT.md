@@ -29,7 +29,7 @@ Required behavior (see `Packages/BitMatchEngine/Sources/BitMatchEngine/File/Safe
 
 - never write to the source; never overwrite an existing destination file
 - never replace an existing destination name; the hard-link path publishes a synced temporary file, while the exFAT/FAT path durably marks the attempt incomplete before exclusively creating the final name
-- keep interrupted or failed output incomplete; only independent readback and the final source, destination and root checks can advance its status
+- keep interrupted or failed output incomplete; only independent readback and the final source, destination and root checks can advance it to verified status
 - refuse output roots that collide with the source, each other, symlinks, files or nested folders
 - include hidden files and empty folders; apply only the recorded AppleDouble exclusion policy and skip symlink entries
 - use uncached checksums for live verification and evidence

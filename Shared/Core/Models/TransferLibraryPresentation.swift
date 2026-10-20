@@ -280,7 +280,11 @@ enum TransferLibraryPresentation {
     }
 
     static func stateLabel(for record: LocalTransferRecord) -> StateLabel {
-        stateLabel(safetyState(for: record))
+        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+            return StateLabel(title: "Selected files verified", accessibilityLabel: "Selected files verified",
+                systemImage: "checkmark.circle", tint: .gray, rowDetail: nil)
+        }
+        return stateLabel(safetyState(for: record))
     }
 
     private static func stateLabel(_ safetyState: CardSafetyState) -> StateLabel {
@@ -447,7 +451,10 @@ enum TransferLibraryPresentation {
     /// Files on the card, not result rows: each file has one row per
     /// destination, so two destinations showed "38 files" for a 19-file card.
     static func fileCount(for record: LocalTransferRecord) -> Int {
-        Set(record.results.map(\.path)).count
+        let rows = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+            ? record.results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+            : record.results
+        return Set(rows.map(\.path)).count
     }
 
     static func detailLine(destinationCount: Int, fileCount: Int) -> String {

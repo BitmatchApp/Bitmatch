@@ -195,13 +195,17 @@ struct CoordinatorSetupLocations: View {
     }
 
     private var presentation: SetupLocationsPresentation {
-        .make(
+        let review = coordinator.appleDoubleSelection
+        return .make(
             sourceURL: coordinator.sourceURL,
-            sourceFileCount: coordinator.sourceFolderInfo?.fileCount,
+            sourceFileCount: SetupLocationsPresentation.selectedSourceFileCount(
+                totalFileCount: coordinator.sourceFolderInfo?.fileCount,
+                ignoresAppleDouble: review.enabled, reviewedPaths: review.paths),
             sourceBytes: coordinator.sourceFolderInfo?.totalSize,
             isAnalysingSource: coordinator.isAnalysingSource,
             cameraName: cameraLabels.detectedCameraName ?? coordinator.detectedCamera?.displayName,
             connectedSourceDetail: connectedSourceDetail,
+            omitsSourceSize: review.enabled && review.paths?.isEmpty != true,
             stagedSources: platform.showsStagedQueue ? stagedPresentations : [],
             destinationURLs: coordinator.destinationURLs,
             capacity: platform.capacity,

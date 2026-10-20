@@ -43,6 +43,10 @@ extension SetupPresentation {
         }
         let hasPreparedCard = jobs.hasPreparedIngestAwaitingStart
         let independence = coordinator.destinationIndependence
+        let review = coordinator.appleDoubleSelection
+        let selectedFileCount = SetupLocationsPresentation.selectedSourceFileCount(
+            totalFileCount: coordinator.sourceFolderInfo?.fileCount,
+            ignoresAppleDouble: review.enabled, reviewedPaths: review.paths)
         let projectBlocker: String? = hasPreparedCard
             ? jobs.startPresentation(
                 preflightReady: plan.canStart,
@@ -68,12 +72,12 @@ extension SetupPresentation {
             stagedDestinationNames: stagedDestinationNames,
             stagedDestinationIdentities: stagedDestinationIdentities,
             stagedVerificationModes: stagedVerificationModes,
-            sourceFileCount: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.fileCount,
-            sourceBytes: coordinator.appleDoubleSelection.paths?.isEmpty == false ? nil : coordinator.sourceFolderInfo?.totalSize,
+            sourceFileCount: selectedFileCount,
+            sourceBytes: review.enabled && review.paths?.isEmpty != true ? nil : coordinator.sourceFolderInfo?.totalSize,
             destinationCount: independence.selectedDestinationCount,
             hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
             physicalSeparationNote: independence.physicalSeparationNote,
-            informationalLines: [coordinator.alreadyBackedUpLine, coordinator.appleDoubleSelection.summaryLine].compactMap { $0 }
+            informationalLines: [coordinator.alreadyBackedUpLine].compactMap { $0 }
         )
     }
 }

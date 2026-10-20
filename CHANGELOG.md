@@ -6,6 +6,7 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.11] - 2026-10-20
 
+- When every selected file and requested handoff verifies, ignored AppleDouble metadata no longer triggers a warning or inflates transfer counts. Details and reports still list exclusions; real problems still need attention.
 - iPhone and iPad keep Start, Pause, Resume and Cancel at the bottom of the screen. The source name has more room when using larger accessibility text.
 - History opens with less repeated work and searches clip names only when you ask. Saved transfers and their evidence stay intact.
 - Check can read supported classic MHL 1.1 checksum files. It checks file contents, without claiming to validate their history or authenticity.
