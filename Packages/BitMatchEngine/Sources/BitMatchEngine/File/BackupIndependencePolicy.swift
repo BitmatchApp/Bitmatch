@@ -14,8 +14,15 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
 
     public func physicalDiskIdentity(for url: URL) -> String? {
 #if os(macOS)
+        guard url.isFileURL, !Task.isCancelled else { return nil }
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         guard let session = DASessionCreate(kCFAllocatorDefault),
-              let disk = DADiskCreateFromVolumePath(kCFAllocatorDefault, session, url as CFURL) else {
+              let disk = SelectedVolumeDiskResolver.disk(
+                for: url,
+                readVolumeRoot: { try? $0.resourceValues(forKeys: [.volumeURLKey]).volume },
+                makeDisk: { DADiskCreateFromVolumePath(kCFAllocatorDefault, session, $0 as CFURL) }
+              ) else {
             return nil
         }
         let wholeDisk = DADiskCopyWholeDisk(disk) ?? disk

@@ -75,7 +75,7 @@ public struct SystemDriveConnectionInfoProvider: DriveConnectionInfoProviding {
     /// The returned registry handle is owned by the caller.
     private static func mediaService(for url: URL) -> io_service_t? {
         guard let session = DASessionCreate(kCFAllocatorDefault),
-              let disk = DriveConnectionVolumeResolver.disk(
+              let disk = SelectedVolumeDiskResolver.disk(
                 for: url,
                 readVolumeRoot: { try? $0.resourceValues(forKeys: [.volumeURLKey]).volume },
                 makeDisk: { DADiskCreateFromVolumePath(kCFAllocatorDefault, session, $0 as CFURL) }
@@ -92,23 +92,6 @@ public struct SystemDriveConnectionInfoProvider: DriveConnectionInfoProviding {
         return service == 0 ? nil : service
     }
 #endif
-}
-
-/// Disk Arbitration needs a mount root, even when the selected backup is a
-/// folder several levels below it. Read only that selection's volume fact;
-/// never discover or enumerate other mounted volumes.
-enum DriveConnectionVolumeResolver {
-    static func disk<Disk>(
-        for selectedURL: URL,
-        readVolumeRoot: (URL) -> URL?,
-        makeDisk: (URL) -> Disk?,
-        isCancelled: () -> Bool = { Task.isCancelled }
-    ) -> Disk? {
-        guard selectedURL.isFileURL, !isCancelled(),
-              let volumeRoot = readVolumeRoot(selectedURL), volumeRoot.isFileURL,
-              !isCancelled() else { return nil }
-        return makeDisk(volumeRoot)
-    }
 }
 
 /// Consumes its initial handle and every retained parent. Stop at the nearest
