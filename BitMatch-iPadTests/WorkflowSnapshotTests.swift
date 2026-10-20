@@ -1,103 +1,93 @@
 import XCTest
 import SwiftUI
 import UIKit
+import Vision
 @testable import BitMatch_iPad
 import BitMatchEngine
+import CryptoKit
 
-/// Opt-in seeded presentation captures for phone and iPad layouts.
+/// Opt-in production-view captures and always-on fixture routing checks.
 ///
-/// The production ContentView is rendered at explicit size constraints. The
-/// coordinator uses a scratch journal and isolated project store; no transfer,
-/// device lifecycle action, or remote service is involved.
+/// Capture the workbench, expanded progress content and expanded History
+/// outcome separately, matching the current queue-based UI. A scratch journal
+/// and isolated settings keep these presentation fixtures independent of any
+/// real transfer, device lifecycle action or remote service.
 @MainActor
 final class WorkflowSnapshotTests: XCTestCase {
+    func testSeededProgressAndCompletionMatchCurrentRoutes() throws {
+        let running = try SnapshotFixture()
+        defer { running.restoreGlobalPreferences() }
+        try running.seedRunning()
+        try running.assertRunningRoute()
+        running.endRunning()
+
+        let finished = try SnapshotFixture()
+        defer { finished.restoreGlobalPreferences() }
+        try finished.seedCompletion()
+        try finished.assertCompletionRoute()
+    }
+
     func testCapturePhoneAndIPadWorkflowSnapshots() async throws {
         try requireCaptureConfiguration()
-        let fixture = try SnapshotFixture()
-        defer { fixture.restoreGlobalPreferences() }
+        let setup = try SnapshotFixture()
+        defer { setup.restoreGlobalPreferences() }
+        setup.seedSetup()
+        await settle()
+        try capture(ContentView(coordinator: setup.coordinator), size: CGSize(width: 393, height: 852), name: "iphone-setup")
+        try capture(ContentView(coordinator: setup.coordinator), size: CGSize(width: 393, height: 1_300), name: "iphone-setup-full")
+        try capture(ContentView(coordinator: setup.coordinator), size: CGSize(width: 820, height: 1_100), name: "ipad-setup")
+        setup.seedComparisonDifferences()
+        await settle()
+        try capture(ContentView(coordinator: setup.coordinator), size: CGSize(width: 820, height: 1_100), name: "ipad-comparison-differences")
+        try capture(ContentView(coordinator: setup.coordinator), size: CGSize(width: 393, height: 852), name: "iphone-comparison-differences")
 
-        fixture.seedSetup()
+        // The current shell keeps Setup visible and shows the transfer in its
+        // queue accessory/inspector. Capture that workbench separately from
+        // the production expanded progress content; do not label Setup as a
+        // full-screen progress view.
+        let running = try SnapshotFixture()
+        defer { running.restoreGlobalPreferences() }
+        try running.seedRunning()
+        try running.assertRunningRoute()
         await settle()
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 393, height: 852),
-            name: "iphone-setup"
-        )
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 393, height: 1_300),
-            name: "iphone-setup-full"
-        )
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 820, height: 1_100),
-            name: "ipad-setup"
-        )
+        // The shell's small native footer varies with simulator safe areas.
+        // Its route is asserted above; OCR checks the expanded content below.
+        try capture(ContentView(coordinator: running.coordinator), size: CGSize(width: 393, height: 852),
+                    name: "iphone-progress-workbench")
+        for (name, size) in [("iphone-progress", CGSize(width: 393, height: 852)),
+                             ("narrowpad-progress", CGSize(width: 600, height: 1_000)),
+                             ("ipad-progress", CGSize(width: 1_180, height: 820))] {
+            try capture(ScrollView {
+                ProgressScreen(presentation: TransferProgressPresentation.make(coordinator: running.coordinator),
+                    actions: ProgressActions(pause: {}, resume: {}, cancel: {}), confirmingCancel: .constant(false))
+                    .padding()
+            }, size: size, name: name, expectedText: ["Copying", "Current file"])
+        }
+        running.endRunning()
 
-        fixture.seedComparisonDifferences()
+        let finished = try SnapshotFixture()
+        defer { finished.restoreGlobalPreferences() }
+        try finished.seedCompletion()
+        try finished.assertCompletionRoute()
         await settle()
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 820, height: 1_100),
-            name: "ipad-comparison-differences"
-        )
+        try capture(ContentView(coordinator: finished.coordinator), size: CGSize(width: 393, height: 852),
+                    name: "iphone-completion-workbench")
+        let recordID = try XCTUnwrap(finished.coordinator.outcomeRecord?.id)
+        for (name, size) in [("iphone-completion", CGSize(width: 393, height: 852)),
+                             ("narrowpad-completion", CGSize(width: 500, height: 1_000)),
+                             ("ipad-completion", CGSize(width: 820, height: 1_100))] {
+            try capture(TransferLibraryView(coordinator: finished.coordinator, journal: finished.journal, initialRecordID: recordID),
+                        size: size, name: name, expectedText: ["Safe to erase", "Saved attempt message"])
+        }
 
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 393, height: 852),
-            name: "iphone-comparison-differences"
-        )
-
-        try fixture.seedCompletion()
+        let recovery = try SnapshotFixture()
+        defer { recovery.restoreGlobalPreferences() }
+        try recovery.seedInterruptedTransfer()
         await settle()
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 393, height: 852),
-            name: "iphone-completion"
-        )
-        await settle()
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 500, height: 1_000),
-            name: "narrowpad-completion"
-        )
-
-        try fixture.seedRunning()
-        await settle()
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 393, height: 852),
-            name: "iphone-progress"
-        )
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 600, height: 1_000),
-            name: "narrowpad-progress"
-        )
-        try capture(
-            ContentView(coordinator: fixture.coordinator),
-            size: CGSize(width: 1_180, height: 820),
-            name: "ipad-progress"
-        )
-        fixture.endRunning()
-
-        // History uses a fresh fixture so earlier progress-screen lifetimes
-        // cannot affect the bookmark targets being captured here.
-        let recoveryFixture = try SnapshotFixture()
-        defer { recoveryFixture.restoreGlobalPreferences() }
-        try recoveryFixture.seedInterruptedTransfer()
-        await settle()
-        try capture(
-            TransferLibraryView(coordinator: recoveryFixture.coordinator, journal: recoveryFixture.journal),
-            size: CGSize(width: 393, height: 852),
-            name: "iphone-queue-recovery"
-        )
-        await settle()
-        try capture(
-            TransferLibraryView(coordinator: recoveryFixture.coordinator, journal: recoveryFixture.journal),
-            size: CGSize(width: 820, height: 1_100),
-            name: "ipad-queue-recovery"
-        )
+        try capture(TransferLibraryView(coordinator: recovery.coordinator, journal: recovery.journal),
+                    size: CGSize(width: 393, height: 852), name: "iphone-queue-recovery")
+        try capture(TransferLibraryView(coordinator: recovery.coordinator, journal: recovery.journal),
+                    size: CGSize(width: 820, height: 1_100), name: "ipad-queue-recovery")
     }
 
     func testCaptureDiagnosticsHistorySnapshots() async throws {
@@ -216,23 +206,41 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
-    private func capture<V: View>(_ view: V, size: CGSize, name: String) throws {
-        let host = UIHostingController(rootView: view.frame(width: size.width, height: size.height))
+    private func capture<V: View>(_ view: V, size: CGSize, name: String, expectedText: [String] = []) throws {
+        let host = UIHostingController(rootView: view
+            .frame(width: size.width, height: size.height)
+            .transaction { $0.disablesAnimations = true })
         let window = UIWindow(frame: CGRect(origin: .zero, size: size))
         window.rootViewController = host
         window.makeKeyAndVisible()
+        defer {
+            window.isHidden = true
+            window.rootViewController = nil
+        }
+        window.frame = CGRect(origin: .zero, size: size)
         host.view.frame = CGRect(origin: .zero, size: size)
         host.view.backgroundColor = .systemBackground
         host.view.setNeedsLayout()
         host.view.layoutIfNeeded()
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.25))
         host.view.layoutIfNeeded()
 
+        XCTAssertEqual(host.view.bounds.size.width, size.width, accuracy: 0.5, "Wrong capture width: \(name)")
+        XCTAssertEqual(host.view.bounds.size.height, size.height, accuracy: 0.5, "Wrong capture height: \(name)")
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { _ in
             host.view.drawHierarchy(in: host.view.bounds, afterScreenUpdates: true)
         }
-        window.isHidden = true
+        if !expectedText.isEmpty {
+            let cgImage = try XCTUnwrap(image.cgImage)
+            let request = VNRecognizeTextRequest()
+            request.recognitionLevel = .accurate
+            try VNImageRequestHandler(cgImage: cgImage).perform([request])
+            let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
+            for expected in expectedText {
+                XCTAssertTrue(text.contains(expected.lowercased()), "\(name) did not render \(expected). Recognized: \(text)")
+            }
+        }
         guard let data = image.pngData() else {
             throw SnapshotError.couldNotEncodePNG(name)
         }
@@ -242,8 +250,8 @@ final class WorkflowSnapshotTests: XCTestCase {
         add(attachment)
 
         guard let directory = outputDirectoryURL() else { return }
-        try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        try? data.write(to: directory.appendingPathComponent("\(name).png"), options: .atomic)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try data.write(to: directory.appendingPathComponent("\(name).png"), options: .atomic)
     }
 
     func testCaptureRecoveryDetails() throws {
@@ -347,24 +355,29 @@ private final class SnapshotFixture {
             verificationMode: .standard
         )
         try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1, 1], selectedSourceBytes: 11)
+        let destinationFile = backup.appendingPathComponent("DCIM/clip.txt")
+        try FileManager.default.createDirectory(at: destinationFile.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let sourceBytes = try Data(contentsOf: source.appendingPathComponent("DCIM/clip.txt"))
+        try Data(sourceBytes.prefix(9)).write(to: destinationFile)
         coordinator.isOperationInProgress = true
         coordinator.operationState = .inProgress
         coordinator.progress = OperationProgress(
             overallProgress: 0.42,
             currentFile: "DCIM/clip.txt",
-            filesProcessed: 7,
-            totalFiles: 8,
+            filesProcessed: 0,
+            totalFiles: 2,
             currentStage: .copying,
             speed: 92_000_000,
             elapsedTime: 20,
             averageSpeed: 92_000_000,
             peakSpeed: nil,
-            bytesProcessed: 1_800_000_000,
-            totalBytes: 4_000_000_000,
+            bytesProcessed: 9,
+            totalBytes: 22,
             stageProgress: nil,
             reusedCopies: nil,
-            perDestinationTotals: [4, 4],
-            perDestinationCompleted: [4, 3]
+            perDestinationTotals: [1, 1],
+            perDestinationCompleted: [0, 0]
         )
     }
 
@@ -399,19 +412,28 @@ private final class SnapshotFixture {
         coordinator.progress = OperationProgress(
             overallProgress: 1,
             currentFile: "DCIM/clip.txt",
-            filesProcessed: 4,
-            totalFiles: 4,
+            filesProcessed: 2,
+            totalFiles: 2,
             currentStage: .completed,
             speed: 92_000_000,
             elapsedTime: 14,
             averageSpeed: 92_000_000,
             peakSpeed: 108_000_000,
-            bytesProcessed: 12_000_000,
-            totalBytes: 12_000_000
+            bytesProcessed: 22,
+            totalBytes: 22
         )
+        // Identical scratch bytes and their real digest seed the presentation;
+        // this capture remains a fixture, not evidence of an engine transfer.
+        let sourceBytes = try Data(contentsOf: source.appendingPathComponent("DCIM/clip.txt"))
+        let digest = SHA256.hash(data: sourceBytes).map { String(format: "%02x", $0) }.joined()
+        for destination in [backup, secondBackup] {
+            let file = destination.appendingPathComponent("DCIM/clip.txt")
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try sourceBytes.write(to: file)
+        }
         let rows = [
-            ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path),
-            ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: secondBackup.lastPathComponent, destinationPath: secondBackup.appendingPathComponent("DCIM/clip.txt").path)
+            ResultRow(path: "DCIM/clip.txt", status: ResultOutcome.verified.statusText, size: 11, checksum: digest, destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path),
+            ResultRow(path: "DCIM/clip.txt", status: ResultOutcome.verified.statusText, size: 11, checksum: digest, destination: secondBackup.lastPathComponent, destinationPath: secondBackup.appendingPathComponent("DCIM/clip.txt").path)
         ]
         coordinator.results = rows
         let id = try coordinator.enqueue(
@@ -420,13 +442,14 @@ private final class SnapshotFixture {
             verificationMode: .standard
         )
         try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1, 1], selectedSourceBytes: 11)
         try journal.finish(
             id: id,
             results: rows,
-            summary: "Copied and verified 4 files to 2 destinations",
+            summary: "Copied and verified 1 file to 2 destinations",
             hadIssues: false
         )
-        coordinator.operationState = .completed(OperationCompletionInfo(success: true, message: "Copied and verified 4 files to 2 destinations"))
+        coordinator.reviewQueuedTransfer(id)
     }
 
     func seedInterruptedTransfer() throws {
@@ -441,8 +464,29 @@ private final class SnapshotFixture {
         )
         try journal.markRunning(id: id)
         try journal.interrupt(id: id, summary: "Interrupted while verifying. Reconnect the original folders and retry.", results: [
-            ResultRow(path: "DCIM/clip.txt", status: "✅ Verified", size: 12_000_000, checksum: "sha256:seeded", destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path)
+            ResultRow(path: "DCIM/clip.txt", status: ResultOutcome.verified.statusText, size: 11, checksum: "sha256:seeded", destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path)
         ])
+    }
+
+    func assertRunningRoute(file: StaticString = #filePath, line: UInt = #line) throws {
+        let rows = coordinator.queuePresentation.rows
+        XCTAssertEqual(rows.count, 1, file: file, line: line)
+        let row = try XCTUnwrap(rows.first, file: file, line: line)
+        XCTAssertTrue(row.isRunning, file: file, line: line)
+        XCTAssertEqual(row.safetyState, .copying(progress: 42), file: file, line: line)
+        XCTAssertNil(row.outcome, file: file, line: line)
+        XCTAssertFalse(coordinator.showsOutcomeSummary, file: file, line: line)
+        XCTAssertEqual(TransferProgressPresentation.make(coordinator: coordinator).phase, .copying, file: file, line: line)
+        XCTAssertEqual(QueueAccessoryPresentation.make(queue: coordinator.queuePresentation).tone, .progress, file: file, line: line)
+    }
+
+    func assertCompletionRoute(file: StaticString = #filePath, line: UInt = #line) throws {
+        let record = try XCTUnwrap(coordinator.outcomeRecord, file: file, line: line)
+        XCTAssertEqual(record.plannedFileCounts, [1, 1], file: file, line: line)
+        XCTAssertEqual(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record), true, file: file, line: line)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase, file: file, line: line)
+        XCTAssertTrue(coordinator.showsOutcomeSummary, file: file, line: line)
+        XCTAssertEqual(coordinator.queuePresentation.rows.first?.outcome?.safetyState, .safeToErase, file: file, line: line)
     }
 
     func restoreGlobalPreferences() {
