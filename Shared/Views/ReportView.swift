@@ -277,8 +277,34 @@ struct ReportView: View {
                 }
             }
         }
-        append(footerSection)
         return blocks
+    }
+
+    /// PDF identity lives outside the manifest so it cannot create an empty last page.
+    func pdfPageFooter(page: Int, total: Int) -> some View {
+        HStack(alignment: .bottom, spacing: 12) {
+            pdfIdentity
+                .frame(maxWidth: .infinity, alignment: .leading)
+            Text("Page \(page) of \(total)").font(.system(size: 9)).monospacedDigit().fixedSize()
+        }.foregroundColor(.secondary)
+    }
+
+    private var pdfIdentity: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text("Job ID: \(s.jobID.uuidString)").font(.system(size: 8, design: .monospaced))
+            if !s.appVersion.isEmpty {
+                Text("BitMatch v\(s.appVersion) • \(s.osVersion)").font(.system(size: 8))
+            }
+            if !s.company.isEmpty { Text(s.company).font(.system(size: 8)) }
+        }.fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Unusually large identity text remains ordinary paginated content.
+    var pdfPaginatedIdentity: ReportPDFBlock {
+        ReportPDFBlock(view: AnyView(VStack(alignment: .leading, spacing: 0) {
+            Divider().padding(.vertical, 12)
+            pdfIdentity.foregroundColor(.secondary)
+        }), continuesManifest: false)
     }
 
     private var pdfLocationsSection: some View {
