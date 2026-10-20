@@ -181,6 +181,82 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertTrue(harness.completedRows[0].isSuccessStatus)
     }
 
+    func testRealDestinationProgressSurvivesMHLAndReportHandoffs() async throws {
+        for includeMHL in [false, true] {
+            try await assertRealDestinationHandoff(includeMHL: includeMHL, failSecondDestination: false)
+        }
+    }
+
+    func testFailedDestinationKeepsItsMeasuredProgressThroughHandoff() async throws {
+        try await assertRealDestinationHandoff(includeMHL: true, failSecondDestination: true)
+    }
+
+    private func assertRealDestinationHandoff(includeMHL: Bool, failSecondDestination: Bool) async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("executor-handoff-progress-\(UUID())")
+        let source = root.appendingPathComponent("Card")
+        let destinations = [root.appendingPathComponent("Backup A"), root.appendingPathComponent("Backup B")]
+        for folder in [source] + destinations { try fm.createDirectory(at: folder, withIntermediateDirectories: true) }
+        defer { try? fm.removeItem(at: root) }
+        let payloads = ["tiny.bin": Data("small payload".utf8),
+                        "large.bin": Data(repeating: 0xA7, count: 4 * 1_024 * 1_024 + 17)]
+        for (name, data) in payloads { try data.write(to: source.appendingPathComponent(name)) }
+        let rejected = destinations[1]
+        let pipeline = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared,
+            pipelinedVerification: true, destinationSetupHook: { url in
+                if failSecondDestination && url == rejected { throw NSError(domain: "SyntheticDestination", code: 5) }
+            })
+        let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source,
+            destinationURLs: destinations, generateASCMHL: includeMHL, makeReport: true,
+            realFileOperations: pipeline, estimatedFiles: payloads.count,
+            estimatedBytes: payloads.values.reduce(Int64(0)) { $0 + Int64($1.count) })
+        let executed = try await harness.execute()
+        let operation = try XCTUnwrap(executed)
+        let firstHandoff = try XCTUnwrap(harness.observedProgress.firstIndex { $0.currentStage == .generating })
+        let lastMedia = try XCTUnwrap(harness.observedProgress[..<firstHandoff].last)
+        let mediaFractions = try XCTUnwrap(lastMedia.perDestinationProgress)
+        XCTAssertEqual(mediaFractions.count, destinations.count)
+        XCTAssertGreaterThan(mediaFractions[0], 0)
+        if failSecondDestination { XCTAssertLessThan(mediaFractions[1], mediaFractions[0]) }
+        let handoff = Array(harness.observedProgress[firstHandoff...])
+        XCTAssertEqual(handoff.contains { $0.isASCMHL == true }, includeMHL)
+        XCTAssertTrue(handoff.contains { $0.currentStage == .generating && $0.isASCMHL != true }, "Report phase must execute")
+        XCTAssertTrue(handoff.allSatisfy { $0.perDestinationTotals == lastMedia.perDestinationTotals }, "Handoff dropped selected-file counts")
+        XCTAssertTrue(handoff.allSatisfy { $0.perDestinationCompleted == lastMedia.perDestinationCompleted }, "Handoff dropped processed-file counts")
+        XCTAssertTrue(handoff.allSatisfy { $0.perDestinationProgress == mediaFractions }, "Handoff reset or fabricated destination work")
+        let mediaRows = TransferProgressPresentation.rows(destinations: destinations, progress: lastMedia, phase: .finishing)
+        for progress in handoff {
+            let view = TransferProgressPresentation.make(state: .verifying, isRunning: true, progress: progress,
+                sourceName: "Card", destinations: destinations, speed: nil, timeRemaining: nil,
+                elapsed: nil, issueCount: failSecondDestination ? payloads.count : 0, device: .mac)
+            XCTAssertEqual(view.destinations.map(\.fraction), mediaRows.map(\.fraction))
+            XCTAssertEqual(view.destinations.map(\.countText), mediaRows.map(\.countText))
+            XCTAssertFalse(view.destinations.contains { $0.state == .waiting })
+            XCTAssertTrue(view.destinations.allSatisfy { $0.stateLabel != "Verified" })
+        }
+        XCTAssertTrue(harness.observedProgress.allSatisfy { $0.overallProgress < 1 })
+        XCTAssertTrue(zip(harness.observedProgress, harness.observedProgress.dropFirst()).allSatisfy { pair in
+            pair.0.overallProgress <= pair.1.overallProgress
+        })
+        XCTAssertEqual(operation.results.count, payloads.count * destinations.count)
+        XCTAssertEqual(harness.terminalInfo?.success, !failSecondDestination)
+        XCTAssertEqual(harness.publishedTerminalStates.count, 1)
+        for (name, data) in payloads {
+            XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent(name)), data)
+            for (index, destination) in destinations.enumerated() where !failSecondDestination || index == 0 {
+                let copied = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: CameraLabelSettings())
+                XCTAssertEqual(try Data(contentsOf: copied.appendingPathComponent(name)), data)
+            }
+        }
+        for (index, destination) in destinations.enumerated() {
+            let copied = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: CameraLabelSettings())
+            XCTAssertEqual(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path),
+                includeMHL && (!failSecondDestination || index == 0))
+        }
+        let reports = try fm.contentsOfDirectory(at: destinations[0].appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        for ext in ["pdf", "csv", "json"] { XCTAssertTrue(reports.contains { $0.pathExtension == ext }) }
+    }
+
     func testHandoffFailurePreservesSuccessfulFileRowsAndPhotographerFinalization() async throws {
         let fixture = try ascFixture()
         try Data("corrupted".utf8).write(to: fixture.result.destinationURL)
