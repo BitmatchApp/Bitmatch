@@ -14,6 +14,31 @@ import CryptoKit
 /// real transfer, device lifecycle action or remote service.
 @MainActor
 final class WorkflowSnapshotTests: XCTestCase {
+    /// Presentation fixture only: retained legacy wording must not turn a
+    /// known Quick attempt into verified recovery counts.
+    func testCaptureQuickRecoverySummaries() throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(),
+            source: try LocalTransferResource(url: fixture.source),
+            destinations: try [fixture.backup, fixture.secondBackup].map(LocalTransferResource.init(url:)),
+            verificationMode: .quick, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .cancelled
+        record.plannedFileCounts = [1, 1]
+        record.results = [fixture.backup, fixture.secondBackup].map { backup in
+            ResultRow(path: "DCIM/clip.txt", status: "✅ Match", size: 11,
+                checksum: "synthetic-legacy-digest", destination: backup.lastPathComponent,
+                destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path, wasReused: true)
+        }
+        for width in [375.0, 760.0] {
+            try capture(TransferRecoveryDetails(record: record, history: [record]).padding()
+                .frame(maxHeight: .infinity, alignment: .top),
+                size: CGSize(width: width, height: 360), name: "ios-quick-recovery-\(Int(width))",
+                expectedText: ["0 reused", "0 copied", "1 copied, unverified"])
+        }
+    }
+
     func testSeededProgressAndCompletionMatchCurrentRoutes() throws {
         let running = try SnapshotFixture()
         defer { running.restoreGlobalPreferences() }
@@ -194,31 +219,6 @@ final class WorkflowSnapshotTests: XCTestCase {
         for width in [320.0, 500.0, 820.0] {
             try capture(TransferDetailsSection(prefs: .constant(prefs), isExpanded: true).padding(),
                         size: CGSize(width: width, height: 400), name: "mobile-transfer-details-\(Int(width))")
-        }
-    }
-
-    /// Presentation fixture only: retained legacy wording must not turn a
-    /// known Quick attempt into verified recovery counts.
-    func testCaptureQuickRecoverySummaries() throws {
-        try requireCaptureConfiguration()
-        let fixture = try SnapshotFixture()
-        defer { fixture.restoreGlobalPreferences() }
-        var record = LocalTransferRecord(id: UUID(), createdAt: Date(),
-            source: try LocalTransferResource(url: fixture.source),
-            destinations: try [fixture.backup, fixture.secondBackup].map(LocalTransferResource.init(url:)),
-            verificationMode: .quick, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
-        record.state = .cancelled
-        record.plannedFileCounts = [1, 1]
-        record.results = [fixture.backup, fixture.secondBackup].map { backup in
-            ResultRow(path: "DCIM/clip.txt", status: "✅ Match", size: 11,
-                checksum: "synthetic-legacy-digest", destination: backup.lastPathComponent,
-                destinationPath: backup.appendingPathComponent("DCIM/clip.txt").path, wasReused: true)
-        }
-        for width in [375.0, 760.0] {
-            try capture(TransferRecoveryDetails(record: record, history: [record]).padding()
-                .frame(maxHeight: .infinity, alignment: .top),
-                size: CGSize(width: width, height: 360), name: "ios-quick-recovery-\(Int(width))",
-                expectedText: ["0 reused", "0 copied", "1 copied, unverified"])
         }
     }
 
