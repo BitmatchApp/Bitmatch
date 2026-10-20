@@ -311,6 +311,8 @@ struct SettingsSheetView: View {
                         .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
                 }
 
+                TransferSettingsSection(coordinator: coordinator)
+
                 Section("Diagnostics") {
                     LocalCrashEvidenceSettingView(settings: generalSettings)
                 }
@@ -358,7 +360,7 @@ struct SettingsSheetView: View {
                 }
 
                 Section {
-                    Text("A report is a record of what happened during a transfer, saved next to your destinations so you can hand it to anyone.")
+                    Text("Transfer reports are saved in Reports on your first destination.")
                         .font(.footnote)
                         .foregroundColor(.secondary)
                 } header: {

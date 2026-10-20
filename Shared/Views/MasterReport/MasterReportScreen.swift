@@ -281,7 +281,7 @@ struct MasterReportScreen: View {
         VStack(alignment: .leading, spacing: 4) {
             Text("No BitMatch reports from \(dayText)")
                 .font(.headline)
-            Text("BitMatch looks for the reports it writes beside each destination, by the day they were written. Pick another day, or a different drive or folder.")
+            Text("BitMatch looks for saved reports by the day they were written. Pick another day, or a different drive or folder.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

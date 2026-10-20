@@ -121,6 +121,9 @@ final class CopyVerifyExecutor {
     private var pipelineWorkBytes = 0.0
     private var pipelineCompletedWorkBytes = 0.0
     private var reservedHandoffBytes = 0.0
+    /// Last actual media measurements, including uneven/failed destinations.
+    /// Handoff progress has its own byte budget but must not erase these rows.
+    private var lastMediaProgress: OperationProgress?
     private(set) var completedPhaseDurations = OperationPhaseDurations(copySeconds: nil, verifySeconds: nil)
     private(set) var completedPerformanceTelemetry = TransferPerformanceTelemetry()
 
@@ -165,6 +168,7 @@ final class CopyVerifyExecutor {
         pipelineWorkBytes = 0
         pipelineCompletedWorkBytes = 0
         reservedHandoffBytes = 0
+        lastMediaProgress = nil
         diagnosticRun = config.operationId
         acceptsPipelineProgress = true
         lastDiagnosticStage = nil
@@ -286,6 +290,7 @@ final class CopyVerifyExecutor {
 #endif
 
             if let finalUpdate = lastPipelineProgress.withLock({ $0 }) {
+                lastMediaProgress = finalUpdate
                 pipelineWorkBytes = finalUpdate.totalWorkBytes ?? 0
                 pipelineCompletedWorkBytes = min(pipelineWorkBytes, max(0, finalUpdate.workBytesProcessed ?? 0))
                 reservedHandoffBytes = config.generateASCMHL && config.verificationMode != .quick
@@ -426,7 +431,11 @@ final class CopyVerifyExecutor {
             timingService.updateStage(.generating)
             handleProgress(OperationProgress(
                 overallProgress: highestOverallProgress, currentFile: "Writing transfer reports…",
-                filesProcessed: 0, totalFiles: allResults.count, currentStage: .generating, speed: nil), callbacks: callbacks)
+                filesProcessed: 0, totalFiles: allResults.count, currentStage: .generating, speed: nil,
+                elapsedTime: nil, averageSpeed: nil, peakSpeed: nil, bytesProcessed: nil, totalBytes: nil,
+                perDestinationTotals: lastMediaProgress?.perDestinationTotals,
+                perDestinationCompleted: lastMediaProgress?.perDestinationCompleted,
+                perDestinationProgress: lastMediaProgress?.perDestinationProgress), callbacks: callbacks)
             reportIssue = try await generateReport(
                 operation: operation,
                 results: allResults,
@@ -500,14 +509,16 @@ final class CopyVerifyExecutor {
         let consumer = Task { @MainActor in
             for await update in channel.stream {
                 self.handleProgress(Self.mhlProgress(update, precedingWorkBytes: self.pipelineWorkBytes,
-                    precedingCompletedWorkBytes: self.pipelineCompletedWorkBytes, reservedHandoffBytes: self.reservedHandoffBytes), callbacks: callbacks)
+                    precedingCompletedWorkBytes: self.pipelineCompletedWorkBytes, reservedHandoffBytes: self.reservedHandoffBytes,
+                    mediaProgress: self.lastMediaProgress), callbacks: callbacks)
             }
         }
         handleProgress(Self.mhlProgress(.init(bytesProcessed: 0, totalBytes: mhlBytes,
                                                     filesProcessed: 0, totalFiles: plan.jobs.flatMap(\.files).count,
                                                     published: false), precedingWorkBytes: pipelineWorkBytes,
                                                     precedingCompletedWorkBytes: pipelineCompletedWorkBytes,
-                                                    reservedHandoffBytes: reservedHandoffBytes), callbacks: callbacks)
+                                                    reservedHandoffBytes: reservedHandoffBytes,
+                                                    mediaProgress: lastMediaProgress), callbacks: callbacks)
         let sourceURL = config.sourceURL
         let startTime = operation.startTime
         let run = config.operationId
@@ -551,7 +562,8 @@ final class CopyVerifyExecutor {
     }
 
     static func mhlProgress(_ update: ASCMHLGenerator.Progress, precedingWorkBytes: Double = 0,
-                            precedingCompletedWorkBytes: Double? = nil, reservedHandoffBytes: Double? = nil) -> OperationProgress {
+                            precedingCompletedWorkBytes: Double? = nil, reservedHandoffBytes: Double? = nil,
+                            mediaProgress: OperationProgress? = nil) -> OperationProgress {
         let fraction = update.totalBytes > 0
             ? min(1, Double(update.bytesProcessed) / Double(update.totalBytes)) : 0
         return OperationProgress(
@@ -560,7 +572,10 @@ final class CopyVerifyExecutor {
             currentFile: update.published ? "ASC MHL records saved" : "Creating ASC MHL — checking destination media…",
             filesProcessed: update.filesProcessed, totalFiles: update.totalFiles,
             currentStage: .generating, speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
-            bytesProcessed: update.bytesProcessed, totalBytes: update.totalBytes, stageProgress: fraction, isASCMHL: true)
+            bytesProcessed: update.bytesProcessed, totalBytes: update.totalBytes, stageProgress: fraction,
+            perDestinationTotals: mediaProgress?.perDestinationTotals,
+            perDestinationCompleted: mediaProgress?.perDestinationCompleted, isASCMHL: true,
+            perDestinationProgress: mediaProgress?.perDestinationProgress)
     }
 
     private func handleError(

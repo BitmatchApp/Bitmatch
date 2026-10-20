@@ -1,0 +1,159 @@
+import CryptoKit
+import Foundation
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
+import Testing
+@testable import BitMatchEngine
+
+/// Original-format reference output is a corpus, not a new supported reader.
+/// All Check calls below are read-only and must keep that boundary explicit.
+struct ClassicMHLCompatibilityTests {
+    private var fixture: URL {
+        get throws {
+            try #require(Bundle.module.resourceURL)
+                .appendingPathComponent("Fixtures/EvidenceCompatibility/classic-reference/media")
+        }
+    }
+    private var checker: SavedChecksumCheck {
+        SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+    }
+    private func copyFixture(nested: Bool = false) throws -> (root: URL, media: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-classic-corpus-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let media = nested ? root.appendingPathComponent("Camera card") : root.appendingPathComponent("media")
+        try FileManager.default.copyItem(at: fixture, to: media)
+        return (root, media)
+    }
+    private func snapshot(_ root: URL) throws -> [String: Data] {
+        try Dictionary(uniqueKeysWithValues: CardSource.enumerateRegularFiles(base: root).map {
+            ($0.relativePath, try Data(contentsOf: $0.url))
+        })
+    }
+
+    /// A test-only XML inventory extractor, deliberately separate from Check.
+    /// CryptoKit independently checks every MD5/SHA-1 record in the fixture.
+    @Test func originalReferenceInventoryHasSixValidDigestRecords() throws {
+        let expected = ["Camera A/clip & cafe.txt": Data("Classic MHL independent fixture\n".utf8),
+                        "support file.txt": Data("Whitespace is part of this filename.\n".utf8),
+                        "sidecar.xml": Data("<clip>synthetic</clip>\n".utf8)]
+        let root = try fixture
+        let before = try snapshot(root)
+        let parser = XMLParser(data: try Data(contentsOf: root.appendingPathComponent("classic-md5-sha1.mhl")))
+        let delegate = ClassicInventoryFixtureParser()
+        parser.shouldResolveExternalEntities = false
+        parser.delegate = delegate
+        #expect(parser.parse())
+        #expect(delegate.version == "1.1")
+        #expect(delegate.items.count == 6)
+        #expect(Set(delegate.items.map(\.path)) == Set(expected.keys))
+        for item in delegate.items {
+            let bytes = try #require(expected[item.path])
+            #expect(try Data(contentsOf: root.appendingPathComponent(item.path)) == bytes)
+            #expect(item.size == bytes.count)
+            let digest: String
+            if item.algorithm == "md5" {
+                digest = Insecure.MD5.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            } else {
+                #expect(item.algorithm == "sha1")
+                digest = Insecure.SHA1.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            }
+            #expect(item.digest == digest)
+        }
+        #expect(delegate.items.filter { $0.algorithm == "md5" }.count == 3)
+        #expect(delegate.items.filter { $0.algorithm == "sha1" }.count == 3)
+        #expect(try snapshot(root) == before)
+    }
+
+    /// Standalone discovery is not implemented. Finding a classic inventory
+    /// cannot fabricate ASC records, a named copy tier, or an intact verdict.
+    @Test(arguments: [false, true])
+    func standaloneClassicInventoryDoesNotAcquireAnASCClaim(nested: Bool) async throws {
+        let fixture = try copyFixture(nested: nested)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let before = try snapshot(fixture.root)
+        await #expect(throws: SavedChecksumCheck.CheckError.notFound) {
+            _ = try await checker.discover(under: nested ? fixture.root : fixture.media)
+        }
+        #expect(try snapshot(fixture.root) == before)
+    }
+
+    /// A valid ASC neighbour must never conceal unsupported classic evidence
+    /// inside the ASC evidence tree. Mutants are disposable test data only.
+    @Test(arguments: ["original", "sha1-only", "size-only", "future-version", "truncated", "traversal"])
+    func classicEvidenceInsideASCHistoryRemainsUnsupported(kind: String) async throws {
+        let fixture = try copyFixture()
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let original = fixture.media.appendingPathComponent("classic-md5-sha1.mhl")
+        let originalText = try String(contentsOf: original, encoding: .utf8)
+        var text = originalText
+        switch kind {
+        case "sha1-only":
+            text = text.replacingOccurrences(of: #"(?s)<hash>(?:(?!</hash>).)*<md5>[^<]+</md5>(?:(?!</hash>).)*</hash>"#,
+                with: "", options: .regularExpression)
+        case "size-only":
+            text = text.replacingOccurrences(of: #"<(md5|sha1)>[^<]+</(md5|sha1)>"#, with: "<null/>", options: .regularExpression)
+        case "future-version": text = text.replacingOccurrences(of: "version=\"1.1\"", with: "version=\"9.0\"")
+        case "truncated": text = String(text.dropLast(30))
+        case "traversal": text = text.replacingOccurrences(of: "<file>sidecar.xml</file>", with: "<file>../outside.xml</file>")
+        default: break
+        }
+        if kind != "original" { #expect(text != originalText) }
+        if kind == "sha1-only" {
+            let parser = XMLParser(data: Data(text.utf8))
+            let delegate = ClassicInventoryFixtureParser()
+            parser.delegate = delegate
+            #expect(parser.parse())
+            #expect(delegate.items.count == 3)
+            #expect(delegate.items.allSatisfy { $0.algorithm == "sha1" })
+        }
+        if kind == "size-only" {
+            #expect(!text.contains("<md5>"))
+            #expect(!text.contains("<sha1>"))
+            #expect(text.components(separatedBy: "<null/>").count - 1 == 6)
+        }
+        let history = fixture.media.appendingPathComponent("ascmhl")
+        try FileManager.default.createDirectory(at: history, withIntermediateDirectories: true)
+        try Data(text.utf8).write(to: history.appendingPathComponent("classic.mhl"))
+        let payload = Data("A".utf8)
+        try payload.write(to: fixture.media.appendingPathComponent("supported.txt"))
+        let md5 = Insecure.MD5.hash(data: payload).map { String(format: "%02x", $0) }.joined()
+        let asc = """
+        <hashlist xmlns="urn:ASC:MHL:v2.0" version="2.0">
+        <creatorinfo><creationdate>2026-10-01T00:00:00Z</creationdate></creatorinfo>
+        <hashes><hash><path>supported.txt</path><md5>\(md5)</md5></hash></hashes></hashlist>
+        """
+        try Data(asc.utf8).write(to: history.appendingPathComponent("supported.mhl"))
+        let before = try snapshot(fixture.root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: fixture.media)
+        }
+        #expect(try snapshot(fixture.root) == before)
+    }
+}
+
+private final class ClassicInventoryFixtureParser: NSObject, XMLParserDelegate {
+    struct Item {
+        var path = ""
+        var size: Int?
+        var algorithm = ""
+        var digest = ""
+    }
+    var version: String?
+    var items: [Item] = []
+    private var item: Item?
+    private var text = ""
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+        text = ""
+        if name == "hashlist" { version = attributes["version"] }
+        if name == "hash" { item = Item() }
+    }
+    func parser(_ parser: XMLParser, foundCharacters string: String) { text += string }
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+        if name == "file" { item?.path = text }
+        if name == "size" { item?.size = Int(text) }
+        if name == "md5" || name == "sha1" { item?.algorithm = name; item?.digest = text }
+        if name == "hash", let item { items.append(item); self.item = nil }
+        text = ""
+    }
+}

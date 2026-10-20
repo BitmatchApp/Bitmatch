@@ -1,6 +1,8 @@
 import Foundation
 #if canImport(Darwin)
 import Darwin
+#elseif canImport(Glibc)
+import Glibc
 #endif
 
 /// A bounded, local record of structured events only. Never accepts free-form
@@ -57,6 +59,18 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     private var writeFailed = false
     private var current: URL { directory.appendingPathComponent("current.jsonl") }
     private var previous: URL { directory.appendingPathComponent("previous.jsonl") }
+
+    private enum InputFile: String, Encodable { case previous, current }
+    private enum InputRejection: String, Encodable { case unreadable, oversized, unsupportedFileType }
+    private struct RejectedInput: Encodable {
+        let file: InputFile
+        let reason: InputRejection
+    }
+    private enum InputRead {
+        case missing
+        case data(Data)
+        case rejected(InputRejection)
+    }
 
     init(directory: URL, limit: Int = 256 * 1024,
          systemEvidenceStore: LocalCrashEvidenceStore = .shared) {
@@ -133,8 +147,16 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         decoder.dateDecodingStrategy = .iso8601
         var events: [Event] = []
         var incompleteRecords = 0
-        for file in [previous, current] where FileManager.default.fileExists(atPath: file.path) {
-            let data = try Data(contentsOf: file)
+        var rejectedInputs: [RejectedInput] = []
+        for (slot, url) in [(InputFile.previous, previous), (.current, current)] {
+            let data: Data
+            switch readInput(url) {
+            case .missing: continue
+            case .rejected(let reason):
+                rejectedInputs.append(RejectedInput(file: slot, reason: reason))
+                continue
+            case .data(let contents): data = contents
+            }
             for line in data.split(separator: 0x0A) {
                 do { events.append(try decoder.decode(Event.self, from: Data(line))) }
                 catch { incompleteRecords += 1 }
@@ -148,6 +170,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             let build: String
             let recordingHadErrors: Bool
             let incompleteRecords: Int
+            let rejectedInputs: [RejectedInput]
             let events: [Event]
             let systemEvidenceEnabled: Bool
             let systemEvidenceRecordingHadErrors: Bool
@@ -163,11 +186,45 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
             appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "unknown",
             build: Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "unknown",
-            recordingHadErrors: writeFailed, incompleteRecords: incompleteRecords, events: events,
+            recordingHadErrors: writeFailed || incompleteRecords > 0 || !rejectedInputs.isEmpty,
+            incompleteRecords: incompleteRecords, rejectedInputs: rejectedInputs, events: events,
             systemEvidenceEnabled: systemEvidence.enabled,
             systemEvidenceRecordingHadErrors: systemEvidence.recordingHadErrors,
             systemEvidenceDeletionHadErrors: systemEvidence.deletionHadErrors,
             systemEvidenceNote: "Apple MetricKit may deliver crash or main-thread hang reports later, or not at all. Absence does not rule out a crash, memory kill, force quit, or background stall. Reports are not tied to a transfer by this export.",
             systemEvidence: systemEvidence.records))
+    }
+
+    /// Bound allocation even if a local file was damaged, replaced or grew
+    /// outside the writer's rotation lock. Nonblocking/no-follow open prevents
+    /// a FIFO or link from turning Export diagnostics into an unrelated read.
+    private func readInput(_ url: URL) -> InputRead {
+#if canImport(Darwin) || canImport(Glibc)
+        let fd = open(url.path, O_RDONLY | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else {
+            if errno == ENOENT { return .missing }
+            return .rejected(errno == ELOOP ? .unsupportedFileType : .unreadable)
+        }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        defer { try? handle.close() }
+        var info = stat()
+        guard fstat(fd, &info) == 0, info.st_size >= 0 else { return .rejected(.unreadable) }
+        guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else { return .rejected(.unsupportedFileType) }
+        // Production files are at most 256 KiB each. Honor smaller test limits
+        // without allowing a larger caller-supplied limit to remove this bound.
+        let byteLimit = min(max(0, limit), 256 * 1024)
+        guard info.st_size <= byteLimit else { return .rejected(.oversized) }
+        do {
+            var data = Data()
+            while true {
+                let chunk = try handle.read(upToCount: min(64 * 1024, byteLimit + 1 - data.count)) ?? Data()
+                guard !chunk.isEmpty else { return .data(data) }
+                data.append(chunk)
+                guard data.count <= byteLimit else { return .rejected(.oversized) }
+            }
+        } catch { return .rejected(.unreadable) }
+#else
+        return .rejected(.unreadable)
+#endif
     }
 }

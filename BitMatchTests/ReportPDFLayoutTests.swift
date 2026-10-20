@@ -1,5 +1,8 @@
 import Foundation
 import PDFKit
+import CoreGraphics
+import ImageIO
+import UniformTypeIdentifiers
 import Testing
 @testable import BitMatch
 import BitMatchEngine
@@ -167,9 +170,8 @@ struct ReportPDFLayoutTests {
             issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
             verificationMethod: "Standard", totalBytesProcessed: 300_000, averageSpeed: 1,
             clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
-        let blocks = ReportView(s: summary, rows: rows).pdfBlocks
-        let heights = ReportPDFRenderer.blockHeights(blocks)
-        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight)
+        let layout = ReportPDFRenderer.layout(ReportView(s: summary, rows: rows))
+        let (blocks, pages) = (layout.blocks, layout.pages)
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
         #expect(pages.count > 1)
         #expect(document.pageCount == pages.count)
@@ -193,6 +195,119 @@ struct ReportPDFLayoutTests {
             let bounds = match.bounds(for: page)
             #expect(bounds.minY >= ReportPDFRenderer.verticalMargin)
             #expect(bounds.maxY <= ReportPDFRenderer.pageHeight - ReportPDFRenderer.verticalMargin)
+        }
+    }
+
+
+    @Test func cancelledSevenRowHistoryKeepsIdentityOnTheContentPage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bm-" + UUID().uuidString)
+        let source = root.appendingPathComponent("Cancel Retry Card-E1061BD4-DFE4-4CC0-8053-58C5263AFFB2")
+        let backup = root.appendingPathComponent("destination-apfs/cancel-retry-E1061BD4-DFE4-4CC0-8053-58C5263AFFB2")
+        for folder in [source, backup] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: source),
+            destinations: [try LocalTransferResource(url: backup)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .cancelled
+        record.startedAt = Date(); record.endedAt = Date()
+        record.plannedFileCounts = [7]
+        record.results = ["clip00.mov", "clip01.xml", "metadata.txt", "clip03.bin", "empty.raw", "clip05.mov", "clip06.txt"].map { name in
+            ResultRow(path: source.appendingPathComponent(name).path, status: ResultOutcome.verified.statusText,
+                size: 10, checksum: "fixture", destination: backup.lastPathComponent,
+                destinationPath: backup.appendingPathComponent(name).path)
+        }
+        let pdf = try await ReportExporter.historyPDF(record: record, includeThumbnails: false)
+        let document = try #require(PDFDocument(data: pdf))
+        if let directory = ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] {
+            let folder = URL(fileURLWithPath: directory)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try pdf.write(to: folder.appendingPathComponent("cancelled-seven-rows.pdf"))
+        }
+        #expect(document.pageCount == 1)
+        let page = try #require(document.page(at: 0))
+        #expect(page.string?.contains("NOT SAFE TO ERASE") == true)
+        #expect(page.string?.contains(record.id.uuidString) == true)
+        for row in record.results { #expect(page.string?.contains(row.fileName) == true) }
+    }
+
+
+    @Test func firstPageUsesSpaceThatContinuationHeadersNeedLater() {
+        let packed = ReportPDFLayout.pages(blockHeights: [60, 60, 20], contentHeight: 100, firstPageContentHeight: 150)
+        #expect(packed.map(\.blocks) == [0..<3])
+        let sliced = ReportPDFLayout.pages(blockHeights: [250, 50], contentHeight: 100, firstPageContentHeight: 150)
+        #expect(sliced.map(\.blocks) == [0..<1, 0..<1, 1..<2])
+        #expect(sliced.map(\.offset) == [0, 150, 0])
+    }
+
+    @Test func previewReportsKeepIdentityWithContentWithoutAnOrphanPage() throws {
+        try checkPreviewFooter(clipCount: 20, longIdentity: false)
+        try checkPreviewFooter(clipCount: 200, longIdentity: false)
+        try checkPreviewFooter(clipCount: 20, longIdentity: true)
+    }
+
+    @Test func veryLargeIdentityPaginatesWithoutDroppingText() throws {
+        try checkPreviewFooter(clipCount: 1, longIdentity: true, oversizedIdentity: true)
+    }
+
+    private func checkPreviewFooter(clipCount: Int, longIdentity: Bool, oversizedIdentity: Bool = false) throws {
+        let source = "/private/tmp/bitmatch-4k-preview-12345678-1234-1234-1234-123456789012/Card"
+        let backup = "/private/tmp/bitmatch-4k-preview-12345678-1234-1234-1234-123456789012/Backup"
+        let rows = (0..<clipCount).map { index in
+            ResultRow(path: source + String(format: "/clip-%02d.mov", index), status: ResultOutcome.verified.statusText,
+                size: 4_000, checksum: "fixture", destination: backup)
+        }
+        let versionTokens = longIdentity ? (0..<(oversizedIdentity ? 240 : 24)).map { "VersionToken\($0)" } : ["synthetic probe"]
+        let companyTokens = longIdentity ? (0..<(oversizedIdentity ? 360 : 36)).map { "CompanyToken\($0)" } : []
+        let summary = ReportSummary(jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1), mode: .copyAndVerify,
+            source: source, destinations: [backup], totalFiles: clipCount, matched: clipCount, issues: 0,
+            workers: 1, appVersion: versionTokens.joined(separator: " "), osVersion: "Version 27.0.1 (Build 26A434)",
+            client: "", production: "", company: companyTokens.joined(separator: " "),
+            verificationMethod: "Standard", verificationMode: .standard, totalBytesProcessed: Int64(clipCount * 4_000),
+            averageSpeed: 0, clientLogoData: nil, companyLogoData: nil, photographyJob: nil,
+            operatorName: "BitMatch validation", notes: "Synthetic 4K preview memory probe", safetyState: .safeToErase)
+        let context = try #require(CGContext(data: nil, width: 256, height: 144, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(CGColor(red: 0.2, green: 0.8, blue: 0.3, alpha: 1)); context.fill(CGRect(x: 0, y: 0, width: 256, height: 144))
+        let image = try #require(context.makeImage())
+        let data = NSMutableData()
+        let encoder = try #require(CGImageDestinationCreateWithData(data, UTType.jpeg.identifier as CFString, 1, nil))
+        CGImageDestinationAddImage(encoder, image, nil); #expect(CGImageDestinationFinalize(encoder))
+        let thumbnails = ReportThumbnails(images: Dictionary(uniqueKeysWithValues: rows.map { ($0.path, data as Data) }), requestedCount: clipCount)
+        let layout = ReportPDFRenderer.layout(ReportView(s: summary, rows: rows, thumbnails: thumbnails))
+        #expect(layout.repeatsIdentity == !oversizedIdentity)
+        let pdf = ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: thumbnails)
+        let document = try #require(PDFDocument(data: pdf))
+        let text = try #require(document.string)
+        #expect(text.contains("VERIFICATION SUCCESSFUL"))
+        #expect(text.contains(summary.jobID.uuidString))
+        for token in versionTokens + companyTokens { #expect(text.contains(token)) }
+        for row in rows {
+            let matches = document.findString(row.fileName, withOptions: [])
+            #expect(matches.count == 1)
+            let match = try #require(matches.first)
+            let page = try #require(match.pages.first)
+            #expect(match.bounds(for: page).minY >= layout.bottomMargin)
+            #expect(match.bounds(for: page).maxY <= ReportPDFRenderer.pageHeight - ReportPDFRenderer.verticalMargin)
+        }
+        for pageIndex in 0..<document.pageCount where !oversizedIdentity {
+            let page = try #require(document.page(at: pageIndex))
+            #expect(page.string?.contains("clip-") == true, "No report page should contain only identity metadata")
+            #expect(page.string?.contains(summary.jobID.uuidString) == true)
+            for token in [summary.jobID.uuidString] + versionTokens + companyTokens {
+                #expect(page.string?.contains(token) == true)
+                let match = try #require(document.findString(token, withOptions: []).first { $0.pages.contains(page) })
+                let bounds = match.bounds(for: page)
+                #expect(bounds.minX >= ReportPDFRenderer.horizontalMargin - 1)
+                #expect(bounds.maxX <= ReportPDFRenderer.pageWidth - ReportPDFRenderer.horizontalMargin + 1)
+                #expect(bounds.minY >= 13)
+                #expect(bounds.maxY <= layout.bottomMargin - 5)
+            }
+        }
+        if !longIdentity { #expect(document.pageCount == (clipCount == 20 ? 2 : 14)) }
+        if let directory = ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] {
+            let folder = URL(fileURLWithPath: directory)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try pdf.write(to: folder.appendingPathComponent("footer-\(clipCount)-\(longIdentity ? "long" : "normal").pdf"))
         }
     }
 

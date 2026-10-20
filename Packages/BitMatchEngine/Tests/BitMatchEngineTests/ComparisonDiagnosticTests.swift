@@ -3,8 +3,8 @@ import XCTest
 @testable import BitMatchEngine
 
 final class ComparisonDiagnosticTests: XCTestCase {
-    private func events(_ run: UUID) throws -> [[String: Any]] {
-        let data = try TransferDiagnosticStore.shared.exportData()
+    private func events(_ run: UUID, store: TransferDiagnosticStore) throws -> [[String: Any]] {
+        let data = try store.exportData()
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
         return try XCTUnwrap(root["events"] as? [[String: Any]]).filter { $0["run"] as? String == run.uuidString }
     }
@@ -20,12 +20,15 @@ final class ComparisonDiagnosticTests: XCTestCase {
         try Data().write(to: left.appendingPathComponent("missing"))
         try Data().write(to: right.appendingPathComponent("extra"))
         let run = UUID()
-        let result = try await TransferDiagnostics.$runID.withValue(run) {
-            try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
-                .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        let store = TransferDiagnosticStore(directory: root.appendingPathComponent("Diagnostics"))
+        let result = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+            try await TransferDiagnostics.$runID.withValue(run) {
+                try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+                    .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+            }
         }
         XCTAssertEqual(result.mismatchedCount, 1)
-        let records = try events(run)
+        let records = try events(run, store: store)
         XCTAssertEqual(records.first?["event"] as? String, "compareStarted")
         XCTAssertEqual(records.last?["comparisonOutcome"] as? String, "completed")
         XCTAssertEqual(records.last?["onlyInSourceCount"] as? Int, 1)
@@ -36,14 +39,19 @@ final class ComparisonDiagnosticTests: XCTestCase {
     func testReadFailureRetainsPhaseAndDoesNotLogSuccessfulCompletion() async throws {
         let run = UUID()
         let marker = "PRIVATE_PATH_\(UUID())"
+        let diagnosticRoot = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-comparison-diagnostics-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: diagnosticRoot) }
+        let store = TransferDiagnosticStore(directory: diagnosticRoot)
         do {
-            _ = try await TransferDiagnostics.$runID.withValue(run) {
-                try await FolderComparer(fileAccess: FailingListing(), checksum: ChecksumEngine.shared)
-                    .compare(left: URL(fileURLWithPath: "/\(marker)"), right: URL(fileURLWithPath: "/backup"), verificationMode: .standard, progress: { _ in })
+            _ = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+                try await TransferDiagnostics.$runID.withValue(run) {
+                    try await FolderComparer(fileAccess: FailingListing(), checksum: ChecksumEngine.shared)
+                        .compare(left: URL(fileURLWithPath: "/\(marker)"), right: URL(fileURLWithPath: "/backup"), verificationMode: .standard, progress: { _ in })
+                }
             }
             XCTFail("Expected unreadable source")
         } catch { XCTAssertEqual((error as NSError).code, 13) }
-        let records = try events(run)
+        let records = try events(run, store: store)
         XCTAssertEqual(records.first { $0["event"] as? String == "comparePhase" }?["comparisonPhase"] as? String, "listingSource")
         XCTAssertEqual(records.last?["comparisonOutcome"] as? String, "failed")
         XCTAssertNil(records.last?["matchingCount"])
@@ -51,15 +59,20 @@ final class ComparisonDiagnosticTests: XCTestCase {
     }
     func testCancellationStillThrowsAndHasNoCompletedSummary() async throws {
         let run = UUID()
+        let diagnosticRoot = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-comparison-diagnostics-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: diagnosticRoot) }
+        let store = TransferDiagnosticStore(directory: diagnosticRoot)
         let task = Task {
-            try await TransferDiagnostics.$runID.withValue(run) {
-                try await FolderComparer(fileAccess: CancelledListing(), checksum: ChecksumEngine.shared)
-                    .compare(left: URL(fileURLWithPath: "/source"), right: URL(fileURLWithPath: "/backup"), verificationMode: .standard, progress: { _ in })
+            try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+                try await TransferDiagnostics.$runID.withValue(run) {
+                    try await FolderComparer(fileAccess: CancelledListing(), checksum: ChecksumEngine.shared)
+                        .compare(left: URL(fileURLWithPath: "/source"), right: URL(fileURLWithPath: "/backup"), verificationMode: .standard, progress: { _ in })
+                }
             }
         }
         do { _ = try await task.value; XCTFail("Cancellation must propagate") }
         catch { XCTAssertTrue(error is CancellationError) }
-        XCTAssertEqual(try events(run).last?["comparisonOutcome"] as? String, "cancelled")
+        XCTAssertEqual(try events(run, store: store).last?["comparisonOutcome"] as? String, "cancelled")
     }
 }
 private final class FailingListing: FakeFileAccess, @unchecked Sendable {

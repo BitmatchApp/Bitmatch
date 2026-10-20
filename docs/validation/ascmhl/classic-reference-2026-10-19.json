@@ -1,0 +1,27 @@
+{
+  "reference_commit": "34f06f22ae965d12e49590adc301373d5ce611ff",
+  "scope": "classic reference inventory/boundary corpus; no BitMatch classic support, hardware or history writes",
+  "passed": 20,
+  "checks": [
+    "pinned unmodified classic reference source",
+    "reference MIT notice retained exactly",
+    "pinned primary schema: bitmatch-oct19-classic-MediaHashList_v1_1.xsd",
+    "pinned primary schema: bitmatch-oct19-classic-xmldsig-core-schema.xsd",
+    "original-format v1.1 inventory XSD",
+    "exact original-media inventory coverage",
+    "Python MD5 and size: support file.txt",
+    "Python SHA1 and size: support file.txt",
+    "Python MD5 and size: Camera A/clip & cafe.txt",
+    "Python SHA1 and size: Camera A/clip & cafe.txt",
+    "Python MD5 and size: sidecar.xml",
+    "Python SHA1 and size: sidecar.xml",
+    "primary schema rejects malformed digest",
+    "primary schema accepts unsupported-in-BitMatch sha1-only variant",
+    "primary schema accepts unsupported-in-BitMatch size-only variant",
+    "classic reference original: exit 0",
+    "classic reference changed-same-size: exit 16",
+    "classic reference missing: exit 3",
+    "classic reference truncated: exit 11",
+    "permanent corpus unchanged"
+  ]
+}

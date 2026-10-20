@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Check no longer reports preserved Finder metadata as missing when it is listed in the saved checksums.
+- Mac: Corrected physical-drive checks for selected subfolders, so two folders on one drive count as one backup.
+- Cleaned up long names and page breaks in PDFs; metadata companions no longer inflate the clip-preview count. Job details now share the page footer instead of creating a nearly empty last page.
+- Long Master Report details and notes now continue onto another page instead of being cut off.
+- Reduced extra work when tracking transfers with lots of files.
+- Mac: Advanced points out a selected backup using a reported USB 2 connection.
+- Diagnostics exports reject oversized or unreadable local records, keep the usable events, and say when the record is incomplete.
+- Destination progress no longer resets to Waiting while ASC MHL and transfer reports are being saved. Processed counts and measured progress stay visible without implying the transfer is complete.
+- Mac Settings now scroll when a pane is taller than the window, keeping the first and last controls reachable.
+- Importing transfer settings on Mac uses a compact review sheet, with longer change lists scrollable above Cancel and Apply.
+- Move reusable transfer settings between Mac, iPad and iPhone from Settings. Imports show the changes before Apply and leave backup locations, camera labels, private report details and saved transfers alone.
 - Older History entries without a saved selected-file plan now stay visible but do not claim the whole card is safe to erase, even if their saved rows say verified. They also no longer trigger the “Backed up before…” hint. Quick entries without that plan show Needs attention instead of a clean size-only copy. History exports keep the original message and add the saved safety verdict.
 - If a new transfer cannot save its selected-file plan, BitMatch stops before creating a completion report or marking a project card safe. The final record keeps the source unsafe. Finish, queue, menu bar, Dock and notifications follow the saved verdict. A later History-save failure also shows an interruption; any separately saved report or project evidence remains available for review.
 - Mac: The menu bar shows the current transfer and its destinations, or the most recent result when idle. The idle icon is a small copy-and-check mark. Closing the main window during a transfer hides it while the work continues; Open BitMatch brings the same window back. Quit still asks before stopping active work.

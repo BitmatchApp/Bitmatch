@@ -2,7 +2,7 @@
 import Foundation
 import Testing
 @testable import BitMatch
-import BitMatchEngine
+@testable import BitMatchEngine
 
 struct SharedCompareFlowTests {
 
@@ -512,6 +512,10 @@ struct SharedCompareFlowTests {
     /// `lastCompareEnd = .cancelled` from the `CancellationError` branch.
     @Test
     func testCancelledCompareRecordsCancelledOutcome() async throws {
+        let diagnosticRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-cancel-compare-diagnostics-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: diagnosticRoot) }
+        let diagnosticStore = TransferDiagnosticStore(directory: diagnosticRoot)
         let left = URL(fileURLWithPath: "/cancel-outcome/left")
         let right = URL(fileURLWithPath: "/cancel-outcome/right")
         let checksum = CancellingChecksumService()
@@ -524,21 +528,23 @@ struct SharedCompareFlowTests {
         }
         checksum.onVerify = {
             await MainActor.run {
-                let run = coordinator.stateService.currentOperationId
-                coordinator.cancelOperation()
-                // Plant: log only activeStartID in cancelOperation. Compare has no
-                // copy start ID, so its user-cancel event would lose this run.
-                do {
-                    let data = try TransferDiagnosticStore.shared.exportData()
-                    let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-                    let events = try #require(root["events"] as? [[String: Any]])
-                    let id = try #require(run)
-                    #expect(events.contains {
-                        $0["run"] as? String == id.uuidString
-                            && $0["event"] as? String == "cancelOrigin"
-                            && $0["origin"] as? String == "user"
-                    })
-                } catch { Issue.record(error) }
+                TransferDiagnostics.$recordingStoreOverride.withValue(diagnosticStore) {
+                    let run = coordinator.stateService.currentOperationId
+                    coordinator.cancelOperation()
+                    // Plant: log only activeStartID in cancelOperation. Compare has no
+                    // copy start ID, so its user-cancel event would lose this run.
+                    do {
+                        let data = try diagnosticStore.exportData()
+                        let root = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+                        let events = try #require(root["events"] as? [[String: Any]])
+                        let id = try #require(run)
+                        #expect(events.contains {
+                            $0["run"] as? String == id.uuidString
+                                && $0["event"] as? String == "cancelOrigin"
+                                && $0["origin"] as? String == "user"
+                        })
+                    } catch { Issue.record(error) }
+                }
             }
         }
         await MainActor.run {

@@ -69,6 +69,20 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     }
 }
 
+/// Row transitions used by completion heroes and automatic eject.
+/// Progress and phase text still render, without rechecking those actions.
+struct QueueRowTransitionState: Equatable, Sendable {
+    let id: UUID
+    let isRunning: Bool
+    let showsSafeHero: Bool
+
+    init(_ row: QueueSessionRow) {
+        id = row.id
+        isRunning = row.isRunning
+        showsSafeHero = row.showsSafeHero
+    }
+}
+
 struct QueueTally: Equatable, Sendable {
     var safeToErase = 0
     var copiedNotVerified = 0
@@ -444,9 +458,15 @@ enum QueueHeroPolicy {
         previousRows: [QueueSessionRow],
         currentRows: [QueueSessionRow]
     ) -> Bool {
-        guard row.showsSafeHero,
-              previousRows.first(where: { $0.id == row.id })?.showsSafeHero != true else { return false }
-        return !currentRows.contains { $0.id != row.id && $0.isRunning }
+        shouldExpand(
+            row: row,
+            wasSafe: previousRows.first(where: { $0.id == row.id })?.showsSafeHero == true,
+            otherCardIsRunning: currentRows.contains { $0.id != row.id && $0.isRunning }
+        )
+    }
+
+    static func shouldExpand(row: QueueSessionRow, wasSafe: Bool, otherCardIsRunning: Bool) -> Bool {
+        row.showsSafeHero && !wasSafe && !otherCardIsRunning
     }
 }
 

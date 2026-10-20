@@ -368,6 +368,82 @@ struct QueueSessionPresentationTests {
         #expect(!QueueHeroPolicy.shouldExpand(row: safeRow, previousRows: [], currentRows: runningRows))
     }
 
+    @Test func transitionObservationIgnoresProgressAndActivePhaseChanges() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let running = try fixture.record(name: "A001", state: .running, at: 1)
+        let stages: [ProgressStage] = [.preparing, .copying, .copying, .verifying, .generating, .completed]
+        let rows = try stages.enumerated().map { index, stage in
+            let progress = OperationProgress(overallProgress: Double(index) / 6,
+                currentFile: "clip-\(index).mov", filesProcessed: index, totalFiles: 6,
+                currentStage: stage, speed: Double(index + 1))
+            return try #require(QueueSessionPresentation.make(
+                records: [running], sessionIDs: [running.id], progress: progress, mountedSourceIDs: []
+            ).rows.first)
+        }
+        let first = try #require(rows.first)
+        #expect(rows.dropFirst().allSatisfy { $0 != first })
+        #expect(rows.allSatisfy { $0.isRunning && !$0.showsSafeHero })
+        #expect(rows.map(QueueRowTransitionState.init).allSatisfy { $0 == QueueRowTransitionState(first) })
+    }
+
+    @Test func transitionObservationKeepsIdentityOrderRunningAndSafeVerdicts() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let waiting = try fixture.record(name: "A001", state: .queued, at: 1)
+        let safe = try fixture.record(name: "A002", state: .completed, outcome: .verified, at: 2)
+        func rows(_ records: [LocalTransferRecord]) -> [QueueSessionRow] {
+            QueueSessionPresentation.make(records: records, sessionIDs: Set(records.map(\.id)),
+                progress: nil, mountedSourceIDs: [safe.id]).rows
+        }
+        let initial = rows([waiting, safe]).map(QueueRowTransitionState.init)
+        #expect(initial != Array(initial.reversed()))
+        #expect(initial != rows([waiting]).map(QueueRowTransitionState.init))
+        #expect(initial != rows([waiting, safe, try fixture.record(name: "A003", state: .queued, at: 3)])
+            .map(QueueRowTransitionState.init))
+        var running = waiting
+        running.state = .running
+        #expect(rows([waiting]).map(QueueRowTransitionState.init) != rows([running]).map(QueueRowTransitionState.init))
+        var noVerdict = safe
+        noVerdict.state = .issues
+        noVerdict.results = []
+        #expect(rows([noVerdict]).map(QueueRowTransitionState.init) != rows([safe]).map(QueueRowTransitionState.init))
+        var retry = safe
+        retry.state = .running
+        #expect(rows([safe]).map(QueueRowTransitionState.init) != rows([retry]).map(QueueRowTransitionState.init))
+    }
+
+    @Test func projectedHeroInputsPreserveSafetyAndPreviousRowPolicy() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let safe = try fixture.record(name: "A001", state: .completed, outcome: .verified, at: 1)
+        let running = try fixture.record(name: "A002", state: .running, at: 2)
+        let failed = try fixture.record(name: "A003", state: .failed, outcome: .failed, at: 3)
+        let quick = try fixture.record(name: "A004", state: .issues, mode: .quick,
+            outcome: .copiedUnverified, quickOnlyUnverified: true, at: 4)
+        let excludedOnly = try fixture.record(name: "A005", state: .issues, outcome: .excludedAppleDouble, at: 5)
+        let records = [safe, running, failed, quick, excludedOnly]
+        let rows = QueueSessionPresentation.make(records: records, sessionIDs: Set(records.map(\.id)),
+            progress: nil, mountedSourceIDs: Set(records.map(\.id))).rows
+        let safeRow = try #require(rows.first { $0.id == safe.id })
+        let runningRow = try #require(rows.first { $0.id == running.id })
+        #expect(rows.filter { [failed.id, quick.id, excludedOnly.id].contains($0.id) }.allSatisfy { !$0.showsSafeHero })
+        for row in rows {
+            for previous in [[], [row], [safeRow]] {
+                for current in [[row], [row, runningRow], [row, safeRow]] {
+                    let oldSemantics = row.showsSafeHero
+                        && previous.first(where: { $0.id == row.id })?.showsSafeHero != true
+                        && !current.contains { $0.id != row.id && $0.isRunning }
+                    let prior = previous.map(QueueRowTransitionState.init)
+                    #expect(QueueHeroPolicy.shouldExpand(row: row, previousRows: previous, currentRows: current) == oldSemantics)
+                    #expect(QueueHeroPolicy.shouldExpand(row: row,
+                        wasSafe: prior.first(where: { $0.id == row.id })?.showsSafeHero == true,
+                        otherCardIsRunning: current.contains { $0.id != row.id && $0.isRunning }) == oldSemantics)
+                }
+            }
+        }
+    }
+
     @Test func accessibilityStatusCombinesCardStateCauseAndSafetyWarning() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }

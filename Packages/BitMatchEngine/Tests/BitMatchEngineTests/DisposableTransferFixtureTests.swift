@@ -64,4 +64,24 @@ struct DisposableTransferFixtureTests {
         try Data().write(to: marker)
         fixture.cleanup()
     }
+    @Test func explicitBaseRequiresOwnershipAndKeepsParentContents() throws {
+        let fm = FileManager.default
+        let base = fm.temporaryDirectory.appendingPathComponent("bitmatch-fixture-base-\(UUID())")
+        try fm.createDirectory(at: base, withIntermediateDirectories: false)
+        defer { try? fm.removeItem(at: base) }
+        #expect(throws: (any Error).self) {
+            try DisposableTransferFixture(seed: 7, fileCount: 1, bytesPerFile: 16, baseDirectory: base)
+        }
+        let marker = base.appendingPathComponent(".bitmatch-disposable-fixture")
+        try Data().write(to: marker)
+        let sentinel = base.appendingPathComponent("unrelated.txt")
+        try Data("keep".utf8).write(to: sentinel)
+        let fixture = try DisposableTransferFixture(seed: 7, fileCount: 1, bytesPerFile: 16, baseDirectory: base)
+        #expect(fixture.source.deletingLastPathComponent().deletingLastPathComponent().path == base.path)
+        fixture.cleanup()
+        #expect(!fm.fileExists(atPath: fixture.source.path))
+        #expect(try Data(contentsOf: sentinel) == Data("keep".utf8))
+        #expect(fm.fileExists(atPath: marker.path))
+    }
+
 }

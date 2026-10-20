@@ -111,6 +111,7 @@ struct VerificationMemoryTests {
     @Test
     func verifyBreadcrumbsHaveConsistentRunAndTerminalOutcomes() async throws {
         try await FileOperationsTestLock.shared.run {
+            let diagnosticStore = TransferDiagnostics.recordingStore
             for pipelined in [true, false] {
                 for outcome in ["matched", "failed", "mismatched", "cancelled"] {
                     let cancelled = outcome == "cancelled"
@@ -142,7 +143,7 @@ struct VerificationMemoryTests {
                         #expect(!cancelled)
                         #expect(operation.results.allSatisfy { $0.success == (outcome == "matched") })
                     } catch is CancellationError { #expect(cancelled) }
-                    let object = try #require(JSONSerialization.jsonObject(with: TransferDiagnosticStore.shared.exportData()) as? [String: Any])
+                    let object = try #require(JSONSerialization.jsonObject(with: diagnosticStore.exportData()) as? [String: Any])
                     let events = try #require(object["events"] as? [[String: Any]]).filter { $0["run"] as? String == run.uuidString }
                     #expect(events.first { $0["event"] as? String == "verifyConfiguration" }?["verifyConcurrency"] as? Int == 1)
                     let verify = events.filter { ($0["event"] as? String)?.hasPrefix("verify") == true && $0["event"] as? String != "verifyConfiguration" }

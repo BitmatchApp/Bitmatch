@@ -177,6 +177,13 @@ final class SharedProjectFixture {
         self.coordinator = coordinator
     }
 
+    /// Workflow tests use distinct abstract disks; their temporary folders
+    /// are not independent physical backups. Real provider/grouping behavior
+    /// is checked separately, and callers can inject shared/unknown identities.
+    private struct DistinctFixtureDisks: PhysicalDiskIdentityProviding {
+        func physicalDiskIdentity(for url: URL) -> String? { "fixture-disk:" + url.standardizedFileURL.path }
+    }
+
     /// Waits for the source scan before preparing, so the coordinator's
     /// launch-time source events have all been delivered.
     static func make(
@@ -184,7 +191,7 @@ final class SharedProjectFixture {
         reportsStage: ProgressStage? = nil,
         corruptJournal: Bool = false,
         prepareCard: Bool = true,
-        physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider()
+        physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = DistinctFixtureDisks()
     ) async throws -> SharedProjectFixture {
         let folders = try CoordinatorFolders()
         if corruptJournal { try Data("corrupt history".utf8).write(to: folders.journalURL) }

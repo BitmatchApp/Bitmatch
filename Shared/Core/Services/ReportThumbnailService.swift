@@ -28,7 +28,12 @@ enum ReportThumbnailService {
         var output = ReportThumbnails()
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: .seconds(max(0, budget)))
-        let eligible = results.filter { $0.isVerifiedStatus && videoExtensions.contains(URL(fileURLWithPath: $0.path).pathExtension.lowercased()) }
+        let eligible = results.filter {
+            let url = URL(fileURLWithPath: $0.path)
+            // Reuse clip-only presentation rules. This does not exclude any
+            // file from copying, verification or the recorded transfer results.
+            return $0.isVerifiedStatus && videoExtensions.contains(url.pathExtension.lowercased()) && ClipIntegrityCheck.supports(url)
+        }
         output.requestedCount = Set(eligible.map(\.path)).count
         var seen: Set<String> = []
         var attempts = 0

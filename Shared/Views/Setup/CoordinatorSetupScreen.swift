@@ -129,6 +129,9 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
                 labelContent
                 Divider()
                 TransferDetailsSection(prefs: $coordinator.reportSettings)
+#if os(macOS)
+                DriveConnectionDetailsSection(destinations: coordinator.destinationURLs)
+#endif
             },
             projectEvidence: { projectEvidence }
         )
