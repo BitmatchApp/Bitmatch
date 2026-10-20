@@ -23,7 +23,7 @@ BITMATCH_UNICODE_HFS=1 swift test \
   --filter 'SourceFilenameAmbiguityTests|MountedUnicodeSourceTests'
 ```
 
-Without the opt-in, the image test skips. Unsupported setup fails rather than being counted as a passing mounted case. The fixture normally detaches only its identity-checked image and refuses recursive cleanup while any filesystem remains mounted beneath its owned root. Failed fixtures remain available. Native filesystem calls are not forcibly preempted.
+Without the opt-in, both image tests skip. Unsupported setup fails rather than being counted as a passing mounted case. The fixture normally detaches only its identity-checked image and refuses recursive cleanup while any filesystem remains mounted beneath its owned root. Failed fixtures remain available. Native filesystem calls are not forcibly preempted.
 
 Full engine gates passed separately in Debug and Release, with all environment-controlled stress, hardware and mounted-image cases disabled:
 
@@ -34,7 +34,13 @@ Full engine gates passed separately in Debug and Release, with all environment-c
 | Release | XCTest | 195 | 43 | 0 |
 | Release | Swift Testing | 217 | 6 | 0 |
 
-XCTest scheduled 238 methods in each configuration. Swift Testing reported 223 declarations in 40 suites, including its six explicit skips. The enabled nine-method focused run above supplies the real mounted HFS+ evidence; the ordinary full runs do not repeat it. Mac app tests and the shared iOS build are separate gates.
+XCTest scheduled 238 methods in each configuration. Swift Testing reported 223 declarations in 40 suites, including its six explicit skips. The enabled nine-method focused run above supplies the real mounted HFS+ evidence; the ordinary full runs do not repeat it.
+
+## Application gates
+
+The full Mac app suite passed 1,282 tests, with 23 skips and zero failures. The first run failed one assertion that expected the previous error message; after updating that assertion, the fresh full run passed. The original failed result remains retained. Both structured and raw runtime UI-warning checks were clear; compiler warnings are retained separately, without an all-warnings-free claim.
+
+Unsigned shared iOS-device and universal Mac Release builds passed. A local universal diagnostic archive also passed deep, strict signature verification using the unchanged signing configuration. It was not installed, exported, notarized or published. Before/after hashes bind all 444 Swift files to the tested code in `546c3d0d`; later validation-document commits do not change that code. These gates do not establish a physical mobile-device or final signed-UI walkthrough.
 
 A fresh x86_64-only Release bundle also passed the same nine explicitly selected XCTest methods under Rosetta: nine passed, zero skipped or failed. Both disposable HFS+ cases ran and normally cleaned their fixtures. Xcode's signed universal XCTest host loaded the translated bundle; no private unsigned test loader or signing credentials were needed. This is translated engine coverage on Apple Silicon, not a physical Intel Mac, older macOS runtime or application walkthrough.
 
