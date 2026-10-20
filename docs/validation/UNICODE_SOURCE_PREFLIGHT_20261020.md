@@ -36,6 +36,8 @@ Full engine gates passed separately in Debug and Release, with all environment-c
 
 XCTest scheduled 238 methods in each configuration. Swift Testing reported 223 declarations in 40 suites, including its six explicit skips. The enabled nine-method focused run above supplies the real mounted HFS+ evidence; the ordinary full runs do not repeat it. Mac app tests and the shared iOS build are separate gates.
 
+A fresh x86_64-only Release bundle also passed the same nine explicitly selected XCTest methods under Rosetta: nine passed, zero skipped or failed. Both disposable HFS+ cases ran and normally cleaned their fixtures. Xcode's signed universal XCTest host loaded the translated bundle; no private unsigned test loader or signing credentials were needed. This is translated engine coverage on Apple Silicon, not a physical Intel Mac, older macOS runtime or application walkthrough.
+
 ## Driver observations and limits
 
 A separate raw POSIX probe attempted 13 name pairs on each of APFS, case-sensitive APFS, journaled HFS+, case-sensitive journaled HFS+, exFAT and FAT32: **78 pair probes**, not 78 application transfers or XCTest methods. Receipt keys are filename bytes. OS-created AppleDouble entries are counted separately from principal files.
