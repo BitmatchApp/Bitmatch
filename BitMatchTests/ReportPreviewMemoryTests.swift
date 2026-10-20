@@ -40,7 +40,11 @@ final class ReportPreviewMemoryTests: XCTestCase {
             throw XCTSkip("Set BITMATCH_HIGH_RES_PREVIEW_MEMORY=1 for the guarded 20-clip 4K decoder probe")
         }
         let clipCount = Int(environment["BITMATCH_HIGH_RES_PREVIEW_CLIPS"] ?? "20") ?? -1
-        guard (20...ReportThumbnailService.maximumPreviews).contains(clipCount) else { throw PreviewProbeError.invalidFixture }
+        let roundCount = Int(environment["BITMATCH_HIGH_RES_PREVIEW_ROUNDS"] ?? "1") ?? -1
+        guard (20...ReportThumbnailService.maximumPreviews).contains(clipCount), (1...10).contains(roundCount),
+              let codec = PreviewProbeCodec(rawValue: environment["BITMATCH_HIGH_RES_PREVIEW_CODEC"] ?? "h264") else {
+            throw PreviewProbeError.invalidFixture
+        }
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("bitmatch-4k-preview-\(UUID())")
         let artifactsBase = URL(fileURLWithPath: environment["BITMATCH_HIGH_RES_PREVIEW_ARTIFACTS"] ?? "/private/tmp")
@@ -51,7 +55,7 @@ final class ReportPreviewMemoryTests: XCTestCase {
         let source = root.appendingPathComponent("Card")
         let backup = root.appendingPathComponent("Backup")
         for directory in [source, backup] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
-        let memory = PreviewProbeMemory(clipCount: clipCount)
+        let memory = PreviewProbeMemory(clipCount: clipCount, codec: codec, roundCount: roundCount)
         _ = memory.sample()
         let pipeline = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
         let worker = Task { @MainActor in
@@ -71,16 +75,17 @@ final class ReportPreviewMemoryTests: XCTestCase {
             monitor.cancel(); await monitor.value
             // The monitor may have latched a failure after the prior check.
             try memory.requireSafe()
+            guard memory.snapshot().rounds.count == roundCount else { throw PreviewProbeError.invalidFixture }
             try save(memory, outcome: "passed", to: artifacts)
             try fm.removeItem(at: root)
-            print("PREVIEW_MEMORY_RESULT clips=\(clipCount) width=3840 height=2160 outcome=passed artifacts=\(artifacts.path)")
+            print("PREVIEW_MEMORY_RESULT clips=\(clipCount) codec=\(codec.rawValue) rounds=\(roundCount) width=3840 height=2160 outcome=passed artifacts=\(artifacts.path)")
         } catch {
             worker.cancel(); pipeline.cancelOperation()
             // run() awaits its owned seed task before escaping; collection
             // cancellation requests native AVFoundation cancellation as usual.
             monitor.cancel(); await monitor.value
             _ = memory.sample()
-            try? save(memory, outcome: memory.snapshot().guardTriggered ? "guarded" : "failed", to: artifacts)
+            try? save(memory, outcome: memory.snapshot().guardTriggered ? "guarded" : (error is XCTSkip ? "unsupported" : "failed"), to: artifacts)
             print("PREVIEW_MEMORY_FAILURE retainedFixture=\(root.path) artifacts=\(artifacts.path)")
             throw error
         }
@@ -91,8 +96,11 @@ final class ReportPreviewMemoryTests: XCTestCase {
         memory.mark("fixture")
         try memory.requireSafe()
         let clipCount = memory.snapshot().sourceClips
-        let seed = Task.detached { try await Self.seed(source, clipCount: clipCount) }
-        let original = try await withTaskCancellationHandler { try await seed.value } onCancel: { seed.cancel() }
+        let codec = try XCTUnwrap(PreviewProbeCodec(rawValue: memory.snapshot().requestedCodec))
+        let seed = Task.detached { try await Self.seed(source, clipCount: clipCount, codec: codec) }
+        let seeded = try await withTaskCancellationHandler { try await seed.value } onCancel: { seed.cancel() }
+        let original = seeded.manifest
+        memory.state.withLock { $0.actualFourCC = seeded.fourCC }
         try Task.checkCancellation()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         try encoder.encode(original).write(to: artifacts.appendingPathComponent("source-sha256.json"), options: .atomic)
@@ -105,7 +113,44 @@ final class ReportPreviewMemoryTests: XCTestCase {
         guard rows.count == clipCount, rows.allSatisfy(\.isVerifiedStatus) else { throw PreviewProbeError.incompleteVerification }
         memory.state.withLock { $0.verifiedRows = rows.count }
         try Task.checkCancellation()
-        memory.mark("decoding")
+        let roundCount = memory.snapshot().roundCount
+        for round in 0..<roundCount {
+            try memory.requireSafe()
+            let phase: (String) -> String = { roundCount == 1 ? $0 : String(format: "round-%02d.", round + 1) + $0 }
+            let roundArtifacts = roundCount == 1 ? artifacts : artifacts.appendingPathComponent(String(format: "round-%02d", round + 1))
+            if roundCount > 1 { try FileManager.default.createDirectory(at: roundArtifacts, withIntermediateDirectories: false) }
+            try await collectAndRender(source: source, backup: backup, artifacts: roundArtifacts, original: original,
+                operation: operation, rows: rows, memory: memory, phase: phase)
+            memory.mark(phase("sourceAndDestinationChecks"))
+            let checked = Task.detached {
+                let after = try Self.hashes(source)
+                let copied = try Self.hashes(backup.appendingPathComponent(source.lastPathComponent), ignoreTransferStatus: true)
+                guard after == original, copied == original else { throw PreviewProbeError.changedMedia }
+            }
+            try await withTaskCancellationHandler { try await checked.value } onCancel: { checked.cancel() }
+            try Task.checkCancellation()
+            if roundCount > 1 {
+                memory.mark(phase("settling"))
+                try await Task.sleep(for: .seconds(2))
+            }
+            try memory.requireSafe()
+            let measured = memory.snapshot()
+            memory.state.withLock { state in
+                state.rounds.append(.init(number: round + 1, settledMiB: measured.afterMiB,
+                    decoderPeakMiB: measured.phases[phase("decoding")]?.peakMiB ?? 0,
+                    pdfPeakMiB: measured.phases[phase("pdf")]?.peakMiB ?? 0,
+                    previews: measured.collected, pdfPages: measured.pdfPages,
+                    sourceHashesAfter: original.count, destinationHashesAfter: original.count))
+            }
+        }
+    }
+
+    /// All per-report images/native PDF objects leave scope before settling.
+    private func collectAndRender(source: URL, backup: URL, artifacts: URL, original: [String: String],
+                                  operation: FileOperation, rows: [ResultRow], memory: PreviewProbeMemory,
+                                  phase: (String) -> String) async throws {
+        let clipCount = original.count
+        memory.mark(phase("decoding"))
         try memory.requireSafe()
         let started = ProcessInfo.processInfo.systemUptime
         let thumbnails = try await ReportThumbnailService.collect(results: rows, enabled: true)
@@ -118,7 +163,7 @@ final class ReportPreviewMemoryTests: XCTestCase {
             try data.write(to: artifacts.appendingPathComponent(String(format: "preview-%02d.jpg", index)))
             try Self.validateJPEG(data)
         }
-        memory.mark("pdf")
+        memory.mark(phase("pdf"))
         try memory.requireSafe()
         let summary = ReportSummary(jobID: UUID(), started: operation.startTime, finished: Date(), mode: .copyAndVerify,
             source: source.path, destinations: [backup.path], totalFiles: rows.count, matched: rows.count, issues: 0,
@@ -127,24 +172,19 @@ final class ReportPreviewMemoryTests: XCTestCase {
             totalBytesProcessed: rows.reduce(0) { $0 + $1.size },
             averageSpeed: 0, clientLogoData: nil, companyLogoData: nil, photographyJob: nil,
             operatorName: "BitMatch validation", notes: "Synthetic 4K preview memory probe", safetyState: .safeToErase)
-        let pdf = ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: thumbnails)
-        // Preserve the generated bytes even if validation or the guard fails.
-        try pdf.write(to: artifacts.appendingPathComponent("verified-4k-previews.pdf"))
-        try memory.requireSafe()
-        guard let document = PDFDocument(data: pdf), let text = document.string,
-              text.contains("Clip previews: \(clipCount)/\(clipCount)"), text.contains("VERIFICATION SUCCESSFUL") else { throw PreviewProbeError.invalidPDF }
-        for name in original.keys { guard text.contains(name) else { throw PreviewProbeError.invalidPDF } }
-        let embedded = try Self.embeddedPreviews(pdf)
-        guard embedded > 0 else { throw PreviewProbeError.invalidPDF }
-        memory.state.withLock { $0.pdfPages = document.pageCount; $0.embeddedImageResources = embedded }
-        memory.mark("sourceAndDestinationChecks")
-        let checked = Task.detached {
-            let after = try Self.hashes(source)
-            let copied = try Self.hashes(backup.appendingPathComponent(source.lastPathComponent), ignoreTransferStatus: true)
-            guard after == original, copied == original else { throw PreviewProbeError.changedMedia }
+        let (pageCount, embedded) = try autoreleasepool { () throws -> (Int, Int) in
+            let pdf = ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: thumbnails)
+            // Preserve the generated bytes even if validation or the guard fails.
+            try pdf.write(to: artifacts.appendingPathComponent("verified-4k-previews.pdf"))
+            try memory.requireSafe()
+            guard let document = PDFDocument(data: pdf), let text = document.string,
+                  text.contains("Clip previews: \(clipCount)/\(clipCount)"), text.contains("VERIFICATION SUCCESSFUL") else { throw PreviewProbeError.invalidPDF }
+            for name in original.keys { guard text.contains(name) else { throw PreviewProbeError.invalidPDF } }
+            let embedded = try Self.embeddedPreviews(pdf)
+            guard embedded > 0 else { throw PreviewProbeError.invalidPDF }
+            return (document.pageCount, embedded)
         }
-        try await withTaskCancellationHandler { try await checked.value } onCancel: { checked.cancel() }
-        try Task.checkCancellation()
+        memory.state.withLock { $0.pdfPages = pageCount; $0.embeddedImageResources = embedded }
     }
 
     private func save(_ memory: PreviewProbeMemory, outcome: String, to artifacts: URL) throws {
@@ -153,14 +193,22 @@ final class ReportPreviewMemoryTests: XCTestCase {
         try encoder.encode(snapshot).write(to: artifacts.appendingPathComponent("memory.json"), options: .atomic)
     }
 
-    nonisolated private static func seed(_ source: URL, clipCount: Int) async throws -> [String: String] {
+    nonisolated private static func seed(_ source: URL, clipCount: Int, codec: PreviewProbeCodec) async throws -> PreviewProbeSeed {
         let first = source.appendingPathComponent("clip-00.mov")
         let writer = try AVAssetWriter(outputURL: first, fileType: .mov)
         defer { if writer.status != .completed { writer.cancelWriting() } }
-        let input = AVAssetWriterInput(mediaType: .video, outputSettings: [AVVideoCodecKey: AVVideoCodecType.h264,
-            AVVideoWidthKey: 3_840, AVVideoHeightKey: 2_160,
-            AVVideoCompressionPropertiesKey: [AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
-                AVVideoAverageBitRateKey: 2_000_000, AVVideoAllowFrameReorderingKey: false]])
+        var settings: [String: Any] = [AVVideoCodecKey: codec.videoType, AVVideoWidthKey: 3_840, AVVideoHeightKey: 2_160]
+        if codec == .h264 {
+            settings[AVVideoCompressionPropertiesKey] = [AVVideoProfileLevelKey: AVVideoProfileLevelH264HighAutoLevel,
+                AVVideoAverageBitRateKey: 2_000_000, AVVideoAllowFrameReorderingKey: false]
+        } else if codec == .hevc {
+            settings[AVVideoCompressionPropertiesKey] = [AVVideoAverageBitRateKey: 2_000_000, AVVideoAllowFrameReorderingKey: false]
+        }
+        guard writer.canApply(outputSettings: settings, forMediaType: .video) else {
+            throw XCTSkip("Requested 4K \(codec.rawValue) encoder is unsupported; no fallback")
+        }
+        let input = AVAssetWriterInput(mediaType: .video, outputSettings: settings)
+        guard writer.canAdd(input) else { throw XCTSkip("Cannot add requested \(codec.rawValue) encoder; no fallback") }
         let adaptor = AVAssetWriterInputPixelBufferAdaptor(assetWriterInput: input,
             sourcePixelBufferAttributes: [kCVPixelBufferPixelFormatTypeKey as String: kCVPixelFormatType_32ARGB])
         writer.add(input)
@@ -199,11 +247,17 @@ final class ReportPreviewMemoryTests: XCTestCase {
         guard let track = tracks.first, try await track.load(.naturalSize) == CGSize(width: 3_840, height: 2_160) else {
             throw PreviewProbeError.invalidFixture
         }
+        let descriptions = try await track.load(.formatDescriptions)
+        guard let description = descriptions.first else { throw PreviewProbeError.invalidFixture }
+        let type = CMFormatDescriptionGetMediaSubType(description)
+        let fourCC = String(bytes: [UInt8(truncatingIfNeeded: type >> 24), UInt8(truncatingIfNeeded: type >> 16),
+            UInt8(truncatingIfNeeded: type >> 8), UInt8(truncatingIfNeeded: type)], encoding: .ascii) ?? ""
+        guard codec.fourCCs.contains(fourCC) else { throw PreviewProbeError.invalidFixture }
         for index in 1..<clipCount {
             try Task.checkCancellation()
             try FileManager.default.copyItem(at: first, to: source.appendingPathComponent(String(format: "clip-%02d.mov", index)))
         }
-        return try hashes(source)
+        return PreviewProbeSeed(manifest: try hashes(source), fourCC: fourCC)
     }
 
     nonisolated private static func hashes(_ root: URL, ignoreTransferStatus: Bool = false) throws -> [String: String] {
@@ -279,6 +333,17 @@ final class ReportPreviewMemoryTests: XCTestCase {
     }
 }
 
+private enum PreviewProbeCodec: String, Sendable {
+    case h264, hevc, prores422
+    var videoType: AVVideoCodecType {
+        switch self { case .h264: .h264; case .hevc: .hevc; case .prores422: .proRes422 }
+    }
+    var fourCCs: Set<String> {
+        switch self { case .h264: ["avc1"]; case .hevc: ["hvc1", "hev1"]; case .prores422: ["apcn"] }
+    }
+}
+private struct PreviewProbeSeed: Sendable { let manifest: [String: String]; let fourCC: String }
+
 private final class PreviewProbeImages { var count = 0; var invalid = false }
 private enum PreviewProbeError: Error {
     case invalidFixture, incompleteVerification, incompletePreviews, invalidPreview, invalidPDF
@@ -286,6 +351,10 @@ private enum PreviewProbeError: Error {
 }
 private final class PreviewProbeMemory: Sendable {
     struct Phase: Encodable, Sendable { var initialMiB: Int; var peakMiB: Int; var lastMiB: Int }
+    struct Round: Encodable, Sendable {
+        let number: Int; let settledMiB: Int; let decoderPeakMiB: Int; let pdfPeakMiB: Int
+        let previews: Int; let pdfPages: Int; let sourceHashesAfter: Int; let destinationHashesAfter: Int
+    }
     struct State: Encodable, Sendable {
         var outcome = "running"
         var phase = "initial"
@@ -296,13 +365,17 @@ private final class PreviewProbeMemory: Sendable {
         var pdfPages = 0; var embeddedImageResources = 0
         let guardMiB = 1_024
         let sourceWidth = 3_840; let sourceHeight = 2_160; let sourceClips: Int
+        let requestedCodec: String; let roundCount: Int
+        var actualFourCC = ""; var rounds: [Round] = []
         let maximumPreviews = ReportThumbnailService.maximumPreviews
         let collectionBudgetSeconds = ReportThumbnailService.maximumSeconds
         let perClipSeconds = ReportThumbnailService.perClipSeconds
-        let scope = "Synthetic host-only 4K H264 decoding/report probe. Sampled process physical footprint; not a reproduction or proof of issue #23. Native calls are not forcibly interrupted."
+        let scope = "Synthetic host-only 4K explicit-codec decoding/report probe. Sampled process physical footprint; not a reproduction or proof of issue #23. Native calls are not forcibly interrupted."
     }
     let state: Mutex<State>
-    init(clipCount: Int = 20) { state = Mutex(State(sourceClips: clipCount)) }
+    init(clipCount: Int = 20, codec: PreviewProbeCodec = .h264, roundCount: Int = 1) {
+        state = Mutex(State(sourceClips: clipCount, requestedCodec: codec.rawValue, roundCount: roundCount))
+    }
     func snapshot() -> State { state.withLock { $0 } }
     func requireSafe() throws {
         if sample() { throw PreviewProbeError.memoryGuard }
