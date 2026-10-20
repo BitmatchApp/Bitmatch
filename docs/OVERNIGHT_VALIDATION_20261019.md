@@ -58,14 +58,14 @@ Before that run, the benchmark harness was corrected so each FileHandle read and
 
 ## App, engine and simulator gates
 
-These are the latest completed full gates before the final benchmark-harness and high-resolution-probe additions. Logical test counts and parameterized case counts are kept separate.
+The engine gates were rerun after the buffer-harness additions at `4106a48a`; the Mac and mobile rows precede the new high-resolution probe and final PDF layout follow-up. Logical test counts and parameterized case counts are kept separate.
 
 | Gate | Completed result |
 | --- | --- |
-| Engine Debug, XCTest | 220 scheduled: 183 passed, 37 opt-in/platform skips, zero failures |
-| Engine Release, XCTest | 220 scheduled: 183 passed, 37 opt-in/platform skips, zero failures |
-| Engine Debug, Swift Testing | 219 tests in 39 suites passed |
-| Engine Release, Swift Testing | 219 tests in 39 suites passed |
+| Engine Debug, XCTest | 223 scheduled: 186 passed, 37 opt-in/platform skips, zero failures |
+| Engine Release, XCTest | 223 scheduled: 186 passed, 37 opt-in/platform skips, zero failures |
+| Engine Debug, Swift Testing | 219 declarations in 39 suites: 213 passed, six opt-in skips, zero failures |
+| Engine Release, Swift Testing | 219 declarations in 39 suites: 213 passed, six opt-in skips, zero failures |
 | Full Mac app suite | 1,286 logical tests: 1,265 passed, 21 skipped, zero failures; no reported runtime warnings |
 | iPad simulator | 79 tests: 69 passed, ten skipped, zero failures; no reported runtime warnings |
 | iPhone simulator | 79 tests: 69 passed, ten skipped, zero failures; no reported runtime warnings |
@@ -82,8 +82,8 @@ The diagnostics-export hardening had its own **32 passing XCTest cases**, zero s
 
 - **Large physical transfer:** the corrected 119.6 GB SSD A → SSD B case was still running at this checkpoint. Do not count it as a pass, infer its eventual verdict, or use an earlier flawed-harness attempt as a substitute.
 - **Application performance:** isolated repeated Standard/Thorough application trials and their counter-aligned measurements need a settled receipt. Raw buffer throughput is not application performance evidence.
-- **4K report-preview memory:** the new host-only 20-path and 200-path probe has preliminary successful runs. Final reviewed receipts and the qualified result belong here before it is counted. Its fixture repeats one two-frame H.264 pattern across distinct paths; it does not cover codec diversity, long GOPs or distinct camera clips.
-- **Intel:** a separate translated-x86/Intel compatibility receipt needs final review. Apple Silicon results and a universal build are not execution on a physical Intel Mac.
+- **4K report-preview memory:** the [reviewed host-only probe](validation/report-preview-memory-2026-10-19.md) passed at 20 and 200 paths, each with three executed XCTest methods, zero skips/failures and no reported runtime warnings. Sampled process footprint peaked at 103 MiB. Its fixture repeats one two-frame H.264 pattern across distinct paths; it does not cover codec diversity, long GOPs, large encoded files or distinct camera clips. All preview pixels, source/destination hashes and PDF image placements were checked. The separate orphan-page layout follow-up remains pending.
+- **Intel:** [translated x86_64 engine tests](validation/ROSETTA_ENGINE_20261019.md) passed: XCTest 186 passed/37 skipped, Swift Testing 213 declarations passed/six skipped, zero final failures. Initial unsigned-loader bookmark setup failures remain documented. This is Rosetta coverage, not execution on a physical Intel Mac or older macOS.
 - **Final revision and cleanup:** update this document after the remaining jobs settle, final combined gates complete, and owned media fixtures, images, caches and simulators are accounted for. Retain compact receipts; preserve uncertain or failed evidence rather than deleting it prematurely.
 
 No run here reproduces a real HDD through the reporter's dock, a USB controller fault, power loss, a forced unplug during active I/O, physical-media failure, or every iOS file-provider/background condition. The successful cases strengthen the tested paths; they do not close issues #10 or #23 without decisive field evidence.
