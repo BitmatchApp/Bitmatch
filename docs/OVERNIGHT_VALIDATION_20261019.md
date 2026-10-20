@@ -58,7 +58,7 @@ Before that run, the benchmark harness was corrected so each FileHandle read and
 
 ## App, engine and simulator gates
 
-The engine gates were rerun after the buffer-harness additions at `4106a48a`; the Mac and mobile rows precede the new high-resolution probe and final PDF layout follow-up. Logical test counts and parameterized case counts are kept separate.
+The engine gates were rerun after the buffer-harness additions at `4106a48a`; the full Mac, iPad and iPhone suites passed again at `84445c21`, including the high-resolution probe guards and final PDF footer regressions. Logical test counts and parameterized case counts are kept separate.
 
 | Gate | Completed result |
 | --- | --- |
@@ -66,9 +66,9 @@ The engine gates were rerun after the buffer-harness additions at `4106a48a`; th
 | Engine Release, XCTest | 223 scheduled: 186 passed, 37 opt-in/platform skips, zero failures |
 | Engine Debug, Swift Testing | 219 declarations in 39 suites: 213 passed, six opt-in skips, zero failures |
 | Engine Release, Swift Testing | 219 declarations in 39 suites: 213 passed, six opt-in skips, zero failures |
-| Full Mac app suite | 1,286 logical tests: 1,265 passed, 21 skipped, zero failures; no reported runtime warnings |
-| iPad simulator | 79 tests: 69 passed, ten skipped, zero failures; no reported runtime warnings |
-| iPhone simulator | 79 tests: 69 passed, ten skipped, zero failures; no reported runtime warnings |
+| Full Mac app suite | 1,291 logical tests: 1,269 passed, 22 skipped, zero failures; no reported runtime warnings |
+| iPad simulator | 81 tests: 71 passed, ten skipped, zero failures; no reported runtime warnings |
+| iPhone simulator | 81 tests: 71 passed, ten skipped, zero failures; no reported runtime warnings |
 | Shared mobile build | Universal iOS simulator build passed |
 | Local signed Mac archive | Built and signature verified; no release published |
 
@@ -82,7 +82,7 @@ The diagnostics-export hardening had its own **32 passing XCTest cases**, zero s
 
 - **Large physical transfer:** the corrected 119.6 GB SSD A → SSD B case was still running at this checkpoint. Do not count it as a pass, infer its eventual verdict, or use an earlier flawed-harness attempt as a substitute.
 - **Application performance:** isolated repeated Standard/Thorough application trials and their counter-aligned measurements need a settled receipt. Raw buffer throughput is not application performance evidence.
-- **4K report-preview memory:** the [reviewed host-only probe](validation/report-preview-memory-2026-10-19.md) passed at 20 and 200 paths, each with three executed XCTest methods, zero skips/failures and no reported runtime warnings. Sampled process footprint peaked at 103 MiB. Its fixture repeats one two-frame H.264 pattern across distinct paths; it does not cover codec diversity, long GOPs, large encoded files or distinct camera clips. All preview pixels, source/destination hashes and PDF image placements were checked. The separate orphan-page layout follow-up remains pending.
+- **4K report-preview memory:** the [reviewed host-only probe](validation/report-preview-memory-2026-10-19.md) passed at 20 and 200 paths, each with three executed XCTest methods, zero skips/failures and no reported runtime warnings. Sampled process footprint peaked at 103 MiB. Its fixture repeats one two-frame H.264 pattern across distinct paths; it does not cover codec diversity, long GOPs, large encoded files or distinct camera clips. All preview pixels, source/destination hashes and PDF image placements were checked. The [separate footer fix](validation/report-pdf-footer-2026-10-19.md) passed its regressions and the integrated app suites: normal 20/200-clip reports retain all previews across 2/14 pages instead of 3/15. Oversized identity text remains fully paginated rather than truncated.
 - **Intel:** [translated x86_64 engine tests](validation/ROSETTA_ENGINE_20261019.md) passed: XCTest 186 passed/37 skipped, Swift Testing 213 declarations passed/six skipped, zero final failures. Initial unsigned-loader bookmark setup failures remain documented. This is Rosetta coverage, not execution on a physical Intel Mac or older macOS.
 - **Final revision and cleanup:** update this document after the remaining jobs settle, final combined gates complete, and owned media fixtures, images, caches and simulators are accounted for. Retain compact receipts; preserve uncertain or failed evidence rather than deleting it prematurely.
 
