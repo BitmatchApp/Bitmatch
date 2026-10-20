@@ -17,6 +17,9 @@ nonisolated struct DriveConnectionDetail: Identifiable, Equatable, Sendable {
 
 /// Owns only the expanded Setup hint. A removed or replaced selection cannot
 /// publish a late registry lookup into the current setup.
+/// This is a snapshot refreshed when Advanced opens or selected backups change,
+/// not a live cable monitor. Reopening Advanced refreshes an unchanged URL after
+/// a reconnect; the provider's media-ID check protects only an active lookup.
 @MainActor
 final class DriveConnectionDetailsModel: ObservableObject {
     @Published private(set) var rows: [DriveConnectionDetail] = []

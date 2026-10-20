@@ -14,6 +14,7 @@ struct DriveConnectionDetailsSection: View {
                     Text("\(row.title): \(row.connectionLabel)")
                         .font(.caption)
                         .foregroundStyle(.secondary)
+                        .help("Checked when Advanced opens or selected backups change. Reopen Advanced after reconnecting a drive.")
                 }
                 Text("A cable, hub or port may be limiting this connection.")
                     .font(.caption)
