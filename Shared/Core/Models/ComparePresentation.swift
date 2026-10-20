@@ -286,7 +286,6 @@ struct CompareVerdictPresentation: Equatable, Sendable {
             number: .decimal
         )
         let fileWord = result.recordedFileCount == 1 ? "file" : "files"
-        let reports = result.records.map { $0.url.lastPathComponent }.joined(separator: ", ")
         let ascDirectories = Set(result.records.filter { $0.kind == .ascMHL }
             .map { $0.url.deletingLastPathComponent().standardizedFileURL.path })
         let hasClassic = result.records.contains { $0.kind == .classicMHL }
@@ -317,19 +316,23 @@ struct CompareVerdictPresentation: Equatable, Sendable {
             }
             return Self(
                 title: title,
-                detail: "Used \(reports).\(newFiles)\(scope)",
+                detail: "\(newFiles)\(scope)".trimmingCharacters(in: .whitespacesAndNewlines),
                 symbol: "checkmark.seal.fill",
                 tone: .verified
             )
         }
 
         var parts: [String] = []
-        if !result.changedPaths.isEmpty { parts.append("\(result.changedPaths.count) files changed") }
+        if !result.changedPaths.isEmpty {
+            parts.append("\(result.changedPaths.count) \(result.changedPaths.count == 1 ? "file" : "files") changed")
+        }
         if !result.missingPaths.isEmpty { parts.append("\(result.missingPaths.count) missing") }
-        if !result.newPaths.isEmpty { parts.append("\(result.newPaths.count) new files not in the record") }
+        if !result.newPaths.isEmpty {
+            parts.append("\(result.newPaths.count) new \(result.newPaths.count == 1 ? "file" : "files") not in the record")
+        }
         return Self(
             title: "Saved checksum check found differences",
-            detail: parts.joined(separator: ", ") + ". Used \(reports)." + scope,
+            detail: parts.joined(separator: ", ") + "." + scope,
             symbol: "xmark.octagon.fill",
             tone: .differ
         )

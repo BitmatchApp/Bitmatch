@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 import BitMatchEngine
 
@@ -118,12 +119,18 @@ struct SetupLocationsPresentation: Equatable {
     let highlightsSource: Bool
     /// The empty backups box receives neutral next-step emphasis.
     let highlightsBackups: Bool
-    /// Source and backups side by side, from the Setup screen's own width
-    /// (toolbar and sidebar widths); stacked when compact.
+    /// Navigation permits columns, but the composer still needs enough of
+    /// its own width to keep the source and drive names readable.
     let sideBySide: Bool
     let showsAddAnotherCard: Bool
     let canAddAnotherCard: Bool
     let addAnotherCardDisabledReason: String?
+
+    /// The composer includes a source, a verification connector and the
+    /// destinations. It needs more room than the navigation toolbar does.
+    func usesSideBySideComposer(availableWidth: CGFloat, stacksVertically: Bool) -> Bool {
+        sideBySide && !stacksVertically && availableWidth >= 820
+    }
 
     static func make(
         sourceURL: URL?,

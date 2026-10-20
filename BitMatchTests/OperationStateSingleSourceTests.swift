@@ -27,6 +27,21 @@ struct OperationStateSingleSourceTests {
         return id
     }
 
+    enum HandoffStage: CaseIterable, Sendable {
+        case ascMHL
+        case report
+        case finishing
+
+        var progress: OperationProgress {
+            OperationProgress(
+                overallProgress: 1, currentFile: nil, filesProcessed: 1,
+                totalFiles: 1, currentStage: self == .finishing ? .completed : .generating,
+                speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
+                bytesProcessed: 1, totalBytes: 1, isASCMHL: self == .ascMHL
+            )
+        }
+    }
+
     /// Fails if `SharedAppCoordinator.operationState` goes back to being
     /// its own stored property.
     @Test func coordinatorAndStateServiceCannotDisagree() {
@@ -124,6 +139,91 @@ struct OperationStateSingleSourceTests {
         await coordinator.pauseOperation()
 
         #expect(coordinator.operationState == .completed(OperationCompletionInfo(success: true, message: "done")))
+        #expect(!coordinator.stateService.pauseResumeCapabilities.canResume)
+    }
+
+    /// Plant: use currentState.canPause instead of canPause in the first
+    /// pauseOperation guard. The drained copy engine must not receive Pause.
+    @Test(arguments: HandoffStage.allCases)
+    func handoffDoesNotSendPauseToTheDrainedCopyEngine(stage: HandoffStage) async {
+        let engine = PauseRecordingFileOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        _ = start(coordinator.stateService)
+        coordinator.operationState = .verifying
+        coordinator.progress = stage.progress
+        coordinator.stateService.updateCapabilities(canPause: false, canResume: false)
+
+        #expect(!coordinator.canPause)
+        await coordinator.pauseOperation()
+
+        #expect(engine.pauseCount == 0)
+        #expect(coordinator.operationState == .verifying)
+        #expect(!coordinator.canResume)
+        #expect(!coordinator.stateService.pauseResumeCapabilities.canResume)
+    }
+
+    /// Plant: use currentState.canPause instead of canPause in the guard
+    /// after the engine await. This schedule enters handoff inside that await.
+    @Test(arguments: HandoffStage.allCases)
+    func handoffBeginningDuringPauseDoesNotOfferResume(stage: HandoffStage) async {
+        let engine = PauseRecordingFileOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        _ = start(coordinator.stateService)
+        engine.onPause = {
+            await MainActor.run {
+                coordinator.operationState = .verifying
+                coordinator.progress = stage.progress
+                coordinator.stateService.updateCapabilities(canPause: false, canResume: false)
+            }
+        }
+
+        await coordinator.pauseOperation()
+
+        #expect(engine.pauseCount == 1)
+        #expect(coordinator.operationState == .verifying)
+        #expect(!coordinator.canPause)
+        #expect(!coordinator.canResume)
+        #expect(!coordinator.stateService.pauseResumeCapabilities.canResume)
+    }
+
+    /// Plant: remove currentOperationId == operationID from the post-await
+    /// guard. A pending pause for the old card must not pause the next card.
+    @Test func pauseForPreviousAttemptDoesNotRelabelTheNextQueuedAttempt() async {
+        let engine = PauseRecordingFileOperations()
+        let coordinator = SharedAppCoordinator(
+            platformManager: PauseRecordingPlatform(fileOperations: engine),
+            defaults: .isolatedWorkflowDefaults()
+        )
+        let previousID = start(coordinator.stateService)
+        let nextID = UUID()
+        engine.onPause = {
+            await MainActor.run {
+                coordinator.stateService.completeOperation(operationId: previousID,
+                    info: OperationCompletionInfo(success: true, message: "done"))
+                coordinator.stateService.startOperation(id: nextID,
+                    sourceURL: URL(fileURLWithPath: "/tmp/next-card"),
+                    destinationURLs: [URL(fileURLWithPath: "/tmp/next-backup")],
+                    totalFiles: 1, totalBytes: 1)
+                coordinator.progress = OperationProgress(overallProgress: 0,
+                    currentFile: nil, filesProcessed: 0, totalFiles: 1,
+                    currentStage: .copying, speed: nil)
+                coordinator.stateService.updateCapabilities(canPause: true, canResume: false)
+            }
+        }
+
+        await coordinator.pauseOperation()
+
+        #expect(engine.pauseCount == 1)
+        #expect(coordinator.stateService.currentOperationId == nextID)
+        #expect(coordinator.operationState == .inProgress)
+        #expect(coordinator.canPause)
+        #expect(!coordinator.canResume)
         #expect(!coordinator.stateService.pauseResumeCapabilities.canResume)
     }
 
