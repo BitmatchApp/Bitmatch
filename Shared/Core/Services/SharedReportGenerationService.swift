@@ -188,21 +188,22 @@ class SharedReportGenerationService: ObservableObject {
         
         // Start first page
         setupNewPage()
+        let newPage = {
+            NSGraphicsContext.restoreGraphicsState()
+            context.endPDFPage()
+            setupNewPage()
+        }
         
         // Render sections using shared helpers
-        yPosition = renderHeader(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration)
-        yPosition = renderSummary(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration)
+        yPosition = renderHeader(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration, newPage: newPage)
+        yPosition = renderSummary(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration, newPage: newPage)
         
         if !configuration.productionNotes.isEmpty {
-            yPosition = renderProductionNotes(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration)
+            yPosition = renderProductionNotes(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration, newPage: newPage)
         }
         
         for cameraGroup in reportData.cameraGroups {
-            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration) {
-                NSGraphicsContext.restoreGraphicsState()
-                context.endPDFPage()
-                setupNewPage()
-            }
+            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration, newPage: newPage)
         }
         
         // End final page
@@ -246,30 +247,29 @@ class SharedReportGenerationService: ObservableObject {
             height: max(0, pageRect.height - configuration.margins.top - configuration.margins.bottom)
         )
         var yPosition: CGFloat = contentRect.minY
+        let newPage = { context.beginPage() }
         
         // Render header
-        yPosition = renderHeader(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration)
+        yPosition = renderHeader(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration, newPage: newPage)
         
         // Render summary
-        yPosition = renderSummary(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration)
+        yPosition = renderSummary(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration, newPage: newPage)
         
         // Render production notes
         if !configuration.productionNotes.isEmpty {
-            yPosition = renderProductionNotes(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration)
+            yPosition = renderProductionNotes(in: contentRect, at: yPosition, reportData: reportData, configuration: configuration, newPage: newPage)
         }
         
         // Render camera groups
         for cameraGroup in reportData.cameraGroups {
-            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration) {
-                context.beginPage()
-            }
+            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration, newPage: newPage)
         }
     }
     #endif
     
     // MARK: - PDF Content Rendering (Shared Logic)
     
-    private func renderHeader(in rect: CGRect, at yPosition: CGFloat, reportData: ReportData, configuration: ReportConfiguration) -> CGFloat {
+    private func renderHeader(in rect: CGRect, at yPosition: CGFloat, reportData: ReportData, configuration: ReportConfiguration, newPage: () -> Void) -> CGFloat {
         var currentY = yPosition
         
         // Title
@@ -297,14 +297,18 @@ class SharedReportGenerationService: ObservableObject {
         ].filter { !$0.hasSuffix(": ") } // Remove empty fields
         
         for line in metadata {
-            currentY += drawWrapped(line, in: rect, at: currentY, attributes: metadataAttributes) + 2
+            currentY = drawPaginated(line, in: rect, at: currentY, attributes: metadataAttributes, newPage: newPage) + 2
         }
         
         return currentY + 20
     }
     
-    private func renderSummary(in rect: CGRect, at yPosition: CGFloat, reportData: ReportData, configuration: ReportConfiguration) -> CGFloat {
+    private func renderSummary(in rect: CGRect, at yPosition: CGFloat, reportData: ReportData, configuration: ReportConfiguration, newPage: () -> Void) -> CGFloat {
         var currentY = yPosition
+        if currentY + 35 + configuration.fontSize + 3 > rect.maxY {
+            newPage()
+            currentY = rect.minY
+        }
         
         // Summary section header
         let headerAttributes = [
@@ -372,14 +376,18 @@ class SharedReportGenerationService: ObservableObject {
         }
         
         for line in summaryLines {
-            currentY += drawWrapped(line, in: rect, at: currentY, attributes: summaryAttributes) + 2
+            currentY = drawPaginated(line, in: rect, at: currentY, attributes: summaryAttributes, newPage: newPage) + 2
         }
         
         return currentY + 20
     }
     
-    private func renderProductionNotes(in rect: CGRect, at yPosition: CGFloat, reportData: ReportData, configuration: ReportConfiguration) -> CGFloat {
+    private func renderProductionNotes(in rect: CGRect, at yPosition: CGFloat, reportData: ReportData, configuration: ReportConfiguration, newPage: () -> Void) -> CGFloat {
         var currentY = yPosition
+        if currentY + 18 + configuration.fontSize + 3 > rect.maxY {
+            newPage()
+            currentY = rect.minY
+        }
         
         // Production notes header
         let headerAttributes = [
@@ -396,10 +404,8 @@ class SharedReportGenerationService: ObservableObject {
             NSAttributedString.Key.foregroundColor: platformColor(hex: "#000000")
         ]
         
-        let notesRect = CGRect(x: rect.minX, y: currentY, width: rect.width, height: 60)
-        configuration.productionNotes.draw(in: notesRect, withAttributes: notesAttributes)
-        
-        return currentY + 80
+        currentY = drawPaginated(configuration.productionNotes, in: rect, at: currentY, attributes: notesAttributes, newPage: newPage)
+        return currentY + 20
     }
     
     private func renderCameraGroup(_ group: ReportData.CameraGroup, in rect: CGRect, at yPosition: CGFloat, configuration: ReportConfiguration, newPage: () -> Void) -> CGFloat {
@@ -417,7 +423,7 @@ class SharedReportGenerationService: ObservableObject {
             newPage()
             currentY = rect.minY
         }
-        currentY += drawWrapped(groupTitle, in: rect, at: currentY, attributes: headerAttributes) + 3
+        currentY = drawPaginated(groupTitle, in: rect, at: currentY, attributes: headerAttributes, newPage: newPage) + 3
         
         // Transfer details
         let detailAttributes = [
@@ -451,9 +457,9 @@ class SharedReportGenerationService: ObservableObject {
             if currentY + height > rect.maxY {
                 newPage()
                 currentY = rect.minY
-                currentY += drawWrapped(groupTitle + " (continued)", in: rect, at: currentY, attributes: headerAttributes) + 3
+                currentY = drawPaginated(groupTitle + " (continued)", in: rect, at: currentY, attributes: headerAttributes, newPage: newPage) + 3
             }
-            currentY += drawWrapped(transferLine, in: rect, at: currentY, attributes: detailAttributes) + 4
+            currentY = drawPaginated(transferLine, in: rect, at: currentY, attributes: detailAttributes, newPage: newPage) + 4
         }
         
         return currentY + 10
@@ -472,18 +478,50 @@ class SharedReportGenerationService: ObservableObject {
     }
 
     private func wrappedHeight(_ text: String, width: CGFloat, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
-        ceil(wrappedText(text, attributes: attributes).boundingRect(
-            with: CGSize(width: width, height: .greatestFiniteMagnitude),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
+        let storage = NSTextStorage(attributedString: wrappedText(text, attributes: attributes))
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: CGSize(width: width, height: .greatestFiniteMagnitude))
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        var height: CGFloat = 0
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { line, _, _, _, _ in
+            height += ceil(line.height)
+        }
+        return height
     }
 
-    @discardableResult
-    private func drawWrapped(_ text: String, in rect: CGRect, at y: CGFloat, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
-        let height = wrappedHeight(text, width: rect.width, attributes: attributes)
-        wrappedText(text, attributes: attributes).draw(
-            with: CGRect(x: rect.minX, y: y, width: rect.width, height: height),
-            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil)
-        return height
+    /// Lay out once and move whole line fragments to the next printable page.
+    /// Drawing the original composed-character ranges preserves every character
+    /// without truncating long fields. Use attributed drawing for each line so
+    /// color-emoji fallback also keeps its PDF text position on macOS.
+    private func drawPaginated(_ text: String, in rect: CGRect, at y: CGFloat,
+                               attributes: [NSAttributedString.Key: Any], newPage: () -> Void) -> CGFloat {
+        let storage = NSTextStorage(attributedString: wrappedText(text, attributes: attributes))
+        let layout = NSLayoutManager()
+        let container = NSTextContainer(size: rect.size)
+        container.size.height = .greatestFiniteMagnitude
+        container.lineFragmentPadding = 0
+        layout.addTextContainer(container)
+        storage.addLayoutManager(layout)
+        layout.ensureLayout(for: container)
+        var lines: [(CGRect, NSRange)] = []
+        layout.enumerateLineFragments(forGlyphRange: layout.glyphRange(for: container)) { line, _, _, glyphs, _ in
+            lines.append((line, glyphs))
+        }
+        var currentY = y
+        for (line, glyphs) in lines {
+            let height = ceil(line.height)
+            if currentY + height > rect.maxY {
+                newPage()
+                currentY = rect.minY
+            }
+            let characters = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            storage.attributedSubstring(from: characters).draw(at: CGPoint(x: rect.minX, y: currentY))
+            currentY += height
+        }
+        return currentY
     }
 
     // MARK: - JSON Generation
