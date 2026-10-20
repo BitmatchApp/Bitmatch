@@ -64,6 +64,85 @@ struct ComparePresentationTests {
         #expect(verdict.tone == .verified)
     }
 
+    /// Plant: let classic results use the copy-age title, or omit their
+    /// content-only scope. A manifest timestamp is not a recorded copy time.
+    @Test(arguments: [0, 1, 2])
+    func classicChecksumMatchNamesRecordedFilesWithoutInventingACopyDate(extraFileCount: Int) {
+        let manifest = Self.card.appendingPathComponent("classic-md5-sha1.mhl")
+        let result = SavedChecksumCheck.Result(root: Self.card,
+            matchingPaths: ["Camera A/clip.mov", "sidecar.xml"], changedPaths: [], missingPaths: [],
+            newPaths: (0..<extraFileCount).map { "extra-\($0).txt" },
+            records: [.init(url: manifest, date: Date(timeIntervalSince1970: 0), kind: .classicMHL)])
+
+        let verdict = CompareVerdictPresentation.makeSaved(result, now: Date(timeIntervalSince1970: 1_700_000_000))
+
+        #expect(verdict.title == "card matches recorded checksums: 2 files")
+        #expect(verdict.tone == .verified)
+        #expect(verdict.detail.contains("Used classic-md5-sha1.mhl."))
+        #expect(verdict.detail.contains("File contents checked against classic MHL; copy history and authenticity were not verified."))
+        #expect(!verdict.title.contains("copied"))
+        #expect(!verdict.title.contains("after copying"))
+        #expect(!verdict.detail.contains("inventory chains checked"))
+        #expect(!verdict.detail.contains("safe to erase"))
+        if extraFileCount > 0 {
+            let word = extraFileCount == 1 ? "file is" : "files are"
+            #expect(verdict.detail.contains("\(extraFileCount) new \(word) not in the record."))
+        } else {
+            #expect(!verdict.detail.contains("not in the record"))
+        }
+    }
+
+    /// Plant: classify classic results as intact despite changed/missing
+    /// media, or omit the same content/history limits from a difference.
+    @Test func classicChecksumDifferencesKeepTheirContentOnlyScope() {
+        let result = SavedChecksumCheck.Result(root: Self.card, matchingPaths: ["intact.mov"],
+            changedPaths: ["changed.mov"], missingPaths: ["missing.mov"], newPaths: ["extra.mov"],
+            records: [.init(url: Self.card.appendingPathComponent("classic.mhl"),
+                date: Date(timeIntervalSince1970: 0), kind: .classicMHL)])
+
+        let verdict = CompareVerdictPresentation.makeSaved(result)
+
+        #expect(verdict.title == "Saved checksum check found differences")
+        #expect(verdict.tone == .differ)
+        #expect(verdict.detail.contains("changed"))
+        #expect(verdict.detail.contains("1 missing"))
+        #expect(verdict.detail.contains("1 new files not in the record"))
+        #expect(verdict.detail.contains("File contents checked against classic MHL; copy history and authenticity were not verified."))
+        #expect(!verdict.detail.contains("after copying"))
+        #expect(!verdict.detail.contains("inventory chains checked"))
+    }
+
+    /// Discovery currently selects one evidence family. A future mixed
+    /// result must still not infer a copy date or full-history verification.
+    /// Plant: apply classic's title/scope only when every record is classic.
+    @Test(arguments: [false, true])
+    func mixedClassicAndASCResultsKeepTheirSeparateScopes(validatedASCChain: Bool) {
+        let history = Self.card.appendingPathComponent("ascmhl")
+        let result = SavedChecksumCheck.Result(root: Self.card,
+            matchingPaths: ["classic.mov", "asc.mov"], changedPaths: [], missingPaths: [], newPaths: [],
+            records: [.init(url: Self.card.appendingPathComponent("classic.mhl"),
+                           date: Date(timeIntervalSince1970: 0), kind: .classicMHL),
+                      .init(url: history.appendingPathComponent("0001.mhl"),
+                           date: Date(timeIntervalSince1970: 86_400), kind: .ascMHL)],
+            validatedHistoryDirectories: validatedASCChain ? [history] : [])
+
+        let verdict = CompareVerdictPresentation.makeSaved(result, now: Date(timeIntervalSince1970: 1_700_000_000))
+
+        #expect(verdict.title == "card matches recorded checksums: 2 files")
+        #expect(verdict.tone == .verified)
+        #expect(verdict.detail.contains("classic.mhl, 0001.mhl"))
+        #expect(verdict.detail.contains("File contents checked against classic MHL; copy history and authenticity were not verified."))
+        #expect(!verdict.title.contains("after copying"))
+        #expect(!verdict.detail.contains("full history verified"))
+        if validatedASCChain {
+            #expect(verdict.detail.contains("MHL inventory chains checked"))
+            #expect(verdict.detail.contains("directory structure and authenticity were not verified"))
+        } else {
+            #expect(verdict.detail.contains("MHL history and directory structure were not verified"))
+            #expect(!verdict.detail.contains("inventory chains checked"))
+        }
+    }
+
     /// Plant: report failed discovery as .notFound in SharedAppCoordinator.
     @Test func unreadableSavedEvidenceIsExplainedInCheck() async throws {
         let folders = try CoordinatorFolders()
@@ -100,8 +179,11 @@ struct ComparePresentationTests {
         #expect(verdict.detail.contains("File contents checked; MHL history and directory structure were not verified."))
     }
 
-    @Test func validatedASCChainDoesNotClaimDirectoryOrAuthenticityVerification() {
-        let history = Self.card.appendingPathComponent("ascmhl")
+    /// Plant: compare ASC history URLs directly, so their directory flag
+    /// incorrectly changes the scope of an already validated chain.
+    @Test(arguments: [false, true])
+    func validatedASCChainDoesNotClaimDirectoryOrAuthenticityVerification(isDirectory: Bool) {
+        let history = Self.card.appendingPathComponent("ascmhl", isDirectory: isDirectory)
         let result = SavedChecksumCheck.Result(root: Self.card, matchingPaths: ["a.mov"], changedPaths: [],
             missingPaths: [], newPaths: [], records: [.init(url: history.appendingPathComponent("one.mhl"),
                 date: Date(), kind: .ascMHL)], validatedHistoryDirectories: [history])
@@ -109,6 +191,7 @@ struct ComparePresentationTests {
         #expect(verdict.tone == .verified)
         #expect(verdict.detail.contains("File contents and supported MHL inventory chains checked"))
         #expect(verdict.detail.contains("directory structure and authenticity were not verified"))
+        #expect(!verdict.detail.contains("other history chains"))
     }
 
     @Test func zeroByteFolderUsesEmptyWording() {

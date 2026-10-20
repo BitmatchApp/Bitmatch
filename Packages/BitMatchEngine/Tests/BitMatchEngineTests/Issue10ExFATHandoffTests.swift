@@ -157,6 +157,68 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: companion), before)
     }
 
+    /// Plant: refuse descriptor-pinned media reads on exFAT, ignore a classic
+    /// digest/size, or modify an inventory while checking it. This uses the
+    /// existing mounted-image fixture and never substitutes an APFS folder.
+    func testStandaloneClassicMHLContentsOnRealExFAT() async throws {
+        func classicContents(_ root: URL) throws -> [String: Data] {
+            try Dictionary(uniqueKeysWithValues: CardSource.enumerateRegularFiles(base: root).map {
+                ($0.relativePath, try Data(contentsOf: $0.url))
+            })
+        }
+        let resourceRoot = try XCTUnwrap(Bundle.module.resourceURL)
+        let corpus = resourceRoot.appendingPathComponent(
+            "Fixtures/EvidenceCompatibility/classic-reference/media", isDirectory: true)
+        let corpusBefore = try classicContents(corpus)
+        let destination = mount.appendingPathComponent("Classic reference", isDirectory: true)
+        try FileManager.default.copyItem(at: corpus, to: destination)
+        let before = try classicContents(destination)
+        let manifest = destination.appendingPathComponent("classic-md5-sha1.mhl")
+        let manifestBytes = try Data(contentsOf: manifest)
+        let expectedPaths: Set<String> = ["Camera A/clip & cafe.txt", "support file.txt", "sidecar.xml"]
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+
+        let discovery = try await checker.discover(under: destination)
+        XCTAssertEqual(Set(discovery.expectedFiles.keys), expectedPaths)
+        XCTAssertEqual(discovery.records.count, 1)
+        XCTAssertTrue(discovery.records.allSatisfy { $0.kind == .classicMHL && $0.generation == nil })
+        XCTAssertTrue(discovery.chainEvidence.isEmpty)
+        for entry in discovery.expectedFiles.values {
+            XCTAssertEqual(entry.requiredDigests.count, 2)
+            XCTAssertEqual(entry.requiredDigests.filter { $0.algorithm == .md5 }.count, 1)
+            XCTAssertEqual(entry.requiredDigests.filter { $0.algorithm == .sha1 }.count, 1)
+            XCTAssertNotNil(entry.expectedSize)
+        }
+        let intact = try await checker.check(discovery) { _ in }
+        XCTAssertTrue(intact.isIntact)
+        XCTAssertEqual(Set(intact.matchingPaths), expectedPaths)
+        XCTAssertEqual(intact.recordedFileCount, 3)
+        XCTAssertTrue(intact.changedPaths.isEmpty)
+        XCTAssertTrue(intact.missingPaths.isEmpty)
+        XCTAssertTrue(intact.validatedHistoryDirectories.isEmpty)
+        XCTAssertEqual(try classicContents(destination), before, "Check must not rewrite media or manifests")
+
+        let changedFile = destination.appendingPathComponent("sidecar.xml")
+        var corrupted = try Data(contentsOf: changedFile)
+        let first = try XCTUnwrap(corrupted.first)
+        corrupted[0] = first ^ 1
+        try corrupted.write(to: changedFile)
+        var expectedAfterCorruption = before
+        expectedAfterCorruption["sidecar.xml"] = corrupted
+        XCTAssertEqual(try classicContents(destination), expectedAfterCorruption,
+            "The controlled same-size mutation must be the only fixture change")
+
+        let changed = try await checker.check(discovery) { _ in }
+        XCTAssertFalse(changed.isIntact)
+        XCTAssertEqual(changed.changedPaths, ["sidecar.xml"])
+        XCTAssertEqual(Set(changed.matchingPaths), expectedPaths.subtracting(["sidecar.xml"]))
+        XCTAssertTrue(changed.missingPaths.isEmpty)
+        XCTAssertTrue(changed.validatedHistoryDirectories.isEmpty)
+        XCTAssertEqual(try classicContents(destination), expectedAfterCorruption)
+        XCTAssertEqual(try Data(contentsOf: manifest), manifestBytes)
+        XCTAssertEqual(try classicContents(corpus), corpusBefore, "The permanent corpus must remain unchanged")
+    }
+
     /// Extends the existing real-exFAT copy test through the handoff step
     /// performed by CopyVerifyExecutor AFTER TransferPipeline has returned.
     func testStandardCopyThenMHLOnRealExFAT() async throws {

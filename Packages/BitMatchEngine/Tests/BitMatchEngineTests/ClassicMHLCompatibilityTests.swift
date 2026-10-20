@@ -6,8 +6,8 @@ import FoundationXML
 import Testing
 @testable import BitMatchEngine
 
-/// Original-format reference output is a corpus, not a new supported reader.
-/// All Check calls below are read-only and must keep that boundary explicit.
+/// Independently generated classic 1.1 content evidence remains separate from
+/// ASC history validation. Every Check call below must remain read-only.
 struct ClassicMHLCompatibilityTests {
     private var fixture: URL {
         get throws {
@@ -65,16 +65,30 @@ struct ClassicMHLCompatibilityTests {
         #expect(try snapshot(root) == before)
     }
 
-    /// Standalone discovery is not implemented. Finding a classic inventory
-    /// cannot fabricate ASC records, a named copy tier, or an intact verdict.
+    /// Plant: omit standalone classic discovery or discard the second digest
+    /// record for each path. The reference corpus requires both recorded hashes.
     @Test(arguments: [false, true])
-    func standaloneClassicInventoryDoesNotAcquireAnASCClaim(nested: Bool) async throws {
+    func standaloneClassicInventoryChecksRecordedContentsWithoutAnASCClaim(nested: Bool) async throws {
         let fixture = try copyFixture(nested: nested)
         defer { try? FileManager.default.removeItem(at: fixture.root) }
         let before = try snapshot(fixture.root)
-        await #expect(throws: SavedChecksumCheck.CheckError.notFound) {
-            _ = try await checker.discover(under: nested ? fixture.root : fixture.media)
+        let selected = nested ? fixture.root : fixture.media
+        let discovery = try await checker.discover(under: selected)
+        #expect(discovery.records.count == 1)
+        #expect(discovery.records.allSatisfy { $0.kind == .classicMHL && $0.generation == nil })
+        #expect(discovery.expectedFiles.count == 3)
+        for entry in discovery.expectedFiles.values {
+            #expect(entry.algorithm == .md5)
+            #expect(Set(entry.requiredDigests.map { $0.algorithm.rawValue }) == ["MD5", "SHA-1"])
+            #expect(entry.expectedSize != nil)
         }
+        let result = try await checker.check(discovery) { _ in }
+        let prefix = nested ? "Camera card/" : ""
+        #expect(result.isIntact)
+        #expect(Set(result.matchingPaths) == Set(["Camera A/clip & cafe.txt", "support file.txt", "sidecar.xml"].map { prefix + $0 }))
+        #expect(result.validatedHistoryDirectories.isEmpty)
+        #expect(result.records.allSatisfy { $0.kind == .classicMHL })
+        #expect(result.newPaths.isEmpty)
         #expect(try snapshot(fixture.root) == before)
     }
 

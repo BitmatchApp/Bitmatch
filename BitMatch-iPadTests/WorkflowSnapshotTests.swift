@@ -188,6 +188,39 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    /// Seeded actual Check screen, not a transfer or an interactive picker test.
+    func testCaptureClassicMHLCheck() throws {
+        try requireCaptureConfiguration()
+        let root = URL(fileURLWithPath: "/fixture/Shuttle")
+        let left = CompareFolderSlot.make(url: root, infoURL: root, fileCount: 3,
+            totalSize: 1024, isFetching: false)
+        let right = CompareFolderSlot.make(url: nil, infoURL: nil, fileCount: nil,
+            totalSize: nil, isFetching: false)
+        let record = SavedChecksumCheck.Record(url: root.appendingPathComponent("classic-md5-sha1.mhl"),
+            date: .distantPast, kind: .classicMHL)
+        for differences in [false, true] {
+            let result = SavedChecksumCheck.Result(root: root,
+                matchingPaths: differences ? ["clip-1.mov"] : ["clip-1.mov", "clip-2.mov", "sidecar.xml"],
+                changedPaths: differences ? ["clip-2.mov"] : [],
+                missingPaths: differences ? ["sidecar.xml"] : [],
+                newPaths: ["added.txt"], records: [record])
+            let presentation = ComparePresentation.make(left: left, right: right,
+                choice: .savedChecksums, savedAvailability: .found(fileCount: 3),
+                mode: .standard, isRunning: false, progress: nil, stats: nil,
+                savedResult: result, end: .completed)
+            // Plant: omit the classic-MHL scope from makeSaved; OCR must fail.
+            for width in [375.0, 760.0] {
+                try capture(CompareScreen(presentation: presentation, checkAgainst: .constant(.savedChecksums),
+                    verificationMode: .constant(.standard), advancedExpanded: .constant(false),
+                    actions: CompareActions(pickLeft: {}, pickRight: {}, clearLeft: {}, clearRight: {}, compare: {}, cancel: {})).padding(),
+                    size: CGSize(width: width, height: 1150),
+                    name: "mobile-classic-mhl-\(differences ? "differences" : "intact")-\(Int(width))",
+                    expectedText: [differences ? "found differences" : "matches recorded checksums",
+                        "classic MHL", "authenticity were not verified", "Record used", "Check again"])
+            }
+        }
+    }
+
     func testCaptureTransferDetails() throws {
         try requireCaptureConfiguration()
         let prefs = ReportPrefs(notes: "Card 01 · backups to Alex.\nKeep the source until both drives are checked.", operatorName: "Alex Morgan")

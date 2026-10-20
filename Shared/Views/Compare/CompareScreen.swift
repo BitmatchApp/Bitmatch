@@ -279,7 +279,7 @@ private struct SavedChecksumResultsView: View {
             pathSection(title: "Missing", paths: result.missingPaths)
             pathSection(title: "New files", paths: result.newPaths)
             VStack(alignment: .leading, spacing: 4) {
-                Text(result.records.count == 1 ? "Report used" : "Reports used")
+                Text(result.records.count == 1 ? "Record used" : "Records used")
                     .font(.subheadline.weight(.semibold))
                 ForEach(result.records, id: \.url) { record in
                     Text(record.url.lastPathComponent)

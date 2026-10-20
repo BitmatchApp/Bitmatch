@@ -9,18 +9,21 @@ import Darwin
 #endif
 
 /// Discovers checksum records below a chosen root and checks the files they
-/// describe. BitMatch reports take precedence over ASC MHL histories. When
-/// several records describe one path, the newest record wins.
+/// describe. BitMatch reports take precedence over ASC MHL, then standalone
+/// classic MHL. Classic inventories must agree on overlapping file records;
+/// existing report and ASC history selection keeps its newest-record policy.
 public struct SavedChecksumCheck: Sendable {
     public enum Algorithm: String, Codable, Equatable, Sendable {
         case sha256 = "SHA-256"
         case md5 = "MD5"
+        case sha1 = "SHA-1"
         case xxh64 = "XXH64"
     }
 
     public enum RecordKind: String, Codable, Equatable, Sendable {
         case bitMatchReport = "BitMatch report"
         case ascMHL = "ASC MHL"
+        case classicMHL = "Classic MHL"
     }
 
     public struct Record: Equatable, Sendable {
@@ -37,17 +40,34 @@ public struct SavedChecksumCheck: Sendable {
         }
     }
 
+    public struct Digest: Equatable, Sendable {
+        public let algorithm: Algorithm
+        public let value: String
+
+        public init(algorithm: Algorithm, value: String) {
+            self.algorithm = algorithm
+            self.value = value
+        }
+    }
+
     public struct ExpectedFile: Equatable, Sendable {
         public let relativePath: String
         public let checksum: String
         public let algorithm: Algorithm
         public let record: Record
+        /// Every supplied classic digest is required, not just the first one.
+        public let requiredDigests: [Digest]
+        public let expectedSize: Int64?
 
-        public init(relativePath: String, checksum: String, algorithm: Algorithm, record: Record) {
+        public init(relativePath: String, checksum: String, algorithm: Algorithm, record: Record,
+                    requiredDigests: [Digest] = [], expectedSize: Int64? = nil) {
             self.relativePath = relativePath
             self.checksum = checksum
             self.algorithm = algorithm
             self.record = record
+            let primary = Digest(algorithm: algorithm, value: checksum)
+            self.requiredDigests = [primary] + requiredDigests.filter { $0 != primary }
+            self.expectedSize = expectedSize
         }
     }
 
@@ -57,6 +77,7 @@ public struct SavedChecksumCheck: Sendable {
         public let records: [Record]
         public let publicationStatuses: [URL]
         var chainEvidence: [ASCMHLChainValidator.Snapshot] = []
+        var classicEvidence: [ClassicMHLReader.Snapshot] = []
 
         public init(root: URL, expectedFiles: [String: ExpectedFile], records: [Record], publicationStatuses: [URL] = []) {
             self.root = root
@@ -117,10 +138,21 @@ public struct SavedChecksumCheck: Sendable {
 
     private let fileAccess: any FileAccess
     private let checksum: any ChecksumService
+    private let classicChunkRead: (@Sendable (URL, Int64) async throws -> Void)?
 
     public init(fileAccess: any FileAccess, checksum: any ChecksumService) {
         self.fileAccess = fileAccess
         self.checksum = checksum
+        self.classicChunkRead = nil
+    }
+
+    /// Test-only interruption seam on the real classic read loop; production
+    /// callers use the public initializer, with no callback or global hook.
+    init(fileAccess: any FileAccess, checksum: any ChecksumService,
+         classicChunkRead: @escaping @Sendable (URL, Int64) async throws -> Void) {
+        self.fileAccess = fileAccess
+        self.checksum = checksum
+        self.classicChunkRead = classicChunkRead
     }
 
     /// Finds and parses records without hashing the recorded files.
@@ -156,7 +188,12 @@ public struct SavedChecksumCheck: Sendable {
             let chain = chains.first { $0.directory == historyURL.deletingLastPathComponent() }
             mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot, generation: ranks[historyURL], expectedDigest: chain?.evidence[historyURL.lastPathComponent]?.sha256))
         }
-        guard !mhlEntries.isEmpty else { throw CheckError.notFound }
+        if mhlEntries.isEmpty {
+            // Empty/unsupported ASC evidence must not be silently bypassed in
+            // favour of a standalone inventory with a narrower selection.
+            guard histories.isEmpty, chains.isEmpty else { throw CheckError.notFound }
+            return try Self.discoverClassic(in: files, under: canonicalRoot, publicationStatuses: statuses)
+        }
         var discovery = Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries, publicationStatuses: statuses)
         discovery.chainEvidence = chains
         return discovery
@@ -179,6 +216,8 @@ public struct SavedChecksumCheck: Sendable {
             throw CheckError.unreadableEvidence
         }
         try Self.requireUnchangedChains(discovery, files: files)
+        try Self.requireUnchangedClassic(discovery, files: files)
+        let classicManifestURLs = Set(discovery.classicEvidence.map { $0.url.standardizedFileURL })
         let resolver = RelativePathResolver(base: root)
         var actual: [String: URL] = [:]
         actual.reserveCapacity(files.count)
@@ -188,7 +227,8 @@ public struct SavedChecksumCheck: Sendable {
             let path = try resolver.resolve(file)
             // Unrecorded Finder state is noise. A preserved companion named in
             // the evidence is part of the transfer set and must be checked.
-            if Self.isReservedEvidence(path)
+            if (discovery.classicEvidence.isEmpty && Self.isReservedEvidence(path))
+                || classicManifestURLs.contains(file.standardizedFileURL)
                 || (FolderComparer.isFinderMetadata(path) && discovery.expectedFiles[path] == nil) { continue }
             #if canImport(Darwin)
             if discovery.expectedFiles[path] == nil,
@@ -202,6 +242,7 @@ public struct SavedChecksumCheck: Sendable {
         var matching: [String] = []
         var changed: [String] = []
         var missing: [String] = []
+        var classicMedia: [URL: ClassicMHLFile.Identity] = [:]
         await progress(Self.progress(processed: 0, total: paths.count, path: nil))
 
         for (index, path) in paths.enumerated() {
@@ -212,11 +253,19 @@ public struct SavedChecksumCheck: Sendable {
                 await progress(Self.progress(processed: index + 1, total: paths.count, path: path))
                 continue
             }
-            let actualChecksum = try await checksumForFile(file, algorithm: entry.algorithm)
-            if actualChecksum.caseInsensitiveCompare(entry.checksum) == .orderedSame {
-                matching.append(path)
+            if entry.record.kind == .classicMHL {
+                let mediaURL = root.appendingPathComponent(path)
+                let checked = try await checkClassicFile(mediaURL, entry: entry)
+                classicMedia[mediaURL] = checked.identity
+                if checked.matches { matching.append(path) }
+                else { changed.append(path) }
             } else {
-                changed.append(path)
+                let actualChecksum = try await checksumForFile(file, algorithm: entry.algorithm)
+                if actualChecksum.caseInsensitiveCompare(entry.checksum) == .orderedSame {
+                    matching.append(path)
+                } else {
+                    changed.append(path)
+                }
             }
             await progress(Self.progress(processed: index + 1, total: paths.count, path: path))
         }
@@ -228,6 +277,13 @@ public struct SavedChecksumCheck: Sendable {
             throw CheckError.unreadableEvidence
         }
         try Self.requireUnchangedChains(discovery, files: finalFiles)
+        try Self.requireUnchangedClassic(discovery, files: finalFiles)
+        for (url, identity) in classicMedia {
+            try Task.checkCancellation()
+            guard try ClassicMHLFile.currentIdentity(at: url) == identity else {
+                throw CheckError.unreadableEvidence
+            }
+        }
         let newPaths = Set(actual.keys).subtracting(expected.keys).sorted()
         let used = Set(expected.values.map(\.record.url))
         return Result(
@@ -236,7 +292,8 @@ public struct SavedChecksumCheck: Sendable {
             changedPaths: changed,
             missingPaths: missing,
             newPaths: newPaths,
-            records: discovery.records.filter { used.contains($0.url) },
+            records: discovery.classicEvidence.isEmpty
+                ? discovery.records.filter { used.contains($0.url) } : discovery.records,
             validatedHistoryDirectories: discovery.chainEvidence.map(\.directory)
         )
     }
@@ -403,6 +460,138 @@ public struct SavedChecksumCheck: Sendable {
             index = path.index(after: nextIndex)
         }
         return result
+    }
+
+    // MARK: - Classic MHL content checks
+
+    private static func classicCandidates(in files: [URL], under root: URL) throws -> [URL] {
+        let resolver = RelativePathResolver(base: root)
+        var candidates: [URL] = []
+        for url in files {
+            try Task.checkCancellation()
+            guard url.pathExtension.caseInsensitiveCompare("mhl") == .orderedSame else { continue }
+            let relative = try resolver.resolve(url)
+            guard !isReservedEvidence(relative) else { continue }
+            if try isMHLMetadataCompanion(url) { continue }
+            candidates.append(url.standardizedFileURL)
+            guard candidates.count <= 1024 else { throw CheckError.unsupportedEvidence }
+        }
+        try Task.checkCancellation()
+        return candidates.sorted { $0.path < $1.path }
+    }
+
+    private static func discoverClassic(in files: [URL], under root: URL,
+                                        publicationStatuses: [URL]) throws -> Discovery {
+        let candidates = try classicCandidates(in: files, under: root)
+        guard !candidates.isEmpty else { throw CheckError.notFound }
+        let candidateSet = Set(candidates)
+        let resolver = RelativePathResolver(base: root)
+        var snapshots: [ClassicMHLReader.Snapshot] = []
+        var expected: [String: ExpectedFile] = [:]
+        var records: [Record] = []
+        var evidenceBytes: Int64 = 0
+        for url in candidates {
+            try Task.checkCancellation()
+            let snapshot = try ClassicMHLReader.read(at: url)
+            let (total, overflow) = evidenceBytes.addingReportingOverflow(snapshot.identity.size)
+            guard !overflow, total <= EvidenceReader.maxReportBytes else { throw CheckError.unsupportedEvidence }
+            evidenceBytes = total
+            snapshots.append(snapshot)
+            let record = Record(url: url, date: snapshot.recordedDate ?? .distantPast, kind: .classicMHL)
+            records.append(record)
+            // Use lexical manifest-relative paths. Resolving a named media
+            // symlink here could silently check its target under another name.
+            let manifestPath = try resolver.resolve(url)
+            let prefix = manifestPath.split(separator: "/").dropLast().joined(separator: "/")
+            for file in snapshot.files {
+                try Task.checkCancellation()
+                let relative = prefix.isEmpty ? file.path : prefix + "/" + file.path
+                guard safeRecordedPath(relative) != nil,
+                      !candidateSet.contains(root.appendingPathComponent(relative).standardizedFileURL),
+                      let primary = file.digests.first else { throw CheckError.unsupportedEvidence }
+                if let previous = expected[relative] {
+                    guard previous.expectedSize == file.size,
+                          previous.relativePath.utf8.elementsEqual(relative.utf8) else {
+                        throw CheckError.unreadableEvidence
+                    }
+                    var combined = previous.requiredDigests
+                    for digest in file.digests {
+                        if let sameAlgorithm = combined.first(where: { $0.algorithm == digest.algorithm }) {
+                            guard sameAlgorithm.value == digest.value else { throw CheckError.unreadableEvidence }
+                        } else { combined.append(digest) }
+                    }
+                    expected[relative] = ExpectedFile(relativePath: relative, checksum: previous.checksum,
+                        algorithm: previous.algorithm, record: previous.record,
+                        requiredDigests: combined, expectedSize: file.size)
+                } else {
+                    expected[relative] = ExpectedFile(relativePath: relative, checksum: primary.value,
+                        algorithm: primary.algorithm, record: record,
+                        requiredDigests: file.digests, expectedSize: file.size)
+                }
+                guard expected.count <= 100_000 else { throw CheckError.unsupportedEvidence }
+            }
+        }
+        guard !expected.isEmpty else { throw CheckError.unreadableEvidence }
+        var discovery = Discovery(root: root, expectedFiles: expected,
+            records: records, publicationStatuses: publicationStatuses)
+        discovery.classicEvidence = snapshots
+        return discovery
+    }
+
+    private static func requireUnchangedClassic(_ discovery: Discovery, files: [URL]) throws {
+        guard discovery.records.contains(where: { $0.kind == .classicMHL }) else { return }
+        guard !discovery.classicEvidence.isEmpty,
+              try classicCandidates(in: files, under: discovery.root)
+                == discovery.classicEvidence.map(\.url).sorted(by: { $0.path < $1.path }) else {
+            throw CheckError.unreadableEvidence
+        }
+        try ClassicMHLReader.requireUnchanged(discovery.classicEvidence)
+    }
+
+    private func checkClassicFile(_ url: URL, entry: ExpectedFile) async throws
+        -> (matches: Bool, identity: ClassicMHLFile.Identity) {
+        guard let expectedSize = entry.expectedSize, expectedSize >= 0,
+              !entry.requiredDigests.isEmpty,
+              entry.requiredDigests.allSatisfy({
+                  ($0.algorithm == .md5 || $0.algorithm == .sha1) && Self.isValid($0.value, for: $0.algorithm)
+              }) else { throw CheckError.unsupportedEvidence }
+        let file = try ClassicMHLFile(url: url)
+        guard file.identity.size == expectedSize else {
+            try file.validateUnchanged()
+            return (false, file.identity)
+        }
+        guard fcntl(file.handle.fileDescriptor, F_NOCACHE, 1) != -1 else {
+            throw CheckError.unreadableEvidence
+        }
+        let needsMD5 = entry.requiredDigests.contains { $0.algorithm == .md5 }
+        let needsSHA1 = entry.requiredDigests.contains { $0.algorithm == .sha1 }
+        var md5 = Insecure.MD5()
+        var sha1 = Insecure.SHA1()
+        var bytesRead: Int64 = 0
+        while true {
+            try Task.checkCancellation()
+            try await PauseGate.waitIfCurrentIsPaused()
+            let remaining = file.identity.size - bytesRead
+            let count = try autoreleasepool { () throws -> Int in
+                let data = try file.handle.read(upToCount: Int(min(1_048_576, remaining)) + 1) ?? Data()
+                guard data.count <= remaining else { throw CheckError.unreadableEvidence }
+                if needsMD5 { md5.update(data: data) }
+                if needsSHA1 { sha1.update(data: data) }
+                return data.count
+            }
+            if count == 0 { break }
+            bytesRead += Int64(count)
+            try await classicChunkRead?(url, bytesRead)
+        }
+        try Task.checkCancellation()
+        try file.validateUnchanged()
+        guard bytesRead == file.identity.size else { throw CheckError.unreadableEvidence }
+        let md5Value = needsMD5 ? md5.finalize().map { String(format: "%02x", $0) }.joined() : ""
+        let sha1Value = needsSHA1 ? sha1.finalize().map { String(format: "%02x", $0) }.joined() : ""
+        let matches = entry.requiredDigests.allSatisfy { digest in
+            digest.value.caseInsensitiveCompare(digest.algorithm == .md5 ? md5Value : sha1Value) == .orderedSame
+        }
+        return (matches, file.identity)
     }
 
     // MARK: - ASC MHL
@@ -609,6 +798,8 @@ public struct SavedChecksumCheck: Sendable {
             return try await checksum.generateChecksum(for: url, type: .sha256, progressCallback: nil)
         case .md5:
             return try await checksum.generateChecksum(for: url, type: .md5, progressCallback: nil)
+        case .sha1:
+            return try await checksum.generateChecksum(for: url, type: .sha1, progressCallback: nil)
         case .xxh64:
             return try await XXH64.checksum(of: url)
         }
@@ -682,6 +873,7 @@ public struct SavedChecksumCheck: Sendable {
         let expectedLength: Int
         switch algorithm {
         case .sha256: expectedLength = 64
+        case .sha1: expectedLength = 40
         case .md5, .xxh64: expectedLength = algorithm == .md5 ? 32 : 16
         }
         return value.count == expectedLength && value.allSatisfy { $0.isASCII && $0.isHexDigit }

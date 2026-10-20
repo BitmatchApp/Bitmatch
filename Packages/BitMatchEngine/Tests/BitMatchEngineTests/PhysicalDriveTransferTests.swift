@@ -180,6 +180,7 @@ final class PhysicalDriveTransferTests: XCTestCase {
                         // pipeline SHA-256 is separately checked against our
                         // source baseline above. Never compare unlike hashes.
                         XCTAssertNotNil(entry.checksum.range(of: "^[a-f0-9]{32}$", options: .regularExpression))
+                    case .sha1: XCTFail("This writer does not request SHA-1")
                     case .xxh64: XCTFail("This writer does not request XXH64")
                     }
                 }
