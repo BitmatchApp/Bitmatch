@@ -269,7 +269,7 @@ final class SafetyValidatorTests: XCTestCase {
             guard case FileOperationError.unsafeOperation(let message) = error else {
                 return XCTFail("Expected unsafeOperation, got \(error)")
             }
-            XCTAssertTrue(message.contains("collide on case-insensitive filesystems"))
+            XCTAssertTrue(message.contains("differ only by case or Unicode form"))
         }
     }
 

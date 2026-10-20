@@ -247,6 +247,18 @@ private func completionGateError(_ message: String) -> NSError {
     )
 }
 
+func uniqueDestinationMetadata(_ entries: [FileEntry]) throws -> [String: FileEntry] {
+    var byPath: [String: FileEntry] = [:]
+    for entry in entries {
+        // Some filesystems allow distinct names that Swift compares as equal.
+        // Never trap or discard an entry while checking authoritative results.
+        guard byPath.updateValue(entry, forKey: entry.relativePath) == nil else {
+            throw completionGateError("Destination contains identical or Unicode-equivalent names. Keep the source media.")
+        }
+    }
+    return byPath
+}
+
 /// Owns the single operation admitted by a service instance.
 /// Cancellation never releases the slot; only the matching operation's exit does.
 public final class ActiveOperationRegistry: Sendable {
@@ -499,6 +511,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Step 2: Build one fail-closed source manifest before safety validation.
         SharedLogger.debug("Prep: enumerating source manifest at \(operation.sourceURL.path)", category: .transfer)
         let completeSourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
+        // Validate these captured paths before exclusions or String-keyed maps.
+        // A later live scan cannot prove this manifest has unambiguous names.
+        try SafetyValidator.validatePortableRelativePaths(completeSourceManifest.map(\.relativePath))
         let excluded = try AppleDoubleSelection.excluded(in: completeSourceManifest, reviewedPaths: operation.settings.excludedAppleDoublePaths)
         if !excluded.isEmpty {
             SharedLogger.transferEvent(.appleDoubleExcluded, run: TransferDiagnostics.runID ?? operation.id, code: excluded.count)
@@ -1059,9 +1074,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             guard let pinned = pinnedDestinations[destIndex] else { continue }
             let actual: [String: FileEntry]
             do {
-                actual = Dictionary(
-                    uniqueKeysWithValues: try pinned.regularFileMetadata().map { ($0.relativePath, $0) }
-                )
+                actual = try uniqueDestinationMetadata(pinned.regularFileMetadata())
             } catch {
                 let reason = "\(destinationURL.lastPathComponent)'s files could not be checked after verification: \(error.localizedDescription)"
                 let failure = completionGateError(reason)

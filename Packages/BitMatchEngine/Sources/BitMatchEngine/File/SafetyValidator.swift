@@ -428,9 +428,11 @@ public final class SafetyValidator {
                 .precomposedStringWithCanonicalMapping
                 .lowercased(with: locale)
 
-            if let original = seen[portableKey], original != relativePath {
+            // Swift String equality includes canonical equivalence. Two distinct
+            // directory entries (for example K and K on HFS+) can compare equal.
+            if let original = seen[portableKey] {
                 throw FileOperationError.unsafeOperation(
-                    "Source contains paths that collide on case-insensitive filesystems: \(original) and \(relativePath)"
+                    "Source contains names that differ only by case or Unicode form: \(original) and \(relativePath)"
                 )
             }
             seen[portableKey] = relativePath
