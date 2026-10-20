@@ -5,7 +5,7 @@ import CryptoKit
 import Combine
 import Testing
 @testable import BitMatch
-import BitMatchEngine
+@testable import BitMatchEngine
 
 @MainActor
 final class LocalTransferQueueIntegrationTests: XCTestCase {
@@ -779,6 +779,142 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let settledData = try Data(contentsOf: f.journalURL)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(try Data(contentsOf: f.journalURL), settledData, "No journal write may trail the exit reply")
+    }
+
+    /// Plant: restore the early return from settlement while queue metadata
+    /// preparation still owns its resource lease. This gate proves preparation
+    /// has started; the stopped flag is observed on the same main actor, with
+    /// no fixed sleep used to infer whether settlement ran.
+    func testExitCancellationWaitsForQueuedPreparationAndPreventsLateStart() async throws {
+        try await withGatedQueuePreparation { f, journal, id, identities, service, coordinator in
+            let queuedJSON = try Data(contentsOf: f.journalURL)
+            let settled = Locked(false)
+            let settlement = Task { @MainActor in
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: .appQuit)
+                settled.set(true)
+            }
+            let stopped = await waitUntil { @MainActor in !coordinator.queueIsRunning }
+            XCTAssertTrue(stopped, "Settlement must first request the queue stop")
+            let returnedBeforeRelease = settled.value
+            XCTAssertFalse(returnedBeforeRelease, "Exit must wait while queued preparation owns its resource scope")
+            identities.release()
+            try await settlement.value
+            if returnedBeforeRelease {
+                // Drain the demonstrated baseline bug before removing its
+                // disposable source; this wait is cleanup, not the assertion.
+                let unwound = await waitUntil { @MainActor in
+                    let starts = await service.starts
+                    return !starts.isEmpty && !coordinator.isOperationInProgress
+                }
+                XCTAssertTrue(unwound, "The old preparation must be drained before fixture cleanup")
+            }
+            let starts = await service.starts
+            XCTAssertTrue(starts.isEmpty, "A cancelled preparation must never reach the copy engine")
+            XCTAssertFalse(coordinator.isOperationInProgress)
+            XCTAssertEqual(journal.records.first(where: { $0.id == id })?.state, .queued,
+                           "No attempt started, so explicit cancellation must not save a failed transfer")
+            XCTAssertEqual(try Data(contentsOf: f.journalURL), queuedJSON,
+                           "Pre-start cancellation must preserve the journal and its saved bookmarks")
+            XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("clip.mov")), Data("card".utf8))
+        }
+    }
+
+    /// Plant: replace the explicit cancelled-invocation admission guard with
+    /// only queueIsRunning. A restart must not revive stale preparation.
+    func testRestartCannotReviveCancelledQueuedPreparation() async throws {
+        try await withGatedQueuePreparation { _, journal, id, identities, service, coordinator in
+            let settled = Locked(false)
+            let settlement = Task { @MainActor in
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: .appQuit)
+                settled.set(true)
+            }
+            let stopped = await waitUntil { @MainActor in !coordinator.queueIsRunning }
+            XCTAssertTrue(stopped)
+            let returnedBeforeRelease = settled.value
+            XCTAssertFalse(returnedBeforeRelease)
+            coordinator.startQueue()
+            XCTAssertFalse(coordinator.queueIsRunning, "Restart waits until the cancelled preparation unwinds")
+            identities.release()
+            try await settlement.value
+            if returnedBeforeRelease {
+                _ = await waitUntil { @MainActor in
+                    let starts = await service.starts
+                    return !starts.isEmpty && !coordinator.isOperationInProgress
+                }
+            }
+            let beforeRestart = await service.starts
+            XCTAssertTrue(beforeRestart.isEmpty, "The old captured preparation must not be admitted")
+            XCTAssertEqual(journal.records.first(where: { $0.id == id })?.state, .queued)
+            coordinator.startQueue()
+            let restarted = await waitUntil { @MainActor in
+                let starts = await service.starts
+                return starts.count == 1 && !coordinator.isOperationInProgress
+            }
+            XCTAssertTrue(restarted, "A new explicit start must work after settlement")
+            let afterRestart = await service.starts
+            XCTAssertEqual(afterRestart.count, 1)
+        }
+    }
+
+    /// Stop after current includes a card already being prepared. It is not
+    /// exit cancellation, and must not acquire the new invalidation semantics.
+    func testStopAfterCurrentStillRunsTheAlreadyPreparingCard() async throws {
+        try await withGatedQueuePreparation { _, journal, id, identities, service, coordinator in
+            coordinator.stopQueueAfterCurrentTransfer()
+            XCTAssertFalse(coordinator.queueIsRunning)
+            identities.release()
+            let finished = await waitUntil { @MainActor in
+                let starts = await service.starts
+                return starts.count == 1 && !coordinator.isOperationInProgress
+            }
+            XCTAssertTrue(finished)
+            let starts = await service.starts
+            XCTAssertEqual(starts.count, 1)
+            XCTAssertNotEqual(journal.records.first(where: { $0.id == id })?.state, .queued)
+            XCTAssertNotEqual(journal.records.first(where: { $0.id == id })?.state, .cancelled)
+            XCTAssertFalse(coordinator.queueIsRunning)
+        }
+    }
+
+    private func withGatedQueuePreparation(
+        _ body: @MainActor (QueueFixture, LocalTransferJournal, UUID, QueuePreparationIdentityGate,
+                 QueueRecordingOperations, SharedAppCoordinator) async throws -> Void
+    ) async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let identities = QueuePreparationIdentityGate()
+        defer { identities.release() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+        let service = QueueRecordingOperations()
+        let diagnostics = TransferDiagnosticStore(directory: f.root.appendingPathComponent("diagnostics"))
+        try await TransferDiagnostics.$recordingStoreOverride.withValue(diagnostics) {
+            let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: service),
+                transferJournal: journal, defaults: f.defaults, physicalDiskIdentityProvider: identities)
+            coordinator.startQueue()
+            let entered = await waitUntil { identities.hasEntered }
+            XCTAssertTrue(entered, "The provider must have started inside queued preparation")
+            guard entered else {
+                identities.release()
+                try await coordinator.cancelOperationAndWaitForSettlement(origin: .appQuit)
+                return
+            }
+            XCTAssertTrue(coordinator.queueIsRunning)
+            XCTAssertFalse(coordinator.isOperationInProgress)
+            let starts = await service.starts
+            XCTAssertTrue(starts.isEmpty)
+            var bodyError: Error?
+            do { try await body(f, journal, id, identities, service, coordinator) }
+            catch { bodyError = error }
+            // Assertions above describe the requested behavior. Only afterward
+            // settle any final queue unwind before deleting its owned fixture.
+            identities.release()
+            try await coordinator.cancelOperationAndWaitForSettlement(origin: .appQuit)
+            XCTAssertFalse(identities.didTimeOut, "The provider gate must be explicitly released, not time out")
+            if let bodyError { throw bodyError }
+        }
     }
 
     func testExitCancellationReportsPersistenceFailureAndLeavesRunningRecordVisible() async throws {
@@ -1991,6 +2127,48 @@ private final class SnapshotIsolationOperations: FileOperationsService, @uncheck
     func cancelOperation() {}
     func pauseOperation() async {}
     func resumeOperation() async {}
+}
+
+/// The production provider API is synchronous, but the coordinator invokes
+/// it off the main actor. A condition gate controls that real await boundary.
+private final class QueuePreparationIdentityGate: PhysicalDiskIdentityProviding, @unchecked Sendable {
+    private let condition = NSCondition()
+    private var entered = false
+    private var released = false
+    private var timedOut = false
+
+    var didTimeOut: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return timedOut
+    }
+
+    var hasEntered: Bool {
+        condition.lock()
+        defer { condition.unlock() }
+        return entered
+    }
+
+    func physicalDiskIdentity(for url: URL) -> String? {
+        condition.lock()
+        entered = true
+        let deadline = Date(timeIntervalSinceNow: 15)
+        while !released {
+            guard condition.wait(until: deadline) else {
+                timedOut = true
+                break
+            }
+        }
+        condition.unlock()
+        return "fixture-disk:" + url.standardizedFileURL.path
+    }
+
+    func release() {
+        condition.lock()
+        released = true
+        condition.broadcast()
+        condition.unlock()
+    }
 }
 
 private struct QueueFixture {

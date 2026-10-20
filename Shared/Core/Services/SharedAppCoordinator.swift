@@ -245,6 +245,10 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var editingSetupTransferID: UUID?
     private var queueSessionRecordOrder: [UUID] = []
     private var isProcessingQueue = false
+    // Retained through access.release(), not just until the engine starts.
+    private var queueInvocationID: UUID?
+    private var cancelledQueueInvocationID: UUID?
+    private var queuedSourceScanTask: Task<[FileEntry], Error>?
     private var activeJournalRecordID: UUID?
     private(set) var activeRunContext: TransferRunContext?
     private var queueFinishNotificationWasPosted = false
@@ -1368,6 +1372,10 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     func startQueue() {
+        if let invocationID = queueInvocationID, cancelledQueueInvocationID == invocationID {
+            queueMessage = "Wait for the queue to stop, then try again."
+            return
+        }
         guard !(isOperationInProgress && currentMode == .compareFolders) else {
             queueIsRunning = false
             queueMessage = "Finish or cancel the folder comparison, then choose Resume Queue."
@@ -1704,8 +1712,16 @@ class SharedAppCoordinator: ObservableObject {
             queueMessage = "Finish or clear the prepared project card before running the queue."
             return
         }
+        let invocationID = UUID()
+        queueInvocationID = invocationID
         isProcessingQueue = true
         defer {
+            // The inner access lease is released before this outer defer.
+            if queueInvocationID == invocationID {
+                queuedSourceScanTask = nil
+                queueInvocationID = nil
+                if cancelledQueueInvocationID == invocationID { cancelledQueueInvocationID = nil }
+            }
             isProcessingQueue = false
             isReplayingQueuedTransfer = false
             if queueIsRunning { Task { await self.processNextQueuedTransfer() } }
@@ -1732,9 +1748,13 @@ class SharedAppCoordinator: ObservableObject {
             activeProjectCardID = nil
             projectRunCameraSettings = nil
             let queuedSourceURL = access.sourceURL
-            let sourceManifest = try await Task.detached(priority: .userInitiated) {
+            let sourceScan = Task.detached(priority: .userInitiated) {
                 try CardSource.enumerateRegularFiles(base: queuedSourceURL)
-            }.value
+            }
+            queuedSourceScanTask = sourceScan
+            let sourceManifest = try await sourceScan.value
+            try requireCurrentQueuePreparation(invocationID)
+            queuedSourceScanTask = nil
             // An empty queued card fails its own record and stops the queue
             // (caught below); returning quietly from executeOperation left
             // the queue running with nothing to run.
@@ -1748,6 +1768,7 @@ class SharedAppCoordinator: ObservableObject {
                 names: destinationNames,
                 provider: physicalDiskIdentityProvider
             )
+            try requireCurrentQueuePreparation(invocationID)
             let context = TransferRunContext(
                 sourceURL: access.sourceURL,
                 destinationURLs: access.destinationURLs,
@@ -1765,7 +1786,10 @@ class SharedAppCoordinator: ObservableObject {
                 independentDestinationCount: independence.independentCopyCount,
                 photographerReportFinalizer: nil
             )
-            await executeOperation(context)
+            await executeOperation(context, queuedInvocationID: invocationID)
+        } catch is CancellationError where cancelledQueueInvocationID == invocationID {
+            // No engine attempt was admitted. Keep its record and bookmarks
+            // queued; an intentional stop is not a failed transfer.
         } catch {
             queueIsRunning = false
             queueMessage = error.localizedDescription
@@ -1781,6 +1805,19 @@ class SharedAppCoordinator: ObservableObject {
         }
     }
 
+
+    private func requireCurrentQueuePreparation(_ invocationID: UUID) throws {
+        guard queueInvocationID == invocationID, cancelledQueueInvocationID != invocationID else {
+            throw CancellationError()
+        }
+        try Task.checkCancellation()
+    }
+
+    private func cancelPendingQueueWork() {
+        guard let invocationID = queueInvocationID else { return }
+        cancelledQueueInvocationID = invocationID
+        queuedSourceScanTask?.cancel()
+    }
 
     private static func isQueueProblem(_ record: LocalTransferRecord) -> Bool {
         let safety = TransferLibraryPresentation.safetyState(for: record)
@@ -1870,8 +1907,12 @@ class SharedAppCoordinator: ObservableObject {
         liveResults.upsert(row)
     }
 
-    private func executeOperation(_ initialContext: TransferRunContext) async {
+    private func executeOperation(_ initialContext: TransferRunContext, queuedInvocationID: UUID? = nil) async {
         guard activeStartID == nil, !isOperationInProgress else { return }
+        if let queuedInvocationID {
+            guard queueInvocationID == queuedInvocationID,
+                  cancelledQueueInvocationID != queuedInvocationID else { return }
+        }
         lastOperationWasCompare = false
         guard !initialContext.sourceIsKnownEmpty else {
             operationState = .failed
@@ -2492,8 +2533,9 @@ class SharedAppCoordinator: ObservableObject {
 
     func cancelOperation(origin: TransferCancelOrigin = .user) {
         cancellationOrigin = origin
-        SharedLogger.cancelEvent(origin, run: activeStartID ?? stateService.currentOperationId)
+        SharedLogger.cancelEvent(origin, run: activeStartID ?? stateService.currentOperationId ?? queueInvocationID)
         queueIsRunning = false
+        cancelPendingQueueWork()
         if activeStartID != nil {
             startCancellationRequested = true
         }
@@ -2519,12 +2561,20 @@ class SharedAppCoordinator: ObservableObject {
     func cancelOperationAndWaitForSettlement(origin: TransferCancelOrigin = .user) async throws {
         let startID = activeStartID
         let recordID = activeJournalRecordID
+        let invocationID = queueInvocationID
 
-        guard startID != nil || isOperationInProgress || queueIsRunning else { return }
-        // The queue can be between records: stopping it is already settled,
-        // and no journal record is currently running.
+        guard startID != nil || isOperationInProgress || queueIsRunning || invocationID != nil else { return }
+        // Queued metadata preparation can own scopes before an engine run or
+        // journal admission exists. Invalidate it and await the lease release.
         guard startID != nil || isOperationInProgress else {
             queueIsRunning = false
+            if let invocationID {
+                cancelPendingQueueWork()
+                SharedLogger.cancelEvent(origin, run: invocationID)
+                while queueInvocationID == invocationID {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+            }
             return
         }
         cancelOperation(origin: origin)
@@ -2535,6 +2585,12 @@ class SharedAppCoordinator: ObservableObject {
             }
         } else {
             while isOperationInProgress {
+                try await Task.sleep(for: .milliseconds(10))
+            }
+        }
+
+        if let invocationID {
+            while queueInvocationID == invocationID {
                 try await Task.sleep(for: .milliseconds(10))
             }
         }
