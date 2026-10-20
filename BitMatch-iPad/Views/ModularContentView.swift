@@ -311,6 +311,8 @@ struct SettingsSheetView: View {
                         .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
                 }
 
+                TransferSettingsSection(coordinator: coordinator)
+
                 Section("Diagnostics") {
                     LocalCrashEvidenceSettingView(settings: generalSettings)
                 }

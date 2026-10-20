@@ -152,6 +152,8 @@ struct PreferencesWindow: View {
                 LocalCrashEvidenceSettingView(settings: generalSettings)
             }
 
+            TransferSettingsSection(coordinator: coordinator)
+
             Section("Updates") {
                 Toggle(
                     "Check for updates automatically",

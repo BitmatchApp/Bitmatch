@@ -39,6 +39,12 @@ BitMatch checks the file structure, shows a quiet exclusion count, and keeps the
 
 The option follows the transfer into the queue and history. Reports list the exclusions, and ASC MHL describes the selected destination files. **Keep the source:** “selected files verified” does not mean the whole card is backed up or safe to erase. Existing destination metadata is left alone, including companions macOS creates itself. This option doesn't repair conflicting files or filter an existing checksum inventory during Check.
 
+## Move Transfer Settings Between Devices
+
+Use **Settings → Transfer settings → Export settings…** to save your verification, ASC MHL, AppleDouble, report and basic folder-naming choices. On another Mac, iPad or iPhone, choose **Import settings…**, review the changes, then Apply. Cancel leaves your settings alone.
+
+This moves options, not a job: it leaves out backup locations, camera labels, folder paths, operator and notes, project details, credentials and saved transfers. Import is unavailable while transfers or queued work need attention. Changing the AppleDouble preference reviews the current source again before Start. Folder recipes and saved destinations aren't included.
+
 ## Check Existing Backups
 
 Choose **Check**, then pick the folder or drive you want to check. Use **Its saved checksums** when BitMatch finds supported records, such as a BitMatch JSON report or an ASC MHL inventory. It reads the files again and compares them with those records; the original card does not need to be connected.
