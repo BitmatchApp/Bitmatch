@@ -137,11 +137,21 @@ def remove_tree_at(parent_fd, name, identity, device):
         with os.scandir(fd) as entries:
             ordered = sorted(entries, key=lambda item: item.name == '.bitmatch-validation-owned.json')
             for entry in ordered:
-                item = entry.stat(follow_symlinks=False)
+                try:
+                    item = entry.stat(follow_symlinks=False)
+                except FileNotFoundError:
+                    # macOS can remove a companion when its principal is unlinked.
+                    if entry.name.startswith('._') and len(entry.name) > 2:
+                        continue
+                    raise
                 if stat.S_ISDIR(item.st_mode):
                     remove_tree_at(fd, entry.name, (item.st_dev, item.st_ino), device)
                 else:
-                    os.unlink(entry.name, dir_fd=fd)
+                    try:
+                        os.unlink(entry.name, dir_fd=fd)
+                    except FileNotFoundError:
+                        if not (entry.name.startswith('._') and len(entry.name) > 2):
+                            raise
         named = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if (named.st_dev, named.st_ino) != identity:
             raise UnsafeFixture('Fixture name was replaced; retaining replacement.')
