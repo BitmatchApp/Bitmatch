@@ -38,6 +38,8 @@ with tempfile.TemporaryDirectory(prefix='bitmatch-fat-chain-reference-') as temp
     root = pathlib.Path(temporary) / 'media'
     shutil.copytree(source, root)
     history = root / 'ascmhl'
+    assert (root / 'Camera A/clip.txt').is_file()
+    assert all(str(p.relative_to(root)).isascii() for p in root.rglob('*')), 'Synthetic derivative filenames must remain Git-portable ASCII'
     chain = etree.parse(str(history / 'ascmhl_chain.xml'))
     etree.XMLSchema(etree.parse(str(reference / 'xsd/ASCMHLDirectory__combined.xsd'))).assertValid(chain)
     schema = etree.XMLSchema(etree.parse(str(reference / 'xsd/ASCMHL.xsd')))

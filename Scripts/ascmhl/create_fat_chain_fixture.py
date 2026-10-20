@@ -8,6 +8,7 @@ ASC tool appends generation two. BitMatch's reader never reseals a history.
 """
 import argparse
 import hashlib
+from xml.sax.saxutils import escape
 import pathlib
 import re
 import subprocess
@@ -52,6 +53,13 @@ assert media == b'BitMatch interoperability test\n', 'Only original ASCMHLFixtur
 # Preserve writer formatting while replacing the one machine-specific field.
 manifest, replacements = re.subn(rb'<hostname>[^<]+</hostname>', b'<hostname>bitmatch-fixture-host</hostname>', original)
 assert replacements == 1
+# exFAT presents the source filename decomposed on macOS, while Git may store
+# it composed. Use ASCII only in this synthetic derivative so a fresh checkout
+# is portable; production recorded paths and existing Unicode corpus stay intact.
+portable_path = 'Camera A/clip.txt'
+recorded = escape(path).encode()
+assert manifest.count(recorded) == 1
+manifest = manifest.replace(recorded, portable_path.encode())
 hasher = C4(); hasher.update(manifest)
 chain = (f'<?xml version="1.0" encoding="UTF-8"?>\n'
          f'<ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">\n'
@@ -59,8 +67,8 @@ chain = (f'<?xml version="1.0" encoding="UTF-8"?>\n'
          f'</ascmhldirectory>\n').encode()
 completion = opening + f'COMPLETE {name} {len(manifest)} {hashlib.sha256(manifest).hexdigest()} {len(chain)} {hashlib.sha256(chain).hexdigest()}\n'.encode()
 output.mkdir(parents=True, exist_ok=False)
-(output / path).parent.mkdir(parents=True)
-(output / path).write_bytes(media)
+(output / portable_path).parent.mkdir(parents=True)
+(output / portable_path).write_bytes(media)
 (output / 'ascmhl').mkdir()
 (output / 'ascmhl' / name).write_bytes(manifest)
 (output / 'ascmhl/ascmhl_chain.xml').write_bytes(chain)

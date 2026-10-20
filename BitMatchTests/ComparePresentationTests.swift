@@ -107,8 +107,8 @@ struct ComparePresentationTests {
                 date: Date(), kind: .ascMHL)], validatedHistoryDirectories: [history])
         let verdict = CompareVerdictPresentation.makeSaved(result)
         #expect(verdict.tone == .verified)
-        #expect(verdict.detail.contains("File contents and MHL inventory chains checked"))
-        #expect(verdict.detail.contains("directory structure and history authenticity were not verified"))
+        #expect(verdict.detail.contains("File contents and supported MHL inventory chains checked"))
+        #expect(verdict.detail.contains("directory structure and authenticity were not verified"))
     }
 
     @Test func zeroByteFolderUsesEmptyWording() {

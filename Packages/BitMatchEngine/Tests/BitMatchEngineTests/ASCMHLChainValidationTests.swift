@@ -142,6 +142,36 @@ struct ASCMHLChainValidationTests {
         await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) { _ = try await checker.discover(under: root) }
     }
 
+    @Test(arguments: [false, true])
+    func completionRejectsHistoryDirectoryReplacement(extended: Bool) throws {
+        let root = try copy("bitmatch-fat-extended")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let history = root.appendingPathComponent("ascmhl")
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        if !extended {
+            let paths = try manifests(root)
+            let first = try #require(paths.first)
+            for path in paths.dropFirst() { try FileManager.default.removeItem(at: path) }
+            try Data(ASCMHLGenerator.initialChain(name: first.lastPathComponent,
+                manifest: Data(contentsOf: first)).utf8).write(to: chain(root))
+        }
+        #expect(try ASCMHLGenerator.publicationIsComplete(at: status))
+        let before = try snapshot(root)
+        let moved = root.appendingPathComponent("preserved-history")
+        let marker = Data("A different writer owns this directory".utf8)
+        let complete = try ASCMHLGenerator.publicationIsComplete(at: status, beforeFinalIdentityCheck: {
+            try FileManager.default.moveItem(at: history, to: moved)
+            try FileManager.default.createDirectory(at: history, withIntermediateDirectories: false)
+            try marker.write(to: history.appendingPathComponent("other-writer.txt"))
+        })
+        #expect(!complete)
+        #expect(try Data(contentsOf: history.appendingPathComponent("other-writer.txt")) == marker)
+        for (path, bytes) in before where path.hasPrefix("ascmhl/") {
+            let preserved = moved.appendingPathComponent(String(path.dropFirst("ascmhl/".count)))
+            #expect(try Data(contentsOf: preserved) == bytes)
+        }
+    }
+
     @Test func childHistoryReferencesRemainExplicitlyUnsupported() async throws {
         let root = try copy()
         defer { try? FileManager.default.removeItem(at: root) }

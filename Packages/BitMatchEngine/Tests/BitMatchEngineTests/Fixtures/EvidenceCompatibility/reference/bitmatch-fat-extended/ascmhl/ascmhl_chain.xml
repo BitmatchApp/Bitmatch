@@ -2,10 +2,10 @@
 <ascmhldirectory xmlns="urn:ASC:MHL:DIRECTORY:v2.0">
   <hashlist sequencenr="1">
     <path>0001_BitMatch_FAT_2026-10-19_234711Z.mhl</path>
-    <c4>c45p4tQ6mitaUGJrsSJcENBs8TWdeDtD3XXcBZe4yySEDDgykamCFtA7fKQySykd7rjLf3PgwBgBmwQyPbWy3ehTqs</c4>
+    <c4>c42SfazAxautKSkd36qAf4nCBDYLXQHoTFps31A9pJSVgBzFZHjSsNpcZya2rf8nYrfCHpFcarFRhq6nqWiGzMQtoz</c4>
   </hashlist>
   <hashlist sequencenr="2">
-    <path>0002_bitmatch-mhl-chain-sanitized-initial_2026-10-19_235129Z.mhl</path>
-    <c4>c43nWHMHukmNzQEJNeLvcZDsDyxtEmpqxexTEkkMZn7F2Ba8aX54KbgGZ5zrnwTqsCixtx34nnJ176QfsCQbDXmrCS</c4>
+    <path>0002_bitmatch-mhl-chain-portable-result_2026-10-20_000226Z.mhl</path>
+    <c4>c417WXirvRwVXCP8BTibgTSGiEWfkGzdrDv4FrjMXP1YABMZFgQd3ssKzsWRzvZkfEyVBmK2ykvyD46PKRuwAbj9Rm</c4>
   </hashlist>
 </ascmhldirectory>

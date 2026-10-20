@@ -14,7 +14,8 @@ Mounted-driver probe:
 
 Public fixture:
 - Sanitized derivative of that initial engine output; not a byte-for-byte
-  mounted-volume capture. Synthetic hostname replaces machine hostname.
+  mounted-volume capture. Synthetic hostname replaces machine hostname; synthetic clip path is ASCII
+  to avoid exFAT/Git Unicode-composition portability differences.
 - Initial chain/status rebuilt during fixture creation only, before the
   official CLI append. Check never writes or reseals histories.
 - Reproducible create_fat_chain_fixture.py run accepted the known synthetic
@@ -26,7 +27,7 @@ Public fixture:
 
 Local focused tests:
 - Swift Testing: ASCMHLChainValidationTests, EvidenceCompatibilityTests,
-  SavedChecksumCheckTests — 48 test functions passed, zero issues, including
+  SavedChecksumCheckTests — 49 test functions passed, zero issues, including
   their parameterized positive/adversarial cases.
 - XCTest: ASCMHLGeneratorTests — 28 executed, zero failures.
 - git diff --check: clean.
@@ -46,3 +47,13 @@ verify directory/root hashes, interpret rename or child-history references,
 authenticate custody, or prove that an unanchored historical tail was never
 removed. Unsupported evidence is explicit; legacy no-chain evidence retains
 its file-content-only scope. No source or history writes were added.
+
+Final follow-up:
+- Original and extended FAT completion paths both recheck the final named
+  directory against the original open descriptor before returning success.
+- Deterministic replacement-directory tests pass for both paths and preserve
+  the displaced evidence plus replacement writer's marker.
+- Removing only that identity comparison in an isolated copy caused both
+  assertions to fail; the positive implementation was untouched.
+- New fixture validated from a fresh Git archive to expose checkout-dependent
+  filename behavior; production Unicode handling was unchanged.
