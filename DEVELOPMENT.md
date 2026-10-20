@@ -6,7 +6,8 @@ Read [docs/THESIS.md](docs/THESIS.md) for what BitMatch promises and the current
 
 ## Building
 
-- Use Xcode 26.3 or newer for the app concurrency settings; CI selects Xcode 26.3. Open `BitMatch.xcodeproj`.
+- The 0.2.10 release is built and tested locally with Xcode 27.1 (27A9275), Swift 6.4. Open `BitMatch.xcodeproj`.
+- CI still selects Xcode 26.3. That toolchain currently aborts while compiling Mac Settings and rejects some engine-test isolation patterns; those jobs do not establish a runtime test result. Older-toolchain build compatibility remains open. This does not change the app's macOS 15.5 minimum.
 - Schemes:
   - `BitMatch`: the macOS app (macOS 15.5 or newer).
   - `BitMatch-iPad`: the iPhone and iPad app (iOS/iPadOS 18.5 or newer). Despite the name it targets both device families.

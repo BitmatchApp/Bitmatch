@@ -7,6 +7,7 @@ All notable changes to this project will be documented in this file.
 ## [0.2.10] - 2026-10-20
 
 - Notification permission requests show when they are waiting or fail, with a link to the running app’s system settings. iPhone and iPad Settings also offer Enable Notifications.
+- Mac updater requirements now match the built app.
 
 - Fixed crashes caused by Unicode-equivalent filenames. Conflicting source names are refused before copying; conflicting existing backup names prevent a successful result.
 - Queued transfers can move on to the next card when every selected file verified and only the AppleDouble metadata files you chose to ignore were excluded. Exclusions stay in the report, and other problems still stop the queue for review.
