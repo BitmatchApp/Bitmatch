@@ -66,7 +66,8 @@ struct ReportPDFLayoutTests {
             clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
         let blocks = ReportView(s: summary, rows: rows).pdfBlocks
         let heights = ReportPDFRenderer.blockHeights(blocks)
-        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight)
+        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight,
+            firstPageContentHeight: ReportPDFRenderer.firstPageContentHeight)
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
         #expect(pages.count > 1)
         #expect(document.pageCount == pages.count)
@@ -91,6 +92,15 @@ struct ReportPDFLayoutTests {
             #expect(bounds.minY >= ReportPDFRenderer.verticalMargin)
             #expect(bounds.maxY <= ReportPDFRenderer.pageHeight - ReportPDFRenderer.verticalMargin)
         }
+    }
+
+
+    @Test func firstPageUsesSpaceThatContinuationHeadersNeedLater() {
+        let packed = ReportPDFLayout.pages(blockHeights: [60, 60, 20], contentHeight: 100, firstPageContentHeight: 150)
+        #expect(packed.map(\.blocks) == [0..<3])
+        let sliced = ReportPDFLayout.pages(blockHeights: [250, 50], contentHeight: 100, firstPageContentHeight: 150)
+        #expect(sliced.map(\.blocks) == [0..<1, 0..<1, 1..<2])
+        #expect(sliced.map(\.offset) == [0, 150, 0])
     }
 
 }

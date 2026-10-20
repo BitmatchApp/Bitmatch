@@ -14,6 +14,7 @@ enum ReportPDFRenderer {
     static let horizontalMargin: CGFloat = 32
     static let verticalMargin: CGFloat = 36
     static let continuationHeight: CGFloat = 40
+    static let firstPageContentHeight = pageHeight - 2 * verticalMargin
     static let contentHeight = pageHeight - 2 * verticalMargin - continuationHeight
 
     @MainActor
@@ -38,7 +39,8 @@ enum ReportPDFRenderer {
         let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
         let blocks = report.pdfBlocks
         let heights = blockHeights(blocks)
-        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: contentHeight)
+        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: contentHeight,
+            firstPageContentHeight: firstPageContentHeight)
         let pdfMetadata = [
             kCGPDFContextCreator: "BitMatch",
             kCGPDFContextTitle: "BitMatch Verification Report"
@@ -70,7 +72,8 @@ enum ReportPDFRenderer {
                     }
                     .fixedSize(horizontal: false, vertical: true)
                     .offset(y: -page.offset)
-                    .frame(width: pageWidth - 2 * horizontalMargin, height: contentHeight, alignment: .topLeading)
+                    .frame(width: pageWidth - 2 * horizontalMargin,
+                           height: pageIndex == 0 ? firstPageContentHeight : contentHeight, alignment: .topLeading)
                     .clipped()
                     Spacer(minLength: 0)
                 }

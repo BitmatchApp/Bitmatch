@@ -7,29 +7,32 @@ enum ReportPDFLayout {
         let offset: CGFloat
     }
 
-    static func pages(blockHeights: [CGFloat], contentHeight: CGFloat) -> [Page] {
+    static func pages(blockHeights: [CGFloat], contentHeight: CGFloat, firstPageContentHeight: CGFloat? = nil) -> [Page] {
         precondition(contentHeight.isFinite && contentHeight > 0)
+        let firstHeight = firstPageContentHeight ?? contentHeight
+        precondition(firstHeight.isFinite && firstHeight > 0)
         precondition(blockHeights.allSatisfy { $0.isFinite && $0 >= 0 })
         var pages: [Page] = []
         var start = 0
         var used: CGFloat = 0
+        var capacity: CGFloat { pages.isEmpty ? firstHeight : contentHeight }
 
         for (index, height) in blockHeights.enumerated() {
-            if height > contentHeight {
-                if start < index { pages.append(Page(blocks: start..<index, offset: 0)) }
+            if used + height > capacity, start < index {
+                pages.append(Page(blocks: start..<index, offset: 0))
+                start = index
+                used = 0
+            }
+            if height > capacity {
                 var offset: CGFloat = 0
                 while offset < height {
+                    let sliceHeight = capacity
                     pages.append(Page(blocks: index..<(index + 1), offset: offset))
-                    offset += contentHeight
+                    offset += sliceHeight
                 }
                 start = index + 1
                 used = 0
             } else {
-                if used + height > contentHeight {
-                    pages.append(Page(blocks: start..<index, offset: 0))
-                    start = index
-                    used = 0
-                }
                 used += height
             }
         }

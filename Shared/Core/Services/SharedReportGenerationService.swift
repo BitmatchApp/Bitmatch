@@ -198,16 +198,11 @@ class SharedReportGenerationService: ObservableObject {
         }
         
         for cameraGroup in reportData.cameraGroups {
-            if yPosition > contentRect.maxY - 150 {
-                // Finish current page
+            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration) {
                 NSGraphicsContext.restoreGraphicsState()
                 context.endPDFPage()
-                
-                // Start new page
                 setupNewPage()
-                yPosition = contentRect.minY
             }
-            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration)
         }
         
         // End final page
@@ -265,13 +260,9 @@ class SharedReportGenerationService: ObservableObject {
         
         // Render camera groups
         for cameraGroup in reportData.cameraGroups {
-            // Check if we need a new page
-            if yPosition > contentRect.maxY - 150 {
+            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration) {
                 context.beginPage()
-                yPosition = contentRect.minY
             }
-            
-            yPosition = renderCameraGroup(cameraGroup, in: contentRect, at: yPosition, configuration: configuration)
         }
     }
     #endif
@@ -306,8 +297,7 @@ class SharedReportGenerationService: ObservableObject {
         ].filter { !$0.hasSuffix(": ") } // Remove empty fields
         
         for line in metadata {
-            line.draw(at: CGPoint(x: rect.minX, y: currentY), withAttributes: metadataAttributes)
-            currentY += configuration.fontSize + 4
+            currentY += drawWrapped(line, in: rect, at: currentY, attributes: metadataAttributes) + 2
         }
         
         return currentY + 20
@@ -382,8 +372,7 @@ class SharedReportGenerationService: ObservableObject {
         }
         
         for line in summaryLines {
-            line.draw(at: CGPoint(x: rect.minX, y: currentY), withAttributes: summaryAttributes)
-            currentY += configuration.fontSize + 4
+            currentY += drawWrapped(line, in: rect, at: currentY, attributes: summaryAttributes) + 2
         }
         
         return currentY + 20
@@ -413,7 +402,7 @@ class SharedReportGenerationService: ObservableObject {
         return currentY + 80
     }
     
-    private func renderCameraGroup(_ group: ReportData.CameraGroup, in rect: CGRect, at yPosition: CGFloat, configuration: ReportConfiguration) -> CGFloat {
+    private func renderCameraGroup(_ group: ReportData.CameraGroup, in rect: CGRect, at yPosition: CGFloat, configuration: ReportConfiguration, newPage: () -> Void) -> CGFloat {
         var currentY = yPosition
         
         // Camera group header
@@ -423,8 +412,12 @@ class SharedReportGenerationService: ObservableObject {
         ]
         
         let groupTitle = "\(group.cameraName) (\(group.transfers.count) transfers)"
-        groupTitle.draw(at: CGPoint(x: rect.minX, y: currentY), withAttributes: headerAttributes)
-        currentY += 16
+        let titleHeight = wrappedHeight(groupTitle, width: rect.width, attributes: headerAttributes)
+        if currentY + titleHeight + 20 > rect.maxY {
+            newPage()
+            currentY = rect.minY
+        }
+        currentY += drawWrapped(groupTitle, in: rect, at: currentY, attributes: headerAttributes) + 3
         
         // Transfer details
         let detailAttributes = [
@@ -454,13 +447,41 @@ class SharedReportGenerationService: ObservableObject {
             }
 
             let transferLine = "\(statusSymbol) \(sourceLeaf) → \(destinationSummary) • \(transfer.fileCount) files • \(transferSize)"
-            transferLine.draw(at: CGPoint(x: rect.minX, y: currentY), withAttributes: detailAttributes)
-            currentY += configuration.fontSize + 4
+            let height = wrappedHeight(transferLine, width: rect.width, attributes: detailAttributes)
+            if currentY + height > rect.maxY {
+                newPage()
+                currentY = rect.minY
+                currentY += drawWrapped(groupTitle + " (continued)", in: rect, at: currentY, attributes: headerAttributes) + 3
+            }
+            currentY += drawWrapped(transferLine, in: rect, at: currentY, attributes: detailAttributes) + 4
         }
         
         return currentY + 10
     }
     
+    /// User-chosen card and backup names may be a full filename long. Measure
+    /// the same wrapped text that is drawn, rather than drawing past the page.
+    private func wrappedText(_ text: String, attributes: [NSAttributedString.Key: Any]) -> NSAttributedString {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.lineBreakMode = .byWordWrapping
+        var attributes = attributes
+        attributes[.paragraphStyle] = paragraph
+        return NSAttributedString(string: text, attributes: attributes)
+    }
+
+    private func wrappedHeight(_ text: String, width: CGFloat, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
+        ceil(wrappedText(text, attributes: attributes).boundingRect(
+            with: CGSize(width: width, height: .greatestFiniteMagnitude),
+            options: [.usesLineFragmentOrigin, .usesFontLeading], context: nil).height)
+    }
+
+    @discardableResult
+    private func drawWrapped(_ text: String, in rect: CGRect, at y: CGFloat, attributes: [NSAttributedString.Key: Any]) -> CGFloat {
+        let height = wrappedHeight(text, width: rect.width, attributes: attributes)
+        wrappedText(text, attributes: attributes).draw(in: CGRect(x: rect.minX, y: y, width: rect.width, height: height))
+        return height
+    }
+
     // MARK: - JSON Generation
     
     private func generateJSON(transfers: [TransferCard], configuration: ReportConfiguration) throws -> Data {

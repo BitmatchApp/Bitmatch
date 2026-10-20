@@ -29,6 +29,19 @@ struct ReportThumbnailTests {
         #expect(data.count <= 64 * 1024)
     }
 
+    @Test func metadataCompanionsDoNotCountAsClipsButOrdinaryHiddenClipsDo() async throws {
+        let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
+        let metadata = ResultRow(path: "/card/._preview.mp4", status: row.status, size: row.size,
+            checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
+        let hidden = ResultRow(path: "/card/.hidden.mov", status: row.status, size: row.size,
+            checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
+        let frames = try await ReportThumbnailService.collect(results: [row, metadata, hidden], enabled: true) { _, _ in Data([1]) }
+        #expect(frames.requestedCount == 2)
+        #expect(frames.images.count == 2)
+        #expect(frames.images[metadata.path] == nil)
+        #expect(frames.images[hidden.path] != nil)
+    }
+
     @Test func disabledAndQuickNeverStartExtraction() async throws {
         let (_, _, row) = try seed()
         defer { if let path = row.destinationPath { try? FileManager.default.removeItem(at: URL(fileURLWithPath: path).deletingLastPathComponent()) } }
@@ -264,7 +277,7 @@ struct ReportThumbnailTests {
                             #expect(text.contains("Operator: Alex & Sam"))
                             #expect(text.contains("preview.mp4"))
                             #expect(text.contains("unsupported.braw"))
-                            let previewCount = exclude ? "Clip previews: 1/1" : "Clip previews: 1/2"
+                            let previewCount = "Clip previews: 1/1"
                             #expect(text.contains(previewCount) == (mode != .quick))
                             let jsonURL = try #require(reports.first { $0.pathExtension == "json" })
                             let json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])

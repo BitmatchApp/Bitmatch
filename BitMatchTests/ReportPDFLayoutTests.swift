@@ -169,7 +169,8 @@ struct ReportPDFLayoutTests {
             clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
         let blocks = ReportView(s: summary, rows: rows).pdfBlocks
         let heights = ReportPDFRenderer.blockHeights(blocks)
-        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight)
+        let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: ReportPDFRenderer.contentHeight,
+            firstPageContentHeight: ReportPDFRenderer.firstPageContentHeight)
         let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
         #expect(pages.count > 1)
         #expect(document.pageCount == pages.count)
@@ -194,6 +195,41 @@ struct ReportPDFLayoutTests {
             #expect(bounds.minY >= ReportPDFRenderer.verticalMargin)
             #expect(bounds.maxY <= ReportPDFRenderer.pageHeight - ReportPDFRenderer.verticalMargin)
         }
+    }
+
+
+    @Test func cancelledSevenRowHistoryKeepsIdentityOnTheContentPage() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bm-" + UUID().uuidString)
+        let source = root.appendingPathComponent("Cancel Retry Card-E1061BD4-DFE4-4CC0-8053-58C5263AFFB2")
+        let backup = root.appendingPathComponent("destination-apfs/cancel-retry-E1061BD4-DFE4-4CC0-8053-58C5263AFFB2")
+        for folder in [source, backup] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: source),
+            destinations: [try LocalTransferResource(url: backup)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .cancelled
+        record.startedAt = Date(); record.endedAt = Date()
+        record.plannedFileCounts = [7]
+        record.results = ["clip00.mov", "clip01.xml", "metadata.txt", "clip03.bin", "empty.raw", "clip05.mov", "clip06.txt"].map { name in
+            ResultRow(path: source.appendingPathComponent(name).path, status: ResultOutcome.verified.statusText,
+                size: 10, checksum: "fixture", destination: backup.lastPathComponent,
+                destinationPath: backup.appendingPathComponent(name).path)
+        }
+        let document = try #require(PDFDocument(data: await ReportExporter.historyPDF(record: record, includeThumbnails: false)))
+        #expect(document.pageCount == 1)
+        let page = try #require(document.page(at: 0))
+        #expect(page.string?.contains("NOT SAFE TO ERASE") == true)
+        #expect(page.string?.contains(record.id.uuidString) == true)
+        for row in record.results { #expect(page.string?.contains(row.fileName) == true) }
+    }
+
+
+    @Test func firstPageUsesSpaceThatContinuationHeadersNeedLater() {
+        let packed = ReportPDFLayout.pages(blockHeights: [60, 60, 20], contentHeight: 100, firstPageContentHeight: 150)
+        #expect(packed.map(\.blocks) == [0..<3])
+        let sliced = ReportPDFLayout.pages(blockHeights: [250, 50], contentHeight: 100, firstPageContentHeight: 150)
+        #expect(sliced.map(\.blocks) == [0..<1, 0..<1, 1..<2])
+        #expect(sliced.map(\.offset) == [0, 150, 0])
     }
 
 }
