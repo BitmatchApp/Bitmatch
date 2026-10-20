@@ -1,0 +1,61 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="1.1">
+
+  <creatorinfo>
+    <name>BitMatch fixture</name>
+    <username>fixture</username>
+<hostname>bitmatch-fixture-host</hostname>
+    <tool>mhl ver. 0.2.0</tool>
+    <startdate>2026-10-20T02:28:55Z</startdate>
+    <finishdate>2026-10-20T02:28:55Z</finishdate>
+  </creatorinfo>
+
+  <hash>
+    <file>support file.txt</file>
+    <size>37</size>
+    <lastmodificationdate>2026-10-18T20:00:00Z</lastmodificationdate>
+    <md5>01d0734d719fbac42635526e9e4c3213</md5>
+    <hashdate>2026-10-20T02:28:55Z</hashdate>
+  </hash>
+
+  <hash>
+    <file>support file.txt</file>
+    <size>37</size>
+    <lastmodificationdate>2026-10-18T20:00:00Z</lastmodificationdate>
+    <sha1>5b68a53be4c5587e9498d1e1b2333219ae8d7a1c</sha1>
+    <hashdate>2026-10-20T02:28:55Z</hashdate>
+  </hash>
+
+  <hash>
+    <file>Camera A/clip &amp; cafe.txt</file>
+    <size>32</size>
+    <lastmodificationdate>2026-10-18T20:00:00Z</lastmodificationdate>
+    <md5>f0da98d79b3b7388cce022a84dbfff56</md5>
+    <hashdate>2026-10-20T02:28:55Z</hashdate>
+  </hash>
+
+  <hash>
+    <file>Camera A/clip &amp; cafe.txt</file>
+    <size>32</size>
+    <lastmodificationdate>2026-10-18T20:00:00Z</lastmodificationdate>
+    <sha1>d21df1382517d6846720aa351d8e1c3d4d4eb33c</sha1>
+    <hashdate>2026-10-20T02:28:55Z</hashdate>
+  </hash>
+
+  <hash>
+    <file>sidecar.xml</file>
+    <size>23</size>
+    <lastmodificationdate>2026-10-18T20:00:00Z</lastmodificationdate>
+    <md5>cf64d1ed2a8e8e5d795e2d8bbdca91d8</md5>
+    <hashdate>2026-10-20T02:28:55Z</hashdate>
+  </hash>
+
+  <hash>
+    <file>sidecar.xml</file>
+    <size>23</size>
+    <lastmodificationdate>2026-10-18T20:00:00Z</lastmodificationdate>
+    <sha1>040182793e3030a9439bd2e179df16edf5299fa2</sha1>
+    <hashdate>2026-10-20T02:28:55Z</hashdate>
+  </hash>
+
+</hashlist>
