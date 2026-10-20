@@ -130,6 +130,102 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: child.appendingPathComponent("keep.txt")), Data("replacement".utf8))
     }
 
+    // Plant: disable the vanished-companion exception in removeTree; the
+    // generated exFAT companion must not make owned fixture cleanup fail.
+    func testPhysicalCleanupChecksGeneratedAppleDoubleEntries() throws {
+        let fixture = try PhysicalAppFixture.load()
+        for role in ["ssdA", "ssdB"] {
+            let child = try fixture.child(role: role, name: "app-cleanup-probe-\(UUID())")
+            let directoryFD = Darwin.open(child.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            guard directoryFD >= 0 else { throw PhysicalAppError.posix(errno) }
+            do {
+                let fileFD = openat(directoryFD, "principal.bin", O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+                guard fileFD >= 0 else { throw PhysicalAppError.posix(errno) }
+                do {
+                    let handle = FileHandle(fileDescriptor: fileFD, closeOnDealloc: false)
+                    try handle.write(contentsOf: Data("owned payload".utf8))
+                    guard fsync(fileFD) == 0 else { throw PhysicalAppError.posix(errno) }
+                    Darwin.close(fileFD)
+                } catch {
+                    Darwin.close(fileFD)
+                    throw error
+                }
+                guard fsync(directoryFD) == 0 else { throw PhysicalAppError.posix(errno) }
+                Darwin.close(directoryFD)
+            } catch {
+                Darwin.close(directoryFD)
+                throw error
+            }
+            XCTAssertTrue(FileManager.default.fileExists(atPath: child.appendingPathComponent("._principal.bin").path))
+            try PhysicalAppHarnessSettlement.withPassingAssertions(testRun?.totalFailureCount) {
+                try fixture.removeChild(child)
+            }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: child.path))
+        }
+        print("PHYSICAL_APP_CLEANUP_PROBE roles=2 generatedAppleDouble=true cleanup=true")
+    }
+
+    func testDescriptorCleanupOnlyToleratesDisappearedCompanionNames() throws {
+        for beforeInspect in [true, false] {
+            for name in ["._clip.bin", "ordinary.bin", "._"] {
+                let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-cleanup-race-\(UUID())")
+                let child = workspace.appendingPathComponent("owned")
+                try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+                defer { try? FileManager.default.removeItem(at: workspace) }
+                try Data("owned test bytes".utf8).write(to: child.appendingPathComponent(name))
+                let parent = Darwin.open(workspace.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+                guard parent >= 0 else { throw PhysicalAppError.posix(errno) }
+                defer { Darwin.close(parent) }
+                var identity = stat()
+                XCTAssertEqual(lstat(child.path, &identity), 0)
+                var removedByHook = false
+                let remove: (Int32, String) -> Void = { directory, entry in
+                    guard entry == name, !removedByHook else { return }
+                    XCTAssertEqual(unlinkat(directory, entry, 0), 0)
+                    removedByHook = true
+                }
+                let hooks = PhysicalAppFixture.RemovalHooks(
+                    beforeInspect: beforeInspect ? remove : nil,
+                    beforeUnlink: beforeInspect ? nil : remove)
+                if name == "._clip.bin" {
+                    try PhysicalAppFixture.removeTree(parent: parent, name: "owned", device: identity.st_dev,
+                                                      inode: identity.st_ino, hooks: hooks)
+                    XCTAssertFalse(FileManager.default.fileExists(atPath: child.path))
+                } else {
+                    XCTAssertThrowsError(try PhysicalAppFixture.removeTree(parent: parent, name: "owned", device: identity.st_dev,
+                                                                           inode: identity.st_ino, hooks: hooks))
+                    XCTAssertTrue(FileManager.default.fileExists(atPath: child.path))
+                }
+                XCTAssertTrue(removedByHook, "The test must exercise the intended disappearance window")
+            }
+        }
+    }
+
+    func testDescriptorCleanupRejectsDirectoryReplacementDuringTraversal() throws {
+        let workspace = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-cleanup-replacement-\(UUID())")
+        let child = workspace.appendingPathComponent("owned")
+        try FileManager.default.createDirectory(at: child, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: workspace) }
+        try Data("old owned bytes".utf8).write(to: child.appendingPathComponent("payload.bin"))
+        let parent = Darwin.open(workspace.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parent >= 0 else { throw PhysicalAppError.posix(errno) }
+        defer { Darwin.close(parent) }
+        var identity = stat()
+        XCTAssertEqual(lstat(child.path, &identity), 0)
+        var replaced = false
+        let hooks = PhysicalAppFixture.RemovalHooks(beforeUnlink: { _, name in
+            guard name == "payload.bin", !replaced else { return }
+            XCTAssertEqual(renameat(parent, "owned", parent, "retained-original"), 0)
+            XCTAssertEqual(mkdirat(parent, "owned", 0o700), 0)
+            try? Data("replacement stays".utf8).write(to: child.appendingPathComponent("sentinel.bin"))
+            replaced = true
+        })
+        XCTAssertThrowsError(try PhysicalAppFixture.removeTree(parent: parent, name: "owned", device: identity.st_dev,
+                                                               inode: identity.st_ino, hooks: hooks))
+        XCTAssertTrue(replaced)
+        XCTAssertEqual(try Data(contentsOf: child.appendingPathComponent("sentinel.bin")), Data("replacement stays".utf8))
+    }
+
     func testPhysicalCardToTwoBackupsAndSavedEvidence() async throws {
         let fixture = try PhysicalAppFixture.load()
         let evidence = try evidenceDirectory()
@@ -470,7 +566,7 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
 
 private final class PhysicalPreviewCollector { var images: [Data] = [] }
 private struct PhysicalAppFile: Codable, Equatable, Sendable { let size: Int64; let sha256: String }
-private enum PhysicalAppError: Error { case unsafeFixture, fixtureFailed, workflowFailed, workflowTimedOut(settled: Bool), invalidPDF, posix(Int32) }
+private enum PhysicalAppError: Error { case unsafeFixture, fixtureFailed, workflowFailed, workflowTimedOut(settled: Bool), invalidPDF, posix(Int32), fixtureRejected(reason: String, code: Int32) }
 
 /// XCTest assertions record failures without throwing. A failing or missing
 /// test context must never authorize a successful receipt or fixture removal.
@@ -672,47 +768,98 @@ private final class PhysicalAppFixture {
               (identity.st_mode & S_IFMT) == S_IFDIR, identity.st_dev == root.device else { throw PhysicalAppError.unsafeFixture }
         let path = URL(fileURLWithPath: root.volume.root).appendingPathComponent(name)
         children[path.path] = Child(role: role, name: name, device: identity.st_dev, inode: identity.st_ino)
+        print("PHYSICAL_APP_CHILD_CREATED device=\(identity.st_dev) inode=\(identity.st_ino)")
         return path
     }
 
     func removeChild(_ path: URL) throws {
         guard let child = children[path.path], let root = roots[child.role],
-              path.deletingLastPathComponent().path == root.volume.root else { throw PhysicalAppError.unsafeFixture }
-        try validate(child.role)
+              path.deletingLastPathComponent().path == root.volume.root else { throw Self.refused("childRegistration") }
+        do { try validate(child.role) }
+        catch {
+            var current = stat()
+            let status = fstat(root.descriptor, &current)
+            throw Self.refused("rootValidation", code: status == 0 ? 0 : errno,
+                               device: root.device, inode: root.inode, actual: status == 0 ? current : nil)
+        }
         try Self.removeTree(parent: root.descriptor, name: child.name, device: child.device, inode: child.inode)
         children.removeValue(forKey: path.path)
     }
 
-    fileprivate static func removeTree(parent: Int32, name: String, device: dev_t, inode: ino_t) throws {
+    fileprivate struct RemovalHooks {
+        var beforeInspect: ((Int32, String) -> Void)? = nil
+        var beforeUnlink: ((Int32, String) -> Void)? = nil
+    }
+
+    fileprivate static func removeTree(parent: Int32, name: String, device: dev_t, inode: ino_t,
+                                       hooks: RemovalHooks = .init()) throws {
         let fd = openat(parent, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw PhysicalAppError.unsafeFixture }
+        guard fd >= 0 else { throw refused("cleanupOpen", code: errno, device: device, inode: inode) }
         defer { Darwin.close(fd) }
         var identity = stat()
-        guard fstat(fd, &identity) == 0, identity.st_dev == device, identity.st_ino == inode else { throw PhysicalAppError.unsafeFixture }
+        let openedStatus = fstat(fd, &identity)
+        guard openedStatus == 0, identity.st_dev == device, identity.st_ino == inode else {
+            throw refused("cleanupOpenedIdentity", code: openedStatus == 0 ? 0 : errno,
+                          device: device, inode: inode, actual: openedStatus == 0 ? identity : nil)
+        }
         let duplicate = dup(fd)
         guard duplicate >= 0 else { throw PhysicalAppError.posix(errno) }
         guard let directory = fdopendir(duplicate) else { Darwin.close(duplicate); throw PhysicalAppError.posix(errno) }
         defer { closedir(directory) }
-        errno = 0
-        while let entry = readdir(directory) {
+        while true {
+            errno = 0
+            guard let entry = readdir(directory) else {
+                guard errno == 0 else { throw PhysicalAppError.posix(errno) }
+                break
+            }
             let child = withUnsafePointer(to: &entry.pointee.d_name) {
                 $0.withMemoryRebound(to: CChar.self, capacity: Int(entry.pointee.d_namlen) + 1) { String(cString: $0) }
             }
             if child == "." || child == ".." { continue }
+            hooks.beforeInspect?(fd, child)
             var info = stat()
-            guard fstatat(fd, child, &info, AT_SYMLINK_NOFOLLOW) == 0, info.st_dev == device else { throw PhysicalAppError.unsafeFixture }
-            if (info.st_mode & S_IFMT) == S_IFDIR {
-                try removeTree(parent: fd, name: child, device: device, inode: info.st_ino)
-            } else {
-                guard unlinkat(fd, child, 0) == 0 else { throw PhysicalAppError.posix(errno) }
+            let childStatus = fstatat(fd, child, &info, AT_SYMLINK_NOFOLLOW)
+            let childError = childStatus == 0 ? 0 : errno
+            if childStatus < 0, childError == ENOENT, isCompanionName(child) {
+                continue
             }
-            errno = 0
+            guard childStatus == 0, info.st_dev == device else {
+                throw refused("cleanupEntry", code: childError, device: device,
+                              actual: childStatus == 0 ? info : nil,
+                              companion: child.hasPrefix("._") && child.utf8.count > 2)
+            }
+            if (info.st_mode & S_IFMT) == S_IFDIR {
+                try removeTree(parent: fd, name: child, device: device, inode: info.st_ino, hooks: hooks)
+            } else {
+                hooks.beforeUnlink?(fd, child)
+                let status = unlinkat(fd, child, 0)
+                let failure = status == 0 ? 0 : errno
+                if status < 0, !(failure == ENOENT && isCompanionName(child)) {
+                    throw refused("cleanupUnlink", code: failure, device: device, actual: info,
+                                  companion: isCompanionName(child))
+                }
+            }
         }
-        guard errno == 0 else { throw PhysicalAppError.posix(errno) }
         var named = stat()
-        guard fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
-              named.st_dev == device, named.st_ino == inode else { throw PhysicalAppError.unsafeFixture }
+        let namedStatus = fstatat(parent, name, &named, AT_SYMLINK_NOFOLLOW)
+        guard namedStatus == 0, named.st_dev == device, named.st_ino == inode else {
+            throw refused("cleanupNamedIdentity", code: namedStatus == 0 ? 0 : errno,
+                          device: device, inode: inode, actual: namedStatus == 0 ? named : nil)
+        }
         guard unlinkat(parent, name, AT_REMOVEDIR) == 0 else { throw PhysicalAppError.posix(errno) }
+    }
+
+    private static func isCompanionName(_ name: String) -> Bool {
+        name.hasPrefix("._") && name.utf8.count > 2
+    }
+
+    /// Fixed reason codes and scalar metadata only; never log fixture names or
+    /// user paths when a fail-closed cleanup guard rejects an operation.
+    private static func refused(_ reason: String, code: Int32 = 0,
+                                device: dev_t? = nil, inode: ino_t? = nil,
+                                actual: stat? = nil, companion: Bool = false) -> PhysicalAppError {
+        print("PHYSICAL_APP_FIXTURE_REJECT reason=\(reason) errno=\(code) expectedDevice=\(String(describing: device)) expectedInode=\(String(describing: inode)) actualDevice=\(String(describing: actual?.st_dev)) actualInode=\(String(describing: actual?.st_ino)) companion=\(companion)")
+        return .fixtureRejected(reason: reason, code: code)
     }
 }
 #endif
