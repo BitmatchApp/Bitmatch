@@ -178,6 +178,22 @@ struct ReportScannerTests {
         #expect(MasterReportPresentation.statusText(for: card).contains("mode not recorded"))
     }
 
+    @Test(arguments: ["standard", "thorough", "paranoid", "byte-compare"])
+    func legacyNamedMethodCannotHideAnUnsupportedDigest(method: String) throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var object = try #require(JSONSerialization.jsonObject(with: reportData(mode: .standard, root: root, finished: Date())) as? [String: Any])
+        var verification = try #require(object["verification"] as? [String: Any])
+        verification["method"] = method
+        verification["algorithm"] = "ROT13"
+        verification.removeValue(forKey: "scope")
+        object["verification"] = verification
+        let card = try #require(ReportScanner.transferCard(reportData: JSONSerialization.data(withJSONObject: object),
+            reportURL: root.appendingPathComponent("r.json")))
+        #expect(card.verified == false)
+        #expect(card.metadata?.verificationMode == nil)
+    }
+
     @Test func contradictoryQuickScopeCannotBecomeVerified() throws {
         let root = try makeTemporaryFolder()
         defer { try? FileManager.default.removeItem(at: root) }

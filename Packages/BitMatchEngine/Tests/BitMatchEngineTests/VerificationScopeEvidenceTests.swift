@@ -109,3 +109,61 @@ struct VerificationScopeEvidenceTests {
         #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1, safeToErase: true, scope: filtered, sourceFileCount: 2))
     }
 }
+
+struct LegacyReportDigestRegressionTests {
+    @Test func suppliedUnsupportedDigestCannotBypassAnExplicitLegacyMode() {
+        let mode = EvidenceReader.verificationMode(method: "standard", algorithm: "ROT13")
+        #expect(mode == nil)
+        #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: mode, totalResults: 1, safeToErase: true))
+        #expect(EvidenceReader.recordedVerificationMode(method: "standard", algorithm: "ROT13") == nil)
+    }
+}
+
+struct LegacyReportDigestCompatibilityTests {
+    @Test(arguments: ["standard", "thorough", "paranoid", "byte-compare"],
+          ["ROT13", "SHA-1", "", "SHA-256, UNKNOWN", "SHA-256,"])
+    func suppliedUnsupportedOrMalformedDigestsAreRejected(method: String, algorithm: String) {
+        #expect(EvidenceReader.verificationMode(method: method, algorithm: algorithm) == nil)
+        #expect(EvidenceReader.recordedVerificationMode(method: method, algorithm: algorithm) == nil)
+    }
+
+    @Test func suppliedDigestsMustSupportTheExplicitNamedMode() {
+        for method in ["standard", "paranoid"] {
+            #expect(EvidenceReader.verificationMode(method: method, algorithm: "MD5") == nil)
+            #expect(EvidenceReader.verificationMode(method: method, algorithm: "XXH64") == nil)
+            #expect(EvidenceReader.verificationMode(method: method, algorithm: "SHA-256") != nil)
+        }
+        #expect(EvidenceReader.verificationMode(method: "thorough", algorithm: "MD5") == nil)
+        #expect(EvidenceReader.verificationMode(method: "thorough", algorithm: "SHA-256") == nil)
+        #expect(EvidenceReader.verificationMode(method: "thorough", algorithm: "SHA-256, MD5") == .thorough)
+        #expect(EvidenceReader.verificationMode(method: "standard", algorithm: "SHA-256, MD5") == .standard)
+    }
+
+    @Test func genuineLegacyMissingAlgorithmsAndGenericContentChecksRemainReadable() {
+        for method in ["standard", "thorough", "paranoid", "byte-compare", "byte-to-byte", "byte_compare", "checksum-and-byte-compare"] {
+            let mode = EvidenceReader.verificationMode(method: method, algorithm: nil)
+            #expect(mode != nil)
+            #expect(EvidenceReader.isVerified(matches: 1, issues: 0, mode: mode, totalResults: 1, safeToErase: true))
+            let recordedMode = EvidenceReader.recordedVerificationMode(method: method, algorithm: nil)
+            #expect(recordedMode == (["standard", "thorough", "paranoid"].contains(method) ? mode : nil))
+        }
+        for algorithm in ["MD5", "XXH64", "SHA-256, MD5"] {
+            #expect(EvidenceReader.verificationMode(method: "checksum", algorithm: algorithm) == .standard)
+            #expect(EvidenceReader.recordedVerificationMode(method: "checksum", algorithm: algorithm) == nil)
+        }
+    }
+
+    @Test(arguments: VerificationMode.allCases)
+    func currentWriterMethodsRemainReadableWithoutInventingAnUnrecordedMode(mode: VerificationMode) throws {
+        let description = EvidenceWriter.verificationDescription(for: ReportPrefs(verificationMode: mode))
+        let written = EnhancedJSONReport<String>.Verification(method: description.method, algorithm: description.algorithm,
+            issuesByType: [:], checksumCache: nil)
+        let read = try JSONDecoder().decode(EvidenceReader.Snapshot.Verification.self, from: JSONEncoder().encode(written))
+        let resolved = EvidenceReader.verificationMode(method: read.method, algorithm: read.algorithm)
+        #expect(resolved == (mode == .thorough ? .standard : mode))
+        if mode == .quick {
+            #expect(read.algorithm == nil)
+            #expect(!EvidenceReader.isVerified(matches: 1, issues: 0, mode: resolved, totalResults: 1, safeToErase: true))
+        }
+    }
+}
