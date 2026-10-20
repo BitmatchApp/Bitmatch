@@ -46,6 +46,16 @@ The running binary was built from `5396f6c5` plus the corrected test harness, be
 
 An earlier physical large-file attempt also had a wrong MD5-versus-SHA-256 harness assertion. Completing its byte work does not make that attempt a pass. It is excluded from the successful physical results.
 
+## Large physical SSD transfer
+
+The corrected SSD A → SSD B run passed one actual XCTest, zero failures and zero skips, in 14,566.320 seconds. Eight generated MOV containers contained **119,600,000,000 selected media bytes**, including 44.5 GB and 45.3 GB files. Standard verification used two requested workers; two large destination readers were observed. ASC MHL and Saved Check completed, and the final source inventory, sizes and content hashes matched their baseline. The sampled engine transfer/MHL/Check footprint peaked at **32 MiB**, from 11 MiB initially. It is not a GUI-process measurement or a leak proof.
+
+Copy/verification took approximately 7,682 seconds, MHL 3,264 seconds and Saved Check 3,228 seconds. MHL covered all 119.6 GB of selected media; exFAT's deliberate reread policy remained enabled. Earlier phases overlapped the SD matrix, and the slower connection dominated I/O, so these are observations rather than a controlled performance benchmark. Exclusions still cannot earn a whole-card safety claim.
+
+Like the SD matrix, this long-running binary predates the final harness guards. Its older receipt says `sourceUnchanged`, meaning the asserted inventory/size/content-hash comparison, not every filesystem attribute. The follow-up controller initially rejected that field because it expected the later `sourceSnapshotCompared` spelling; that controller failure occurred before app trials or HFS+ provisioning and does not invalidate the native passing transfer. Its original failed receipt is retained separately.
+
+The [FAT32 boundary follow-up](FAT32_BOUNDARY_VALIDATION_20261020.md) also passed two actual XCTest cases without skips or failures: the largest allowed file completed Standard → MHL → Saved Check and retry, while exactly 4 GiB returned `EFBIG` and preserved prior media/history and incomplete evidence. These used sparse APFS sources and fresh host disk images, not physical FAT32 media or materialized camera footage. Initial setup-only failures remain documented.
+
 ## Abrupt worker termination
 
 The [process-death matrix](validation/PROCESS_DEATH_RECOVERY_20261019.md) passed 20 scenarios on APFS, journaled HFS+, exFAT and FAT32 images. Each directly spawned worker reached a durable, kernel-stopped boundary and then exited by SIGKILL. Its running journal reopened as interrupted; source hashes and existing bytes were preserved. Incomplete MHL could not pass Check. The positive boundary also matters: a completely published history remained intact and passed a fresh Check, while the unsettled journal stayed interrupted. This is process-death coverage, not a power-loss or OOM-cause reproduction.
@@ -80,8 +90,8 @@ The engine gates passed again at `79f07486`, including the soak and private diag
 
 | Gate | Completed result |
 | --- | --- |
-| Engine Debug, XCTest | 227 scheduled: 188 passed, 39 opt-in/platform skips, zero failures |
-| Engine Release, XCTest | 227 scheduled: 188 passed, 39 opt-in/platform skips, zero failures |
+| Engine Debug, XCTest | `0d62cbc5`: 229 scheduled: 188 passed, 41 opt-in/platform skips, zero failures |
+| Engine Release, XCTest | `0d62cbc5`: 229 scheduled: 188 passed, 41 opt-in/platform skips, zero failures |
 | Engine Debug, Swift Testing | 223 declarations in 40 suites: 217 passed, six opt-in skips, zero failures |
 | Engine Release, Swift Testing | 223 declarations in 40 suites: 217 passed, six opt-in skips, zero failures |
 | Full Mac app suite | 1,305 logical tests: 1,282 passed, 23 skipped, zero failures; structured and raw UI-warning scans clear |
@@ -105,7 +115,6 @@ A preceding post-soak Release run failed two diagnostic-ordering assertions whil
 
 ## Pending finalization
 
-- **Large physical transfer:** the corrected 119.6 GB SSD A → SSD B case was still running at this checkpoint. Do not count it as a pass, infer its eventual verdict, or use an earlier flawed-harness attempt as a substitute.
 - **Application performance:** isolated repeated Standard/Thorough application trials and their counter-aligned measurements need a settled receipt. Raw buffer throughput is not application performance evidence.
 - **4K report-preview memory:** the [initial host-only probe](validation/report-preview-memory-2026-10-19.md) passed at 20 and 200 H.264 paths, peaking at 103 MiB. The [explicit-codec extension](validation/report-preview-codecs-2026-10-20.md) also passed actual 4K HEVC and ProRes 422 at 20 paths, plus ten H.264 reports in one process. Those three invocations each passed three methods without skips/failures; their peaks were 103, 143 and 102 MiB. All preview pixels, source/destination hashes and PDF placements were checked. Each codec still repeats one short generated pattern; there is no claim of long-GOP, large encoded-file or camera-footage coverage. The [footer fix](validation/report-pdf-footer-2026-10-19.md) retains normal 20/200-clip reports across 2/14 pages instead of 3/15; oversized identity text remains paginated rather than truncated.
 - **Intel:** [translated x86_64 engine tests](validation/ROSETTA_ENGINE_20261019.md) passed: XCTest 186 passed/37 skipped, Swift Testing 213 declarations passed/six skipped, zero final failures. Initial unsigned-loader bookmark setup failures remain documented. This is Rosetta coverage, not execution on a physical Intel Mac or older macOS.
