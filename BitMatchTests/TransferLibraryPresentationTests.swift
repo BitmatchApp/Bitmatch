@@ -365,6 +365,46 @@ struct TransferLibraryPresentationTests {
             == "C0001.MP4 on SHUTTLE A (failed) and SHUTTLE B (not verified)")
     }
 
+    /// Plant: stop passing the saved verification mode into search-row
+    /// classification; legacy Quick matches then lose their warning.
+    @Test(arguments: [VerificationMode.quick, .standard, .thorough, .paranoid],
+          [ResultOutcome.verified.statusText, "✅ Match", "✅ SHA-256 verified"])
+    func clipSearchRespectsQuickModeEvenWhenSavedRowsClaimVerification(
+        mode: VerificationMode, recordedStatus: String
+    ) {
+        let row = ResultRow(path: "DCIM/C0001.MP4", status: recordedStatus,
+                            size: 10, checksum: "retained-checksum", destination: "SHUTTLE A")
+        var record = PresentationTestSupport.record(state: .completed, verificationMode: mode)
+        record.results = [row]
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        let suffix = mode == .quick ? " (not verified)" : ""
+        #expect(index.match(for: record, search: "C0001")?.clipLine
+            == "C0001.MP4 on SHUTTLE A" + suffix)
+        #expect(record.results.map(\.status) == [recordedStatus])
+        #expect(record.results.map(\.checksum) == ["retained-checksum"])
+        #expect(record.results.map(\.id) == [row.id])
+    }
+
+    /// Plant: classify Quick before failure/exclusion checks; this would hide
+    /// a failed or intentionally excluded destination behind "not verified".
+    @Test func quickClipSearchKeepsDestinationFailureAndExclusionWarnings() {
+        var record = PresentationTestSupport.record(state: .issues, verificationMode: .quick)
+        record.results = [
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE A"),
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE B", outcome: .failed),
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE C", outcome: .excludedAppleDouble),
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE B"),
+            PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE C")
+        ]
+        let statuses = record.results.map(\.status)
+        let index = TransferLibraryPresentation.SearchIndex(records: [record])
+
+        #expect(index.match(for: record, search: "C0001")?.clipLine
+            == "C0001.MP4 on SHUTTLE A (not verified), SHUTTLE B (failed), and SHUTTLE C (intentionally excluded)")
+        #expect(record.results.map(\.status) == statuses)
+    }
+
     @Test func clipIndexDoesNotTreatResultDestinationNamesAsClipText() {
         let record = PresentationTestSupport.recordWithRows([
             PresentationTestSupport.clipRow(path: "DCIM/C0001.MP4", destination: "SHUTTLE A")

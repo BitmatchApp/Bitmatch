@@ -197,6 +197,19 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    func testCaptureHistorySearchStates() throws {
+        try requireCaptureConfiguration()
+        for width in [375.0, 760.0] {
+            for state in TransferHistorySearchPlaceholder.allCases {
+                let expected = state == .failed ? ["Search", "finish", "Try again"]
+                    : [state.title.replacingOccurrences(of: "…", with: "")]
+                try capture(TransferHistorySearchPlaceholderView(state: state),
+                            size: CGSize(width: width, height: 560),
+                            name: "ios-history-search-\(state)-\(Int(width))", expectedText: expected)
+            }
+        }
+    }
+
     private func requireCaptureConfiguration() throws {
         let environment = ProcessInfo.processInfo.environment
         let enabled = environment["BITMATCH_CAPTURE_WORKFLOW_SNAPSHOTS"] == "1"
