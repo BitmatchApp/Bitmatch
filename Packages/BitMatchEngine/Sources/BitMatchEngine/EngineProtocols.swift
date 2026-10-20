@@ -96,6 +96,9 @@ public struct FileOperation: Sendable {
     public let sourceFingerprint: String?
     public let verificationMode: VerificationMode
     public let settings: CameraLabelSettings
+    /// Classifier-backed paths for this run. Public/manual operations have no
+    /// such fact; only the pipeline can record it after validating the review.
+    public internal(set) var reviewedAppleDoubleExclusionPaths: [String]? = nil
     public let estimatedTotalBytes: Int64? // For improved ETA calculation
     
     public var duration: TimeInterval? {

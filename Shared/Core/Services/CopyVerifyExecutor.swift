@@ -10,6 +10,7 @@ struct PhotographerFinalizationResult {
     /// The persisted card verdict. A configured photographer finalizer must
     /// explicitly certify this before raw copy rows can complete successfully.
     let locallySafe: Bool
+    var allowsQueueContinuationForExpectedExclusions: Bool = false
 }
 
 typealias PhotographerReportFinalizer = @MainActor ([ResultRow]) throws -> PhotographerFinalizationResult
@@ -33,6 +34,9 @@ struct CopyVerifyConfig {
     /// stays ungated with a nil default so existing call sites compile in
     /// every configuration — only non-nil values are DEBUG-only.
     let fanOutHooks: DestinationWriter.FanOutHooks?
+    /// Frozen run and saved-journal identity agreed before execution. Missing
+    /// for direct/legacy configs; never inferred from an absent finalizer.
+    let expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification?
 
     init(
         operationId: UUID,
@@ -46,7 +50,8 @@ struct CopyVerifyConfig {
         currentMode: AppMode,
         photographerReportFinalizer: PhotographerReportFinalizer? = nil,
         generateASCMHL: Bool = false,
-        fanOutHooks: DestinationWriter.FanOutHooks? = nil
+        fanOutHooks: DestinationWriter.FanOutHooks? = nil,
+        expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil
     ) {
         self.operationId = operationId
         self.sourceURL = sourceURL
@@ -60,6 +65,7 @@ struct CopyVerifyConfig {
         self.photographerReportFinalizer = photographerReportFinalizer
         self.generateASCMHL = generateASCMHL
         self.fanOutHooks = fanOutHooks
+        self.expectedExclusionQueueIdentity = expectedExclusionQueueIdentity
     }
 }
 
@@ -97,6 +103,7 @@ final class CopyVerifyExecutor {
         /// `nil` means no photographer finalizer was configured for this
         /// ordinary copy. A configured finalizer must return `true`.
         let locallySafe: Bool?
+        var allowsQueueContinuationForExpectedExclusions: Bool = false
     }
 
     // MARK: - Dependencies
@@ -469,7 +476,11 @@ final class CopyVerifyExecutor {
         let completionInfo = OperationCompletionInfo(
             success: succeeded,
             message: completionMessage,
-            copiedNotVerified: verdict.copiedNotVerified
+            copiedNotVerified: verdict.copiedNotVerified,
+            expectedExclusionQueueQualification: TransferCompletion.expectedExclusionQueueQualification(
+                operation: operation, expectedMode: config.verificationMode, handoffIssues: handoffIssues, reportIssue: reportIssue,
+                project: Self.expectedExclusionProjectGate(config: config, lifecycle: photographerLifecycle)
+            )
         )
 
         timingService.completeOperation(success: succeeded, message: completionMessage)
@@ -483,6 +494,31 @@ final class CopyVerifyExecutor {
         NotificationCenter.default.post(name: .operationCompleted, object: nil)
 
         return operation
+    }
+
+    /// Queue identity is separate from the project's whole-card safety gate.
+    /// A missing/mismatched project context cannot masquerade as an ordinary run.
+    static func expectedExclusionProjectGate(
+        config: CopyVerifyConfig, lifecycle: PhotographerLifecycleFinalization
+    ) -> TransferCompletion.ProjectGate {
+        var allowed = false
+        if let identity = config.expectedExclusionQueueIdentity, lifecycle.didPersist {
+            switch identity {
+            case .ordinaryTransfer:
+                allowed = config.photographerReportFinalizer == nil
+                    && lifecycle.context == nil && lifecycle.locallySafe == nil
+            case .projectTransfer(let projectID, let cardID):
+                allowed = config.photographerReportFinalizer != nil
+                    && lifecycle.context?.job.id == projectID && lifecycle.context?.cardIngestID == cardID
+                    && lifecycle.locallySafe != nil
+                    && lifecycle.allowsQueueContinuationForExpectedExclusions
+            }
+        }
+        return TransferCompletion.ProjectGate(
+            didPersist: lifecycle.didPersist, locallySafe: lifecycle.locallySafe,
+            allowsQueueContinuationForExpectedExclusions: allowed,
+            expectedExclusionQueueIdentity: allowed ? config.expectedExclusionQueueIdentity : nil
+        )
     }
 
     private func createASCMHLHistories(operation: FileOperation, config: CopyVerifyConfig,
@@ -693,7 +729,8 @@ final class CopyVerifyExecutor {
             return PhotographerLifecycleFinalization(
                 context: result?.context,
                 didPersist: true,
-                locallySafe: result?.locallySafe
+                locallySafe: result?.locallySafe,
+                allowsQueueContinuationForExpectedExclusions: result?.allowsQueueContinuationForExpectedExclusions ?? false
             )
         } catch let interruption as TransferInterruption {
             throw interruption

@@ -324,10 +324,25 @@ public enum TransferCompletion: Sendable {
         public let didPersist: Bool
         /// `nil` when no project finalizer ran (an ordinary copy).
         public let locallySafe: Bool?
+        /// Positive queue-only evidence, supplied for a known ordinary run or
+        /// a separately proven project selection. Unknown project state is not enough.
+        public let allowsQueueContinuationForExpectedExclusions: Bool
+        public let expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification?
 
-        public init(didPersist: Bool, locallySafe: Bool?) {
+        public init(didPersist: Bool, locallySafe: Bool?, allowsQueueContinuationForExpectedExclusions: Bool = false, expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil) {
             self.didPersist = didPersist
             self.locallySafe = locallySafe
+            self.allowsQueueContinuationForExpectedExclusions = allowsQueueContinuationForExpectedExclusions
+            self.expectedExclusionQueueIdentity = expectedExclusionQueueIdentity
+        }
+
+        public var permitsExpectedExclusionQueueContinuation: Bool {
+            guard didPersist, allowsQueueContinuationForExpectedExclusions,
+                  let identity = expectedExclusionQueueIdentity else { return false }
+            switch identity {
+            case .ordinaryTransfer: return locallySafe == nil
+            case .projectTransfer: return locallySafe != nil
+            }
         }
 
         public var permitsSuccess: Bool { didPersist && (locallySafe ?? true) }

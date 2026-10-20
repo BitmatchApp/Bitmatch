@@ -1,5 +1,6 @@
 // OperationModels.swift - Operation and transfer state models
 import Foundation
+import BitMatchEngine
 
 // MARK: - Operation State
 enum OperationState: Equatable {
@@ -84,6 +85,7 @@ struct OperationCompletionInfo: Equatable {
     /// Quick mode copied every file and nothing else failed (see
     /// `TransferCompletion.Verdict.copiedNotVerified`). Never with `success`.
     var copiedNotVerified: Bool = false
+    var expectedExclusionQueueQualification: ExpectedExclusionQueueQualification? = nil
 }
 
 // MARK: - Volume Event

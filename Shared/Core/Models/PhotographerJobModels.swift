@@ -528,12 +528,46 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         return FinalizedCard(card: card, verifiedDestinationCount: 0)
     }
 
+    /// Conditional project evidence only. The executor must separately bind
+    /// these excluded paths to the pipeline's reviewed AppleDouble selection.
+    /// This never changes the persisted whole-card verdict or fingerprint.
+    static func allowsQueueContinuationForExpectedExclusions(
+        context: PhotographerReportContext,
+        results: [ResultRow],
+        excludedSourcePaths: Set<String>
+    ) -> Bool {
+        guard !excludedSourcePaths.isEmpty,
+              let card = context.job.cardIngests.first(where: { $0.id == context.cardIngestID }),
+              card.localState == .copying || card.localState == .verifying,
+              context.job.requiredLocalCopyCount > 0,
+              let independentCount = context.independentDestinationCount,
+              independentCount >= context.job.requiredLocalCopyCount else { return false }
+        let originalPaths = context.analysis.sourcePaths
+        let originalSet = Set(originalPaths)
+        guard !originalPaths.isEmpty,
+              originalSet.count == originalPaths.count,
+              context.analysis.fileCount == originalPaths.count,
+              card.fileCount == originalPaths.count,
+              excludedSourcePaths.isSubset(of: originalSet),
+              excludedSourcePaths.allSatisfy({ ($0 as NSString).lastPathComponent.hasPrefix("._") }) else { return false }
+        let excludedRows = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
+        guard Set(excludedRows.map(\.path)) == excludedSourcePaths else { return false }
+        let selectedRows = results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        guard !selectedRows.isEmpty, selectedRows.allSatisfy(\.isVerifiedStatus) else { return false }
+        return finalEvidence(
+            context: context, card: card, results: selectedRows,
+            excludingSourcePaths: excludedSourcePaths
+        ) != nil
+    }
+
     private static func finalEvidence(
         context: PhotographerReportContext,
         card: CardIngest,
-        results: [ResultRow]
+        results: [ResultRow],
+        excludingSourcePaths: Set<String> = []
     ) -> FinalEvidence? {
-        let expectedPaths = context.analysis.sourcePaths
+        let originalPaths = context.analysis.sourcePaths
+        let expectedPaths = originalPaths.filter { !excludingSourcePaths.contains($0) }
         let expectedSet = Set(expectedPaths)
         let identifiedRows = results.compactMap { row -> (String, ResultRow)? in
             guard let identity = destinationIdentity(for: row, packagePath: card.renderedRelativePath) else {
@@ -553,7 +587,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         )
         let hasExactEvidence = !expectedPaths.isEmpty
             && expectedSet.count == expectedPaths.count
-            && expectedPaths.count == card.fileCount
+            && originalPaths.count == card.fileCount
             && identifiedRows.count == results.count
             && independentCount >= context.job.requiredLocalCopyCount
             && groups.values.allSatisfy { rows in

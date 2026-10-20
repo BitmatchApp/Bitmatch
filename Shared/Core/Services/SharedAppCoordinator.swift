@@ -144,6 +144,20 @@ enum SavedTransferPlanGate {
     }
 }
 
+/// Only a frozen run whose saved identity agrees can propose queue scope.
+/// This is not the final qualification; the executor still proves all gates.
+enum SavedExpectedExclusionQueueIdentity {
+    static func matching(projectID: UUID?, projectCardID: UUID?, record: LocalTransferRecord?) -> ExpectedExclusionQueueQualification? {
+        guard let record, record.state == .running,
+              record.projectID == projectID, record.projectCardID == projectCardID else { return nil }
+        switch (projectID, projectCardID) {
+        case (nil, nil): return .ordinaryTransfer
+        case (.some(let project), .some(let card)): return .projectTransfer(projectID: project, cardID: card)
+        default: return nil
+        }
+    }
+}
+
 @MainActor
 class SharedAppCoordinator: ObservableObject {
     enum CancellationSettlementError: LocalizedError, Equatable {
@@ -1771,7 +1785,8 @@ class SharedAppCoordinator: ObservableObject {
 
     private static func isQueueProblem(_ record: LocalTransferRecord) -> Bool {
         let safety = TransferLibraryPresentation.safetyState(for: record)
-        return safety == .needsAttention || safety == .failed || safety == .interrupted
+        return (safety == .needsAttention || safety == .failed || safety == .interrupted)
+            && !TransferJournal.permitsExpectedExclusionQueueContinuation(record)
     }
 
     func startOperation(
@@ -2024,6 +2039,10 @@ class SharedAppCoordinator: ObservableObject {
         let runResults = TransferRunResults()
         let projectIdentity = context.projectIdentity
         let runBelongsToQueueSession = currentTransferBelongsToQueueSession
+        let expectedExclusionQueueIdentity = SavedExpectedExclusionQueueIdentity.matching(
+            projectID: context.projectID, projectCardID: context.projectCardID,
+            record: transferJournal.records.first(where: { $0.id == recordID })
+        )
         let config = CopyVerifyConfig(
             operationId: startID,
             sourceURL: context.sourceURL,
@@ -2039,7 +2058,8 @@ class SharedAppCoordinator: ObservableObject {
             // Screenshot seam (`-BitMatchDemoSlow`): non-nil only for the
             // demo seeder's own records on a flagged DEBUG launch; nil
             // everywhere else, and always nil in Release.
-            fanOutHooks: demoFanOutHooks(for: context.journalRecordID)
+            fanOutHooks: demoFanOutHooks(for: context.journalRecordID),
+            expectedExclusionQueueIdentity: expectedExclusionQueueIdentity
         )
 
         let callbacks = CopyVerifyCallbacks(
@@ -2147,6 +2167,7 @@ class SharedAppCoordinator: ObservableObject {
                     summary: info.message,
                     hadIssues: !info.success,
                     quickOnlyUnverified: info.copiedNotVerified,
+                    expectedExclusionQueueQualification: info.expectedExclusionQueueQualification,
                     copyDurationSeconds: durations.copySeconds,
                     verifyDurationSeconds: durations.verifySeconds,
                     performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,
@@ -2262,6 +2283,12 @@ class SharedAppCoordinator: ObservableObject {
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
         switch safety {
         case .needsAttention, .failed, .interrupted:
+            if belongs && TransferJournal.permitsExpectedExclusionQueueContinuation(record) {
+                // Every selected file and requested handoff verified; only
+                // reviewed metadata was excluded. Keep the amber verdict and
+                // finish notification, but let this queue run its next card.
+                break
+            }
             if belongs {
                 pauseQueueAttempt(recordID: recordID, message: record.summary)
             } else {

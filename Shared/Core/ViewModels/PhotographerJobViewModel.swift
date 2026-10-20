@@ -662,6 +662,15 @@ final class PhotographerJobViewModel: ObservableObject {
             warnings: duplicateWarning.map { [$0.message] } ?? [],
             independentDestinationCount: independentDestinationCount
         )
+        // Compute before unsafe whole-card finalization clears the verified
+        // destination count. The executor still has to prove these exclusions
+        // exactly match the pipeline's reviewed selection and clean handoffs.
+        let excludedSourcePaths = Set(results.filter {
+            ResultOutcome(statusText: $0.status) == .excludedAppleDouble
+        }.map(\.path))
+        let allowsExpectedExclusionQueueContinuation = PhotographerReportPayload.allowsQueueContinuationForExpectedExclusions(
+            context: context, results: results, excludedSourcePaths: excludedSourcePaths
+        )
         let finalized: PhotographerReportPayload.FinalizedCard
         do {
             finalized = try PhotographerReportPayload.finalizedCard(
@@ -699,7 +708,8 @@ final class PhotographerJobViewModel: ObservableObject {
         return finalizationResult(
             job: jobForRun(jobID) ?? job,
             cardID: cardID,
-            analysis: analysis
+            analysis: analysis,
+            allowsQueueContinuationForExpectedExclusions: allowsExpectedExclusionQueueContinuation
         )
     }
 
@@ -1127,7 +1137,8 @@ final class PhotographerJobViewModel: ObservableObject {
     private func finalizationResult(
         job: PhotographerJob,
         cardID: UUID,
-        analysis: CardAnalysis
+        analysis: CardAnalysis,
+        allowsQueueContinuationForExpectedExclusions: Bool = false
     ) -> PhotographerFinalizationResult {
         let card = job.cardIngests.first { $0.id == cardID }
         let context = PhotographerReportContext(
@@ -1144,7 +1155,8 @@ final class PhotographerJobViewModel: ObservableObject {
         )
         return PhotographerFinalizationResult(
             context: context,
-            locallySafe: card?.localState == .locallySafe
+            locallySafe: card?.localState == .locallySafe,
+            allowsQueueContinuationForExpectedExclusions: allowsQueueContinuationForExpectedExclusions
         )
     }
 
