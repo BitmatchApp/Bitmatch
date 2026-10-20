@@ -18,13 +18,22 @@ struct PersistedQueueSession: Codable, Equatable, Sendable {
 final class LocalTransferJournal: ObservableObject {
     @Published private(set) var records: [LocalTransferRecord] = []
     @Published private(set) var persistenceError: String?
-    let store: TransferJournal
+    private let store: TransferJournal
     let fileURL: URL
     let queueSessionFileURL: URL
     private let beforeMarkRunning: ((UUID) throws -> Void)?
     private let beforeCancel: ((UUID) throws -> Void)?
     private let beforeRecordPlan: ((UUID) throws -> Void)?
     private let beforeFinish: ((UUID) throws -> Void)?
+    /// Cache only derived finish fields, with a stable newest-first admission
+    /// window. Older rows bypass it instead of evicting every other row on a
+    /// large queue's next render.
+    static let completedQueueRowLimit = 64
+    private var completedQueueRows: [UUID: QueueSessionRow] = [:]
+    private var isRefreshingRecords = false
+    /// Counts expensive derivations, so performance tests need no timing limit.
+    private(set) var completedQueueRowBuildCount = 0
+    var completedQueueRowCacheCount: Int { completedQueueRows.count }
 
     init(
         fileURL: URL? = nil,
@@ -66,8 +75,52 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     private func refresh() {
+        // All record mutation goes through this owner, including failed calls.
+        // Invalidate without comparing/hashing potentially huge result arrays.
+        completedQueueRows.removeAll(keepingCapacity: true)
+        isRefreshingRecords = true
+        defer { isRefreshingRecords = false }
         records = store.records
         persistenceError = store.persistenceError
+    }
+
+    func queuePresentation(
+        sessionIDs: Set<UUID>,
+        sessionRecordIDsInOrder: [UUID]? = nil,
+        progress: OperationProgress?,
+        mountedSourceIDs: Set<UUID>,
+        ejectedSourceIDs: Set<UUID> = [],
+        pausedRecordID: UUID? = nil,
+        now: Date = Date()
+    ) -> QueueSessionPresentation {
+        // @Published sends synchronously before replacing its value. A
+        // subscriber may ask for the old presentation while refresh publishes;
+        // it must not populate a cache that survives into the new snapshot.
+        if !isRefreshingRecords {
+            let admitted = records.lazy.filter {
+                sessionIDs.contains($0.id) && $0.state != .queued && $0.state != .running
+            }.prefix(Self.completedQueueRowLimit)
+            let admittedIDs = Set(admitted.map(\.id))
+            for id in completedQueueRows.keys where !admittedIDs.contains(id) {
+                completedQueueRows.removeValue(forKey: id)
+            }
+            for record in admitted where completedQueueRows[record.id] == nil {
+                completedQueueRows[record.id] = QueueSessionPresentation.completedRow(for: record)
+                completedQueueRowBuildCount += 1
+            }
+        }
+        return QueueSessionPresentation.make(
+            records: records,
+            sessionIDs: sessionIDs,
+            sessionRecordIDsInOrder: sessionRecordIDsInOrder,
+            progress: progress,
+            mountedSourceIDs: mountedSourceIDs,
+            ejectedSourceIDs: ejectedSourceIDs,
+            pausedRecordID: pausedRecordID,
+            now: now,
+            completedRows: isRefreshingRecords ? [:] : completedQueueRows,
+            onCompletedRowBuilt: { self.completedQueueRowBuildCount += 1 }
+        )
     }
 
     @discardableResult
