@@ -61,6 +61,8 @@ BITMATCH_PROCESS_DEATH_MATRIX=full swift test \
   --filter ProcessDeathRecoveryTests
 ```
 
+On Apple Silicon with Xcode 27, prefix the Swift command with `arch -arm64`, as the engine wrapper in `test.sh` does, if the stock helper selects an incompatible XCTest architecture.
+
 All final images were detached without force, and disposable image/source
 payloads were removed. Compact journals, child logs, phase breadcrumbs and a
 scenario receipt were retained privately. Failures retain their owned fixtures.

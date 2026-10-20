@@ -46,6 +46,12 @@ The running binary was built from `5396f6c5` plus the corrected test harness, be
 
 An earlier physical large-file attempt also had a wrong MD5-versus-SHA-256 harness assertion. Completing its byte work does not make that attempt a pass. It is excluded from the successful physical results.
 
+## Abrupt worker termination
+
+The [process-death matrix](validation/PROCESS_DEATH_RECOVERY_20261019.md) passed 20 scenarios on APFS, journaled HFS+, exFAT and FAT32 images. Each directly spawned worker reached a durable, kernel-stopped boundary and then exited by SIGKILL. Its running journal reopened as interrupted; source hashes and existing bytes were preserved. Incomplete MHL could not pass Check. The positive boundary also matters: a completely published history remained intact and passed a fresh Check, while the unsettled journal stayed interrupted. This is process-death coverage, not a power-loss or OOM-cause reproduction.
+
+The focused run scheduled three XCTest methods: two passed and one internal helper skipped. The 20 scenarios are not 20 additional XCTest passes. Ordinary discovery passed the ownership guard and skipped the two opt-in methods. Final images and disposable source payloads were cleaned after normal detach.
+
 ## First buffer-benchmark read
 
 The selected SSD's opt-in raw benchmark completed **one XCTest, zero failures and zero skips**: 25 hash passes and 25 raw-copy passes, each over a 2 GiB fixture. This is a raw I/O/hash benchmark, not a verified application transfer.
@@ -70,7 +76,8 @@ The engine gates were rerun after the buffer-harness additions at `4106a48a`; th
 | iPad simulator | 81 tests: 71 passed, ten skipped, zero failures; no reported runtime warnings |
 | iPhone simulator | 81 tests: 71 passed, ten skipped, zero failures; no reported runtime warnings |
 | Shared mobile build | Universal iOS simulator build passed |
-| Local signed Mac archive | Built and signature verified; no release published |
+| Release builds | Universal Mac and iOS-device builds passed |
+| Local signed Mac archive | `5fb59a64`: x86_64 and arm64, deep/strict signature verification passed; no install, notarization or release |
 
 Skipped opt-in tests are not counted as passes. Some were enabled in separate runs above; those runs do not turn the whole-suite skip count into zero.
 
