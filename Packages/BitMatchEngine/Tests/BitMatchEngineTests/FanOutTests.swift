@@ -634,43 +634,74 @@ struct FanOutTests {
         }
     }
 
+    /// Plant: remove activeOperations.requestCancellation() from
+    /// TransferPipeline.cancelOperation(); the blocked write must hit the
+    /// caller's watchdog instead of settling as an explicit cancellation.
     @Test
     func cancellationMidBroadcastPublishesNothingAndReportsNoSuccess() async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)
             let fixture = try FanOutFixture(name: "cancel")
             defer { fixture.cleanup() }
-            try fixture.write(Data(repeating: 0x33, count: 4 * 1024 * 1024), to: "clip.bin")
-            let probe = FanOutProbe()
+            let sourceBytes = Data(repeating: 0x33, count: 4 * 1024 * 1024)
+            try fixture.write(sourceBytes, to: "clip.bin")
+            let (entered, entrySignal) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+            defer { entrySignal.finish() }
             let successes = FanOutProbe()
             let hooks = DestinationWriter.FanOutHooks(beforeWrite: { destination, _, chunk in
                 guard destination == 1, chunk == 0 else { return }
-                probe.signalStall()
+                entrySignal.yield(())
+                // This sleep is the blocked-write cancellation point, not a
+                // readiness estimate. The structured caller always joins it.
                 try await Task.sleep(for: .seconds(30))
             })
             let pipeline = fixture.pipeline(hooks: hooks)
-            let operation = Task {
-                try await pipeline.performFileOperation(
-                    sourceURL: fixture.source,
-                    destinationURLs: fixture.destinations,
-                    verificationMode: .standard,
-                    settings: CameraLabelSettings(),
-                    progressCallback: { _ in },
-                    onFileResult: { result in
-                        if result.success { successes.recordSuccess() }
+            try await withThrowingTaskGroup(of: FanOutCancellationEvent.self) { children in
+                // On an early operation error, failed requirement, watchdog or
+                // parent cancellation, cancel AND join every child before the
+                // fixture can be removed. No unowned 30-second task survives.
+                defer { children.cancelAll() }
+                children.addTask {
+                    do {
+                        _ = try await pipeline.performFileOperation(
+                            sourceURL: fixture.source,
+                            destinationURLs: fixture.destinations,
+                            verificationMode: .standard,
+                            settings: CameraLabelSettings(),
+                            progressCallback: { _ in },
+                            onFileResult: { result in
+                                if result.success { successes.recordSuccess() }
+                            }
+                        )
+                        return .completed
+                    } catch is CancellationError {
+                        return .cancelled
                     }
-                )
+                }
+                children.addTask {
+                    var iterator = entered.makeAsyncIterator()
+                    guard await iterator.next() != nil else { throw CancellationError() }
+                    return .entered
+                }
+                children.addTask {
+                    // A liveness failure bounds this test; elapsed time never
+                    // substitutes for proof that the write actually started.
+                    try await Task.sleep(for: .seconds(10))
+                    return .watchdogExpired
+                }
+                let firstEvent = try await children.next()
+                try #require(firstEvent == .entered,
+                    "The second destination must enter its blocked first write before cancellation")
+                try Task.checkCancellation()
+                pipeline.cancelOperation()
+                let terminalEvent = try await children.next()
+                try #require(terminalEvent == .cancelled,
+                    "The blocked fan-out operation must settle through CancellationError")
             }
-            #expect(await waitUntil { probe.isStalled })
-            pipeline.cancelOperation()
-            do {
-                _ = try await operation.value
-                Issue.record("The fan-out operation should have been cancelled")
-            } catch is CancellationError {
-                // Expected.
-            }
+            try Task.checkCancellation()
 
             #expect(successes.successCount == 0)
+            #expect(try Data(contentsOf: fixture.source.appendingPathComponent("clip.bin")) == sourceBytes)
             for destination in fixture.destinations {
                 let output = SafetyValidator.resolvedDestinationRoot(
                     source: fixture.source,
@@ -1112,6 +1143,10 @@ private enum FanOutFault: String, CaseIterable, Sendable {
     }
 }
 
+private enum FanOutCancellationEvent: Equatable, Sendable {
+    case entered, completed, cancelled, watchdogExpired
+}
+
 private final class FanOutProbe: Sendable {
     private struct State: Sendable {
         var opened: [String: Int] = [:]
@@ -1120,7 +1155,6 @@ private final class FanOutProbe: Sendable {
         var slowWrites = 0
         var maximumReadLead = 0
         var once = false
-        var stalled = false
         var successes = 0
         var maximumProgressBytes: Int64 = 0
         var completedPerDestination: [Int] = []
@@ -1171,8 +1205,6 @@ private final class FanOutProbe: Sendable {
         }
     }
 
-    func signalStall() { state.withLock { $0.stalled = true } }
-    var isStalled: Bool { state.withLock { $0.stalled } }
     func recordSuccess() { state.withLock { $0.successes += 1 } }
     var successCount: Int { state.withLock { $0.successes } }
 
