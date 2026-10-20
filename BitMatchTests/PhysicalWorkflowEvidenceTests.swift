@@ -217,7 +217,8 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
             print("PHYSICAL_APP_TIMEOUT cancellationRequestedBy=harness originAPI=user executorSettled=\(settled) fixturesRetained=true")
             throw PhysicalAppError.workflowTimedOut(settled: settled)
         }
-        let queueSettled = ProcessInfo.processInfo.systemUptime - started
+        let settledUptime = ProcessInfo.processInfo.systemUptime
+        let queueSettled = settledUptime - started
         let cpu = try Self.cpuSeconds() - cpuStart
         monitor.cancel(); await monitor.value
         let records = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: journalURL))
@@ -308,7 +309,9 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         XCTAssertEqual(after, original, "Source changed after reports/check")
         return try PhysicalAppHarnessSettlement.withPassingAssertions(testRun?.totalFailureCount) {
             let receipt = PhysicalAppReceipt(pair: pair, mode: mode.rawValue, sourceFiles: original.count,
-                selectedFiles: selected.count, sourceBytes: totalBytes, queueSettledSeconds: queueSettled,
+                selectedFiles: selected.count, sourceBytes: totalBytes,
+                transferStartedUptime: started, transferSettledUptime: settledUptime,
+                queueSettledSeconds: queueSettled,
                 pipelineReturnedSeconds: pipelineSamples.pipelineReturnedUptime.map { $0 - started },
                 cpuSeconds: cpu, initialMiB: pipelineSamples.initialMiB, peakMiB: pipelineSamples.peakMiB,
                 telemetry: telemetry, destinations: io.destinations.enumerated().map {
@@ -497,6 +500,10 @@ private enum PhysicalAppHarnessSettlement {
 private struct PhysicalAppReceipt: Encodable {
     struct Destination: Codable { let index: Int; let pipelineWrittenBytes: Int64; let pipelineReadbackBytes: Int64 }
     let pair: Int; let mode: String; let sourceFiles: Int; let selectedFiles: Int; let sourceBytes: Int64
+    /// Monotonic host times separate automatic transfer work from the test's
+    /// later hashes, Check, and report regeneration in external I/O samples.
+    let transferStartedUptime: Double
+    let transferSettledUptime: Double
     /// End includes automatic reports + durable journal settlement. Independent
     /// test hashes, Saved Check and History regeneration occur after this clock.
     let queueSettledSeconds: Double
