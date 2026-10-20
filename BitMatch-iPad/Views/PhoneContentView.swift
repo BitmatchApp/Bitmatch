@@ -4,7 +4,7 @@ import SwiftUI
 struct PhoneContentView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @State private var showSettings = false
-    @State private var showingTransfers = false
+    @Binding var showingTransfers: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {

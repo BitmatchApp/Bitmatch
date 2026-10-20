@@ -2476,6 +2476,21 @@ class SharedAppCoordinator: ObservableObject {
         return true
     }
 
+    /// Identity captured when presenting a delayed cancellation confirmation.
+    /// Preparation owns a start ID before the state service admits the run.
+    var cancellationTargetID: UUID? {
+        activeStartID ?? stateService.currentOperationId
+    }
+
+    /// A confirmation for an earlier attempt must never cancel its replacement.
+    /// The identity check and cancellation stay in one main-actor turn.
+    @discardableResult
+    func cancelOperation(ifCurrentTargetID targetID: UUID, origin: TransferCancelOrigin = .user) -> Bool {
+        guard cancellationTargetID == targetID else { return false }
+        cancelOperation(origin: origin)
+        return true
+    }
+
     func cancelOperation(origin: TransferCancelOrigin = .user) {
         cancellationOrigin = origin
         SharedLogger.cancelEvent(origin, run: activeStartID ?? stateService.currentOperationId)
