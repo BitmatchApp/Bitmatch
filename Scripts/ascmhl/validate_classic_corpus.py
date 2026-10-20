@@ -2,8 +2,8 @@
 """Read-only classic MHL corpus checks using primary schemas/reference CLI.
 
 Requires lxml. Schemas are caller-supplied private downloads, not vendored.
-All corruption controls run in disposable copies. This does not test or enable
-classic-MHL support in BitMatch's ASC-only saved-checksum reader.
+All corruption controls run in disposable copies. This validates the reference corpus independently of BitMatch's reader;
+BitMatch behavior is covered by the engine regression tests.
 """
 import hashlib
 import json
@@ -95,7 +95,7 @@ def main():
                         digest.tag = 'null'
                         digest.text = None
         schema.assertValid(variant)
-        checks.append('primary schema accepts unsupported-in-BitMatch ' + kind + ' variant')
+        checks.append('primary schema accepts ' + kind + ' variant')
 
     with tempfile.TemporaryDirectory(prefix='bitmatch-classic-corpus-') as temporary:
         for kind, expected in [('original', 0), ('changed-same-size', 16), ('missing', 3), ('truncated', 11)]:
@@ -117,7 +117,7 @@ def main():
         raise RuntimeError('Validation changed the permanent corpus')
     checks.append('permanent corpus unchanged')
     print(json.dumps({'reference_commit': REFERENCE_COMMIT,
-                      'scope': 'classic reference inventory/boundary corpus; no BitMatch classic support, hardware or history writes',
+                      'scope': 'independent classic reference inventory/corruption controls; no hardware or history writes',
                       'passed': len(checks), 'checks': checks}, indent=2))
 
 
