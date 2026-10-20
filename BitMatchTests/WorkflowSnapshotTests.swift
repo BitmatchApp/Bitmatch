@@ -23,6 +23,17 @@ private final class ComposerCaptureBounds: @unchecked Sendable {
     }
 }
 
+/// Retain the last source-control layout after the temporary window closes.
+private final class SourceControlCaptureBounds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [SetupSourceControlRole: CGRect] = [:]
+    var frames: [SetupSourceControlRole: CGRect] { lock.withLock { stored } }
+    func update(_ frames: [SetupSourceControlRole: CGRect]) {
+        guard !frames.isEmpty else { return }
+        lock.withLock { stored = frames }
+    }
+}
+
 /// Opt-in production-view captures and always-on fixture routing checks.
 ///
 /// Capture the workbench, expanded progress content and expanded History
@@ -223,6 +234,67 @@ final class WorkflowSnapshotTests: XCTestCase {
             .onPreferenceChange(ComposerFrameKey.self, perform: bounds.update),
                 size: CGSize(width: width, height: 800), name: "mac-readable-composer-\(Int(width))",
                 expectedComposerText: ["CameraCard", "Backup A", "Backup B"], composerBounds: bounds)
+        }
+    }
+
+    /// Full source names must remain readable inside the composer, not only
+    /// in its repeated summary or accessibility label. Unicode stays unchanged.
+    /// Plant: restore Text(source.title).lineLimit(1); OCR loses name tokens.
+    func testCaptureAccessibleSourceNames() throws {
+        try requireCaptureConfiguration()
+        let actions = SetupLocationsActions(pickSource: {}, clearSource: {}, addAnotherCard: { nil },
+            chooseConnectedSource: { _ in }, chooseFolderOnSource: { _ in },
+            chooseConnectedBackup: { _ in }, chooseFolderOnBackup: { _ in },
+            editStagedCard: { _ in false }, cancelEdit: {}, moveStagedCard: { _, _ in },
+            removeStagedCard: { _ in }, pickBackups: {}, removeBackup: { _ in })
+        let names = ["Camera Card Montréal 東京 Day 05 Finale 099",
+                     "Camera Card Remote Location Night Interior Scene 42 Finale 099"]
+        for (index, title) in names.enumerated() {
+            for width in [580.0, 1_100.0] {
+                for typeSize in [DynamicTypeSize.accessibility2] {
+                    let composer = ComposerCaptureBounds()
+                    let controls = SourceControlCaptureBounds()
+                    let presentation = SetupLocationsPresentation.make(
+                        sourceURL: URL(fileURLWithPath: "/fixture/" + title),
+                        sourceFileCount: 12, sourceBytes: 4_096, isAnalysingSource: false,
+                        cameraName: "Sony VENICE", destinationURLs: [], capacity: { _ in nil },
+                        isOperationInProgress: false, nextStep: nil,
+                        layout: AdaptiveNavigationPolicy.presentation(for: width))
+                    XCTAssertEqual(presentation.source?.title, title)
+                    let size = CGSize(width: width, height: 1_600)
+                    try capture(ScrollView {
+                        SetupLocationsView(presentation: presentation, actions: actions,
+                            verificationMode: .constant(.standard), connectedSources: [],
+                            connectedDestinations: [], editingID: nil, stacksVertically: false,
+                            advanced: AnyView(EmptyView())).padding()
+                    }
+                    .environment(\.dynamicTypeSize, typeSize)
+                    .coordinateSpace(name: QueueFlightSpace.name)
+                    .onPreferenceChange(ComposerFrameKey.self, perform: composer.update)
+                    .onPreferenceChange(SetupSourceControlBoundsKey.self, perform: controls.update),
+                        size: size,
+                        name: "mac-accessible-source-\(index)-\(Int(width))-\(typeSize)",
+                        expectedComposerText: index == 0
+                            ? ["Camera", "Card", "Day", "05", "Finale", "099"]
+                            : ["Camera", "Remote", "Location", "Night", "Interior", "Scene", "42", "Finale", "099"],
+                        composerBounds: composer)
+                    let frames = controls.frames
+                    XCTAssertEqual(Set(frames.keys), [.choose, .remove, .subfolder])
+                    for frame in frames.values {
+                        // Mac retains native compact button sizes. The iOS
+                        // counterpart requires a 44-point minimum touch target.
+                        XCTAssertGreaterThan(frame.width, 0)
+                        XCTAssertGreaterThan(frame.height, 0)
+                        XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame))
+                    }
+                    let choose = try XCTUnwrap(frames[.choose])
+                    let remove = try XCTUnwrap(frames[.remove])
+                    let subfolder = try XCTUnwrap(frames[.subfolder])
+                    XCTAssertLessThanOrEqual(choose.maxY, min(remove.minY, subfolder.minY),
+                        "Auxiliary controls must leave the name its own row at accessibility sizes")
+                    XCTAssertFalse(remove.intersects(subfolder))
+                }
+            }
         }
     }
 

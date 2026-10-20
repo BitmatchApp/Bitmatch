@@ -33,6 +33,17 @@ private final class WorkflowActionCaptureBounds: @unchecked Sendable {
     func update(_ role: WorkflowActionRole, _ frame: CGRect) { lock.withLock { stored[role] = frame } }
 }
 
+/// Retain the last source-control layout after the temporary window closes.
+private final class SourceControlCaptureBounds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [SetupSourceControlRole: CGRect] = [:]
+    var frames: [SetupSourceControlRole: CGRect] { lock.withLock { stored } }
+    func update(_ frames: [SetupSourceControlRole: CGRect]) {
+        guard !frames.isEmpty else { return }
+        lock.withLock { stored = frames }
+    }
+}
+
 /// Opt-in production-view captures and always-on fixture routing checks.
 ///
 /// Capture the workbench, expanded progress content and expanded History
@@ -467,6 +478,65 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    /// Full source names must remain readable inside the composer, not only
+    /// in its repeated summary or accessibility label. Unicode stays unchanged.
+    /// Plant: restore Text(source.title).lineLimit(1); OCR loses name tokens.
+    func testCaptureAccessibleSourceNames() async throws {
+        try requireCaptureConfiguration()
+        let actions = SetupLocationsActions(pickSource: {}, clearSource: {}, addAnotherCard: { nil },
+            chooseConnectedSource: { _ in }, chooseFolderOnSource: { _ in },
+            chooseConnectedBackup: { _ in }, chooseFolderOnBackup: { _ in },
+            editStagedCard: { _ in false }, cancelEdit: {}, moveStagedCard: { _, _ in },
+            removeStagedCard: { _ in }, pickBackups: {}, removeBackup: { _ in })
+        let names = ["Camera Card Montréal 東京 Day 05 Finale 099",
+                     "Camera Card Remote Location Night Interior Scene 42 Finale 099"]
+        for (index, title) in names.enumerated() {
+            for width in [375.0, 760.0] {
+                for typeSize in [DynamicTypeSize.accessibility2, .accessibility5] {
+                    let composer = ComposerCaptureBounds()
+                    let controls = SourceControlCaptureBounds()
+                    let presentation = SetupLocationsPresentation.make(
+                        sourceURL: URL(fileURLWithPath: "/fixture/" + title),
+                        sourceFileCount: 12, sourceBytes: 4_096, isAnalysingSource: false,
+                        cameraName: "Sony VENICE", destinationURLs: [], capacity: { _ in nil },
+                        isOperationInProgress: false, nextStep: nil,
+                        layout: AdaptiveNavigationPolicy.presentation(for: width))
+                    XCTAssertEqual(presentation.source?.title, title)
+                    let size = CGSize(width: width, height: 1_600)
+                    try await capture(ScrollView {
+                        SetupLocationsView(presentation: presentation, actions: actions,
+                            verificationMode: .constant(.standard), connectedSources: [],
+                            connectedDestinations: [], editingID: nil, stacksVertically: false,
+                            advanced: AnyView(EmptyView())).padding()
+                    }
+                    .environment(\.dynamicTypeSize, typeSize)
+                    .coordinateSpace(name: QueueFlightSpace.name)
+                    .onPreferenceChange(ComposerFrameKey.self, perform: composer.update)
+                    .onPreferenceChange(SetupSourceControlBoundsKey.self, perform: controls.update),
+                        size: size,
+                        name: "mobile-accessible-source-\(index)-\(Int(width))-\(typeSize)",
+                        expectedComposerText: index == 0
+                            ? ["Camera", "Card", "Day", "05", "Finale", "099"]
+                            : ["Camera", "Remote", "Location", "Night", "Interior", "Scene", "42", "Finale", "099"],
+                        composerBounds: composer, scrollableComposer: true)
+                    let frames = controls.frames
+                    XCTAssertEqual(Set(frames.keys), [.choose, .remove, .subfolder])
+                    for frame in frames.values {
+                        XCTAssertGreaterThanOrEqual(frame.width, 44)
+                        XCTAssertGreaterThanOrEqual(frame.height, 44)
+                        XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame))
+                    }
+                    let choose = try XCTUnwrap(frames[.choose])
+                    let remove = try XCTUnwrap(frames[.remove])
+                    let subfolder = try XCTUnwrap(frames[.subfolder])
+                    XCTAssertLessThanOrEqual(choose.maxY, min(remove.minY, subfolder.minY),
+                        "Auxiliary controls must leave the name its own row at accessibility sizes")
+                    XCTAssertFalse(remove.intersects(subfolder))
+                }
+            }
+        }
+    }
+
     func testCaptureTransferDetails() async throws {
         try requireCaptureConfiguration()
         let prefs = ReportPrefs(notes: "Card 01 · backups to Alex.\nKeep the source until both drives are checked.", operatorName: "Alex Morgan")
@@ -501,6 +571,7 @@ final class WorkflowSnapshotTests: XCTestCase {
     private func capture<V: View>(_ view: V, size: CGSize, name: String,
                                  expectedText: [String] = [], textOccurrences: [String: Int] = [:],
                                  expectedComposerText: [String] = [], composerBounds: ComposerCaptureBounds? = nil,
+                                 scrollableComposer: Bool = false,
                                  actionBounds: WorkflowActionCaptureBounds? = nil,
                                  expectedActions: Set<WorkflowActionRole> = [], bottomOcclusion: CGFloat = 0,
                                  appearance: UIUserInterfaceStyle = .dark) async throws {
@@ -596,11 +667,22 @@ final class WorkflowSnapshotTests: XCTestCase {
             let frame = try XCTUnwrap(composerBounds?.current(), "Composer geometry was not reported")
             XCTAssertGreaterThan(frame.width, 0)
             XCTAssertGreaterThan(frame.height, 0)
-            XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame), "Composer must fit in its capture")
+            let viewport = CGRect(origin: .zero, size: size)
+            if !scrollableComposer {
+                XCTAssertTrue(viewport.contains(frame), "Composer must fit in its capture")
+            }
+            // Source-only accessibility captures may scroll past the backups.
+            // Keep the default full-composer assertion, but never send Vision
+            // an invalid region after any failed containment assertion.
+            let visible = frame.intersection(viewport)
+            guard !visible.isNull, visible.width > 0, visible.height > 0 else {
+                XCTFail("Composer has no visible area in \(name)")
+                return
+            }
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
-            request.regionOfInterest = CGRect(x: frame.minX / size.width,
-                y: 1 - frame.maxY / size.height, width: frame.width / size.width, height: frame.height / size.height)
+            request.regionOfInterest = CGRect(x: visible.minX / size.width,
+                y: 1 - visible.maxY / size.height, width: visible.width / size.width, height: visible.height / size.height)
             try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
             let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
             for expected in expectedComposerText {
