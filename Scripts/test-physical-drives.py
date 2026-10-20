@@ -47,36 +47,58 @@ def direct_mount(value):
     return path
 
 
-def physical_volume(value):
-    path = direct_mount(value)
-    info = disk_info(path)
-    roles = info.get('APFSVolumeRoles', info.get('APFSVolumeRole', []))
-    roles = [roles] if isinstance(roles, str) else roles
-    if (not info.get('Mounted') or info.get('MountPoint') != str(path)
-            or not info.get('VolumeUUID') or info.get('Internal') is not False
-            or info.get('ReadOnlyMedia') or info.get('ReadOnlyVolume')
-            or info.get('Writable') is False or info.get('BootVolume') or info.get('SystemImage')
-            or info.get('Bootable') is True
-            or any(str(role).lower() not in ('none', '') for role in roles)
-            or not os.access(path, os.W_OK | os.X_OK)):
-        raise UnsafeFixture('The selected mount must be writable, external data media.')
+def parent_disks(info):
     parent = info.get('ParentWholeDisk')
     container = info.get('APFSContainerReference')
     if container:
         containers = plist_command('/usr/sbin/diskutil', 'apfs', 'list', '-plist').get('Containers', [])
         stores = [store for item in containers if item.get('ContainerReference') == container
                   for store in item.get('PhysicalStores', [])]
-        if len(stores) != 1:
-            raise UnsafeFixture('An APFS role must resolve to exactly one physical store.')
-        parent = disk_info(stores[0]['DeviceIdentifier']).get('ParentWholeDisk')
+        parents = {disk_info(store['DeviceIdentifier']).get('ParentWholeDisk') for store in stores}
+        if not parents or None in parents:
+            raise UnsafeFixture('Cannot establish the APFS physical stores.')
+        return parents
     if not parent:
         raise UnsafeFixture('Cannot establish the physical ParentWholeDisk.')
+    return {parent}
+
+
+def removable_sd_reader(info):
+    return (info.get('Internal') is True and info.get('RemovableMedia') is True
+            and info.get('BusProtocol') == 'Secure Digital' and info.get('OSInternalMedia') is False
+            and not info.get('SystemImage'))
+
+
+def physical_volume(value):
+    path = direct_mount(value)
+    info = disk_info(path)
+    roles = info.get('APFSVolumeRoles', info.get('APFSVolumeRole', []))
+    roles = [roles] if isinstance(roles, str) else roles
+    reader = removable_sd_reader(info)
+    if (info.get('Mounted') is False or info.get('MountPoint') != str(path)
+            or not info.get('VolumeUUID') or (info.get('Internal') is not False and not reader)
+            or info.get('ReadOnlyMedia') or info.get('ReadOnlyVolume')
+            or any(info.get(key) is False for key in ('Writable', 'WritableMedia', 'WritableVolume'))
+            or info.get('BootVolume') or info.get('SystemImage') or info.get('OSInternalMedia')
+            or any(str(role).lower() not in ('none', '') for role in roles)
+            or not os.access(path, os.W_OK | os.X_OK)):
+        raise UnsafeFixture('Use writable external data media or an explicitly selected removable SD card.')
+    parents = parent_disks(info)
+    if len(parents) != 1:
+        raise UnsafeFixture('A selected volume must resolve to exactly one physical store.')
+    parent = next(iter(parents))
     whole = disk_info(parent)
-    if (not whole.get('Whole') or whole.get('Internal') is not False
+    if (not whole.get('WholeDisk', whole.get('Whole'))
+            or (whole.get('Internal') is not False and not (reader and removable_sd_reader(whole)))
             or str(whole.get('VirtualOrPhysical', '')).lower() != 'physical'
             or whole.get('DiskImage') or whole.get('BootVolume') or whole.get('SystemImage')
-            or whole.get('Bootable') is True):
+            or whole.get('OSInternalMedia') or whole.get('ReadOnlyMedia')
+            or any(whole.get(key) is False for key in ('Writable', 'WritableMedia'))):
         raise UnsafeFixture('Virtual, internal, or ambiguous physical media is refused.')
+    # Bootable is a capability flag, including on some ExFAT data SSDs.
+    # Reject the actual startup device instead of inferring it from that flag.
+    if parent in parent_disks(disk_info('/')):
+        raise UnsafeFixture('The active startup physical disk cannot be used for validation.')
     return {'path': path, 'uuid': info['VolumeUUID'], 'parent': parent,
             'filesystem': info.get('FilesystemType', info.get('FileSystemPersonality', ''))}
 
@@ -159,7 +181,10 @@ class Run:
             finally:
                 if self.child.poll() is None:
                     for sig in (signal.SIGINT, signal.SIGTERM):
-                        os.killpg(self.child.pid, sig)
+                        try:
+                            os.killpg(self.child.pid, sig)
+                        except ProcessLookupError:
+                            pass  # The child exited between poll and signal.
                         try:
                             self.child.wait(timeout=10)
                             break
@@ -339,7 +364,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--source-volume', required=True, metavar='/Volumes/CARD')
     parser.add_argument('--backup-volume', required=True, action='append', metavar='/Volumes/SSD',
-                        help='Repeat twice. First seeds the large source; second is the default large destination. Three distinct external physical disks are required.')
+                        help='Repeat twice. First seeds the large source; second is the default large destination. Three distinct physical disks are required; an internal removable SD reader is allowed.')
     parser.add_argument('--large', action='store_true', help='Also run the 119.6 GB / eight-file case.')
     parser.add_argument('--fast-large-image-on', metavar='/Volumes/SSD',
                         help='With --large, put a 160 GiB sparse exFAT image on one authorized backup.')
