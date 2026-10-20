@@ -72,22 +72,34 @@ struct TransferRunContext {
 }
 
 @MainActor
-private final class TransferRunResults {
+final class TransferRunResults {
     private(set) var rows: [ResultRow] = []
+    private struct Key: Hashable {
+        let path: String
+        let destinationPath: String?
+    }
+    private var indexByKey: [Key: Int] = [:]
     var attemptedPlanSave = false
     var planSaveError: Error?
 
     func upsert(_ row: ResultRow) {
-        if let index = rows.firstIndex(where: {
-            $0.path == row.path && $0.destinationPath == row.destinationPath
-        }) {
+        let key = Key(path: row.path, destinationPath: row.destinationPath)
+        if let index = indexByKey[key] {
             rows[index] = row
         } else {
+            indexByKey[key] = rows.count
             rows.append(row)
         }
     }
 
     func replace(with rows: [ResultRow]) {
+        var index: [Key: Int] = [:]
+        index.reserveCapacity(rows.count)
+        for (offset, row) in rows.enumerated() {
+            let key = Key(path: row.path, destinationPath: row.destinationPath)
+            if index[key] == nil { index[key] = offset }
+        }
+        indexByKey = index
         self.rows = rows
     }
 }
