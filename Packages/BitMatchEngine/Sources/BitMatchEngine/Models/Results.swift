@@ -183,7 +183,16 @@ extension ResultRow: Codable {
 
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
-        let id = try container.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        let id: UUID
+        if let savedID = try container.decodeIfPresent(UUID.self, forKey: .id) {
+            id = savedID
+        } else {
+            id = UUID()
+            // A journal must persist newly assigned identities once, so later
+            // launches, retries and exports keep referring to the same rows.
+            (decoder.userInfo[JournalDecodingMigrations.userInfoKey] as? JournalDecodingMigrations)?
+                .recordGeneratedResultID()
+        }
         let path = try container.decode(String.self, forKey: .path)
         let status = try container.decode(String.self, forKey: .status)
         let size = try container.decode(Int64.self, forKey: .size)
