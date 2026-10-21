@@ -10,6 +10,7 @@ struct MobileTransferActionBar: View {
     var showsSetupAction = true
     var showsRunningContext = true
     @State private var cancellationTarget: UUID?
+    @State private var setupAdmissionTask: Task<Void, Never>?
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     init(coordinator: SharedAppCoordinator, isShowingHistory: Bool = false,
@@ -40,7 +41,7 @@ struct MobileTransferActionBar: View {
             case .setup:
                 if showsSetupAction {
                     SetupStartControl(start: SetupPresentation.make(coordinator: coordinator).start,
-                        action: CoordinatorSetupActions.make(coordinator: coordinator).start,
+                        action: setupActions.start,
                         usesBottomBar: true)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 12)
@@ -63,6 +64,14 @@ struct MobileTransferActionBar: View {
         }
         .onChange(of: placement) { _, value in
             if value != .running { cancellationTarget = nil }
+        }
+        .onDisappear {
+            // A prepared admission owns its result once the coordinator has
+            // begun committing. Before that point, leaving this presentation
+            // can retire the pending preflight without losing a committed row.
+            if !coordinator.isCommittingSelection {
+                setupAdmissionTask?.cancel()
+            }
         }
         .confirmationDialog(TransferProgressPresentation.cancelConfirmationTitle,
             isPresented: Binding(
@@ -134,5 +143,31 @@ struct MobileTransferActionBar: View {
         .buttonBorderShape(.roundedRectangle(radius: 12))
         .tint(.accentColor)
         .workflowActionBounds(.primary)
+    }
+
+    private var setupActions: SetupActions {
+        CoordinatorSetupActions.make(
+            coordinator: coordinator,
+            enqueueSelection: { runPreparedSetupAdmission(startBatch: false) },
+            startSetupTransfers: { runPreparedSetupAdmission(startBatch: true) }
+        )
+    }
+
+    private func runPreparedSetupAdmission(startBatch: Bool) {
+        guard setupAdmissionTask == nil, !coordinator.isCommittingSelection else { return }
+        setupAdmissionTask = Task { @MainActor in
+            defer { setupAdmissionTask = nil }
+            do {
+                if startBatch {
+                    _ = try await coordinator.startSetupTransfersPrepared()
+                } else {
+                    _ = try await coordinator.enqueueSelectionPrepared()
+                }
+            } catch is CancellationError {
+                // The presentation disappeared before admission committed.
+            } catch {
+                await coordinator.showError(error)
+            }
+        }
     }
 }

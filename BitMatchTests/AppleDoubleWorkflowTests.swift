@@ -350,6 +350,10 @@ final class AppleDoubleWorkflowTests: XCTestCase {
         })
         XCTAssertTrue(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
         review.enabled = false
+        let unfilteredReady = await waitUntil {
+            SetupPresentation.make(coordinator: coordinator).start.readyLine?.contains("3 files (") == true
+        }
+        XCTAssertTrue(unfilteredReady)
         XCTAssertTrue(try XCTUnwrap(SetupPresentation.make(coordinator: coordinator).start.readyLine).contains("3 files ("))
         XCTAssertFalse(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
         review.enabled = true

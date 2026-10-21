@@ -1650,6 +1650,10 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 summary: isSafe ? "Verified" : "Mismatch", hadIssues: !isSafe
             )
         }
+        let availabilitySettled = await waitUntil {
+            Set([firstID, secondID]).isSubset(of: Set(coordinator.queuePresentation.ejectableCardIDs))
+        }
+        XCTAssertTrue(availabilitySettled, "Only confirmed original sources offer Eject")
         let recorder = EjectRecorder()
 
         let error = await coordinator.ejectAllSafeQueueSources { url in
@@ -1657,6 +1661,11 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             return url.resolvingSymlinksInPath() == second.resolvingSymlinksInPath() ? "Drive is busy" : nil
         }
 
+        let presentationSettled = await waitUntil {
+            coordinator.queuePresentation.rows.first { $0.id == firstID }?.action == .ejected
+                && coordinator.queuePresentation.rows.first { $0.id == secondID }?.action == .eject
+        }
+        XCTAssertTrue(presentationSettled)
         let recordedURLs = await recorder.urls
         let attempted = recordedURLs.map { $0.resolvingSymlinksInPath() }
         XCTAssertEqual(attempted, [f.source.resolvingSymlinksInPath(), second.resolvingSymlinksInPath()])

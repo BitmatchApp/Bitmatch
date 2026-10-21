@@ -34,6 +34,10 @@ struct MacSetupLocations: View {
             pickSource: { Self.chooseFolders(multiple: false, prompt: "Choose Source").first },
             pickBackups: { Self.chooseFolders(multiple: true, prompt: "Add Destination") },
             addBackup: { volumeAccess.addDestination($0) },
+            didApproveBackup: { urls, replaced in
+                urls.forEach(volumeAccess.recordPreparedDestinationAdd)
+                if let replaced { volumeAccess.recordDestinationDismissal(replaced) }
+            },
             removeBackup: { volumeAccess.removeDestination($0) },
             connectedSources: connectedSourceChoices,
             connectedDestinations: connectedDestinationChoices,
@@ -96,7 +100,7 @@ struct MacSetupLocations: View {
     private var connectedDestinationChoices: [SetupConnectedVolume] {
         let usableURLs = Set(volumeMonitor.connectedVolumes.filter { volume in
             volume.cameraName == nil && (volume.freeBytes > 0 || coordinator.destinationURLs.contains {
-                BackupTargetPolicy.canonicalPath($0) == BackupTargetPolicy.canonicalPath(volume.url)
+                $0.standardizedFileURL.path == volume.url.standardizedFileURL.path
             })
         }.map(\.url))
         return SetupConnectedMenuPolicy.destinationRows(

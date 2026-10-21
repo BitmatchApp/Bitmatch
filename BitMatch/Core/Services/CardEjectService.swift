@@ -22,8 +22,8 @@ enum CardEjectService {
 
     /// Nil on success; a plain, displayable message on failure.
     static func eject(_ url: URL) async -> String? {
-        guard isEjectable(url) else { return "This folder is not on an ejectable drive. There is nothing to eject." }
-        return await Task.detached(priority: .userInitiated) {
+        return await Task.detached(priority: .utility) { () -> String? in
+            guard isEjectable(url) else { return "This folder is not on an ejectable drive. There is nothing to eject." }
             do {
                 // The source may be a folder on the card (DCIM); eject
                 // needs the volume itself.

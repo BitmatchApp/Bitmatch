@@ -8,6 +8,7 @@ struct TransferLibraryView: View {
     @ObservedObject var journal: LocalTransferJournal
     @State private var search = ""
     @State private var pdfTask: Task<Void, Never>?
+    @State private var retryTask: Task<Void, Never>?
     @State private var preparingPDF = false
     @State private var errorMessage: String?
     @State private var exportDocument: TransferHistoryDocument?
@@ -81,6 +82,7 @@ struct TransferLibraryView: View {
             }
             .onDisappear {
                 pdfTask?.cancel()
+                retryTask?.cancel()
                 historySearch.cancel()
             }
             .sheet(item: $reauthorizeRecord) { record in
@@ -216,7 +218,7 @@ struct TransferLibraryView: View {
                 }
             }
             if actions.retry {
-                Button("Retry") { retry(record.id) }.tint(.blue)
+                Button("Retry") { retry(record.id) }.tint(.blue).disabled(retryTask != nil)
             }
         }
         #endif
@@ -235,9 +237,11 @@ struct TransferLibraryView: View {
     private func menuItems(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
         if actions.retry {
             Button("Retry") { retry(record.id) }
+                .disabled(retryTask != nil)
         }
         if actions.retryWithoutASCMHL {
             Button("Retry without ASC MHL") { retry(record.id, generateASCMHL: false) }
+                .disabled(retryTask != nil)
         }
         if actions.reconnect {
             Button("Reconnect…") { reauthorizeRecord = record }
@@ -317,6 +321,7 @@ struct TransferLibraryView: View {
                 Button("Retry without ASC MHL") {
                     retry(record.id, generateASCMHL: false)
                 }
+                .disabled(retryTask != nil)
                 .modifier(TouchTarget())
                 Text("Rechecks copies and retries unfinished work. Existing ASC MHL histories are preserved; this attempt won’t create new ones.")
                     .foregroundStyle(.secondary)
@@ -363,8 +368,13 @@ struct TransferLibraryView: View {
     }
 
     private func retry(_ id: UUID, generateASCMHL: Bool? = nil) {
-        coordinator.retryTransfer(id, generateASCMHL: generateASCMHL)
-        onBack?()
+        guard retryTask == nil else { return }
+        retryTask = Task { @MainActor in
+            defer { retryTask = nil }
+            await coordinator.retryTransferPrepared(id, generateASCMHL: generateASCMHL)
+            guard !Task.isCancelled else { return }
+            onBack?()
+        }
     }
 }
 
@@ -407,6 +417,9 @@ struct ReauthorizeLocationsView: View {
     @State private var pickingIndex: Int?
     @State private var showingPicker = false
     @State private var scopedURLs: [URL] = []
+    @State private var accessTask: Task<Void, Never>?
+    @State private var requestGeneration = UUID()
+    @State private var isBusy = true
     @State private var message: String?
     @State private var messageIsError = false
 
@@ -445,8 +458,13 @@ struct ReauthorizeLocationsView: View {
                                         .textSelection(.enabled)
                                 }
                                 Spacer()
-                                if stale == nil {
+                                if stale == nil && isBusy {
                                     ProgressView().controlSize(.small)
+                                } else if stale == nil {
+                                    Label("Status unavailable", systemImage: "exclamationmark.triangle")
+                                        .font(.callout)
+                                        .foregroundStyle(ResultStatusTone.warning.color)
+                                        .labelStyle(.titleAndIcon)
                                 } else if stale?.contains(location.index) == true && !location.identityCanBeConfirmed {
                                     Label("Cannot reconnect", systemImage: "exclamationmark.triangle")
                                         .font(.callout)
@@ -456,7 +474,7 @@ struct ReauthorizeLocationsView: View {
                                     Button("Choose") {
                                         pickingIndex = location.index
                                         showingPicker = true
-                                    }
+                                    }.disabled(isBusy)
                                 } else {
                                     Label("Connected", systemImage: "checkmark.circle.fill")
                                         .font(.callout)
@@ -495,7 +513,7 @@ struct ReauthorizeLocationsView: View {
                 }
                 Section {
                     Button("Check again") { refresh() }
-                        .disabled(record == nil)
+                        .disabled(record == nil || isBusy)
                 }
             }
             .navigationTitle("Reconnect folders")
@@ -511,7 +529,13 @@ struct ReauthorizeLocationsView: View {
                 select(result, resourceIndex: index)
             }
             .onAppear { refresh() }
-            .onDisappear { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+            .onDisappear {
+                accessTask?.cancel()
+                // A reauthorization commit owns its mount until it returns.
+                // Its task releases any picker scope in defer; otherwise there
+                // is no worker using these scopes and they can be released now.
+                if accessTask == nil { releaseAllScopes() }
+            }
         }
         #if os(macOS)
         .frame(minWidth: 480, idealWidth: 560, minHeight: 440)
@@ -519,22 +543,90 @@ struct ReauthorizeLocationsView: View {
     }
 
     private func refresh() {
-        stale = coordinator.reauthorizationStatus(id: recordID)
+        accessTask?.cancel()
+        let request = UUID()
+        requestGeneration = request
+        stale = nil
+        message = nil
+        messageIsError = false
+        isBusy = true
+        accessTask = Task { @MainActor in
+            defer {
+                if requestGeneration == request {
+                    isBusy = false
+                    accessTask = nil
+                }
+            }
+            do {
+                let result = try await coordinator.reauthorizationStatusPrepared(id: recordID)
+                guard !Task.isCancelled, requestGeneration == request else { return }
+                stale = result
+            } catch is CancellationError {
+                return
+            } catch {
+                guard requestGeneration == request else { return }
+                stale = nil
+                message = "Could not check folder access. \(error.localizedDescription)"
+                messageIsError = true
+            }
+        }
     }
 
     private func select(_ result: Result<[URL], Error>, resourceIndex: Int) {
         do {
             let urls = try result.get()
             guard let url = urls.first else { return }
+            guard !isBusy else { return }
             if url.startAccessingSecurityScopedResource() { scopedURLs.append(url) }
-            try coordinator.reauthorizeTransfer(recordID, resourceIndex: resourceIndex, url: url)
-            message = "Reconnected. Dismiss and choose Retry on the transfer to continue."
+            let request = UUID()
+            requestGeneration = request
+            stale = nil
+            message = nil
             messageIsError = false
-            refresh()
+            isBusy = true
+            accessTask = Task { @MainActor in
+                defer {
+                    releaseScope(for: url)
+                    if requestGeneration == request {
+                        isBusy = false
+                        accessTask = nil
+                    }
+                }
+                do {
+                    try await coordinator.reauthorizeTransferPrepared(
+                        recordID, resourceIndex: resourceIndex, url: url
+                    )
+                    guard !Task.isCancelled, requestGeneration == request else { return }
+                    let status = try await coordinator.reauthorizationStatusPrepared(id: recordID)
+                    guard !Task.isCancelled, requestGeneration == request else { return }
+                    stale = status
+                    message = "Reconnected. Dismiss and choose Retry on the transfer to continue."
+                    messageIsError = false
+                } catch is CancellationError {
+                    return
+                } catch {
+                    guard requestGeneration == request else { return }
+                    stale = nil
+                    message = "Could not reconnect this folder. \(error.localizedDescription)"
+                    messageIsError = true
+                }
+            }
         } catch {
             message = error.localizedDescription
             messageIsError = true
         }
+    }
+
+    private func releaseScope(for url: URL) {
+        guard let index = scopedURLs.lastIndex(of: url) else { return }
+        let scopedURL = scopedURLs.remove(at: index)
+        scopedURL.stopAccessingSecurityScopedResource()
+    }
+
+    private func releaseAllScopes() {
+        let urls = scopedURLs
+        scopedURLs.removeAll()
+        urls.forEach { $0.stopAccessingSecurityScopedResource() }
     }
 }
 

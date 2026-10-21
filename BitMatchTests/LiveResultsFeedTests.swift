@@ -127,12 +127,13 @@ struct LiveResultsFeedTests {
         let feed = coordinator.liveResults.objectWillChange.sink { _ in MainActor.assumeIsolated { probe.feedChanges += 1 } }
         defer { shell.cancel(); feed.cancel() }
         // Let the launch-time folder scans settle so they cannot land mid-stream.
-        _ = await waitUntil(timeout: .seconds(5)) {
+        #expect(await waitUntil(timeout: .seconds(5)) {
             coordinator.sourceFolderInfo?.url == folders.source
                 && !coordinator.isFolderInfoLoading(for: folders.source)
                 && !coordinator.isFolderInfoLoading(for: folders.primary)
                 && !coordinator.isFolderInfoLoading(for: folders.secondary)
-        }
+                && !coordinator.isPreparingTransferSetup
+        })
         await waitUntilQuiet(probe)
 
         await coordinator.startOperation()

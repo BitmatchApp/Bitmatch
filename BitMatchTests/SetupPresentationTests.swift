@@ -257,15 +257,15 @@ struct SetupPresentationTests {
             URL(fileURLWithPath: "/Volumes/SHUTTLE A"),
             URL(fileURLWithPath: "/Volumes/SHUTTLE B"),
         ]
-        for _ in 0..<100 {
-            if coordinator.destinationIndependence.independentCopyCount == 1 { break }
-            await Task.yield()
+        let expectedWarning = "SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"
+        let settled = await waitUntil(timeout: .seconds(5)) {
+            coordinator.destinationIndependence.independentCopyCount == 1
+                && coordinator.transferReadiness.warnings == [expectedWarning]
         }
 
+        #expect(settled)
         #expect(coordinator.destinationIndependence.independentCopyCount == 1)
-        #expect(coordinator.transferReadiness.warnings == [
-            "SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"
-        ])
+        #expect(coordinator.transferReadiness.warnings == [expectedWarning])
     }
 
     @MainActor

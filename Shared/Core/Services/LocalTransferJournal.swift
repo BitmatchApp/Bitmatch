@@ -133,6 +133,86 @@ final class LocalTransferJournal: ObservableObject {
                                  generateASCMHL: generateASCMHL, projectID: projectID, projectCardID: projectCardID, estimatedSourceBytes: estimatedSourceBytes)
     }
 
+    /// Commits the exact resources prepared and validated by the bounded
+    /// selection worker. A fresh path lookup here could adopt a replacement
+    /// folder, so the engine receives the original prepared identities.
+    @discardableResult
+    func enqueuePrepared(
+        source: LocalTransferResource,
+        destinations: [LocalTransferResource],
+        verificationMode: VerificationMode,
+        cameraSettings: CameraLabelSettings,
+        reportSettings: ReportPrefs,
+        generateASCMHL: Bool,
+        estimatedSourceBytes: Int64? = nil,
+        projectID: UUID? = nil,
+        projectCardID: UUID? = nil,
+        using worker: DriveAccessWorker,
+        jobKey: String
+    ) async throws -> UUID {
+        defer { refresh() }
+        try Task.checkCancellation()
+        let store = self.store
+        let mountKeys = Set(([source.url] + destinations.map(\.url)).map { DriveAccessWorker.mountKey(for: $0) })
+        // Once admission starts, a cancellation cannot hide a journal commit
+        // that may already be durable. This unstructured task owns the worker
+        // result; callers receive the actual commit outcome.
+        let mutationKey = jobKey + ".mutation." + UUID().uuidString
+        let commitTask = Task { @MainActor in
+            try await worker.perform(mountKeys: mountKeys, jobKey: mutationKey) {
+                try store.enqueue(
+                    source: source,
+                    destinations: destinations,
+                    verificationMode: verificationMode,
+                    cameraSettings: cameraSettings,
+                    reportSettings: reportSettings,
+                    generateASCMHL: generateASCMHL,
+                    projectID: projectID,
+                    projectCardID: projectCardID,
+                    estimatedSourceBytes: estimatedSourceBytes
+                )
+            }
+        }
+        return try await commitTask.value
+    }
+
+    /// Revalidates and commits an edited queued card on the bounded worker.
+    func replaceQueuedPrepared(
+        id: UUID,
+        source: LocalTransferResource,
+        destinations: [LocalTransferResource],
+        verificationMode: VerificationMode,
+        cameraSettings: CameraLabelSettings,
+        reportSettings: ReportPrefs,
+        generateASCMHL: Bool,
+        estimatedSourceBytes: Int64? = nil,
+        using worker: DriveAccessWorker,
+        jobKey: String
+    ) async throws {
+        defer { refresh() }
+        try Task.checkCancellation()
+        let store = self.store
+        let mountKeys = Set(([source.url] + destinations.map(\.url)).map { DriveAccessWorker.mountKey(for: $0) })
+        // As above, once the durable queued-record update is admitted, its
+        // commit result must reach the coordinator even if its caller cancels.
+        let mutationKey = jobKey + ".mutation." + UUID().uuidString
+        let commitTask = Task { @MainActor in
+            try await worker.perform(mountKeys: mountKeys, jobKey: mutationKey) {
+                try store.replaceQueued(
+                    id: id,
+                    source: source,
+                    destinations: destinations,
+                    verificationMode: verificationMode,
+                    cameraSettings: cameraSettings,
+                    reportSettings: reportSettings,
+                    generateASCMHL: generateASCMHL,
+                    estimatedSourceBytes: estimatedSourceBytes
+                )
+            }
+        }
+        try await commitTask.value
+    }
+
     /// A retry is a new attempt, preserving the previous attempt and its evidence.
     @discardableResult
     func requeue(id: UUID, generateASCMHL: Bool? = nil) throws -> UUID {
@@ -140,13 +220,75 @@ final class LocalTransferJournal: ObservableObject {
         return try store.requeue(id: id, generateASCMHL: generateASCMHL)
     }
 
+    /// Validates and durably commits a retry on the bounded drive worker.
+    /// Once admitted, the unstructured commit task owns the outcome even if
+    /// its UI caller is cancelled.
+    @discardableResult
+    func requeue(
+        id: UUID,
+        generateASCMHL: Bool? = nil,
+        using worker: DriveAccessWorker,
+        jobKey: String
+    ) async throws -> UUID {
+        guard let record = records.first(where: { $0.id == id }) else {
+            throw LocalTransferJournalError.invalidState
+        }
+        defer { refresh() }
+        try Task.checkCancellation()
+        let store = self.store
+        let mountKeys = Set(([record.source.url] + record.destinations.map(\.url))
+            .map { DriveAccessWorker.mountKey(for: $0) })
+        let mutationKey = jobKey + ".mutation." + UUID().uuidString
+        let commitTask = Task { @MainActor in
+            try await worker.perform(mountKeys: mountKeys, jobKey: mutationKey) {
+                try store.requeue(id: id, generateASCMHL: generateASCMHL)
+            }
+        }
+        let retryID = try await commitTask.value
+        return retryID
+    }
+
     func prepareToRun(id: UUID) throws -> LocalTransferAccess {
         try store.prepareToRun(id: id)
+    }
+
+    func prepareToRun(id: UUID, using worker: DriveAccessWorker, jobKey: String) async throws -> LocalTransferAccess {
+        guard let record = records.first(where: { $0.id == id }) else {
+            throw LocalTransferJournalError.invalidState
+        }
+        let store = self.store
+        let expectedResources = [record.source] + record.destinations
+        let mountKeys = Set(([record.source.url] + record.destinations.map(\.url))
+            .map { DriveAccessWorker.mountKey(for: $0) })
+        return try await worker.perform(
+            mountKeys: mountKeys,
+            jobKey: jobKey
+        ) {
+            try store.prepareToRun(id: id, expectedResources: expectedResources)
+        }
     }
 
 
     func prepareSourceForEjection(id: UUID) throws -> LocalTransferAccess {
         try store.prepareSourceForEjection(id: id)
+    }
+
+    func prepareSourceForEjection(
+        id: UUID,
+        using worker: DriveAccessWorker,
+        jobKey: String
+    ) async throws -> LocalTransferAccess {
+        guard let record = records.first(where: { $0.id == id }) else {
+            throw LocalTransferJournalError.invalidState
+        }
+        let store = self.store
+        let expectedResources = [record.source] + record.destinations
+        return try await worker.perform(
+            mountKey: DriveAccessWorker.mountKey(for: record.source.url),
+            jobKey: jobKey
+        ) {
+            try store.prepareSourceForEjection(id: id, expectedResources: expectedResources)
+        }
     }
 
     /// Indexes into `[source] + destinations` whose stored access no longer
@@ -155,10 +297,56 @@ final class LocalTransferJournal: ObservableObject {
         try store.staleResourceIndexes(id: id)
     }
 
+    func staleResourceIndexes(id: UUID, using worker: DriveAccessWorker, jobKey: String) async throws -> [Int] {
+        guard let record = records.first(where: { $0.id == id }) else {
+            throw LocalTransferJournalError.invalidState
+        }
+        let store = self.store
+        let expectedResources = [record.source] + record.destinations
+        let mountKeys = Set(([record.source.url] + record.destinations.map(\.url))
+            .map { DriveAccessWorker.mountKey(for: $0) })
+        return try await worker.perform(
+            mountKeys: mountKeys,
+            jobKey: jobKey
+        ) {
+            try store.staleResourceIndexes(id: id, expectedResources: expectedResources)
+        }
+    }
+
     /// Refreshes one stored location after access expired; see `TransferJournal.reauthorize`.
     func reauthorize(id: UUID, resourceIndex: Int, newURL: URL) throws {
         defer { refresh() }
         try store.reauthorize(id: id, resourceIndex: resourceIndex, newURL: newURL)
+    }
+
+    /// Reconnects an original resource and durably stores its refreshed
+    /// bookmark on the bounded worker. The original record and replacement
+    /// URL mounts remain reserved until the commit finishes.
+    func reauthorize(
+        id: UUID,
+        resourceIndex: Int,
+        newURL: URL,
+        using worker: DriveAccessWorker,
+        jobKey: String
+    ) async throws {
+        guard let record = records.first(where: { $0.id == id }) else {
+            throw LocalTransferJournalError.invalidState
+        }
+        let originalURLs = [record.source.url] + record.destinations.map(\.url)
+        guard originalURLs.indices.contains(resourceIndex) else {
+            throw LocalTransferJournalError.invalidState
+        }
+        defer { refresh() }
+        try Task.checkCancellation()
+        let store = self.store
+        let mountKeys = Set((originalURLs + [newURL]).map { DriveAccessWorker.mountKey(for: $0) })
+        let mutationKey = jobKey + ".mutation." + UUID().uuidString
+        let commitTask = Task { @MainActor in
+            try await worker.perform(mountKeys: mountKeys, jobKey: mutationKey) {
+                try store.reauthorize(id: id, resourceIndex: resourceIndex, newURL: newURL)
+            }
+        }
+        try await commitTask.value
     }
 
     func markRunning(id: UUID, independentDestinationCount: Int? = nil,

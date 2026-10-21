@@ -331,6 +331,34 @@ public final class TransferJournal: Sendable {
         return record.id
     }
 
+    /// Enqueues the exact folder identities prepared by the caller. Identity
+    /// checks run while their access scopes are active, immediately before the
+    /// durable record is committed; this never replaces them with fresh path
+    /// lookups that could adopt a different folder at the same URL.
+    @discardableResult
+    public func enqueue(source: LocalTransferResource, destinations: [LocalTransferResource],
+                        verificationMode: VerificationMode, cameraSettings: CameraLabelSettings,
+                        reportSettings: ReportPrefs, generateASCMHL: Bool = true,
+                        projectID: UUID? = nil, projectCardID: UUID? = nil,
+                        estimatedSourceBytes: Int64? = nil) throws -> UUID {
+        guard !destinations.isEmpty else { throw LocalTransferJournalError.missingDestinations }
+        let resources = [source] + destinations
+        let scopedURLs = resources.map(\.url).filter { $0.startAccessingSecurityScopedResource() }
+        defer { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+        try source.validateIdentity(at: source.url)
+        for destination in destinations {
+            try destination.validateIdentity(at: destination.url)
+        }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: source,
+                                         destinations: destinations,
+                                         verificationMode: verificationMode, cameraSettings: cameraSettings,
+                                         reportSettings: reportSettings, generateASCMHL: generateASCMHL,
+                                         projectID: projectID, projectCardID: projectCardID)
+        record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
+        try commit { [record] + $0 }
+        return record.id
+    }
+
     /// A retry is a new attempt, preserving the previous attempt and its evidence.
     @discardableResult
     public func requeue(id: UUID, generateASCMHL: Bool? = nil) throws -> UUID {
@@ -352,11 +380,24 @@ public final class TransferJournal: Sendable {
         guard let record = records.first(where: { $0.id == id }), (record.state == .queued || record.canRetry) else {
             throw LocalTransferJournalError.invalidState
         }
+        return try prepareToRun(record: record)
+    }
+
+    /// Uses the exact resource snapshot reserved by the caller. If the queued
+    /// record changed while this request waited for its mount, reject it before
+    /// resolving any bookmark or touching a filesystem.
+    public func prepareToRun(id: UUID, expectedResources: [LocalTransferResource]) throws -> LocalTransferAccess {
+        let record = try record(id: id, matching: expectedResources, requireRunnable: true)
+        return try prepareToRun(record: record)
+    }
+
+    private func prepareToRun(record: LocalTransferRecord) throws -> LocalTransferAccess {
         var scopedURLs: [URL] = []
         do {
             let resources = [record.source] + record.destinations
             var resolvedURLs: [URL] = []
             for resource in resources {
+                try Task.checkCancellation()
                 let resolved = try resource.resolve()
                 if resolved.startAccessingSecurityScopedResource() { scopedURLs.append(resolved) }
                 try resource.validateIdentity(at: resolved)
@@ -376,6 +417,20 @@ public final class TransferJournal: Sendable {
         guard let record = records.first(where: { $0.id == id }) else {
             throw LocalTransferJournalError.invalidState
         }
+        return try prepareSourceForEjection(record: record)
+    }
+
+    /// Resolves only the source from the exact resource snapshot reserved by
+    /// the caller, rejecting a changed record before filesystem access.
+    public func prepareSourceForEjection(
+        id: UUID,
+        expectedResources: [LocalTransferResource]
+    ) throws -> LocalTransferAccess {
+        let record = try record(id: id, matching: expectedResources, requireRunnable: false)
+        return try prepareSourceForEjection(record: record)
+    }
+
+    private func prepareSourceForEjection(record: LocalTransferRecord) throws -> LocalTransferAccess {
         var scopedURLs: [URL] = []
         do {
             let resolved = try record.source.resolve()
@@ -394,8 +449,23 @@ public final class TransferJournal: Sendable {
         guard let record = records.first(where: { $0.id == id }) else {
             throw LocalTransferJournalError.invalidState
         }
+        return try staleResourceIndexes(record: record)
+    }
+
+    /// Checks and probes the exact resource snapshot reserved by the caller.
+    /// A replaced queued record fails before bookmark resolution begins.
+    public func staleResourceIndexes(
+        id: UUID,
+        expectedResources: [LocalTransferResource]
+    ) throws -> [Int] {
+        let record = try record(id: id, matching: expectedResources, requireRunnable: false)
+        return try staleResourceIndexes(record: record)
+    }
+
+    private func staleResourceIndexes(record: LocalTransferRecord) throws -> [Int] {
         var stale: [Int] = []
         for (index, resource) in ([record.source] + record.destinations).enumerated() {
+            try Task.checkCancellation()
             do {
                 let resolved = try resource.resolve()
                 let scoped = resolved.startAccessingSecurityScopedResource()
@@ -406,6 +476,38 @@ public final class TransferJournal: Sendable {
             }
         }
         return stale
+    }
+
+    /// Takes a journal snapshot under its lock and compares every resource
+    /// token before any filesystem operation runs on that snapshot.
+    private func record(
+        id: UUID,
+        matching expectedResources: [LocalTransferResource],
+        requireRunnable: Bool
+    ) throws -> LocalTransferRecord {
+        try state.withLock { state in
+            guard let record = state.records.first(where: { $0.id == id }),
+                  !requireRunnable || record.state == .queued || record.canRetry,
+                  Self.matchesResourceSnapshot([record.source] + record.destinations, expectedResources) else {
+                throw LocalTransferJournalError.invalidState
+            }
+            return record
+        }
+    }
+
+    private static func matchesResourceSnapshot(
+        _ current: [LocalTransferResource],
+        _ expected: [LocalTransferResource]
+    ) -> Bool {
+        guard current.count == expected.count else { return false }
+        return zip(current, expected).allSatisfy { pair in
+            let (current, expected) = pair
+            return current.url == expected.url
+                && current.bookmark == expected.bookmark
+                && current.volumeID == expected.volumeID
+                && current.resourceID == expected.resourceID
+                && current.creationDate == expected.creationDate
+        }
     }
 
     /// Refreshes one stored location after access expired. The replacement must
@@ -584,6 +686,50 @@ public final class TransferJournal: Sendable {
         guard !destinationURLs.isEmpty else { throw LocalTransferJournalError.missingDestinations }
         let source = try LocalTransferResource(url: sourceURL)
         let destinations = try destinationURLs.map(LocalTransferResource.init(url:))
+        try commit { records in
+            try Self.updated(records, id: id) { record in
+                guard record.state == .queued, record.projectID == nil else {
+                    throw LocalTransferJournalError.invalidState
+                }
+                record = LocalTransferRecord(
+                    id: record.id,
+                    createdAt: record.createdAt,
+                    source: source,
+                    destinations: destinations,
+                    verificationMode: verificationMode,
+                    cameraSettings: cameraSettings,
+                    reportSettings: reportSettings,
+                    generateASCMHL: generateASCMHL,
+                    retryOf: source.volumeID == record.source.volumeID
+                        && source.resourceID == record.source.resourceID
+                        && source.creationDate == record.source.creationDate ? record.retryOf : nil
+                )
+                record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
+            }
+        }
+    }
+
+    /// Replaces a queued setup with exact previously prepared identities.
+    /// The selected folders are revalidated on this worker immediately before
+    /// the journal update, so a same-path replacement fails closed.
+    public func replaceQueued(
+        id: UUID,
+        source: LocalTransferResource,
+        destinations: [LocalTransferResource],
+        verificationMode: VerificationMode,
+        cameraSettings: CameraLabelSettings,
+        reportSettings: ReportPrefs,
+        generateASCMHL: Bool,
+        estimatedSourceBytes: Int64? = nil
+    ) throws {
+        guard !destinations.isEmpty else { throw LocalTransferJournalError.missingDestinations }
+        let resources = [source] + destinations
+        let scopedURLs = resources.map(\.url).filter { $0.startAccessingSecurityScopedResource() }
+        defer { scopedURLs.forEach { $0.stopAccessingSecurityScopedResource() } }
+        try source.validateIdentity(at: source.url)
+        for destination in destinations {
+            try destination.validateIdentity(at: destination.url)
+        }
         try commit { records in
             try Self.updated(records, id: id) { record in
                 guard record.state == .queued, record.projectID == nil else {

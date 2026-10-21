@@ -432,7 +432,7 @@ struct BackupAddPathTests {
         shared.sourceURL = source
         shared.destinationURLs = [planned]
         #expect(await waitUntil { !shared.isAnalysingSource })
-        try shared.enqueueSelection()
+        _ = try await shared.enqueueSelectionPrepared()
         #expect(!shared.stagedSetupTransfers.isEmpty)
 
         // Discovery only reports availability. It changes neither the saved
@@ -515,7 +515,7 @@ struct BackupAddPathTests {
     /// Plant: in `MacVolumeAccessModel.loadLastDestinations`, delete the
     /// `refusal:` argument (the coordinator then refuses only the temp
     /// folder and restores the other: a partial set).
-    @Test func restoreDoesNotBringBackTheStressTestTempFolder() throws {
+    @Test func restoreDoesNotBringBackTheStressTestTempFolder() async throws {
         let key = "lastUsedDestinations"
         let suiteName = "BitMatchTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suiteName))
@@ -537,6 +537,7 @@ struct BackupAddPathTests {
         model.lastUsedDefaults = defaults
 
         model.restoreLastDestinations()
+        await model.waitForRestoreForTesting()
 
         #expect(shared.destinationURLs.isEmpty)
     }
