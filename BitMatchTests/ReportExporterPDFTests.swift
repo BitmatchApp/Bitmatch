@@ -389,14 +389,16 @@ private final class ReportPDFMemoryMetrics: Sendable {
 
     func persist(outcome: String) {
         receiptWriteLock.withLock { _ in
-            guard let data = try? JSONEncoder().encode(receipt(outcome: outcome, fileCount: fileCount,
-                                                               resultRows: resultRows)) else { return }
-            do {
-                try data.write(to: receiptURL, options: .atomic)
-                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
-            } catch {
-                // The deferred final write remains best-effort too; the probe's
-                // own failure should not be replaced by an artifact-write failure.
+            autoreleasepool {
+                guard let data = try? JSONEncoder().encode(receipt(outcome: outcome, fileCount: fileCount,
+                                                                   resultRows: resultRows)) else { return }
+                do {
+                    try data.write(to: receiptURL, options: .atomic)
+                    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
+                } catch {
+                    // The deferred final write remains best-effort too; the probe's
+                    // own failure should not be replaced by an artifact-write failure.
+                }
             }
         }
     }
