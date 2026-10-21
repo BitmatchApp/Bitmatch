@@ -133,7 +133,9 @@ private final class ReportPDFFileSink: @unchecked Sendable {
             throw ReportPDFRenderer.RenderingError.invalidSinkOutput
         }
 
-        guard let mapping = mmap(nil, size, PROT_READ, MAP_PRIVATE, fileDescriptor, 0),
+        // Data permits mutation of uniquely held storage. Private writable
+        // pages preserve that contract without changing the completed file.
+        guard let mapping = mmap(nil, size, PROT_READ | PROT_WRITE, MAP_PRIVATE, fileDescriptor, 0),
               mapping != MAP_FAILED else {
             throw ReportPDFRenderer.RenderingError.sinkReadFailed(errno)
         }
