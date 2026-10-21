@@ -743,6 +743,25 @@ struct QueueSessionPresentationTests {
             rows: [], reviewedIDs: [], standaloneAttentionIDs: [UUID(), UUID()]
         ) == 2)
     }
+
+    @Test func ejectedRowBecomesRemovedWhenItsVolumeGoes() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(name: "Card", state: .completed, outcome: .verified, at: 1)
+        let ejected = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
+            progress: nil, mountedSourceIDs: [], ejectedSourceIDs: [record.id])
+        #expect(ejected.rows[0].action == .ejected)
+        let removed = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
+            progress: nil, mountedSourceIDs: [], ejectedSourceIDs: [record.id], removedSourceIDs: [record.id])
+        #expect(removed.rows[0].action == .removed)
+        let ejecting = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
+            progress: nil, mountedSourceIDs: [record.id], ejectingSourceIDs: [record.id])
+        #expect(ejecting.rows[0].action == .ejecting)
+        // Removed only follows an eject; an unejected row stays on its own action.
+        let notEjected = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
+            progress: nil, mountedSourceIDs: [], removedSourceIDs: [record.id])
+        #expect(notEjected.rows[0].action != .removed)
+    }
 }
 
 private final class QueuePresentationFixture {

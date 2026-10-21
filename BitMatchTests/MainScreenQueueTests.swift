@@ -154,6 +154,45 @@ struct MainScreenQueueTests {
         return (fixture, coordinator, id, live)
     }
 
+    /// A completed, verified card whose source folder is still on disk.
+    private func makeCoordinatorWithSafeMountedCard() async throws
+        -> (SharedProjectFixture, SharedAppCoordinator, LocalTransferRecord) {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        let coordinator = fixture.coordinator
+        let journal = coordinator.transferJournal
+        let id = try journal.enqueue(
+            sourceURL: fixture.folders.source, destinationURLs: [fixture.folders.primary],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(), generateASCMHL: false
+        )
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
+        let backup = fixture.folders.primary
+        try journal.finish(
+            id: id,
+            results: [ResultRow(path: "clip.mov", status: ResultOutcome.verified.statusText,
+                                size: 4, checksum: "abc", destination: backup.lastPathComponent,
+                                destinationPath: backup.appendingPathComponent("clip.mov").path)],
+            summary: "Verified", hadIssues: false
+        )
+        let record = try #require(journal.records.first { $0.id == id })
+        return (fixture, coordinator, record)
+    }
+
+    @Test func ejectMarksEjectingThenEjectedThenRemoved() async throws {
+        let (fixture, coordinator, record) = try await makeCoordinatorWithSafeMountedCard()
+        defer { fixture.folders.cleanup() }
+        let error = await coordinator.ejectQueueSource(record.id, using: { _ in nil })
+        #expect(error == nil, "\(error ?? "")")
+        #expect(coordinator.ejectedQueueSourceIDs.contains(record.id))
+        #expect(!coordinator.ejectingQueueSourceIDs.contains(record.id))
+        let volumeID = try #require(record.source.volumeID)
+        coordinator.markQueueSourceRemoved(volumeID: "some-other-volume")
+        #expect(!coordinator.removedQueueSourceIDs.contains(record.id))
+        coordinator.markQueueSourceRemoved(volumeID: volumeID)
+        #expect(coordinator.removedQueueSourceIDs.contains(record.id))
+    }
+
     private func finishLiveRun(_ fixture: SharedProjectFixture, _ coordinator: SharedAppCoordinator,
                                _ live: Task<Void, Never>) async {
         coordinator.cancelOperation()

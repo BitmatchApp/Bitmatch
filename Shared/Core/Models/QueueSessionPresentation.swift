@@ -5,6 +5,8 @@ enum QueueRowAction: Equatable, Sendable {
     case eject
     case review
     case ejected
+    case ejecting
+    case removed
 }
 
 struct QueueSessionRow: Identifiable, Equatable, Sendable {
@@ -84,10 +86,14 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
 
     /// A cached finish describes evidence, never whether the card is still
     /// connected. Reapply that live capability on every presentation.
-    fileprivate func showingSource(isMounted: Bool, isEjected: Bool) -> Self {
+    fileprivate func showingSource(
+        isMounted: Bool, isEjected: Bool, isEjecting: Bool = false, isRemoved: Bool = false
+    ) -> Self {
         var row = self
         if selectedFilesVerified { row.action = nil; return row }
-        if isEjected && safetyState.canEject { row.action = .ejected }
+        if isRemoved && isEjected && safetyState.canEject { row.action = .removed }
+        else if isEjecting && safetyState.canEject { row.action = .ejecting }
+        else if isEjected && safetyState.canEject { row.action = .ejected }
         else if safetyState.canEject && isMounted { row.action = .eject }
         else if safetyState == .copiedNotVerified || safetyState == .needsAttention
             || safetyState == .failed || safetyState == .interrupted { row.action = .review }
@@ -164,6 +170,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
         progress: OperationProgress?,
         mountedSourceIDs: Set<UUID>,
         ejectedSourceIDs: Set<UUID> = [],
+        ejectingSourceIDs: Set<UUID> = [],
+        removedSourceIDs: Set<UUID> = [],
         pausedRecordID: UUID? = nil,
         now: Date = Date(),
         /// Terminal rows derived from this exact journal snapshot. The journal
@@ -202,7 +210,9 @@ struct QueueSessionPresentation: Equatable, Sendable {
                let completed = completedRows[record.id] {
                 return completed.withEarlierAttempts(attempt.earlier).showingSource(
                     isMounted: mountedSourceIDs.contains(record.id),
-                    isEjected: ejectedSourceIDs.contains(record.id)
+                    isEjected: ejectedSourceIDs.contains(record.id),
+                    isEjecting: ejectingSourceIDs.contains(record.id),
+                    isRemoved: removedSourceIDs.contains(record.id)
                 )
             }
             if record.state != .queued, record.state != .running {
@@ -213,6 +223,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 progress: record.id == runningID ? progress : nil,
                 isMounted: mountedSourceIDs.contains(record.id),
                 isEjected: ejectedSourceIDs.contains(record.id),
+                isEjecting: ejectingSourceIDs.contains(record.id),
+                isRemoved: removedSourceIDs.contains(record.id),
                 earlierAttemptIDs: attempt.earlier
             )
         }
@@ -316,6 +328,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
         progress: OperationProgress?,
         isMounted: Bool,
         isEjected: Bool,
+        isEjecting: Bool = false,
+        isRemoved: Bool = false,
         earlierAttemptIDs: [UUID] = []
     ) -> QueueSessionRow {
         let state: CardSafetyState
@@ -386,7 +400,9 @@ struct QueueSessionPresentation: Equatable, Sendable {
             estimatedWorkBytes: estimatedWorkBytes(for: record),
             endedAt: record.endedAt,
             earlierAttemptIDs: earlierAttemptIDs
-        ).showingSource(isMounted: isMounted, isEjected: isEjected)
+        ).showingSource(
+            isMounted: isMounted, isEjected: isEjected, isEjecting: isEjecting, isRemoved: isRemoved
+        )
     }
 
     static func estimatedWorkBytes(for record: LocalTransferRecord) -> Double? {

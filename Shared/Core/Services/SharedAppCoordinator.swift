@@ -244,6 +244,8 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var ejectedQueueSourceIDs: Set<UUID> = [] {
         didSet { scheduleSourceAvailability() }
     }
+    @Published private(set) var ejectingQueueSourceIDs: Set<UUID> = []
+    @Published private(set) var removedQueueSourceIDs: Set<UUID> = []
     @Published private(set) var standaloneAttentionRecordIDsSinceLaunch: Set<UUID> = []
     @Published private(set) var queuePausedRecordID: UUID?
     @Published private(set) var reviewedQueueRecordID: UUID?
@@ -1886,6 +1888,8 @@ class SharedAppCoordinator: ObservableObject {
         reviewedQueueAttentionIDs.subtract(ids)
         skippedQueueAttentionIDs.subtract(ids)
         ejectedQueueSourceIDs.subtract(ids)
+        ejectingQueueSourceIDs.subtract(ids)
+        removedQueueSourceIDs.subtract(ids)
         if let paused = queuePausedRecordID, ids.contains(paused) {
             queuePausedRecordID = nil
             queueMessage = nil
@@ -1999,6 +2003,8 @@ class SharedAppCoordinator: ObservableObject {
             progress: progress,
             mountedSourceIDs: sourceAvailability.availableIDs,
             ejectedSourceIDs: ejectedQueueSourceIDs,
+            ejectingSourceIDs: ejectingQueueSourceIDs,
+            removedSourceIDs: removedQueueSourceIDs,
             pausedRecordID: queuePausedRecordID
         )
     }
@@ -2771,6 +2777,8 @@ class SharedAppCoordinator: ObservableObject {
         reviewedQueueAttentionIDs.removeAll()
         skippedQueueAttentionIDs.removeAll()
         ejectedQueueSourceIDs.removeAll()
+        ejectingQueueSourceIDs.removeAll()
+        removedQueueSourceIDs.removeAll()
         queueSessionSourceVolumeIDs.removeAll()
         queuePausedRecordID = nil
         reviewedQueueRecordID = nil
@@ -2854,6 +2862,18 @@ class SharedAppCoordinator: ObservableObject {
         ejectedQueueSourceIDs.insert(id)
     }
 
+    /// The card's volume left the reader. Rows already ejected, or still
+    /// ejecting (the volume can vanish before the ejector returns), read
+    /// "Removed". The row itself stays until the user clears it.
+    func markQueueSourceRemoved(volumeID: String) {
+        let matching = transferJournal.records.filter {
+            $0.source.volumeID == volumeID
+                && (ejectedQueueSourceIDs.contains($0.id) || ejectingQueueSourceIDs.contains($0.id))
+        }.map(\.id)
+        guard !matching.isEmpty else { return }
+        removedQueueSourceIDs.formUnion(matching)
+    }
+
     #if os(macOS)
     func ejectQueueSource(
         _ id: UUID,
@@ -2879,7 +2899,10 @@ class SharedAppCoordinator: ObservableObject {
             return error.localizedDescription
         }
         defer { access.release() }
-        if let error = await ejector(access.sourceURL) { return error }
+        ejectingQueueSourceIDs.insert(id)
+        let ejectError = await ejector(access.sourceURL)
+        ejectingQueueSourceIDs.remove(id)
+        if let error = ejectError { return error }
         markQueueSourceEjected(id)
         return nil
     }

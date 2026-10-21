@@ -540,8 +540,8 @@ struct TransferQueueSection: View {
             .controlSize(.large)
             .buttonStyle(.bordered)
             #endif
-        case .some(.ejected):
-            Text("Ejected").font(.caption).foregroundStyle(.secondary)
+        case .some(.ejected), .some(.ejecting), .some(.removed):
+            if ejectSource != nil { EjectProgressLabel(action: row.action) }
         case .none:
             EmptyView()
         }
@@ -611,7 +611,8 @@ struct TransferQueueSection: View {
                 eject: QueueEjectPolicy.canOfferEject(
                     row: row,
                     platformSupportsEject: ejectSource != nil
-                ) ? { eject(row.id) } : nil
+                ) ? { eject(row.id) } : nil,
+                ejectState: ejectSource != nil ? row.action : nil
             )
         } else if let outcome = row.outcome {
             finishedDetails(row, outcome: outcome)
@@ -706,6 +707,8 @@ struct TransferQueueSection: View {
             platformSupportsEject: ejectSource != nil
         ) {
             Button("Eject") { eject(row.id) }
+        } else if ejectSource != nil {
+            EjectProgressLabel(action: row.action)
         }
         // On a safe card Retry is a rare repair, so it lives in the overflow
         // menu rather than competing with Eject.
@@ -1010,11 +1013,38 @@ private struct FinishedQueueRowExpansion<Content: View>: View {
     }
 }
 
+/// Where a card is after Eject: unmounting, safe to pull, or gone from the
+/// reader. Shown in place of the Eject button at the button's width so the
+/// row does not reflow. Nothing renders where the platform cannot eject.
+private struct EjectProgressLabel: View {
+    let action: QueueRowAction?
+
+    var body: some View {
+        switch action {
+        case .some(.ejecting):
+            HStack(spacing: 6) {
+                ProgressView().controlSize(.small)
+                label("Ejecting\u{2026}")
+            }
+        case .some(.ejected): label("Ejected \u{00B7} safe to remove")
+        case .some(.removed): label("Removed")
+        default: EmptyView()
+        }
+    }
+
+    private func label(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary)
+            .frame(minWidth: 72, alignment: .trailing)
+    }
+}
+
 private struct SafeTransferHero: View {
     let row: QueueSessionRow
     let outcome: TransferOutcomePresentation
     let reduceMotion: Bool
     let eject: (() -> Void)?
+    /// Mac only: nil when the platform cannot eject.
+    var ejectState: QueueRowAction?
     @State private var closesRing = false
 
     var body: some View {
@@ -1033,6 +1063,8 @@ private struct SafeTransferHero: View {
                         Button("Eject", action: eject)
                             .buttonStyle(.borderedProminent).tint(CardSafetyTint.green.color)
                             .controlSize(.large)
+                    } else if let ejectState {
+                        EjectProgressLabel(action: ejectState)
                     }
                 }
             }
@@ -1055,6 +1087,8 @@ private struct SafeTransferHero: View {
             if let eject {
                 Button("Eject", action: eject)
                     .buttonStyle(.borderedProminent).tint(CardSafetyTint.green.color)
+            } else if let ejectState {
+                EjectProgressLabel(action: ejectState)
             }
         }
     }

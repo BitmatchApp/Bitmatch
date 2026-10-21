@@ -303,6 +303,9 @@ final class MacVolumeAccessModel: ObservableObject {
 
     /// Internal so a missed event gap can be driven without a real mount.
     func handleConnectedVolumesUpdate(_ volumes: [ConnectedDrivesPresentation.Volume]) {
+        let goneIDs = Set(latestConnectedVolumes.compactMap(\.volumeID))
+            .subtracting(volumes.compactMap(\.volumeID))
+        for volumeID in goneIDs { shared?.markQueueSourceRemoved(volumeID: volumeID) }
         latestConnectedVolumes = volumes
         hasReceivedConnectedVolumesUpdate = true
         connectedVolumesGeneration &+= 1
