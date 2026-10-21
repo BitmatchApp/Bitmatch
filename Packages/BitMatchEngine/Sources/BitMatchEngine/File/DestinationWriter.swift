@@ -877,6 +877,7 @@ public final class DestinationWriter {
             }
         }
         let activeDestinations = prepared
+        let spaceExhausted = SpacePauseTracker()
 
         // FAT/exFAT companion publication can retire or change an AppleDouble
         // entry. Finish media publication before copying its metadata files;
@@ -942,7 +943,8 @@ public final class DestinationWriter {
                                     onIOBytes: onIOBytes,
                                     onSourceReadEvidence: onSourceReadEvidence,
                                     onProgress: onProgress,
-                                    onError: onError
+                                    onError: onError,
+                                    spaceExhausted: spaceExhausted
                                 )
                             } catch is CancellationError {
                                 throw CancellationError()
@@ -1048,6 +1050,30 @@ public final class DestinationWriter {
         let error: (any Error)?
     }
 
+    /// Shared per-attempt record of destinations paused for space.
+    private final class SpacePauseTracker: Sendable {
+        private let exhausted = Mutex<Set<Int>>([])
+        func isPaused(_ index: Int) -> Bool { exhausted.withLock { $0.contains(index) } }
+        func pause(_ index: Int) { exhausted.withLock { $0.insert(index) } }
+    }
+
+    /// Once a destination reports ENOSPC it is paused for the rest of the
+    /// attempt: later files fail fast for that destination without another
+    /// write attempt, while other destinations finish normally. Resume is a
+    /// new attempt, which revalidates space and identity from scratch.
+    private static func isOutOfSpace(_ error: Error) -> Bool {
+        let failure = error as NSError
+        return failure.domain == NSPOSIXErrorDomain && failure.code == Int(ENOSPC)
+    }
+
+    private static func outOfSpaceError() -> NSError {
+        NSError(
+            domain: NSPOSIXErrorDomain,
+            code: Int(ENOSPC),
+            userInfo: [NSLocalizedDescriptionKey: "Destination is out of space; paused for the rest of this attempt"]
+        )
+    }
+
     private static func copyFileFanOut(
         from source: URL,
         relativePath: String,
@@ -1060,7 +1086,8 @@ public final class DestinationWriter {
         onIOBytes: IOByteCallback?,
         onSourceReadEvidence: @escaping @Sendable (String, SourceReadEvidence) async -> Void,
         onProgress: @escaping @Sendable (Int, String, Int64, Bool) async -> Void,
-        onError: @escaping @Sendable (Int, String, Error) async -> Void
+        onError: @escaping @Sendable (Int, String, Error) async -> Void,
+        spaceExhausted: SpacePauseTracker
     ) async throws {
         let fm = FileManager.default
         let sourceAttributes = try fm.attributesOfItem(atPath: source.path)
@@ -1072,6 +1099,10 @@ public final class DestinationWriter {
         var pendingReuse: [FanOutDestination] = []
         var active: [FanOutTemporaryFile] = []
         for destination in destinations {
+            if spaceExhausted.isPaused(destination.index) {
+                await onError(destination.index, relativePath, Self.outOfSpaceError())
+                continue
+            }
             do {
                 let parentFD = try destination.root.openOrCreateDirectory(at: Array(components.dropLast()))
                 var parentOwnedByTemporaryFile = false
@@ -1106,6 +1137,9 @@ public final class DestinationWriter {
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
+                if Self.isOutOfSpace(error) {
+                    spaceExhausted.pause(destination.index)
+                }
                 await onError(destination.index, relativePath, error)
             }
         }
@@ -1217,6 +1251,9 @@ public final class DestinationWriter {
                 for result in results {
                     if let error = result.error {
                         if error is CancellationError { throw CancellationError() }
+                        if Self.isOutOfSpace(error) {
+                            spaceExhausted.pause(result.file.destination.index)
+                        }
                         result.file.cleanup()
                         await onError(result.file.destination.index, relativePath, error)
                     } else {
@@ -1395,6 +1432,9 @@ public final class DestinationWriter {
                 file.cleanup()
                 throw CancellationError()
             } catch {
+                if Self.isOutOfSpace(error) {
+                    spaceExhausted.pause(file.destination.index)
+                }
                 file.cleanup()
                 await onError(file.destination.index, relativePath, error)
             }

@@ -370,6 +370,51 @@ struct FanOutTests {
         }
     }
 
+    /// Plant: one destination reports ENOSPC on every write. It must be
+    /// paused after the first failure — later files fail fast for that
+    /// destination with no further write attempts — while the healthy
+    /// destination finishes every file.
+    @Test
+    func outOfSpaceDestinationIsPausedWhileOthersFinish() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try FanOutFixture(name: "space-pause")
+            defer { fixture.cleanup() }
+            let fileNames = (0..<24).map { "f\($0).bin" }
+            for name in fileNames {
+                try fixture.write(Data(repeating: 0x51, count: 2048), to: name)
+            }
+            let badWriteAttempts = Mutex(0)
+            let hooks = DestinationWriter.FanOutHooks(beforeWrite: { index, _, _ in
+                if index == 1 {
+                    badWriteAttempts.withLock { $0 += 1 }
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENOSPC))
+                }
+            })
+            let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: CameraLabelSettings(),
+                progressCallback: { _ in }, onFileResult: nil
+            )
+            #expect(operation.results.count == 48)
+            #expect(operation.results.filter { $0.success }.count == 24)
+            let failed = operation.results.filter { !$0.success }
+            #expect(failed.count == 24)
+            #expect(failed.allSatisfy { ($0.error as? NSError)?.code == Int(ENOSPC) })
+            #expect(failed.contains { ($0.error as? NSError)?.localizedDescription.contains("paused for the rest of this attempt") == true })
+            // Attempts on the full destination are bounded by the worker
+            // count (each worker can be mid-file when the pause lands),
+            // never by the file count.
+            let attempts = badWriteAttempts.withLock { $0 }
+            #expect(attempts >= 1 && attempts <= 4)
+            let goodRoot = SafetyValidator.resolvedDestinationRoot(
+                source: fixture.source, destination: fixture.destinations[0], settings: CameraLabelSettings())
+            for name in fileNames {
+                #expect(try Data(contentsOf: goodRoot.appendingPathComponent(name)) == Data(repeating: 0x51, count: 2048))
+            }
+            #expect(!fixture.verdict(for: operation, settings: CameraLabelSettings()).success)
+        }
+    }
+
     @Test
     func copiedFilesWithFailedReadbackDoNotCountAsCoverage() async throws {
         try await FileOperationsTestLock.shared.run {
