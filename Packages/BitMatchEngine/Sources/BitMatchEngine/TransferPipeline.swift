@@ -511,6 +511,78 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         pauseGate.resume()
     }
 
+    /// One-time re-copy after a failed readback: copy the single file to the
+    /// one failed destination again and verify it again. The initial failure
+    /// stays on the result (marking outcome preserved); success is claimed
+    /// only when the re-copy itself verifies. A changed source simply fails
+    /// the second verification — it is never silently trusted.
+    private func attemptRecopyAfterFailedReadback(
+        source: URL, destination: URL, relativePath: String, fileSize: Int64,
+        destinationIndex: Int, pinnedRoot: PinnedDestinationDirectory,
+        verificationMode: VerificationMode, attemptID: UUID,
+        initialVerification: VerificationResult, initialMarking: String?,
+        sourceReadEvidence: DestinationWriter.SourceReadEvidence?,
+        hooks: DestinationWriter.FanOutHooks?,
+        onIOBytes: DestinationWriter.IOByteCallback?
+    ) async throws -> FileOperationResult {
+        let started = Date()
+        func stillFailed(marking: String?, verification: VerificationResult) -> FileOperationResult {
+            FileOperationResult(
+                sourceURL: source, destinationURL: destination, success: false, error: nil,
+                fileSize: fileSize, verificationResult: verification,
+                processingTime: Date().timeIntervalSince(started),
+                failedOutputMarking: marking, recopyOutcome: "stillFailed")
+        }
+        do {
+            try Task.checkCancellation()
+            let copyError = Mutex(false)
+            try await DestinationWriter.copyAllSafelyFanOut(
+                from: source.deletingLastPathComponent(),
+                toPinnedRoots: [DestinationWriter.FanOutDestination(index: destinationIndex, root: pinnedRoot)],
+                verificationMode: verificationMode, workers: 1,
+                checksumService: checksumService, preEnumeratedFiles: [source],
+                attemptID: attemptID, pauseCheck: { try await self.waitIfPaused() },
+                hooks: hooks, onIOBytes: onIOBytes,
+                onSourceReadEvidence: { _, _ in },
+                onProgress: { _, _, _, _ in },
+                onError: { _, _, _ in copyError.withLock { $0 = true } }
+            )
+            if copyError.withLock({ $0 }) {
+                return stillFailed(marking: initialMarking, verification: initialVerification)
+            }
+            let identityBeforeVerify = (try? pinnedRoot.currentRegularFileIdentity(at: relativePath)) ?? nil
+            let checked = try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
+                source: source, pinnedRoot: pinnedRoot, relativePath: relativePath,
+                verificationMode: verificationMode, checksumService: checksumService,
+                clipURL: destination, sourceReadEvidence: sourceReadEvidence,
+                destinationIndex: destinationIndex, hooks: hooks, onIOBytes: onIOBytes
+            )
+            if checked.verification.matches {
+                return FileOperationResult(
+                    sourceURL: source, destinationURL: destination, success: true, error: nil,
+                    fileSize: fileSize, verificationResult: checked.verification,
+                    processingTime: Date().timeIntervalSince(started),
+                    clipIntegrity: checked.clipIntegrity,
+                    failedOutputMarking: initialMarking, recopyOutcome: "recovered")
+            }
+            var retryMarking = initialMarking
+            let marked = markedDestination(
+                pinnedRoot: pinnedRoot, relativePath: relativePath,
+                identityBeforeVerify: identityBeforeVerify, originalURL: destination)
+            retryMarking = marked.marking
+            return FileOperationResult(
+                sourceURL: source, destinationURL: marked.url, success: false, error: nil,
+                fileSize: fileSize, verificationResult: checked.verification,
+                processingTime: Date().timeIntervalSince(started),
+                clipIntegrity: checked.clipIntegrity,
+                failedOutputMarking: retryMarking, recopyOutcome: "stillFailed")
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return stillFailed(marking: initialMarking, verification: initialVerification)
+        }
+    }
+
     private func waitIfPaused() async throws {
         try await pauseGate.wait()
     }
@@ -744,7 +816,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     effectiveDestination = marked.url
                     failedOutputMarking = marked.marking
                 }
-                let verified = FileOperationResult(
+                var verified = FileOperationResult(
                     sourceURL: job.source,
                     destinationURL: effectiveDestination,
                     success: verificationResult.matches,
@@ -755,6 +827,15 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     clipIntegrity: checked.clipIntegrity,
                     failedOutputMarking: failedOutputMarking
                 )
+                if !verificationResult.matches, failedOutputMarking != nil {
+                    verified = try await self.attemptRecopyAfterFailedReadback(
+                        source: job.source, destination: job.destination, relativePath: job.relativePath,
+                        fileSize: job.fileSize, destinationIndex: job.destinationIndex, pinnedRoot: job.pinnedRoot,
+                        verificationMode: operation.verificationMode, attemptID: operation.id,
+                        initialVerification: verificationResult, initialMarking: failedOutputMarking,
+                        sourceReadEvidence: job.sourceReadEvidence, hooks: self.fanOutHooks, onIOBytes: onIOBytes)
+                    if verified.success { workMeter.verified(path: job.relativePath, destination: job.destinationIndex) }
+                }
                 let event = await ledger.recordVerify(
                     verified,
                     relativePath: job.relativePath,
@@ -1058,7 +1139,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                 }
 
                                 let fileSize = sizeForVerify
-                                let result = FileOperationResult(
+                                var result = FileOperationResult(
                                     sourceURL: fileURL,
                                     destinationURL: effectiveDestination,
                                     success: verificationResult.matches,
@@ -1069,6 +1150,16 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     clipIntegrity: checked.clipIntegrity,
                                     failedOutputMarking: failedOutputMarking
                                 )
+                                if !verificationResult.matches, failedOutputMarking != nil {
+                                    result = try await self.attemptRecopyAfterFailedReadback(
+                                        source: fileURL, destination: destinationFileURL, relativePath: relativePath,
+                                        fileSize: fileSize, destinationIndex: destIndex, pinnedRoot: pinnedDestination,
+                                        verificationMode: operation.verificationMode, attemptID: operation.id,
+                                        initialVerification: verificationResult, initialMarking: failedOutputMarking,
+                                        sourceReadEvidence: await sourceReadEvidence.evidence(for: relativePath),
+                                        hooks: fanOutHooks, onIOBytes: onIOBytes)
+                                    if result.success { workMeter.verified(path: relativePath, destination: destIndex) }
+                                }
                                 await ledger.record(
                                     result,
                                     relativePath: relativePath,

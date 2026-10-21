@@ -250,9 +250,24 @@ final class StressTests: XCTestCase {
                 )
 
                 XCTAssertNil(mutationError.value)
-                XCTAssertFalse(verdict(for: operation).success, "\(corruption): \(describe(operation))")
                 let target = try XCTUnwrap(operation.results.first { $0.sourceURL.lastPathComponent == "target.bin" })
-                XCTAssertFalse(target.success, "\(corruption) was reported as safe")
+                if corruption == .delete {
+                    // A missing file is a read failure, not proven
+                    // corruption: no marking, no re-copy, verdict fails.
+                    XCTAssertFalse(verdict(for: operation).success, "\(corruption): \(describe(operation))")
+                    XCTAssertFalse(target.success)
+                    XCTAssertNil(target.recopyOutcome)
+                } else {
+                    // Fail-closed is preserved through recovery, not by
+                    // leaving the verdict failed: corrupted bytes never
+                    // count, the bad file is marked, and only the fresh
+                    // re-copy that verifies may report success — with the
+                    // initial failure preserved.
+                    XCTAssertTrue(verdict(for: operation).success, "\(corruption): \(describe(operation))")
+                    XCTAssertTrue(target.success, "\(corruption) was not recovered by verified re-copy")
+                    XCTAssertEqual(target.recopyOutcome, "recovered")
+                    XCTAssertEqual(target.failedOutputMarking, "marked")
+                }
             }
         }
     }

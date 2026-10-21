@@ -19,7 +19,8 @@ public enum TransferCompletion: Sendable {
             destinationPath: result.destinationURL.path,
             clipIntegrity: result.clipIntegrity,
             wasReused: result.wasReused,
-            failedOutputMarking: result.failedOutputMarking
+            failedOutputMarking: result.failedOutputMarking,
+            recopyOutcome: result.recopyOutcome
         )
     }
 

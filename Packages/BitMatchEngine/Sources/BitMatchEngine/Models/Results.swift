@@ -48,6 +48,9 @@ public struct ResultRow: Identifiable, Sendable {
     /// `marked`, `nameOccupied`, `fileChanged`, `fileMissing`, `nameTooLong`
     /// or `swapped`. Nil when no marking was attempted.
     public let failedOutputMarking: String?
+    /// One-time re-copy outcome after a failed readback (`recovered` or
+    /// `stillFailed`); nil when no re-copy ran.
+    public let recopyOutcome: String?
     
     public init(id: UUID = UUID(),
          path: String,
@@ -58,7 +61,8 @@ public struct ResultRow: Identifiable, Sendable {
          destinationPath: String? = nil,
          clipIntegrity: ClipIntegrityFinding? = nil,
          wasReused: Bool = false,
-         failedOutputMarking: String? = nil) {
+         failedOutputMarking: String? = nil,
+         recopyOutcome: String? = nil) {
         self.id = id
         self.path = path
         self.status = status
@@ -69,6 +73,7 @@ public struct ResultRow: Identifiable, Sendable {
         self.clipIntegrity = clipIntegrity
         self.wasReused = wasReused
         self.failedOutputMarking = failedOutputMarking
+        self.recopyOutcome = recopyOutcome
     }
     
     /// Canonical History/report suffix for the marking outcome, shared by
@@ -200,7 +205,7 @@ public struct ReportPrefs: Codable, Sendable {
 
 extension ResultRow: Codable {
     public enum CodingKeys: String, CodingKey, Sendable {
-        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking
+        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome
     }
 
     public init(from decoder: Decoder) throws {
@@ -224,8 +229,9 @@ extension ResultRow: Codable {
         let clipIntegrity = try container.decodeIfPresent(ClipIntegrityFinding.self, forKey: .clipIntegrity)
         let wasReused = try container.decodeIfPresent(Bool.self, forKey: .wasReused) ?? false
         let failedOutputMarking = try container.decodeIfPresent(String.self, forKey: .failedOutputMarking)
+        let recopyOutcome = try container.decodeIfPresent(String.self, forKey: .recopyOutcome)
 
-        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking)
+        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -240,5 +246,6 @@ extension ResultRow: Codable {
         try container.encodeIfPresent(clipIntegrity, forKey: .clipIntegrity)
         if wasReused { try container.encode(true, forKey: .wasReused) }
         try container.encodeIfPresent(failedOutputMarking, forKey: .failedOutputMarking)
+        try container.encodeIfPresent(recopyOutcome, forKey: .recopyOutcome)
     }
 }

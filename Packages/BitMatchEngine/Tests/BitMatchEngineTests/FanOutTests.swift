@@ -415,6 +415,77 @@ struct FanOutTests {
         }
     }
 
+    /// Plant: the copy stream is corrupted once. First readback fails, the
+    /// bad file is marked, exactly one re-copy runs clean and verifies.
+    @Test
+    func recopyRecoversAfterOneTimeCorruption() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try FanOutFixture(name: "recopy-recover")
+            defer { fixture.cleanup() }
+            let original = Data(repeating: 0x33, count: 4096)
+            try fixture.write(original, to: "clip.bin")
+            let probe = FanOutProbe()
+            let hooks = DestinationWriter.FanOutHooks(sourceDidRead: { _, data in
+                guard probe.takeOnce() else { return data }
+                var corrupted = data
+                if !corrupted.isEmpty { corrupted[corrupted.startIndex] ^= 0xff }
+                return corrupted
+            })
+            let settings = CameraLabelSettings()
+            let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .thorough, settings: settings,
+                progressCallback: { _ in }, onFileResult: nil
+            )
+            let recovered = try #require(operation.results.first { $0.destinationURL.path.hasSuffix("clip.bin") })
+            #expect(recovered.success)
+            #expect(recovered.recopyOutcome == "recovered")
+            #expect(recovered.failedOutputMarking == "marked")
+            let root = SafetyValidator.resolvedDestinationRoot(
+                source: fixture.source, destination: fixture.destinations[1], settings: settings)
+            #expect(try Data(contentsOf: root.appendingPathComponent("clip.bin")) == original)
+            let marked = try Data(contentsOf: root.appendingPathComponent("clip.bin.bitmatch-failed"))
+            #expect(marked != original)
+            #expect(fixture.verdict(for: operation, settings: settings).success)
+        }
+    }
+
+    /// Plant: corruption repeats. The re-copy also fails, is marked under
+    /// the occupied-name rule, and nothing is claimed verified.
+    @Test
+    func recopyStillFailsWhenCorruptionRepeats() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try FanOutFixture(name: "recopy-still-fails")
+            defer { fixture.cleanup() }
+            let original = Data(repeating: 0x44, count: 4096)
+            try fixture.write(original, to: "clip.bin")
+            let hooks = DestinationWriter.FanOutHooks(sourceDidRead: { _, data in
+                var corrupted = data
+                if !corrupted.isEmpty { corrupted[corrupted.startIndex] ^= 0xff }
+                return corrupted
+            })
+            let settings = CameraLabelSettings()
+            let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .thorough, settings: settings,
+                progressCallback: { _ in }, onFileResult: nil
+            )
+            let failed = try #require(operation.results.first {
+                $0.destinationURL.path.hasSuffix("clip.bin") || $0.destinationURL.path.hasSuffix("clip.bin.bitmatch-failed")
+            })
+            #expect(!failed.success)
+            #expect(failed.recopyOutcome == "stillFailed")
+            // First bad file took the marked name; the retry's mark was
+            // refused because that name is occupied, so it stays in place.
+            #expect(failed.failedOutputMarking == "nameOccupied")
+            let root = SafetyValidator.resolvedDestinationRoot(
+                source: fixture.source, destination: fixture.destinations[1], settings: settings)
+            #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("clip.bin.bitmatch-failed").path))
+            #expect(try Data(contentsOf: root.appendingPathComponent("clip.bin")) != original)
+            #expect(!fixture.verdict(for: operation, settings: settings).success)
+        }
+    }
+
     @Test
     func copiedFilesWithFailedReadbackDoNotCountAsCoverage() async throws {
         try await FileOperationsTestLock.shared.run {
@@ -451,26 +522,30 @@ struct FanOutTests {
 
             #expect(operation.results.count == fixture.destinations.count)
             #expect(operation.results.filter { $0.success }.count == 1)
-            // The failed file was made unmistakable on disk: it now lives at
-            // the marked name, with its corrupted bytes preserved.
+            // The first failed file was made unmistakable on disk at the
+            // marked name; the one-time re-copy also failed (corruption
+            // repeats), could not take the occupied marked name, and its
+            // result reports the retry file at the normal name.
             let corruptedFile = SafetyValidator.resolvedDestinationRoot(
                 source: fixture.source,
                 destination: fixture.destinations[1],
                 settings: settings
             ).appendingPathComponent("clip.bin.bitmatch-failed")
-            #expect(!FileManager.default.fileExists(
-                atPath: corruptedFile.deletingPathExtension().path))
             let corruptedData = try Data(contentsOf: corruptedFile)
             #expect(corruptedData.count == expected.count)
             #expect(corruptedData != expected)
-            let corruptedResult = operation.results.first { $0.destinationURL.path == corruptedFile.path }
+            let corruptedResult = operation.results.first {
+                $0.destinationURL.path == corruptedFile.deletingPathExtension().path
+            }
             #expect(corruptedResult?.success == false)
             #expect(corruptedResult?.verificationResult?.isValid == false)
             let corruptedRow = corruptedResult.map {
                 TransferCompletion.row(from: $0, destinationRoots: fixture.destinations)
             }
-            #expect(corruptedResult?.failedOutputMarking == "marked")
-            #expect(corruptedRow?.failedOutputMarking == "marked")
+            #expect(corruptedResult?.failedOutputMarking == "nameOccupied")
+            #expect(corruptedResult?.recopyOutcome == "stillFailed")
+            #expect(corruptedRow?.failedOutputMarking == "nameOccupied")
+            #expect(corruptedRow?.recopyOutcome == "stillFailed")
             #expect(corruptedRow?.isVerifiedStatus == false)
             let verdict = fixture.verdict(for: operation, settings: settings)
             #expect(!verdict.success)
@@ -1004,11 +1079,12 @@ struct FanOutTests {
                     let output = root.appendingPathComponent("clip.bin")
                     #expect(try Data(contentsOf: output) != original)
                 } else {
-                    // Caught corruption is marked on disk, not left at the
-                    // normal name, and its bytes are preserved.
-                    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("clip.bin").path))
+                    // First failure is preserved at the marked name; the
+                    // failed re-copy's file stays at the normal name because
+                    // the marked name is occupied. Neither is original.
                     let marked = root.appendingPathComponent("clip.bin.bitmatch-failed")
                     #expect(try Data(contentsOf: marked) != original)
+                    #expect(try Data(contentsOf: root.appendingPathComponent("clip.bin")) != original)
                 }
             }
             #else

@@ -138,6 +138,9 @@ public struct FileOperationResult: Sendable {
     /// `fileChanged`, `fileMissing`, `nameTooLong`, `swapped`) when a
     /// checksum mismatch triggered marking; otherwise nil.
     public let failedOutputMarking: String?
+    /// One-time re-copy outcome after a failed readback: `recovered`
+    /// (re-copy verified) or `stillFailed`. Nil when no re-copy ran.
+    public let recopyOutcome: String?
     
     public var excludedAppleDouble: Bool = false
 
@@ -151,7 +154,7 @@ public struct FileOperationResult: Sendable {
 
     public var statusDescription: String { outcome.statusText }
 
-    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil, wasReused: Bool = false, failedOutputMarking: String? = nil) {
+    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil, wasReused: Bool = false, failedOutputMarking: String? = nil, recopyOutcome: String? = nil) {
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
         self.success = success
@@ -162,6 +165,7 @@ public struct FileOperationResult: Sendable {
         self.clipIntegrity = clipIntegrity
         self.wasReused = wasReused
         self.failedOutputMarking = failedOutputMarking
+        self.recopyOutcome = recopyOutcome
     }
 
     func preservingReuse(_ reused: Bool) -> Self {
@@ -170,7 +174,8 @@ public struct FileOperationResult: Sendable {
             error: error, fileSize: fileSize, verificationResult: verificationResult,
             processingTime: processingTime, clipIntegrity: clipIntegrity,
             wasReused: success && (wasReused || reused),
-            failedOutputMarking: failedOutputMarking
+            failedOutputMarking: failedOutputMarking,
+            recopyOutcome: recopyOutcome
         )
         result.excludedAppleDouble = excludedAppleDouble
         return result

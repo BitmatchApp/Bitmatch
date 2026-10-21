@@ -21,6 +21,7 @@ All notable changes to this project will be documented in this file.
 - History now says what happened to a failed file: renamed with the `.bitmatch-failed` suffix, or why it could not be renamed and that it is still at its original name.
 - Safety counts are stricter: only destinations proven to be on different physical drives count toward required backup copies. Folders whose drive cannot be identified can still be used, but no longer prove independence on their own.
 - When a backup runs out of space, that destination now pauses for the rest of the attempt instead of being retried for every remaining file. Other backups finish normally; the full destination's files are recorded as failed, and copying there resumes on the next attempt after space is freed.
+- If a copied file fails verification, BitMatch now re-copies that one file once and verifies it again. The transfer only counts as good when the second copy verifies; History records that the first copy failed and the file recovered, or that the re-copy also failed. Files BitMatch did not write in that attempt, and files that could not be read back at all, are never re-copied or moved.
 
 ## [0.2.11] - 2026-10-20
 
