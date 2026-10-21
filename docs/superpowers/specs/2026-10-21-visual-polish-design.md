@@ -73,7 +73,7 @@ Eject carry-through:
 - Failure (volume busy): inline text naming the app holding the volume; no modal.
 
 Attention variant:
-- No sweep. Fill stops, desaturates to grey over 150 ms; orange 4 pt edge grows in over 150 ms; triangle appears at once. No wiggle. First failed file scrolls into view. Time-sensitive notification.
+- No sweep. Fill stops, desaturates to grey over 150 ms; orange 4 pt edge grows in over 150 ms; triangle appears at once. No wiggle. First failed file scrolls into view. Normal notification banner.
 
 Out-of-screen cues (no sound):
 - Notification "SD_CARD_042 is safe to erase. 2 backups verified." Dock badge until eject. Menu bar companion status. Haptic success on iPhone and iPad.
@@ -165,9 +165,9 @@ Never: pulsing or breathing edges, shimmer, looping spinners on paused rows, con
 - **Duplicate attempts, step 0.** Fix at the presentation layer only. Journal records are never deleted or merged; History and report scans keep every attempt. In the queue, "same card" means the same source identity within one queue session (the identity the coordinator already uses to refuse repeats); the latest attempt is the row, earlier attempts are listed inside the expanded row. If reproduction shows a different cause, fix that cause, but still never touch journal records.
 - **Motion scope.** Token routing covers the six named call sites in the queue section, flight, hero and Mac shell, plus all new work in this spec. No sweep of Photographer, InterfaceLab, Preferences or the iPad content views; those keep their animations until a later pass.
 
-## Open question for Mike
+## Decided by Mike, 2026-10-21
 
-- **Attention notification.** `.timeSensitive` needs the Time Sensitive Notifications entitlement, which touches the App ID, Developer ID signing and the Sparkle release flow. Default if unanswered: ship the attention notice as `.active` (normal banner) in step 1 and add the entitlement as a separate, later change.
+- **Attention notification** ships as a normal `.active` banner. No Time Sensitive entitlement; not worth the signing and release-flow churn.
 
 ## Left to the builder
 
