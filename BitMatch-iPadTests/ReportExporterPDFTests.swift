@@ -107,14 +107,14 @@ struct ReportPDFNativeRowTests {
     @Test
     func nativeWrappedLongFilenameFitsMeasuredRowWithoutOverlappingFollowingContent() throws {
         let alphaPath = "/card/ALPHAID/" + Array(repeating: "alpha-repeated-path-segment", count: 8).joined(separator: "/") + "/tail-A.mov"
-        let betaPath = "/card/BETAID/" + Array(repeating: "beta-repeated-path-segment", count: 8).joined(separator: "/") + "/tail-B.mov"
+        let betaPath = "/card/BETAID-東京/" + Array(repeating: "beta-repeated-path-segment", count: 8).joined(separator: "/") + "/tail-Ω.mov"
         let rows = [
             ResultRow(path: alphaPath, status: ResultOutcome.verified.statusText,
                       size: 1_024, checksum: "alpha", destination: "/Volumes/Backup",
                       destinationPath: "/Volumes/Backup/tail-A.mov"),
             ResultRow(path: betaPath, status: ResultOutcome.verified.statusText,
                       size: 2_048, checksum: "beta", destination: "/Volumes/Backup",
-                      destinationPath: "/Volumes/Backup/tail-B.mov"),
+                      destinationPath: "/Volumes/Backup/tail-Ω.mov"),
             ResultRow(path: "/card/AFTERID/after-row.mov", status: ResultOutcome.verified.statusText,
                       size: 3_072, checksum: "after", destination: "/Volumes/Backup",
                       destinationPath: "/Volumes/Backup/after-row.mov")
@@ -146,7 +146,7 @@ struct ReportPDFNativeRowTests {
         }
         let document = try #require(PDFDocument(data: data))
         let betaMatches = document.findString("BETAID", withOptions: [])
-        let tailMatches = document.findString("tail-B.mov", withOptions: [])
+        let tailMatches = document.findString("tail-Ω.mov", withOptions: [])
         #expect(document.findString("ALPHAID", withOptions: []).count == 1)
         #expect(document.findString("tail-A.mov", withOptions: []).count == 1)
         #expect(betaMatches.count == 1)
@@ -165,6 +165,12 @@ struct ReportPDFNativeRowTests {
 
         let betaBounds = beta.bounds(for: page)
         let tailBounds = tail.bounds(for: page)
+        let nativeRowSelection = try #require(
+            page.selection(for: betaBounds.union(tailBounds).insetBy(dx: -2, dy: -2)))
+        let nativeRowText = try #require(nativeRowSelection.string)
+        #expect(nativeRowText.contains("…"), "the native row should retain its middle ellipsis")
+        #expect(nativeRowText.contains("東京"), "the native row should retain its Unicode head")
+        #expect(nativeRowText.contains("Ω"), "the native row should retain its Unicode filename tail")
         let afterBounds = after.bounds(for: page)
         let footerBounds = footer.bounds(for: page)
         for bounds in [betaBounds, tailBounds] {
