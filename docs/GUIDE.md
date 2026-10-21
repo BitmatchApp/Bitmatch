@@ -25,6 +25,8 @@ For new copies, Standard verifies the backup against the bytes obtained during t
 
 An existing file is reused only after the selected verification checks establish that it matches. Conflicting files are never overwritten. A failed, cancelled or interrupted attempt keeps its partial results and stays unsafe. A retry is a new attempt, not permission to trust the old one.
 
+If a newly copied file fails its readback check, BitMatch renames it to `<name>.bitmatch-failed` on that backup, so bad output is unmistakable next to the good files. The bytes are kept for inspection; the rename only happens when identity checks prove the file is exactly the one this attempt wrote and checked. A file that was already there and reused is never renamed, and a read error (rather than a mismatch) leaves the file at its normal name — History shows the real path and the unsafe verdict either way.
+
 Older History entries may not include the original selected-file plan. Their saved rows can still show which files were verified, but they cannot establish whole-card coverage or a safe-to-erase verdict. Keep the source and run a new verified transfer if you need that verdict.
 
 “Safe to erase” requires complete verified coverage on every required backup, plus any requested handoff/report steps. Two folders on the same physical drive aren't independent backups. Quick, missing files and intentional AppleDouble exclusions cannot earn a whole-card safe verdict. Keep the source until you've reviewed the results; a successful check doesn't promise that a drive can never fail later.
@@ -51,7 +53,7 @@ Choose **Check**, then pick the folder or drive you want to check. Use **Its sav
 
 For ASC MHL, this checks recorded file contents, including inventories inside card subfolders. When an inventory chain is present, Check also validates its supported records. Older inventories without a chain get a contents-only check. Directory hashes, recorded renames and chain of custody aren't verified. If a record is damaged or includes checksums BitMatch cannot read, Check says so instead of silently checking only part of it.
 
-Standalone classic MHL 1.1 supports UTF-8 filenames and MD5/SHA-1 file checksums. Check rereads each recorded file and requires every supplied checksum and size to match. Multiple classic inventories must agree on overlapping files. This checks recorded contents; it doesn't establish copy history, prove who created the inventory, validate signatures or mean the card is safe to erase. Classic history references, other encodings and unsupported hashes (including C4-only file checksums) are refused.
+Standalone classic MHL 1.1 supports UTF-8 filenames and MD5/SHA-1 file checksums. Check rereads each recorded file and requires every supplied checksum and size to match. Multiple classic inventories must agree on overlapping files. This checks recorded contents; it doesn't establish copy history, prove who created the inventory, validate signatures or mean the card is safe to erase. Classic history references, other encodings and unsupported hashes (including C4-only, size-only and XXH64 file checksums) are refused.
 
 Use **Another folder** to compare two copies instead. Standard compares contents with SHA-256; Quick checks sizes only. The results separate changed files from files missing or extra in the other folder. An extra file alone does not mean the matching files are damaged. Check does not copy, delete, or repair anything.
 
