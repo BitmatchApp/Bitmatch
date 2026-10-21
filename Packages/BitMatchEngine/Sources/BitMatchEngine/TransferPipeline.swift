@@ -635,7 +635,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 ))
             }
         }
-        let onIOBytes: DestinationWriter.IOByteCallback = { index, path, phase, bytes, duration, ended in
+        let onIOBytes: DestinationWriter.IOByteCallback = { [workProgressClock = self.workProgressClock] index, path, phase, bytes, duration, ended in
             if let snapshot = ioMeter.record(destination: index, phase: phase,
                                              bytes: bytes, duration: duration, now: ended) {
                 ioProgressCallback(snapshot)
