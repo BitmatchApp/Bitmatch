@@ -90,6 +90,10 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     let showsNewTransfer: Bool
     let newTransferHelp: String?
     let copySummary: String
+    /// The hero's one evidence sentence. Claims exactly what the mode did.
+    let heroSubtitle: String
+    /// The button that starts the next card on the same backups.
+    let nextCardLabel: String
 
     var isInterrupted: Bool { safetyState == .interrupted }
 
@@ -326,8 +330,43 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 reason: reason,
                 allFilesReused: allFilesReused,
                 selectedFilesVerified: selectedFilesVerified
-            )
+            ),
+            heroSubtitle: makeHeroSubtitle(
+                fileCount: sourceFileCount ?? sourceEvidence.fileCount,
+                backupCount: destinations.count,
+                verificationMode: verificationMode,
+                duration: duration
+            ),
+            nextCardLabel: "Next card"
         )
+    }
+
+    private static func makeHeroSubtitle(
+        fileCount: Int,
+        backupCount: Int,
+        verificationMode: VerificationMode?,
+        duration: TimeInterval?
+    ) -> String {
+        let files = fileCount == 1 ? "1 file" : "\(fileCount) files"
+        let counted = backupCount <= 1 ? "the backup" : "\(backupCount) backups"
+        let readBackFrom: String
+        switch backupCount {
+        case ...1: readBackFrom = "the backup"
+        case 2: readBackFrom = "both backups"
+        default: readBackFrom = "all \(backupCount) backups"
+        }
+        var sentence: String
+        switch verificationMode {
+        case .standard, .thorough:
+            sentence = "\(files) read back from \(readBackFrom) and matched to the card"
+        case .paranoid:
+            sentence = "\(files) compared byte for byte and matched to the card on \(counted)"
+        case .quick, nil:
+            sentence = "\(files) copied to \(counted); sizes checked, not verified"
+        }
+        sentence += "."
+        if let duration { sentence += " \(durationText(duration))." }
+        return sentence
     }
 
     // MARK: - Pieces

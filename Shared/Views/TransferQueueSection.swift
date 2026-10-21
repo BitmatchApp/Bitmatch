@@ -701,31 +701,41 @@ struct TransferQueueSection: View {
 
     @ViewBuilder
     private func finishedActionButtons(_ row: QueueSessionRow, outcome: TransferOutcomePresentation) -> some View {
-        if outcome.canRetry {
-            Button("Retry") { retry(row.id) }
-                .buttonStyle(.borderedProminent)
-                .disabled(retryTask != nil)
-        }
-        if outcome.canExport {
-            #if os(macOS)
-            Menu("Export Report") {
-                Button("JSON report") { export(row.id, asCSV: false) }
-                Button("CSV results") { export(row.id, asCSV: true) }
-            }.menuStyle(.button)
-            #else
-            Menu("Export Report") {
-                Button("JSON report") { export(row.id, asCSV: false) }
-                Button("CSV results") { export(row.id, asCSV: true) }
-            }
-            .buttonStyle(.bordered)
-            #endif
-        }
-        Button("Copy Summary") { TransferSummaryPasteboard.copy(row.copySummary) }
         if QueueEjectPolicy.canOfferEject(
             row: row,
             platformSupportsEject: ejectSource != nil
         ) {
             Button("Eject") { eject(row.id) }
+        }
+        // On a safe card Retry is a rare repair, so it lives in the overflow
+        // menu rather than competing with Eject.
+        if outcome.canRetry, outcome.safetyState != .safeToErase {
+            Button("Retry") { retry(row.id) }
+                .buttonStyle(.borderedProminent)
+                .disabled(retryTask != nil)
+        }
+        if outcome.canExport {
+            Menu("Export Report") {
+                Button("JSON report") { export(row.id, asCSV: false) }
+                Button("CSV results") { export(row.id, asCSV: true) }
+            }
+            #if os(macOS)
+            .menuStyle(.button)
+            #else
+            .buttonStyle(.bordered)
+            #endif
+        }
+        Button("Copy Summary") { TransferSummaryPasteboard.copy(row.copySummary) }
+        if outcome.canRetry, outcome.safetyState == .safeToErase {
+            Menu("More") {
+                Button("Retry") { retry(row.id) }
+                    .disabled(retryTask != nil)
+            }
+            #if os(macOS)
+            .menuStyle(.button)
+            #else
+            .buttonStyle(.bordered)
+            #endif
         }
     }
 
@@ -1022,6 +1032,7 @@ private struct SafeTransferHero: View {
                     if let eject {
                         Button("Eject", action: eject)
                             .buttonStyle(.borderedProminent).tint(CardSafetyTint.green.color)
+                            .controlSize(.large)
                     }
                 }
             }
@@ -1033,7 +1044,7 @@ private struct SafeTransferHero: View {
             withAnimation(.easeOut(duration: 0.8)) { closesRing = true }
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(outcome.finishTitle). \(heroEvidence)")
+        .accessibilityLabel("\(outcome.finishTitle). \(outcome.heroSubtitle)")
     }
 
     private var heroRow: some View {
@@ -1070,22 +1081,13 @@ private struct SafeTransferHero: View {
         VStack(alignment: .leading, spacing: 5) {
             Text(outcome.finishTitle)
                 .font(.title2.weight(.semibold)).foregroundStyle(CardSafetyTint.green.color)
-            Text(heroEvidence).font(.subheadline).foregroundStyle(.secondary)
+            Text(outcome.heroSubtitle).font(.subheadline).foregroundStyle(.secondary)
             ForEach(outcome.advisoryLines, id: \.self) { advisory in
                 Label(advisory, systemImage: "exclamationmark.triangle")
                     .font(.callout)
                     .foregroundStyle(CardSafetyTint.amber.color)
             }
         }
-    }
-
-    private var heroEvidence: String {
-        var parts: [String] = []
-        if let evidence = row.evidence { parts.append(evidence) }
-        let count = row.destinationNames.count
-        parts.append("\(count) destination\(count == 1 ? "" : "s")")
-        parts.append(row.verificationModeName)
-        return parts.joined(separator: " · ")
     }
 }
 

@@ -58,6 +58,62 @@ struct TransferOutcomePresentationTests {
         )
     }
 
+    /// A clean, fully verified card of `files` files on `destinations` backups.
+    private func make(
+        state: OperationState,
+        mode: VerificationMode,
+        files: Int,
+        destinations count: Int,
+        seconds: TimeInterval,
+        destinationURL: URL? = nil
+    ) -> TransferOutcomePresentation {
+        let backups = (0..<count).map { index in
+            destinationURL
+                ?? URL(fileURLWithPath: "/Volumes/BACKUP \(index)/Card", isDirectory: true)
+        }
+        let rows = backups.flatMap { backup in
+            (0..<files).map { row("C\($0).mov", .verified, backup: backup) }
+        }
+        return TransferOutcomePresentation.make(
+            state: state, rows: rows, destinations: backups,
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: seconds, sourceFileCount: files, sourceBytes: 100,
+            verificationMode: mode, canRetry: true, canExport: true
+        )
+    }
+
+    private var done: OperationState { .completed(.init(success: true, message: "Verified")) }
+
+    @Test func heroSubtitleIsExactForStandardVerify() {
+        let outcome = make(state: done, mode: .standard, files: 486, destinations: 2, seconds: 95)
+        #expect(outcome.heroSubtitle == "486 files read back from both backups and matched to the card. 1m 35s.")
+        #expect(outcome.nextCardLabel == "Next card")
+    }
+
+    @Test func heroSubtitleNamesThreeBackupsAndParanoid() {
+        let outcome = make(state: done, mode: .paranoid, files: 12, destinations: 3, seconds: 61)
+        #expect(outcome.heroSubtitle == "12 files compared byte for byte and matched to the card on 3 backups. 1m 1s.")
+    }
+
+    @Test func heroSubtitleNeverClaimsMoreThanTheMode() {
+        let quick = make(state: done, mode: .quick, files: 1, destinations: 1, seconds: 2)
+        #expect(quick.heroSubtitle == "1 file copied to the backup; sizes checked, not verified. 2s.")
+        let many = make(state: done, mode: .standard, files: 3, destinations: 3, seconds: 5)
+        #expect(many.heroSubtitle == "3 files read back from all 3 backups and matched to the card. 5s.")
+        let one = make(state: done, mode: .paranoid, files: 2, destinations: 1, seconds: 5)
+        #expect(one.heroSubtitle == "2 files compared byte for byte and matched to the card on the backup. 5s.")
+        #expect(!many.heroSubtitle.contains("byte for byte"))
+        #expect(!quick.heroSubtitle.contains("matched"))
+    }
+
+    @Test func destinationLineIsVolumeThenFolder() {
+        let outcome = make(
+            state: done, mode: .standard, files: 1, destinations: 1, seconds: 2,
+            destinationURL: URL(fileURLWithPath: "/Volumes/SHUTTLE A/Day_04/A_CAM")
+        )
+        #expect(outcome.destinations[0].title == "SHUTTLE A › Day_04/A_CAM")
+    }
+
     private var partialRows: [ResultRow] {
         [
             row("A001.mov", .verified, backup: backupA),
