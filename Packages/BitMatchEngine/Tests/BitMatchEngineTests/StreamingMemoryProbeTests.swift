@@ -99,7 +99,9 @@ final class StreamingMemoryProbeTests: XCTestCase {
             onIOBytes: { index, _, phase, count, _, _ in
                 switch phase {
                 case .writing: samples.wrote(index: index, count: count)
-                case .readingBack, .validatingExisting, .sourceReading, .sourceVerifying, .sourceValidatingExisting: break
+                case .readingBack, .validatingExisting, .sourceReading, .sourceVerifying, .sourceValidatingExisting,
+                     .sourceHashing, .sourceReuseHashing, .sourceReuseComparing,
+                     .destinationReuseComparing: break
                 }
             },
             onProgress: { index, _, byteCount, wasReused in

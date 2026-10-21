@@ -987,10 +987,7 @@ public final class DestinationWriter {
                         destinationIndex: destination.index,
                         relativePath: relativePath,
                         hooks: hooks,
-                        onIOBytes: { index, path, phase, bytes, duration, ended in
-                            let reusePhase: TransferIOPhase = phase == .readingBack ? .validatingExisting : .sourceValidatingExisting
-                            onIOBytes?(index, path, reusePhase, bytes, duration, ended)
-                        }
+                        onIOBytes: onIOBytes
                     )
                     pendingReuse.append(destination)
                 } else {
@@ -1244,6 +1241,33 @@ public final class DestinationWriter {
         }
     }
 
+    /// Keeps work-meter phases distinct for both early and raced reuse proofs.
+    private static func reuseValidationIOCallback(_ callback: IOByteCallback?) -> IOByteCallback? {
+        guard let callback else { return nil }
+        return { index, path, phase, bytes, duration, ended in
+            let reusePhase: TransferIOPhase
+            switch phase {
+            case .readingBack: reusePhase = .validatingExisting
+            case .sourceHashing: reusePhase = .sourceReuseHashing
+            default: reusePhase = phase
+            }
+            callback(index, path, reusePhase, bytes, duration, ended)
+        }
+    }
+
+    private static func reuseComparisonIOCallback(_ callback: IOByteCallback?) -> IOByteCallback? {
+        guard let callback else { return nil }
+        return { index, path, phase, bytes, duration, ended in
+            let reusePhase: TransferIOPhase
+            switch phase {
+            case .readingBack: reusePhase = .destinationReuseComparing
+            case .sourceVerifying: reusePhase = .sourceReuseComparing
+            default: reusePhase = phase
+            }
+            callback(index, path, reusePhase, bytes, duration, ended)
+        }
+    }
+
     private static func uncachedSourceHandle(for source: URL) throws -> FileHandle {
         let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC
         let fd = source.path.withCString { Darwin.open($0, flags) }
@@ -1384,7 +1408,7 @@ public final class DestinationWriter {
                 destinationIndex: destinationIndex,
                 relativePath: relativePath,
                 hooks: hooks,
-                onIOBytes: onIOBytes
+                onIOBytes: reuseComparisonIOCallback(onIOBytes)
             ) else {
                 throw reuseConflict("Existing destination file bytes differ; refusing to overwrite it", relativePath: relativePath)
             }
@@ -1398,7 +1422,7 @@ public final class DestinationWriter {
             destinationIndex: destinationIndex,
             relativePath: relativePath,
             hooks: hooks,
-            onIOBytes: onIOBytes
+            onIOBytes: reuseValidationIOCallback(onIOBytes)
         ) else {
             throw reuseConflict("Existing destination file checksum differs; refusing to overwrite it", relativePath: relativePath)
         }
@@ -1621,7 +1645,7 @@ public final class DestinationWriter {
                     return delta
                 }
                 if delta > 0 {
-                    onIOBytes?(destinationIndex, relativePath, .sourceVerifying, Int(delta), 0, ProcessInfo.processInfo.systemUptime)
+                    onIOBytes?(destinationIndex, relativePath, .sourceHashing, Int(delta), 0, ProcessInfo.processInfo.systemUptime)
                 }
             }
         }

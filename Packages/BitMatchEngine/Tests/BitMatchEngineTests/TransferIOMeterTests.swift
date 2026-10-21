@@ -52,6 +52,21 @@ struct TransferIOMeterTests {
         #expect(abs((final.destinations[0].writeBytesPerSecond ?? 0) - 1_500) < 1)
     }
 
+    @Test func sourceReuseHashWorkDoesNotCountAsDestinationReadback() throws {
+        let meter = TransferIOMeter(destinationCount: 1)
+        for phase in [TransferIOPhase.sourceHashing, .sourceReuseHashing, .sourceReuseComparing] {
+            #expect(meter.record(destination: 0, phase: phase, bytes: 10_000,
+                                 duration: 0.1, now: 10) == nil)
+        }
+        _ = meter.record(destination: 0, phase: .destinationReuseComparing,
+                         bytes: 128, duration: 0.2, now: 10)
+        _ = meter.record(destination: 0, phase: .destinationReuseComparing,
+                         bytes: 256, duration: 0.2, now: 10.3)
+        let snapshot = meter.finalSnapshot(now: 10.3)
+        #expect(snapshot.destinations[0].readbackBytes == 384)
+        #expect((snapshot.destinations[0].readbackBytesPerSecond ?? 0) > 0)
+    }
+
     @Test func overlappingCallsCountConcurrentBytesOverOneActiveInterval() {
         let meter = TransferIOMeter(destinationCount: 1)
         let chunk = 4 * 1024 * 1024

@@ -48,6 +48,10 @@ enum TransferIOPhase: Sendable {
     case sourceReading
     case sourceVerifying
     case sourceValidatingExisting
+    case sourceHashing
+    case sourceReuseHashing
+    case sourceReuseComparing
+    case destinationReuseComparing
 }
 
 /// Counts bytes only after an actual destination I/O call succeeds. A short
@@ -140,9 +144,10 @@ final class TransferIOMeter: Sendable {
             switch phase {
             case .writing:
                 state.destinations[destination].writing.add(bytes: bytes, duration: duration, now: now)
-            case .readingBack, .validatingExisting:
+            case .readingBack, .validatingExisting, .destinationReuseComparing:
                 state.destinations[destination].readingBack.add(bytes: bytes, duration: duration, now: now)
-            case .sourceReading, .sourceVerifying, .sourceValidatingExisting:
+            case .sourceReading, .sourceVerifying, .sourceValidatingExisting, .sourceHashing,
+                 .sourceReuseHashing, .sourceReuseComparing:
                 return nil
             }
             guard state.lastPublishUptime.map({ now - $0 >= 0.25 }) ?? true else { return nil }
