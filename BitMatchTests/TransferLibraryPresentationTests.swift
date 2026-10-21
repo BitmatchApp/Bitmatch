@@ -555,6 +555,25 @@ struct TransferLibraryPresentationTests {
         #expect(TransferLibraryPresentation.detailLine(destinationCount: 1, fileCount: 1) == "1 destination · 1 file")
         #expect(TransferLibraryPresentation.detailLine(destinationCount: 2, fileCount: 128) == "2 destinations · 128 files")
     }
+
+    /// The combined row presentation must match the separate label/detail
+    /// computations for every state, so sharing one verified-evidence scan
+    /// cannot drift a collapsed row's verdict or file count.
+    @Test func rowPresentationMatchesSeparateLabelAndDetailComputations() {
+        for state in allStates {
+            var record = PresentationTestSupport.record(state: state)
+            let destination = record.destinations[0].url
+            record.results = [
+                PresentationTestSupport.row(.verified, destination: destination),
+                PresentationTestSupport.row(.excludedAppleDouble, destination: destination)
+            ]
+            let combined = TransferLibraryPresentation.rowPresentation(for: record)
+            #expect(combined.stateLabel == TransferLibraryPresentation.stateLabel(for: record))
+            #expect(combined.detailLine == TransferLibraryPresentation.detailLine(
+                destinationCount: record.destinations.count,
+                fileCount: TransferLibraryPresentation.fileCount(for: record)))
+        }
+    }
 }
 
 /// Shared minimal fixtures for these tests.

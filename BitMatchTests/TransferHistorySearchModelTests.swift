@@ -30,6 +30,29 @@ final class TransferHistorySearchModelTests: XCTestCase {
         XCTAssertEqual(counter.workerCalls, 0)
     }
 
+    /// Opening History with no query, and journal publications while the
+    /// query stays empty, must not build an index at all. The first nonempty
+    /// query builds it exactly once, on demand.
+    func testIndexBuildsLazilyOnlyForTheFirstNonemptyQuery() async throws {
+        let counter = HistorySearchCounter()
+        let model = TransferHistorySearchModel(indexBuilder: { records in
+            counter.recordWorker()
+            return try TransferLibraryPresentation.SearchIndex.cancellable(records: records)
+        })
+        defer { model.cancel() }
+        let saved = try record(clip: "needle.MOV")
+        model.resume(records: [saved], query: "")
+        model.replaceRecords([saved])
+        XCTAssertEqual(model.matches.map(\.record.id), [saved.id])
+        XCTAssertEqual(counter.workerCalls, 0)
+
+        model.updateQuery("needle")
+        try await waitUntil { !model.isSearching }
+        XCTAssertEqual(model.matches.map(\.record.id), [saved.id])
+        XCTAssertEqual(model.matches.first?.clipLine, "needle.MOV on Backup")
+        XCTAssertEqual(counter.workerCalls, 1)
+    }
+
     /// Plant: run the actual index builder on MainActor instead of the
     /// detached worker. Both index construction and matching must stay off it.
     func testIndexAndMatchingActuallyExecuteOffTheMainThread() async throws {
