@@ -324,6 +324,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
     /// default; the engine itself reads no settings.
     private let pipelinedVerification: Bool
     private let verificationConcurrency: Int?
+    /// Monotonic-time seam for work-meter publication; production uses system uptime.
+    private let workProgressClock: @Sendable () -> TimeInterval
     private let activeOperations = ActiveOperationRegistry()
     private let pauseGate = PauseGate()
 
@@ -333,7 +335,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         pipelinedVerification: Bool = true,
         verificationConcurrency: Int? = nil,
         destinationSetupHook: (@Sendable (URL) throws -> Void)? = nil,
-        fanOutHooks: DestinationWriter.FanOutHooks? = nil
+        fanOutHooks: DestinationWriter.FanOutHooks? = nil,
+        workProgressClock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
     ) {
         self.fileSystem = fileSystem
         self.checksumService = checksum
@@ -341,6 +344,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         self.verificationConcurrency = verificationConcurrency.flatMap { $0 > 0 ? min($0, 16) : nil }
         self.destinationSetupHook = destinationSetupHook
         self.fanOutHooks = fanOutHooks
+        self.workProgressClock = workProgressClock
     }
     
     // MARK: - FileOperationsService Protocol Implementation
@@ -434,7 +438,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             checksum: checksumService,
             pipelinedVerification: pipelinedVerification,
             destinationSetupHook: destinationSetupHook,
-            fanOutHooks: fanOutHooks ?? self.fanOutHooks
+            fanOutHooks: fanOutHooks ?? self.fanOutHooks,
+            workProgressClock: workProgressClock
         )
         return try await scoped.performFileOperation(
             sourceURL: sourceURL,
@@ -630,12 +635,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 ))
             }
         }
-        let onIOBytes: DestinationWriter.IOByteCallback = { index, path, phase, bytes, duration, ended in
+        let onIOBytes: DestinationWriter.IOByteCallback = { [workProgressClock = self.workProgressClock] index, path, phase, bytes, duration, ended in
             if let snapshot = ioMeter.record(destination: index, phase: phase,
                                              bytes: bytes, duration: duration, now: ended) {
                 ioProgressCallback(snapshot)
             }
-            if workMeter.record(path: path, destination: index, phase: phase, bytes: bytes, now: ended) {
+            if workMeter.record(path: path, destination: index, phase: phase, bytes: bytes, now: workProgressClock()) {
                 emitProgress(.copying, nil, nil, Date(), nil)
             }
         }
@@ -877,7 +882,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         processingTime: 0,
                         wasReused: wasReused
                     )
-                    workMeter.copied(path: relativePath, destination: destIndex)
+                    workMeter.copied(path: relativePath, destination: destIndex, wasReused: wasReused)
                     let copied = await ledger.recordCopy(
                         copyResult,
                         relativePath: relativePath,
