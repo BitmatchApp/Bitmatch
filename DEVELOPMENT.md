@@ -62,6 +62,8 @@ App build/test jobs use a stable per-checkout build folder under `/private/tmp/b
 
 GitHub Actions CI was disabled on October 20, 2026. The workflow file is retained, but automatic jobs are not part of the project’s validation or release process. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests. Do not repair or re-enable GitHub CI unless Mike asks.
 
+The offline Python regression suite runs with `python3 -m unittest discover -s Scripts -p 'test_*.py'`. Choose an interpreter with descriptor-relative filesystem APIs for the cleanup tests; the local Python 3.12 run passes, while a Python 3.9 build here lacks `dir_fd` support. Keep that guard rather than weakening ownership-checked cleanup to accommodate an unsupported interpreter.
+
 ### Change workflow
 
 1. Read the shared path before changing copy, verification, preflight, state, readiness or report behavior.

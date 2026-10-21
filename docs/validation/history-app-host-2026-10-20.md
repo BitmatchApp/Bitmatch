@@ -1,6 +1,6 @@
 # History app-host scale probe — October 20, 2026
 
-The focused macOS app-host probe passed on the branch based at `main0a50ee5c`. It exercised the actual `LocalTransferJournal`, History search model, `TransferLibraryView`, and `TransferQueueSection` using an owned synthetic journal. No production History, app container, user bookmarks, connected drives, media, or physical device was accessed. The probe and its fixtures are opt-in and bounded; they do not change retention or journal behavior.
+The focused macOS app-host probe passed on the branch based at `main` at `0a50ee5c`. It exercised the actual `LocalTransferJournal`, History search model, `TransferLibraryView`, and `TransferQueueSection` using an owned synthetic journal. No production History, app container, user bookmarks, connected drives, media, or physical device was accessed. The probe and its fixtures are opt-in and bounded; they do not change retention or journal behavior.
 
 ## Fixture and coverage
 
@@ -58,4 +58,14 @@ These boundaries narrow the interval in which eager view work occurs; they do no
 
 The path-normalization change passed the actual 500-attempt / 50,000-row workflow with a complete cleanup receipt: 371 MiB observed process peak, 1,263 footprint samples, window attachment 3.712 s, showing the window 1.719 s, and maximum main-actor pulse 5,524.0 ms. The focused XCTest took 13.752 s. These remain single-run measurements under shared machine load, not a controlled performance comparison; a substantial interval remains. The shorter external process sample also produced an empty call graph, so no sampled function is identified as its cause.
 
-A subsequent small presentation change reuses destination summaries already built during one row's safety calculation instead of rebuilding them for selected-plan coverage. It adds no cache, persistence change or new verdict. Existing planned/legacy/Quick/exclusion coverage tests and the app-host measurement must be rerun on that newer source; the measurements above precede it.
+A subsequent small presentation change reuses destination summaries already built during one row's safety calculation instead of rebuilding them for selected-plan coverage. It adds no cache, persistence change or new verdict. The full Mac suite passed at `bf3fa22c` with that change: 1,411 passed, 34 skipped and zero failed. A fresh opt-in app-host measurement remains pending; the measurements above precede it.
+
+## Scratch configuration containment
+
+The wrapper resolves configured evidence and DerivedData paths before creating them, requires strict containment under canonical `/private/tmp`, rejects the checkout, and revalidates after creation. A symlinked existing parent cannot redirect writes outside scratch. Seven stub tests passed, including the `/tmp` alias, evidence/DerivedData escapes, traversal, and skipped/vacuous Xcode success. Removing the correction in a disposable copy made both escape regressions fail; their outside targets were exclusively owned temporary directories and were cleaned even on failure. An earlier dangling-symlink control passed on the old wrapper too and is not counted as red evidence.
+
+The app-host probe separately requires an existing canonical scratch directory before creating its fixture. Its two new ordinary XCTest cases passed in the 39-test focused run and the updated full Mac suite (1,424 passed, 34 skipped, zero failed). These checks guard configuration mistakes; they are not a claim of race-free descriptor traversal against concurrent hostile replacement. All 67 script regressions passed under Python 3.12.15. A first run under the shell's Python 3.9 failed the existing descriptor-relative cleanup tests; that interpreter limitation is retained separately, and no cleanup protection was weakened.
+
+## Updated production rerun
+
+At `b30e844f`, after summary reuse and scratch-root validation, the actual 500-attempt / 50,000-row probe passed again. The focused XCTest passed without a skip; the strict wrapper receipt checks passed, `cleanupComplete` was true and no fixture directory remained. Observations: 367 MiB peak, 1,242 footprint samples, a 4,177.1 ms maximum main-actor pulse, 2.657 s attaching the History window, 1.379 s showing it, and 28 ms rendering its PNG. These remain single-run shared-machine observations. They do not establish a controlled speedup, identify a production hot function, or reproduce #23.
