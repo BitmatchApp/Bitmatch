@@ -314,8 +314,17 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         coordinator.reportSettings = ReportPrefs(makeReport: true)
         coordinator.generateASCMHL = false
 
+        let setupReady = await waitUntil(timeout: .seconds(5)) { @MainActor in
+            coordinator.sourceFolderInfo?.url == f.source
+                && !coordinator.isFolderInfoLoading(for: f.source)
+                && !coordinator.isAnalysingSource
+                && !coordinator.isPreparingTransferSetup
+                && coordinator.transferReadiness.isReady
+        }
+        XCTAssertTrue(setupReady, "The selected source scan and transfer setup must finish before the direct run starts")
+
         let directTask = Task { await coordinator.startOperation() }
-        let directStarted = await waitUntil { await operations.starts.count == 1 }
+        let directStarted = await waitUntil(timeout: .seconds(5)) { await operations.starts.count == 1 }
         XCTAssertTrue(directStarted)
         let directID = try XCTUnwrap(coordinator.activeRunContext?.journalRecordID)
 

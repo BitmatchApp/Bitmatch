@@ -337,7 +337,10 @@ final class AppleDoubleWorkflowTests: XCTestCase {
         review.refresh(source: folders.source)
         XCTAssertNotNil(review.readinessIssue)
         let ready = await waitUntil {
-            review.paths != nil && coordinator.sourceFolderInfo != nil && !coordinator.isAnalysingSource
+            review.paths != nil && coordinator.sourceFolderInfo != nil
+                && !coordinator.isAnalysingSource && coordinator.transferReadiness.isReady
+                && SetupPresentation.make(coordinator: coordinator).start.readyLine?
+                    .contains("2 files to 1 destination") == true
         }
         XCTAssertTrue(ready)
         XCTAssertEqual(review.paths, ["._A.ARW"])
@@ -351,7 +354,8 @@ final class AppleDoubleWorkflowTests: XCTestCase {
         XCTAssertTrue(AppleDoubleReviewModel(defaults: folders.defaults).enabled)
         review.enabled = false
         let unfilteredReady = await waitUntil {
-            SetupPresentation.make(coordinator: coordinator).start.readyLine?.contains("3 files (") == true
+            coordinator.transferReadiness.isReady
+                && SetupPresentation.make(coordinator: coordinator).start.readyLine?.contains("3 files (") == true
         }
         XCTAssertTrue(unfilteredReady)
         XCTAssertTrue(try XCTUnwrap(SetupPresentation.make(coordinator: coordinator).start.readyLine).contains("3 files ("))

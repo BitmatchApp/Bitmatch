@@ -64,6 +64,7 @@ struct DriveAccessWorkerTests {
 
         let healthy = try await worker.perform(mountKey: "/Volumes/B", jobKey: "test.healthy") { "healthy" }
         #expect(healthy == "healthy")
+        #expect(await waitUntil { worker.runningCount == 1 && worker.queuedCount == 1 })
         #expect(worker.runningCount == 1)
         #expect(worker.queuedCount == 1)
 

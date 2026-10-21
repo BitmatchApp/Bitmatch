@@ -431,7 +431,11 @@ struct BackupAddPathTests {
 
         shared.sourceURL = source
         shared.destinationURLs = [planned]
-        #expect(await waitUntil { !shared.isAnalysingSource })
+        #expect(await waitUntil {
+            shared.sourceFolderInfo != nil && !shared.isAnalysingSource
+                && shared.transferReadiness.isReady
+                && SetupPresentation.make(coordinator: shared).start.readyLine != nil
+        })
         _ = try await shared.enqueueSelectionPrepared()
         #expect(!shared.stagedSetupTransfers.isEmpty)
 
