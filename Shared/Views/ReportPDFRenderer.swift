@@ -25,8 +25,8 @@ struct ReportPDFBlock {
     }
 }
 
-/// Simple single-line manifest cells share a few fonts instead of creating a
-/// SwiftUI drawing resource graph for every row. Complex rows keep their view.
+/// Printable manifest cells share a few fonts instead of creating a SwiftUI
+/// drawing resource graph for every row. Previews and control text keep their view.
 @MainActor
 struct ReportPDFNativeRow {
     let fileName: String
@@ -34,6 +34,7 @@ struct ReportPDFNativeRow {
     let size: String
     let glyph: String
     let tone: ResultStatusTone
+    private var wrappedCells: [[CTLine]]? = nil
 
     private static func font(_ size: CGFloat, medium: Bool = false) -> CTFont {
         #if os(macOS)
@@ -49,12 +50,16 @@ struct ReportPDFNativeRow {
     private static let black = CGColor(gray: 0.13, alpha: 1)
     private static let secondary = CGColor(gray: 0.5, alpha: 1)
 
-    private static func line(_ text: String, font: CTFont, color: CGColor) -> CTLine {
+    private static func attributed(_ text: String, font: CTFont, color: CGColor) -> CFAttributedString {
         let attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTForegroundColorAttributeName as String): color
         ]
-        return CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes) as CFAttributedString)
+        return NSAttributedString(string: text, attributes: attributes) as CFAttributedString
+    }
+
+    private static func line(_ text: String, font: CTFont, color: CGColor) -> CTLine {
+        CTLineCreateWithAttributedString(attributed(text, font: font, color: color))
     }
 
     static func makeIfFits(fileName: String, destination: String, size: String,
@@ -65,6 +70,46 @@ struct ReportPDFNativeRow {
                   CTLineGetTypographicBounds(line(text, font: font, color: black), nil, nil, nil) <= width else { return nil }
         }
         return ReportPDFNativeRow(fileName: fileName, destination: destination, size: size, glyph: glyph, tone: tone)
+    }
+
+    /// Match the manifest's two-line, middle-truncated text policy without
+    /// accumulating a separate SwiftUI font resource graph for each long row.
+    /// The existing SwiftUI view still supplies the measured row height.
+    static func makeWrapping(fileName: String, destination: String, size: String,
+                             glyph: String, tone: ResultStatusTone) -> ReportPDFNativeRow? {
+        guard CTLineGetTypographicBounds(line(size, font: valueFont, color: black), nil, nil, nil) <= 70 else {
+            return nil
+        }
+        let cells = [(fileName, fileFont, black, 250.0),
+                     (destination, destinationFont, secondary, 150.0),
+                     (size, valueFont, black, 70.0)]
+        var prepared: [[CTLine]] = []
+        for (text, font, color, width) in cells {
+            guard !text.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+                  let lines = twoLines(text, font: font, color: color, width: width) else { return nil }
+            prepared.append(lines)
+        }
+        var row = ReportPDFNativeRow(fileName: fileName, destination: destination, size: size,
+                                     glyph: glyph, tone: tone)
+        row.wrappedCells = prepared
+        return row
+    }
+
+    private static func twoLines(_ text: String, font: CTFont, color: CGColor, width: Double) -> [CTLine]? {
+        let value = attributed(text, font: font, color: color)
+        let whole = CTLineCreateWithAttributedString(value)
+        if CTLineGetTypographicBounds(whole, nil, nil, nil) <= width { return [whole] }
+        let typesetter = CTTypesetterCreateWithAttributedString(value)
+        let count = CFAttributedStringGetLength(value)
+        let firstCount = CTTypesetterSuggestLineBreak(typesetter, 0, width)
+        guard firstCount > 0, firstCount < count else { return nil }
+        let first = CTTypesetterCreateLine(typesetter, CFRange(location: 0, length: firstCount))
+        let remainder = CTTypesetterCreateLine(typesetter, CFRange(location: firstCount, length: count - firstCount))
+        let token = line("…", font: font, color: color)
+        guard let last = CTLineCreateTruncatedLine(remainder, width, .middle, token),
+              CTLineGetTypographicBounds(first, nil, nil, nil) <= width,
+              CTLineGetTypographicBounds(last, nil, nil, nil) <= width else { return nil }
+        return [first, last]
     }
 
     var statusColor: CGColor {
@@ -91,14 +136,23 @@ struct ReportPDFNativeRow {
                      (fileName, Self.fileFont, Self.black, CGFloat(76), false),
                      (destination, Self.destinationFont, Self.secondary, CGFloat(334), false),
                      (size, Self.valueFont, Self.black, CGFloat(562), true)]
-        for (text, font, color, edge, rightAligned) in cells {
-            let line = Self.line(text, font: font, color: color)
-            var ascent: CGFloat = 0, descent: CGFloat = 0
-            let width = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
-            let baselineFromTop = top + (height - ascent - descent) / 2 + ascent
-            context.textPosition = CGPoint(x: rightAligned ? edge - CGFloat(width) : edge,
-                                           y: ReportPDFRenderer.pageHeight - baselineFromTop)
-            CTLineDraw(line, context)
+        for (index, cell) in cells.enumerated() {
+            let (text, font, color, edge, rightAligned) = cell
+            let lines = index > 0 ? wrappedCells?[index - 1] : nil
+            let measured = (lines ?? [Self.line(text, font: font, color: color)]).map { line in
+                var ascent: CGFloat = 0, descent: CGFloat = 0
+                let width = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
+                return (line: line, width: CGFloat(width), ascent: ascent, descent: descent)
+            }
+            let textHeight = measured.reduce(CGFloat.zero) { $0 + $1.ascent + $1.descent }
+            var baselineFromTop = top + (height - textHeight) / 2
+            for item in measured {
+                baselineFromTop += item.ascent
+                context.textPosition = CGPoint(x: rightAligned ? edge - item.width : edge,
+                                               y: ReportPDFRenderer.pageHeight - baselineFromTop)
+                CTLineDraw(item.line, context)
+                baselineFromTop += item.descent
+            }
         }
     }
 }

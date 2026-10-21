@@ -388,7 +388,14 @@ struct ReportView: View {
         let source = ResultPathMatch.comparablePath(s.source)
         let path = ResultPathMatch.comparablePath(row.path)
         let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
-        return ReportPDFNativeRow.makeIfFits(
+        let native = ReportPDFNativeRow.makeIfFits(
+            fileName: display,
+            destination: pdfDestination(for: row),
+            size: ByteCountPresentation.fileSize(row.size),
+            glyph: pdfStatusGlyph(for: status.tone),
+            tone: status.tone
+        )
+        return native ?? ReportPDFNativeRow.makeWrapping(
             fileName: display,
             destination: pdfDestination(for: row),
             size: ByteCountPresentation.fileSize(row.size),

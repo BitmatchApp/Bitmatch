@@ -105,6 +105,84 @@ struct ReportPDFNativeRowTests {
     }
 
     @Test
+    func nativeWrappedLongFilenameFitsMeasuredRowWithoutOverlappingFollowingContent() throws {
+        let alphaPath = "/card/ALPHAID/" + Array(repeating: "alpha-repeated-path-segment", count: 8).joined(separator: "/") + "/tail-A.mov"
+        let betaPath = "/card/BETAID/" + Array(repeating: "beta-repeated-path-segment", count: 8).joined(separator: "/") + "/tail-B.mov"
+        let rows = [
+            ResultRow(path: alphaPath, status: ResultOutcome.verified.statusText,
+                      size: 1_024, checksum: "alpha", destination: "/Volumes/Backup",
+                      destinationPath: "/Volumes/Backup/tail-A.mov"),
+            ResultRow(path: betaPath, status: ResultOutcome.verified.statusText,
+                      size: 2_048, checksum: "beta", destination: "/Volumes/Backup",
+                      destinationPath: "/Volumes/Backup/tail-B.mov"),
+            ResultRow(path: "/card/AFTERID/after-row.mov", status: ResultOutcome.verified.statusText,
+                      size: 3_072, checksum: "after", destination: "/Volumes/Backup",
+                      destinationPath: "/Volumes/Backup/after-row.mov")
+        ]
+        let summary = ReportSummary(
+            jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(60), mode: .copyAndVerify,
+            source: "/card", destinations: ["/Volumes/Backup"], totalFiles: rows.count, matched: rows.count,
+            issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "", production: "", company: "",
+            verificationMethod: "SHA-256", totalBytesProcessed: 6_144, averageSpeed: 1,
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
+        let report = ReportView(s: summary, rows: rows)
+        let native = try #require(report.pdfNativeManifestRow(rows[1], showPreview: false))
+        #expect(native.glyph == "✓")
+        #expect(native.tone == .verified)
+
+        let layout = ReportPDFRenderer.layout(report)
+        let nativeBlock = try #require(layout.blocks.firstIndex(where: { $0.nativeRow?(report) != nil }))
+        #expect(nativeBlock > 0 && nativeBlock + 1 < layout.blocks.count)
+        #expect(layout.blocks[nativeBlock + 1].nativeRow?(report) != nil,
+                "the following short row must remain independently measured and drawn")
+        #expect(layout.blocks[nativeBlock - 1].nativeRow?(report) == nil,
+                "the first, SwiftUI measured long row must remain on the fallback path")
+        let measuredHeight = layout.heights[nativeBlock]
+
+        let data = try ReportPDFRenderer.renderPDF(summary: summary, results: rows)
+        if let output = ProcessInfo.processInfo.environment["BITMATCH_PDF_EDGE_ARTIFACTS"] {
+            try data.write(to: URL(fileURLWithPath: output).appendingPathComponent("wrapped-rows.pdf"),
+                           options: .withoutOverwriting)
+        }
+        let document = try #require(PDFDocument(data: data))
+        let betaMatches = document.findString("BETAID", withOptions: [])
+        let tailMatches = document.findString("tail-B.mov", withOptions: [])
+        #expect(document.findString("ALPHAID", withOptions: []).count == 1)
+        #expect(document.findString("tail-A.mov", withOptions: []).count == 1)
+        #expect(betaMatches.count == 1)
+        #expect(tailMatches.count == 1)
+        let beta = try #require(betaMatches.first)
+        let tail = try #require(tailMatches.first)
+        let after = try #require(document.findString("AFTERID", withOptions: []).first)
+        let footer = try #require(document.findString("Page 1 of 1", withOptions: []).first)
+        let page = try #require(beta.pages.first)
+        let tailPage = try #require(tail.pages.first)
+        let afterPage = try #require(after.pages.first)
+        let footerPage = try #require(footer.pages.first)
+        #expect(page === tailPage)
+        #expect(page === afterPage)
+        #expect(page === footerPage)
+
+        let betaBounds = beta.bounds(for: page)
+        let tailBounds = tail.bounds(for: page)
+        let afterBounds = after.bounds(for: page)
+        let footerBounds = footer.bounds(for: page)
+        for bounds in [betaBounds, tailBounds] {
+            #expect(bounds.minX >= 76 - 1)
+            #expect(bounds.maxX <= 326 + 1)
+        }
+        let lineStep = betaBounds.midY - tailBounds.midY
+        #expect(lineStep > 5, "the retained head and tail should occupy separate visible lines")
+        #expect(lineStep < measuredHeight, "both filename lines must fit the SwiftUI measured row")
+        #expect(betaBounds.maxY - tailBounds.minY <= measuredHeight,
+                "the full two-line selection must fit within the existing measured row height")
+        #expect(tailBounds.minY > afterBounds.maxY, "the wrapped filename must not overlap the following row")
+        #expect(tailBounds.minY > footerBounds.maxY, "the wrapped filename must remain above the page footer")
+        #expect(tailBounds.minY >= ReportPDFRenderer.verticalMargin)
+        #expect(betaBounds.maxY <= ReportPDFRenderer.pageHeight - ReportPDFRenderer.verticalMargin)
+    }
+
+    @Test
     func nativeManifestEligibilityFallsBackForWideAndControlTextAndPreviews() throws {
         let tone = ResultStatusTone.verified
         #expect(ReportPDFNativeRow.makeIfFits(fileName: "résumé-東京.mov", destination: "Backup 1",
@@ -121,6 +199,19 @@ struct ReportPDFNativeRowTests {
                                               size: "1.0 KB", glyph: "✓", tone: tone) == nil)
         #expect(ReportPDFNativeRow.makeIfFits(fileName: "clip.mov", destination: "Backup 1",
                                               size: "1.0\nKB", glyph: "✓", tone: tone) == nil)
+        #expect(ReportPDFNativeRow.makeIfFits(fileName: "clip\u{1B}mov", destination: "Backup 1",
+                                              size: "1.0 KB", glyph: "✓", tone: tone) == nil)
+        #expect(ReportPDFNativeRow.makeIfFits(fileName: "clip.mov", destination: "Backup\u{7F}1",
+                                              size: "1.0 KB", glyph: "✓", tone: tone) == nil)
+        #expect(ReportPDFNativeRow.makeIfFits(fileName: "clip.mov", destination: "Backup 1",
+                                              size: "1.0\u{00} KB", glyph: "✓", tone: tone) == nil)
+
+        #expect(ReportPDFNativeRow.makeWrapping(fileName: "clip\u{1B}mov", destination: "Backup 1",
+                                                size: "1 KB", glyph: "✓", tone: tone) == nil)
+        #expect(ReportPDFNativeRow.makeWrapping(fileName: "clip.mov", destination: "Backup\u{7F}1",
+                                                size: "1 KB", glyph: "✓", tone: tone) == nil)
+        #expect(ReportPDFNativeRow.makeWrapping(fileName: "clip.mov", destination: "Backup 1",
+                                                size: "1\u{00} KB", glyph: "✓", tone: tone) == nil)
 
         let inProgress = ReportPDFNativeRow.makeIfFits(fileName: "copying.mov", destination: "Backup 1",
                                                       size: "1.0 KB", glyph: "…", tone: .inProgress)
@@ -144,6 +235,16 @@ struct ReportPDFNativeRowTests {
             thumbnails: ReportThumbnails(images: [row.path: Data([0x01])], requestedCount: 1))
         #expect(reportWithPreview.pdfNativeManifestRow(row, showPreview: true) == nil)
         #expect(reportWithPreview.pdfNativeManifestRow(row, showPreview: false) != nil)
+
+        let longPath = "/card/PREVIEWID/" + Array(repeating: "preview-repeated-path-segment", count: 8).joined(separator: "/") + "/tail-preview.mov"
+        let longPreviewRow = ResultRow(path: longPath, status: ResultOutcome.verified.statusText,
+                                       size: 1_024, checksum: "digest", destination: "/Volumes/Backup")
+        let fakeJPEG = Data([0xFF, 0xD8, 0xFF, 0xD9])
+        let longReportWithPreview = ReportView(
+            s: summary, rows: [longPreviewRow],
+            thumbnails: ReportThumbnails(images: [longPath: fakeJPEG], requestedCount: 1))
+        #expect(longReportWithPreview.thumbnails.images[longPath] != nil)
+        #expect(longReportWithPreview.pdfNativeManifestRow(longPreviewRow, showPreview: true) == nil)
     }
 
     @Test
