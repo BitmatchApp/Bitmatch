@@ -232,6 +232,11 @@ enum CompletionVerdict: Equatable {
             return .issues
         }
 
+        // A completed claim with no successful rows has nothing verified.
+        guard !summary.successfulRows.isEmpty else {
+            return .issues
+        }
+
         // Green means verified (Promise 2): a row that was copied but never
         // checksum- or byte-verified keeps the run out of success, whatever
         // the run itself reported.

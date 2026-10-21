@@ -641,7 +641,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
     }
 
     private static func isVerified(_ row: ResultRow) -> Bool {
-        row.isSuccessStatus
+        row.isVerifiedStatus
             && nonblank(row.path) != nil
             && nonblank(row.checksum) != nil
             && nonblank(row.destinationPath) != nil

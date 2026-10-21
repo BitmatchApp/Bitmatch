@@ -8,23 +8,8 @@ enum TransferHistoryResultPresentation {
         if mode == .quick && row.isSuccessStatus {
             return "Copied · contents not verified"
         }
-        guard let marking = row.failedOutputMarking else { return row.status }
-        switch marking {
-        case "marked":
-            return row.status + " · failed file renamed with .bitmatch-failed suffix"
-        case "nameOccupied":
-            return row.status + " · failed file could not be renamed (marked name already in use), still at original name"
-        case "fileChanged":
-            return row.status + " · failed file could not be renamed (file changed after checking), still at original name"
-        case "fileMissing":
-            return row.status + " · failed file could not be renamed (file no longer there)"
-        case "nameTooLong":
-            return row.status + " · failed file could not be renamed (marked name too long), still at original name"
-        case "swapped":
-            return row.status + " · failed file could not be renamed (file changed during renaming), still at original name"
-        default:
-            return row.status + " · failed file could not be renamed, still at original name"
-        }
+        guard let note = row.markingNote else { return row.status }
+        return row.status + " · " + note
     }
 }
 
