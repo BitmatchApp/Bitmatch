@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Mac drive discovery runs listing and drive checks off the main thread, with bounded workers and no overlapping probes of one drive.
+- Camera hints scan large folders incrementally and check cancellation between entries.
+- Check rejects classic MHL records that give conflicting modification dates for the same file.
+- Saved path comparisons stay consistent when files or symlinks appear or disappear. Safety checks recognize source-folder aliases even when final child folders do not exist yet.
+
 ## [0.2.11] - 2026-10-20
 
 - When every selected file and requested handoff verifies, ignored AppleDouble metadata stays out of normal warnings and counts. PDFs show selected files with a small disclosure; details and CSV/JSON keep the full exclusion list. Real problems still need attention.

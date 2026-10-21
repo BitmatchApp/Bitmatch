@@ -54,7 +54,7 @@ IOS_SIMULATOR_DESTINATION='platform=iOS Simulator,name=iPad (A16)' bash test.sh 
 bash test.sh release-builds  # macOS and iOS simulator Release builds
 ```
 
-`ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to reuse a build folder (default `.derived-data/`).
+`ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to choose a build folder; the default temporary location is described below.
 
 The Mac and iOS test jobs request serial execution with `-parallel-testing-enabled NO`; the engine uses `--no-parallel`. This reduces contention between independent tests that share the main actor or use real temporary files. Tests still exercise their own concurrent copy, verification and cancellation work. Keep assertion deadlines unchanged, and record failed runs separately from passing reruns.
 

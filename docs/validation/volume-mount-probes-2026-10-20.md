@@ -13,7 +13,7 @@ Two deliberate production regressions were observed:
 - Moving snapshot enumeration back onto the main actor failed the bounded responsiveness assertion in the earlier 20-test suite. An independent release watchdog prevented a permanent hang. The service was then restored byte-for-byte.
 - Removing the scheduler's serial-group eligibility check failed `differentKeysInOneSerialGroupWaitWhileHealthyGroupBypasses` in the final 22-test suite. The service was restored byte-for-byte. The preceding final green run and this red run are retained separately.
 
-An earlier combined Mac run passed 1,404 tests, skipped 33 and failed none. That run predates the serial-group follow-up; it is not the final full-suite gate for this patch. An independent read-only review of the final scheduler and source identity changes found no actionable issue. Final combined Mac/iOS gates remain pending at this record's revision.
+The final combined Mac run passed 1,411 tests, skipped 34 and failed none (1,445 total), after both mutations were restored. The generic iPhone/iPad simulator build also succeeded for arm64 and x86_64. An earlier 1,404-pass/33-skip Mac result predates the serial-group follow-up and remains separate evidence. An independent read-only review of the final scheduler and source identity changes found no actionable issue. These are app-host and build gates; native/signed-app and physical card checks remain open.
 
 Two initial compile failures in integration were corrected before these runs: optional Boolean continuation typing and an existing test that now needed to await asynchronous reconciliation. Source-model tests use dedicated monitors so separate latest-selection requests cannot supersede one another across tests.
 
