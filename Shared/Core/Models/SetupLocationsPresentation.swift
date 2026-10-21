@@ -8,12 +8,7 @@ import BitMatchEngine
 /// the primary label.
 nonisolated enum DestinationIdentityPresentation {
     static func title(for url: URL) -> String {
-        let components = url.standardizedFileURL.pathComponents
-        if let volumes = components.firstIndex(of: "Volumes"), volumes + 1 < components.count {
-            return components[volumes + 1]
-        }
-        let reportedName = (try? url.resourceValues(forKeys: [.volumeNameKey]))?.volumeName
-        return title(for: url, reportedVolumeName: reportedName)
+        title(for: url, reportedVolumeName: nil)
     }
 
     static func title(for url: URL, reportedVolumeName: String?) -> String {
@@ -143,6 +138,7 @@ struct SetupLocationsPresentation: Equatable {
         omitsSourceSize: Bool = false,
         stagedSources: [StagedSource] = [],
         destinationURLs: [URL],
+        destinationNames: [URL: String] = [:],
         capacity: (URL) -> Capacity?,
         isOperationInProgress: Bool,
         keepsComposerEditableDuringOperation: Bool = false,
@@ -167,7 +163,8 @@ struct SetupLocationsPresentation: Equatable {
             source: source,
             stagedSources: stagedSources,
             backups: destinationURLs.map { url in
-                let title = DestinationIdentityPresentation.title(for: url)
+                let title = destinationNames[url]
+                    ?? DestinationIdentityPresentation.title(for: url, reportedVolumeName: nil)
                 return Backup(
                     url: url,
                     title: title,
@@ -279,8 +276,8 @@ enum SetupQueueDifferencePolicy {
         mode: VerificationMode
     ) -> SetupQueueDifference {
         SetupQueueDifference(
-            destinations: Set(firstDestinations.map(BackupTargetPolicy.canonicalPath))
-                != Set(destinations.map(BackupTargetPolicy.canonicalPath)),
+            destinations: Set(firstDestinations.map { $0.standardizedFileURL.path })
+                != Set(destinations.map { $0.standardizedFileURL.path }),
             verificationMode: firstMode != mode
         )
     }

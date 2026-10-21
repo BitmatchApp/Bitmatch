@@ -2,6 +2,14 @@
 
 This records local reliability work branched from `main` at `0a50ee5c` on October 20. Source changes and this note are unmerged. The evidence distinguishes passing checks from failing, blocked, and still-running work; it does not complete the blocked-drive TODO.
 
+## Later status and reboot handoff
+
+The table below preserves the earlier overnight runs. Subsequent work reached local PDF candidate `1f73beba`: the final Mac suite passed 1,435 tests with 35 skips and no failures, and the generic iPhone/iPad app build passed. A fresh nine-operation physical engine matrix and one small app-host SD-to-two-SSD workflow also passed. The latter wrapper falsely rejected Xcode’s `TEST EXECUTE SUCCEEDED` wording despite a one-test passing result and complete trial/artifact checks; receipt correction remains pending. The earlier permission block still applies to the unexecuted 119.6 GB actual-app workload, not every app-level drive check.
+
+See the [later report/physical validation record](report-memory-2026-10-21.md) and [merge checklist](report-memory-review-2026-10-21.md) for exact results, source boundaries and remaining checks. The later passes do not explain the earlier Thorough rejection or resolve field reports #10/#23.
+
+The Mac reboot removed temporary runners, progress records and host-side artifacts. The external build image and closed-evidence archive were confirmed present, but their contents and remaining fixtures have not been revalidated. Earlier statements below that evidence “remains available” describe the pre-reboot state. Recovery is pending; no drive access, build or test was restarted for this documentation pass. Mike has limited current work to small source reads and documentation while using the Mac on set. No merge or release.
+
 ## Source slices
 
 - `BitMatch/Core/Services/VolumeMonitorService.swift` moves mounted-volume snapshots, per-mount analysis, and live identity checks behind a bounded scheduler. It caps active probes at two, waiting work at eight, coalesces mount snapshots, and serializes probes that touch the same lexical mount. Held-probe tests show MainActor responsiveness, a healthy second-mount path, and stale-identity rejection. A blocked kernel call retains its worker slot until the OS returns; timeouts do not cancel it.
@@ -57,7 +65,7 @@ Host free space fell below the 50 GiB external-build floor during earlier pauses
 
 ## Probe runner review and cleanup
 
-The physical app probe now has a tracked wrapper and receipt validator that reject skipped/vacuous Xcode success, mismatched workload and hash/count evidence, and incomplete cleanup. Workload flags are replaced explicitly so a smoke invocation cannot inherit the large opt-in. The probe also requires all eight selected basenames in PDF text. Nine stubbed physical-wrapper cases and seven History-wrapper cases passed in the 67-test script suite; these are runner checks only. The actual physical app run remains permission-blocked. The PDF assertion compiled in the passing full Mac gate, but its opt-in physical workflow did not run. History scratch containment also passed two ordinary app tests and the actual 500-attempt probe. The original shell wrapper failed both corrected symlink-escape controls; restored source passed.
+The physical app probe now has a tracked wrapper and receipt validator that reject skipped/vacuous Xcode success, mismatched workload and hash/count evidence, and incomplete cleanup. Workload flags are replaced explicitly so a smoke invocation cannot inherit the large opt-in. The probe also requires all eight selected basenames in PDF text. Nine stubbed physical-wrapper cases and seven History-wrapper cases passed in the 67-test script suite; these are runner checks only. At that point the physical app run remained permission-blocked: the PDF assertion compiled, but the opt-in physical workflow had not run. The later small app-host result and its limits are recorded above. History scratch containment also passed two ordinary app tests and the actual 500-attempt probe. The original shell wrapper failed both corrected symlink-escape controls; restored source passed.
 
 The physical engine tests above lacked a private diagnostic-store override and could write synthetic events into the default unsandboxed application-support ring. This was not measured, and does not establish that the signed app's separate container was affected. A separate test-only candidate scopes future pipeline, MHL and Check diagnostics to retained private scratch evidence. Existing logs and saved transfer history are not changed by that correction.
 

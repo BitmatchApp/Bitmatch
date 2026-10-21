@@ -34,7 +34,7 @@ struct MainScreenQueueTests {
         coordinator.reportSettings.makeReport = false
         let backups = coordinator.destinationURLs
 
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
 
         let record = try #require(coordinator.transferJournal.records.first)
         #expect(record.verificationMode == .paranoid)
@@ -60,7 +60,7 @@ struct MainScreenQueueTests {
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
         #expect(await waitUntil { coordinator.canEnqueueSelection })
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let id = try #require(coordinator.transferJournal.records.first?.id)
         try coordinator.transferJournal.markRunning(id: id)
         let result = ResultRow(
@@ -95,7 +95,7 @@ struct MainScreenQueueTests {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let finishedID = try #require(coordinator.transferJournal.records.first?.id)
         try coordinator.transferJournal.markRunning(id: finishedID)
         try coordinator.transferJournal.finish(
@@ -166,7 +166,7 @@ struct MainScreenQueueTests {
         coordinator.reportSettings.makeReport = false
         coordinator.generateASCMHL = false
 
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         #expect(!coordinator.queueSessionStarted)
         let firstID = try #require(coordinator.stagedSetupTransfers.first?.id)
         let secondCard = fixture.folders.root.appendingPathComponent("second-card", isDirectory: true)
@@ -175,7 +175,7 @@ struct MainScreenQueueTests {
         coordinator.sourceURL = secondCard
         #expect(await waitUntil { !coordinator.isAnalysingSource })
 
-        try coordinator.startSetupTransfers()
+        _ = try await coordinator.startSetupTransfersPrepared()
 
         #expect(coordinator.transferJournal.records.count == 2)
         let finalID = try #require(coordinator.transferJournal.records.first { $0.id != firstID }?.id)
@@ -197,7 +197,8 @@ struct MainScreenQueueTests {
         coordinator.reportSettings.makeReport = false
         coordinator.generateASCMHL = false
 
-        let committedID = try #require(try coordinator.startSetupTransfers())
+        let committedMaybe = try await coordinator.startSetupTransfersPrepared()
+        let committedID = try #require(committedMaybe)
 
         #expect(coordinator.queuePresentation.rows.contains { $0.id == committedID })
         #expect(coordinator.sourceURL == nil)
@@ -212,9 +213,9 @@ struct MainScreenQueueTests {
         let coordinator = fixture.coordinator
         coordinator.reportSettings.makeReport = false
         coordinator.generateASCMHL = false
-        let stagedID = try coordinator.enqueueSelection()
+        let stagedID = try await coordinator.enqueueSelectionPrepared()
 
-        let committedID = try coordinator.startSetupTransfers()
+        let committedID = try await coordinator.startSetupTransfersPrepared()
 
         #expect(committedID == nil)
         #expect(coordinator.queuePresentation.rows.contains { $0.id == stagedID })
@@ -231,7 +232,7 @@ struct MainScreenQueueTests {
         coordinator.sourceURL = nil
 
         do {
-            _ = try coordinator.startSetupTransfers()
+            _ = try await coordinator.startSetupTransfersPrepared()
             Issue.record("Expected an empty setup batch to be rejected")
         } catch let error as FileOperationError {
             guard case .unsafeOperation(let message) = error else {
@@ -250,7 +251,7 @@ struct MainScreenQueueTests {
         coordinator.cameraLabelSettings.label = "Original label"
         coordinator.reportSettings.operatorName = "Alex"
         coordinator.reportSettings.notes = "Keep original notes"
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let id = try #require(coordinator.stagedSetupTransfers.first?.id)
         let originalDestinations = coordinator.destinationURLs
         let secondSource = fixture.folders.root.appendingPathComponent("second-card", isDirectory: true)
@@ -258,10 +259,10 @@ struct MainScreenQueueTests {
         try Data("second".utf8).write(to: secondSource.appendingPathComponent("C.ARW"))
         coordinator.sourceURL = secondSource
         #expect(await waitUntil { !coordinator.isAnalysingSource })
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let originalOrder = coordinator.stagedSetupTransfers.map(\.id)
 
-        try coordinator.editSetupTransfer(id)
+        try await coordinator.editSetupTransferPrepared(id: id)
         coordinator.destinationURLs = [fixture.folders.primary]
         coordinator.verificationMode = .paranoid
         coordinator.reportSettings.notes = "Discarded edit"
@@ -275,7 +276,7 @@ struct MainScreenQueueTests {
         let replacementSource = fixture.folders.root.appendingPathComponent("replacement-card", isDirectory: true)
         try FileManager.default.createDirectory(at: replacementSource, withIntermediateDirectories: true)
         try Data("replacement".utf8).write(to: replacementSource.appendingPathComponent("B.ARW"))
-        try coordinator.editSetupTransfer(id)
+        try await coordinator.editSetupTransferPrepared(id: id)
         coordinator.sourceURL = replacementSource
         coordinator.destinationURLs = [fixture.folders.secondary]
         coordinator.verificationMode = .thorough
@@ -284,7 +285,7 @@ struct MainScreenQueueTests {
         coordinator.reportSettings.makeReport = false
         #expect(await waitUntil { !coordinator.isAnalysingSource })
 
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
 
         #expect(coordinator.stagedSetupTransfers.count == 2)
         #expect(coordinator.stagedSetupTransfers.map(\.id) == originalOrder)
@@ -309,7 +310,9 @@ struct MainScreenQueueTests {
         try FileManager.default.moveItem(at: selected, to: fixture.folders.root.appendingPathComponent("original-moved"))
         try FileManager.default.createDirectory(at: selected, withIntermediateDirectories: true)
         try Data("replacement".utf8).write(to: selected.appendingPathComponent("replacement.bin"))
-        #expect(throws: (any Error).self) { try fixture.coordinator.enqueueSelection() }
+        await #expect(throws: (any Error).self) {
+            try await fixture.coordinator.enqueueSelectionPrepared()
+        }
         #expect(fixture.coordinator.transferJournal.records.isEmpty)
         await fixture.coordinator.startOperation()
         #expect(await fixture.operations.starts.isEmpty)
@@ -320,14 +323,14 @@ struct MainScreenQueueTests {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let id = try #require(coordinator.stagedSetupTransfers.first?.id)
         let source = fixture.folders.source
         try FileManager.default.moveItem(at: source, to: fixture.folders.root.appendingPathComponent("original-moved"))
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try Data("replacement".utf8).write(to: source.appendingPathComponent("replacement.mov"))
         do {
-            try coordinator.editSetupTransfer(id)
+            try await coordinator.editSetupTransferPrepared(id: id)
             let loaded = try #require(coordinator.sourceURL)
             #expect(loaded != source)
         } catch {
@@ -341,14 +344,16 @@ struct MainScreenQueueTests {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
         let coordinator = fixture.coordinator
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let id = try #require(coordinator.stagedSetupTransfers.first?.id)
-        try coordinator.editSetupTransfer(id)
+        try await coordinator.editSetupTransferPrepared(id: id)
         #expect(await waitUntil { !coordinator.isAnalysingSource })
         let original = try #require(coordinator.transferJournal.records.first { $0.id == id })
         try FileManager.default.moveItem(at: fixture.folders.primary, to: fixture.folders.root.appendingPathComponent("old-backup"))
         try FileManager.default.createDirectory(at: fixture.folders.primary, withIntermediateDirectories: true)
-        #expect(throws: (any Error).self) { try coordinator.enqueueSelection() }
+        await #expect(throws: (any Error).self) {
+            try await coordinator.enqueueSelectionPrepared()
+        }
         #expect(coordinator.editingSetupTransferID == id)
         #expect(coordinator.transferJournal.records.first { $0.id == id }?.destinations.first?.resourceID == original.destinations.first?.resourceID)
         coordinator.cancelSetupTransferEdit()
@@ -359,7 +364,7 @@ struct MainScreenQueueTests {
     @Test func waitingCardCanBeEditedWhileAnotherRunIsActive() async throws {
         let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
         let coordinator = fixture.coordinator
-        try coordinator.enqueueSelection()
+        _ = try await coordinator.enqueueSelectionPrepared()
         let waitingID = try #require(coordinator.stagedSetupTransfers.first?.id)
 
         let runningSource = fixture.folders.root.appendingPathComponent("running-card", isDirectory: true)
@@ -370,7 +375,7 @@ struct MainScreenQueueTests {
         let run = Task { await coordinator.startOperation() }
         #expect(await waitUntil { await fixture.operations.starts.count == 1 })
 
-        try coordinator.editSetupTransfer(waitingID)
+        try await coordinator.editSetupTransferPrepared(id: waitingID)
 
         #expect(coordinator.editingSetupTransferID == waitingID)
         #expect(coordinator.sourceURL?.resolvingSymlinksInPath() == fixture.folders.source.resolvingSymlinksInPath())
@@ -402,7 +407,9 @@ struct MainScreenQueueTests {
         let inside = source.appendingPathComponent("backup")
         try FileManager.default.createDirectory(at: inside, withIntermediateDirectories: true)
         coordinator.destinationURLs = [inside]
-        #expect(throws: FileOperationError.self) { try coordinator.enqueueSelection() }
+        await #expect(throws: FileOperationError.self) {
+            try await coordinator.enqueueSelectionPrepared()
+        }
         #expect(coordinator.sourceURL == source)
         #expect(coordinator.destinationURLs == [inside])
         #expect(coordinator.transferJournal.records.isEmpty)
@@ -423,7 +430,9 @@ struct MainScreenQueueTests {
         let fixture = try await SharedProjectFixture.make(corruptJournal: true, prepareCard: false)
         defer { fixture.folders.cleanup() }
         let backups = fixture.coordinator.destinationURLs
-        #expect(throws: (any Error).self) { try fixture.coordinator.enqueueSelection() }
+        await #expect(throws: (any Error).self) {
+            try await fixture.coordinator.enqueueSelectionPrepared()
+        }
         #expect(fixture.coordinator.sourceURL == fixture.folders.source)
         #expect(fixture.coordinator.destinationURLs == backups)
         #expect(fixture.coordinator.transferJournal.records.isEmpty)
@@ -453,7 +462,9 @@ struct MainScreenQueueTests {
         let fixture = try await SharedProjectFixture.make()
         defer { fixture.folders.cleanup() }
         #expect(!fixture.coordinator.canEnqueueSelection)
-        #expect(throws: FileOperationError.self) { try fixture.coordinator.enqueueSelection() }
+        await #expect(throws: FileOperationError.self) {
+            try await fixture.coordinator.enqueueSelectionPrepared()
+        }
         #expect(fixture.coordinator.transferJournal.records.isEmpty)
     }
 

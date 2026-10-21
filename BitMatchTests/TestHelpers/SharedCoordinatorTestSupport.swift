@@ -252,6 +252,7 @@ final class SharedProjectFixture {
                 && !coordinator.isFolderInfoLoading(for: folders.source)
                 && !coordinator.appleDoubleSelection.isReviewing
                 && !coordinator.isAnalysingSource
+                && coordinator.transferReadiness.isReady
         }
     }
 

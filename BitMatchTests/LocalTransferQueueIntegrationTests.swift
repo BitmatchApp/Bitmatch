@@ -314,8 +314,17 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         coordinator.reportSettings = ReportPrefs(makeReport: true)
         coordinator.generateASCMHL = false
 
+        let setupReady = await waitUntil(timeout: .seconds(5)) { @MainActor in
+            coordinator.sourceFolderInfo?.url == f.source
+                && !coordinator.isFolderInfoLoading(for: f.source)
+                && !coordinator.isAnalysingSource
+                && !coordinator.isPreparingTransferSetup
+                && coordinator.transferReadiness.isReady
+        }
+        XCTAssertTrue(setupReady, "The selected source scan and transfer setup must finish before the direct run starts")
+
         let directTask = Task { await coordinator.startOperation() }
-        let directStarted = await waitUntil { await operations.starts.count == 1 }
+        let directStarted = await waitUntil(timeout: .seconds(5)) { await operations.starts.count == 1 }
         XCTAssertTrue(directStarted)
         let directID = try XCTUnwrap(coordinator.activeRunContext?.journalRecordID)
 
@@ -1650,6 +1659,10 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 summary: isSafe ? "Verified" : "Mismatch", hadIssues: !isSafe
             )
         }
+        let availabilitySettled = await waitUntil {
+            Set([firstID, secondID]).isSubset(of: Set(coordinator.queuePresentation.ejectableCardIDs))
+        }
+        XCTAssertTrue(availabilitySettled, "Only confirmed original sources offer Eject")
         let recorder = EjectRecorder()
 
         let error = await coordinator.ejectAllSafeQueueSources { url in
@@ -1657,6 +1670,11 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             return url.resolvingSymlinksInPath() == second.resolvingSymlinksInPath() ? "Drive is busy" : nil
         }
 
+        let presentationSettled = await waitUntil {
+            coordinator.queuePresentation.rows.first { $0.id == firstID }?.action == .ejected
+                && coordinator.queuePresentation.rows.first { $0.id == secondID }?.action == .eject
+        }
+        XCTAssertTrue(presentationSettled)
         let recordedURLs = await recorder.urls
         let attempted = recordedURLs.map { $0.resolvingSymlinksInPath() }
         XCTAssertEqual(attempted, [f.source.resolvingSymlinksInPath(), second.resolvingSymlinksInPath()])

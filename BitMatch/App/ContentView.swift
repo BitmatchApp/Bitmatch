@@ -92,6 +92,7 @@ struct MacMainView: View {
     @State private var dropRejectionMessage = ""
     @State private var transitioningQueueID: UUID?
     @State private var queueTransitionClearTask: Task<Void, Never>?
+    @State private var queueAdmissionTask: Task<Void, Never>?
     @Namespace private var queueTransition
     /// Cancel asks once (thesis decision), from the button or ⌘.
     @State private var confirmingTransferCancel = false
@@ -543,7 +544,8 @@ struct MacMainView: View {
         QueueTransferTransitionContext(
             namespace: queueTransition,
             activeID: $transitioningQueueID,
-            perform: performQueueTransition
+            perform: performQueueTransition,
+            performCompleted: performCompletedQueueTransition
         )
     }
 
@@ -561,7 +563,39 @@ struct MacMainView: View {
         // shared matched-text transition stays off here.
         withAnimation(animation) {
             committedID = operation()
+            if let committedID { transitioningQueueID = committedID }
         }
+        guard let committedID else { return }
+        finishQueueTransition(
+            committedID,
+            reduceMotion: reduceMotion,
+            previousEditingID: previousEditingID
+        )
+    }
+
+    private func performCompletedQueueTransition(
+        reduceMotion: Bool,
+        previousEditingID: UUID?,
+        committedID: UUID
+    ) {
+        queueTransitionClearTask?.cancel()
+        let animation: Animation = reduceMotion
+            ? .easeInOut(duration: 0.18)
+            : .spring(duration: 0.4, bounce: 0.18)
+        // The async preparation is complete before the matched transition begins.
+        withAnimation(animation) { transitioningQueueID = committedID }
+        finishQueueTransition(
+            committedID,
+            reduceMotion: reduceMotion,
+            previousEditingID: previousEditingID
+        )
+    }
+
+    private func finishQueueTransition(
+        _ committedID: UUID,
+        reduceMotion: Bool,
+        previousEditingID: UUID?
+    ) {
         if !reduceMotion, previousEditingID == nil,
            let id = coordinator.editingSetupTransferID,
            let from = queueRowFrames[id], let to = composerFrame,
@@ -578,7 +612,6 @@ struct MacMainView: View {
                 withAnimation(.easeOut(duration: 0.12)) { queueFlight = nil }
             }
         }
-        guard committedID != nil else { return }
         queueTransitionClearTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
@@ -742,13 +775,7 @@ struct MacMainView: View {
                     let presentation = SetupPresentation.make(coordinator: coordinator)
                     guard presentation.start.canStart else { return }
                     if presentation.start.action == .addToQueue {
-                        performQueueTransition(reduceMotion: reduceMotion) {
-                            do { return try coordinator.enqueueSelection() }
-                            catch {
-                                Task { await coordinator.showError(error) }
-                                return nil
-                            }
-                        }
+                        enqueueSelectionPrepared()
                         return
                     }
                     if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
@@ -756,13 +783,7 @@ struct MacMainView: View {
                         hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
                         isOperationInProgress: coordinator.isOperationInProgress
                     ) {
-                        performQueueTransition(reduceMotion: reduceMotion) {
-                            do { return try coordinator.startSetupTransfers() }
-                            catch {
-                                Task { await coordinator.showError(error) }
-                                return nil
-                            }
-                        }
+                        startSetupTransfersPrepared()
                     } else {
                         Task { await coordinator.startCurrentMode() }
                     }
@@ -803,6 +824,43 @@ struct MacMainView: View {
             .onReceive(NotificationCenter.default.publisher(for: .clearTestData)) { _ in
                 coordinator.resetForNewOperation()
             }
+    }
+
+    private func enqueueSelectionPrepared() {
+        guard queueAdmissionTask == nil else { return }
+        let previousEditingID = coordinator.editingSetupTransferID
+        queueAdmissionTask = Task { @MainActor in
+            defer { queueAdmissionTask = nil }
+            do {
+                let id = try await coordinator.enqueueSelectionPrepared()
+                performCompletedQueueTransition(
+                    reduceMotion: reduceMotion,
+                    previousEditingID: previousEditingID,
+                    committedID: id
+                )
+            } catch {
+                await coordinator.showError(error)
+            }
+        }
+    }
+
+    private func startSetupTransfersPrepared() {
+        guard queueAdmissionTask == nil else { return }
+        let previousEditingID = coordinator.editingSetupTransferID
+        queueAdmissionTask = Task { @MainActor in
+            defer { queueAdmissionTask = nil }
+            do {
+                if let id = try await coordinator.startSetupTransfersPrepared() {
+                    performCompletedQueueTransition(
+                        reduceMotion: reduceMotion,
+                        previousEditingID: previousEditingID,
+                        committedID: id
+                    )
+                }
+            } catch {
+                await coordinator.showError(error)
+            }
+        }
     }
 }
 

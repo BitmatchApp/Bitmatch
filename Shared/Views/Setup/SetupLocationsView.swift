@@ -6,11 +6,13 @@ struct SetupLocationsActions {
     var pickSource: () -> Void
     var clearSource: () -> Void
     var addAnotherCard: () -> UUID?
+    var addAnotherCardAsync: (@MainActor () async -> UUID?)? = nil
     var chooseConnectedSource: (URL) -> Void
     var chooseFolderOnSource: (URL) -> Void
     var chooseConnectedBackup: (URL) -> Void
     var chooseFolderOnBackup: (URL) -> Void
     var editStagedCard: (UUID) -> Bool
+    var editStagedCardAsync: (@MainActor (UUID) async -> UUID?)? = nil
     var cancelEdit: () -> Void
     var moveStagedCard: (UUID, Int) -> Void
     var removeStagedCard: (UUID) -> Void
@@ -30,6 +32,7 @@ struct QueueTransferTransitionContext {
     let namespace: Namespace.ID
     let activeID: Binding<UUID?>
     let perform: (_ reduceMotion: Bool, _ operation: @escaping () -> UUID?) -> Void
+    var performCompleted: ((_ reduceMotion: Bool, _ previousEditingID: UUID?, _ committedID: UUID) -> Void)? = nil
 }
 
 /// The shared transfer composer. Accent colour means selected; green remains
@@ -55,6 +58,8 @@ struct SetupLocationsView: View {
     @State private var selectedQueueID: UUID?
     @State private var transitioningQueueID: UUID?
     @State private var transitionClearTask: Task<Void, Never>?
+    @State private var composerActionTask: Task<Void, Never>?
+    @State private var isComposerActionInFlight = false
     @FocusState private var focusedQueueID: UUID?
     @Namespace private var queueTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -528,10 +533,13 @@ struct SetupLocationsView: View {
         HStack(spacing: 8) {
             if editingID != nil {
                 Button("Cancel", action: actions.cancelEdit).keyboardShortcut(.cancelAction)
+                    .disabled(isComposerActionInFlight)
             }
-            Button(editingID == nil ? "Add to queue" : "Update", action: addOrUpdate)
+            Button(isComposerActionInFlight
+                   ? (editingID == nil ? "Adding…" : "Updating…")
+                   : (editingID == nil ? "Add to queue" : "Update"), action: addOrUpdate)
                 .buttonStyle(.bordered)
-                .disabled(!presentation.canAddAnotherCard)
+                .disabled(!presentation.canAddAnotherCard || isComposerActionInFlight)
                 .accessibilityHint(presentation.canAddAnotherCard
                     ? "Saves this card and its current destinations and settings"
                     : presentation.addAnotherCardDisabledReason ?? "This card is not ready")
@@ -620,7 +628,7 @@ struct SetupLocationsView: View {
             Button("Edit") { edit(item.id) }
                 .buttonStyle(.borderless)
                 .foregroundStyle(Color.accentColor)
-                .disabled(editingID != nil)
+                .disabled(editingID != nil || isComposerActionInFlight)
                 .help("Load \(item.title) into the setup above to change it")
         }
         .font(.subheadline)
@@ -681,35 +689,63 @@ struct SetupLocationsView: View {
     }
 
     private func addOrUpdate() {
-        performTransition { actions.addAnotherCard() }
+        guard !isComposerActionInFlight else { return }
+        isComposerActionInFlight = true
+        let wasEditingID = editingID
+        composerActionTask = Task { @MainActor in
+            defer {
+                isComposerActionInFlight = false
+                composerActionTask = nil
+            }
+            let id: UUID?
+            if let addAsync = actions.addAnotherCardAsync {
+                id = await addAsync()
+            } else {
+                id = actions.addAnotherCard()
+            }
+            guard let id else { return }
+            performCompletedTransition(to: id, previousEditingID: wasEditingID)
+        }
     }
 
     private func edit(_ id: UUID) {
-        performTransition { actions.editStagedCard(id) ? id : nil }
+        guard !isComposerActionInFlight else { return }
+        isComposerActionInFlight = true
+        let wasEditingID = editingID
+        composerActionTask = Task { @MainActor in
+            defer {
+                isComposerActionInFlight = false
+                composerActionTask = nil
+            }
+            let selectedID: UUID?
+            if let editAsync = actions.editStagedCardAsync {
+                selectedID = await editAsync(id)
+            } else {
+                selectedID = actions.editStagedCard(id) ? id : nil
+            }
+            guard let selectedID else { return }
+            performCompletedTransition(to: selectedID, previousEditingID: wasEditingID)
+        }
     }
 
-    private func performTransition(_ operation: @escaping () -> UUID?) {
+    private func performCompletedTransition(to id: UUID, previousEditingID: UUID?) {
+        if let performCompleted = transferTransitionContext?.performCompleted {
+            performCompleted(reduceMotion, previousEditingID, id)
+            return
+        }
         if let transferTransitionContext {
-            transferTransitionContext.perform(reduceMotion, operation)
+            transferTransitionContext.perform(reduceMotion) { id }
             return
         }
         transitionClearTask?.cancel()
         let animation: Animation = reduceMotion
             ? .easeInOut(duration: 0.18)
             : .spring(duration: 0.4, bounce: 0.18)
-        var committedID: UUID?
-        withAnimation(animation) {
-            committedID = operation()
-            guard let id = committedID else { return }
-            transitioningQueueID = id
-        }
-        guard committedID != nil else { return }
+        withAnimation(animation) { transitioningQueueID = id }
         transitionClearTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
-            await MainActor.run {
-                transitioningQueueID = nil
-            }
+            await MainActor.run { transitioningQueueID = nil }
         }
     }
 

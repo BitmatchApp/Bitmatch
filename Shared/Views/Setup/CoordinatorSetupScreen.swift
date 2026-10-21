@@ -20,17 +20,21 @@ extension SetupPresentation {
         let jobs = coordinator.photographerJobViewModel
         let stagedTransfers = coordinator.stagedSetupTransfers
         let isEditingStagedTransfer = coordinator.editingSetupTransferID != nil
-        let composerDestinationNames = coordinator.destinationURLs.map {
-            DestinationIdentityPresentation.title(for: $0)
+        let composerDestinationNames = coordinator.destinationURLs.enumerated().map { index, url in
+            let preparedName = coordinator.destinationVolumeNames.indices.contains(index)
+                ? coordinator.destinationVolumeNames[index] : nil
+            return DestinationIdentityPresentation.title(for: url, reportedVolumeName: preparedName)
         }
         let composerDestinationIdentities = coordinator.destinationURLs.map {
-            BackupTargetPolicy.canonicalPath($0)
+            $0.standardizedFileURL.path
         }
         let stagedDestinationNames = stagedTransfers.map { record in
             if record.id == coordinator.editingSetupTransferID {
                 return composerDestinationNames
             }
-            return record.destinations.map { DestinationIdentityPresentation.title(for: $0.url) }
+            return record.destinations.map {
+                DestinationIdentityPresentation.title(for: $0.url, reportedVolumeName: nil)
+            }
         }
         let stagedVerificationModes = stagedTransfers.map { record in
             record.id == coordinator.editingSetupTransferID ? coordinator.verificationMode : record.verificationMode
@@ -39,7 +43,7 @@ extension SetupPresentation {
             if record.id == coordinator.editingSetupTransferID {
                 return composerDestinationIdentities
             }
-            return record.destinations.map { BackupTargetPolicy.canonicalPath($0.url) }
+            return record.destinations.map { $0.url.standardizedFileURL.path }
         }
         let hasPreparedCard = jobs.hasPreparedIngestAwaitingStart
         let independence = coordinator.destinationIndependence
@@ -87,6 +91,7 @@ extension SetupPresentation {
 struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelContent: View, ProjectEvidence: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var optionsExpanded: Bool
+    @State private var queueAdmissionTask: Task<Void, Never>?
     private let usesBottomActions: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let transferTransitionContext: QueueTransferTransitionContext?
@@ -147,7 +152,12 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     }
 
     private var actions: SetupActions {
-        CoordinatorSetupActions.make(coordinator: coordinator, performQueueTransition: performQueueTransition)
+        CoordinatorSetupActions.make(
+            coordinator: coordinator,
+            enqueueSelection: enqueueSelectionPrepared,
+            startSetupTransfers: startSetupTransfersPrepared,
+            performQueueTransition: performQueueTransition
+        )
     }
 
     private func performQueueTransition(_ operation: @escaping () -> UUID?) {
@@ -160,6 +170,38 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
             _ = operation()
         }
     }
+
+    private func enqueueSelectionPrepared() {
+        guard queueAdmissionTask == nil else { return }
+        let previousEditingID = coordinator.editingSetupTransferID
+        queueAdmissionTask = Task { @MainActor in
+            defer { queueAdmissionTask = nil }
+            do {
+                let id = try await coordinator.enqueueSelectionPrepared()
+                if let performCompleted = transferTransitionContext?.performCompleted {
+                    performCompleted(reduceMotion, previousEditingID, id)
+                }
+            } catch {
+                await coordinator.showError(error)
+            }
+        }
+    }
+
+    private func startSetupTransfersPrepared() {
+        guard queueAdmissionTask == nil else { return }
+        let previousEditingID = coordinator.editingSetupTransferID
+        queueAdmissionTask = Task { @MainActor in
+            defer { queueAdmissionTask = nil }
+            do {
+                if let id = try await coordinator.startSetupTransfersPrepared(),
+                   let performCompleted = transferTransitionContext?.performCompleted {
+                    performCompleted(reduceMotion, previousEditingID, id)
+                }
+            } catch {
+                await coordinator.showError(error)
+            }
+        }
+    }
 }
 
 /// One Start action for inline Mac controls and the mobile bottom bar. Recheck
@@ -168,6 +210,8 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
 enum CoordinatorSetupActions {
     static func make(
         coordinator: SharedAppCoordinator,
+        enqueueSelection: (() -> Void)? = nil,
+        startSetupTransfers: (() -> Void)? = nil,
         performQueueTransition: @escaping (@escaping () -> UUID?) -> Void = { _ = $0() }
     ) -> SetupActions {
         return SetupActions(
@@ -180,11 +224,16 @@ enum CoordinatorSetupActions {
                 let presentation = SetupPresentation.make(coordinator: coordinator)
                 guard presentation.start.canStart else { return }
                 if presentation.start.action == .addToQueue {
-                    performQueueTransition {
-                        do { return try coordinator.enqueueSelection() }
-                        catch {
-                            Task { await coordinator.showError(error) }
-                            return nil
+                    if let enqueueSelection {
+                        enqueueSelection()
+                    } else {
+                        // Compatibility path for synchronous callers and tests.
+                        performQueueTransition {
+                            do { return try coordinator.enqueueSelection() }
+                            catch {
+                                Task { await coordinator.showError(error) }
+                                return nil
+                            }
                         }
                     }
                     return
@@ -195,6 +244,10 @@ enum CoordinatorSetupActions {
                     hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
                     isOperationInProgress: coordinator.isOperationInProgress
                 ) {
+                    if let startSetupTransfers {
+                        startSetupTransfers()
+                        return
+                    }
                     performQueueTransition {
                         do { return try coordinator.startSetupTransfers() }
                         catch {

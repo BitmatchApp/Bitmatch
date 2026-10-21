@@ -233,6 +233,24 @@ struct SetupLocationsPresentationTests {
         ) == "Folder: bitmatch-destination")
     }
 
+    @Test func setupUsesPreparedDestinationNameForNonVolumePath() {
+        let destination = URL(fileURLWithPath: "/tmp/bitmatch-destination/Jobs", isDirectory: true)
+        let presentation = SetupLocationsPresentation.make(
+            sourceURL: nil,
+            sourceFileCount: nil,
+            sourceBytes: nil,
+            isAnalysingSource: false,
+            cameraName: nil,
+            destinationURLs: [destination],
+            destinationNames: [destination: "Studio RAID"],
+            capacity: { _ in nil },
+            isOperationInProgress: false,
+            nextStep: nil,
+            layout: .compact
+        )
+        #expect(presentation.backups.first?.title == "Studio RAID")
+    }
+
     @Test func backupShowsHowMuchMoreSpaceItNeeds() {
         let presentation = SetupLocationsPresentation.make(
             sourceURL: card,

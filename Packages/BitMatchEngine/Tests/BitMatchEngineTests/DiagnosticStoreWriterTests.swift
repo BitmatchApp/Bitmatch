@@ -137,6 +137,11 @@ final class DiagnosticStoreWriterTests: XCTestCase {
         XCTAssertEqual((exported["events"] as? [[String: Any]])?.compactMap { $0["code"] as? Int }, [8])
         XCTAssertEqual(exported["snapshotUnavailable"] as? Bool, false)
         XCTAssertEqual(exported["recordingHadErrors"] as? Bool, true, "Another instance must disclose the dropped event")
+        XCTAssertEqual(exported["recordingFailureDetailAvailable"] as? Bool, true)
+        XCTAssertEqual(exported["recordingFailureDetailSource"] as? String, "persistedMarker")
+        let detail = try XCTUnwrap(exported["recordingFailureDetail"] as? [String: Any])
+        XCTAssertEqual(detail["stage"] as? String, "directoryLock")
+        XCTAssertEqual(detail["code"] as? Int, Int(EWOULDBLOCK))
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".recording-error")).count, 0)
     }
 #endif

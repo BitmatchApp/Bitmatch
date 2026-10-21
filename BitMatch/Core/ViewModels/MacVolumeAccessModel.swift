@@ -14,6 +14,39 @@ import BitMatchEngine
 import AppKit
 #endif
 
+/// A scope is started on the drive worker and transferred to the view model
+/// only after the request is still current. Dropping a stale result releases it.
+private final class MacSecurityScopeLease: @unchecked Sendable {
+    let url: URL
+    let didStart: Bool
+    let isVolumesDirectory: Bool
+
+    init(startingAccessTo url: URL) {
+        self.url = url
+        didStart = url.startAccessingSecurityScopedResource()
+        isVolumesDirectory = DriveAccessPolicy.isVolumesPath(url.path)
+    }
+
+    deinit {
+        if didStart { url.stopAccessingSecurityScopedResource() }
+    }
+}
+
+private struct MacBookmarkLoadResult: Sendable {
+    let volumesLease: MacSecurityScopeLease?
+    let legacyLeases: [MacSecurityScopeLease]
+    let legacyURLsToAnalyze: [URL]
+    let staleLegacyKeys: [String]
+    let shouldDeleteVolumesBookmark: Bool
+    let hasStoredVolumesBookmark: Bool
+}
+
+private struct MacVolumesGrantResult: Sendable {
+    let bookmarkData: Data
+    let lease: MacSecurityScopeLease?
+    let isVolumesDirectory: Bool
+}
+
 enum DriveAccessPolicy {
     static func needsDriveAccess(isSandboxed: Bool, hasActiveVolumesScope: Bool) -> Bool {
         isSandboxed && !hasActiveVolumesScope
@@ -21,7 +54,12 @@ enum DriveAccessPolicy {
 
     static func grantsAccess(chosenPath: String?, hasActiveVolumesScope: Bool) -> Bool {
         guard let chosenPath else { return false }
-        return isVolumesPath(chosenPath) && hasActiveVolumesScope
+        return grantsAccess(isVolumesDirectory: isVolumesPath(chosenPath),
+                            hasActiveVolumesScope: hasActiveVolumesScope)
+    }
+
+    static func grantsAccess(isVolumesDirectory: Bool, hasActiveVolumesScope: Bool) -> Bool {
+        isVolumesDirectory && hasActiveVolumesScope
     }
 
     static func isVolumesPath(_ path: String) -> Bool {
@@ -48,6 +86,7 @@ final class MacVolumeAccessModel: ObservableObject {
     @Published var detectedCameraCards: [VolumeMonitorService.DetectedVolume] = []
     @Published var detectedBackupDrives: [VolumeMonitorService.DetectedVolume] = []
     @Published private(set) var needsDriveAccess: Bool
+    private(set) var hasVolumeAccess = false
 
     // MARK: - Private Properties
     private weak var shared: SharedAppCoordinator?
@@ -55,8 +94,9 @@ final class MacVolumeAccessModel: ObservableObject {
     private let maxRememberedDestinations = 5
     var volumeMonitor = VolumeMonitorService.shared
     private var cancellables = Set<AnyCancellable>()
-    /// Track active security-scoped resource URLs to prevent leaks (Bug 2 fix)
-    private var activeSecurityScopes = Set<URL>()
+    /// Retaining each lease keeps its access scope active; dropping a stale
+    /// result releases the scope through the lease's deinitializer.
+    private var activeSecurityScopes: [MacSecurityScopeLease] = []
     private let isSandboxed: Bool
     /// Destination paths the user explicitly removed. Discovery auto-add
     /// skips these until the drive disappears (unplug) or the user re-adds
@@ -66,6 +106,13 @@ final class MacVolumeAccessModel: ObservableObject {
     private var selectedSourceMountIdentity: String?
     private var sourceIdentityGeneration: UInt64 = 0
     private var sourceIdentityTask: Task<Void, Never>?
+    private var restoreGeneration: UInt64 = 0
+    private var bookmarkLoadGeneration: UInt64 = 0
+    private var accessRequestGeneration: UInt64 = 0
+    private let workerNamespace = UUID().uuidString
+    private var restoreTask: Task<Void, Never>?
+    private var bookmarkLoadTask: Task<Void, Never>?
+    private var grantTask: Task<Void, Never>?
     private var latestConnectedVolumes: [ConnectedDrivesPresentation.Volume] = []
     private var hasReceivedConnectedVolumesUpdate = false
     private var connectedVolumesGeneration: UInt64 = 0
@@ -75,10 +122,14 @@ final class MacVolumeAccessModel: ObservableObject {
     var sourceMountIdentity: @Sendable (URL) -> String? = VolumeMonitorService.selectionIdentity
     /// Volume facts for `BackupTargetPolicy`. Tests supply their own, since
     /// their drives are not mounted.
-    var volumeFacts: (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
+    var volumeFacts: @Sendable (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
+    /// Existence seam lets restore tests use lexical synthetic mount paths
+    /// without touching a mounted or user-owned volume.
+    var restorePathExists: @Sendable (URL) -> Bool = { FileManager.default.fileExists(atPath: $0.path) }
     /// The coordinator's preference store. Tests inject a private suite so
     /// recents and last-used backups cannot race with another test process.
     private var defaults: UserDefaults
+    private let driveAccessWorker: DriveAccessWorker
     var lastUsedDefaults: UserDefaults {
         get { defaults }
         set { defaults = newValue }
@@ -91,22 +142,19 @@ final class MacVolumeAccessModel: ObservableObject {
     init(
         shared: SharedAppCoordinator,
         enableVolumeMonitoring: Bool = true,
-        defaults: UserDefaults? = nil
+        defaults: UserDefaults? = nil,
+        driveAccessWorker: DriveAccessWorker? = nil
     ) {
         let isSandboxed = ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil
         self.isSandboxed = isSandboxed
         self.defaults = defaults ?? shared.defaults
+        self.driveAccessWorker = driveAccessWorker ?? shared.selectionWorker
+        self.hasVolumeAccess = self.defaults.data(forKey: "volumesDirectoryBookmark") != nil
         self.needsDriveAccess = DriveAccessPolicy.needsDriveAccess(
             isSandboxed: isSandboxed,
             hasActiveVolumesScope: false
         )
         self.shared = shared
-        // Decision S-3: before anything can overwrite the saved list, put
-        // back last time's backups, but only if every one is still mounted.
-        // The real app only (tests build the model without monitoring).
-        if enableVolumeMonitoring {
-            restoreLastDestinations()
-        }
         observeSelection(of: shared)
         if enableVolumeMonitoring {
             setupVolumeMonitoring()
@@ -125,26 +173,30 @@ final class MacVolumeAccessModel: ObservableObject {
             .store(in: &cancellables)
         shared.$destinationURLs.dropFirst()
             .sink { [weak self] urls in
-                guard self?.shared?.isReplayingQueuedTransfer != true else { return }
-                if !urls.isEmpty { self?.saveLastDestinations(urls) }
+                guard let self else { return }
+                self.restoreGeneration &+= 1
+                self.restoreTask?.cancel()
+                guard self.shared?.isReplayingQueuedTransfer != true else { return }
+                if !urls.isEmpty { self.saveLastDestinations(urls) }
             }
             .store(in: &cancellables)
     }
 
     deinit {
-        // stopAccessingSecurityScopedResource is safe to call from any thread
-        for url in activeSecurityScopes {
-            url.stopAccessingSecurityScopedResource()
-        }
+        // Releasing retained leases stops their scopes from any thread.
+        restoreTask?.cancel()
+        bookmarkLoadTask?.cancel()
+        grantTask?.cancel()
     }
 
-    private func trackSecurityScope(_ url: URL) {
-        activeSecurityScopes.insert(url)
+    private func trackSecurityScope(_ lease: MacSecurityScopeLease) {
+        guard lease.didStart else { return }
+        activeSecurityScopes.append(lease)
         updateDriveAccessRequirement()
     }
 
     private var hasActiveVolumesScope: Bool {
-        activeSecurityScopes.contains { DriveAccessPolicy.isVolumesPath($0.path) }
+        activeSecurityScopes.contains { $0.isVolumesDirectory }
     }
 
     private func updateDriveAccessRequirement() {
@@ -254,6 +306,7 @@ final class MacVolumeAccessModel: ObservableObject {
         latestConnectedVolumes = volumes
         hasReceivedConnectedVolumesUpdate = true
         connectedVolumesGeneration &+= 1
+        shared?.refreshSourceAvailability()
         autoQueuedVolumeIDs.formIntersection(Set(volumes.compactMap(\.volumeID)))
         guard connectedVolumesTask == nil else { return }
         connectedVolumesTask = Task { [weak self] in
@@ -310,7 +363,14 @@ final class MacVolumeAccessModel: ObservableObject {
             ).contains { $0.url == row.url }
             guard stillCandidate else { continue }
             do {
-                try shared.enqueueAutomaticallyDetectedCard(source: row.url)
+                try await shared.enqueueAutomaticallyDetectedCardPrepared(source: row.url)
+                // The prepared enqueue may outlive this volume snapshot. Only
+                // mark it seen while it remains part of the current discovery
+                // generation, so a stale completion cannot suppress a later
+                // arrival.
+                guard generation == connectedVolumesGeneration,
+                      await volumeMonitor.isCurrentDiscoveredVolume(row),
+                      generation == connectedVolumesGeneration else { return }
                 autoQueuedVolumeIDs.insert(volumeID)
             } catch {
                 SharedLogger.warning("Could not queue \(row.displayName): \(error.localizedDescription)", category: .transfer)
@@ -369,13 +429,29 @@ final class MacVolumeAccessModel: ObservableObject {
     /// Removes a backup and remembers the dismissal, so discovery does not
     /// add the same drive back while it stays plugged in.
     func removeDestination(_ url: URL) {
-        dismissedDestinationPaths.insert(url.path)
+        recordDestinationDismissal(url)
         shared?.removeDestinationFolder(url)
+    }
+
+    /// Records an add that was already accepted by prepared selection work.
+    /// This updates only discovery bookkeeping; policy and coordinator CAS
+    /// have already completed at that point.
+    func recordPreparedDestinationAdd(_ url: URL) {
+        dismissedDestinationPaths.remove(url.path)
+    }
+
+    /// Records the replaced destination as dismissed without changing the
+    /// coordinator selection a second time.
+    func recordDestinationDismissal(_ url: URL) {
+        dismissedDestinationPaths.insert(url.path)
     }
 
     @MainActor
     func requestVolumeAccess(completion: ((Bool) -> Void)? = nil) {
         #if os(macOS)
+        accessRequestGeneration &+= 1
+        let generation = accessRequestGeneration
+        grantTask?.cancel()
         let openPanel = NSOpenPanel()
         openPanel.allowsMultipleSelection = false
         openPanel.canChooseDirectories = true
@@ -390,55 +466,46 @@ final class MacVolumeAccessModel: ObservableObject {
         
         openPanel.begin { [weak self] response in
             guard response == .OK, let selectedURL = openPanel.urls.first else {
+                guard let self, self.accessRequestGeneration == generation else { return }
                 completion?(false)
                 return
             }
-
-            SharedLogger.info("Granted access to: \(selectedURL.path)", category: .transfer)
-            
-            // Store security-scoped bookmark for the selected directory
-            do {
-                #if os(macOS)
-                // Request read-write access to /Volumes so we can write to external drives
-                let bookmarkOptions: URL.BookmarkCreationOptions = [.withSecurityScope]
-                #else
-                let bookmarkOptions: URL.BookmarkCreationOptions = []
-                #endif
-                
-                let bookmarkData = try selectedURL.bookmarkData(
-                    options: bookmarkOptions,
-                    includingResourceValuesForKeys: nil,
-                    relativeTo: nil
-                )
-                
-                // Security 17: store bookmark in Keychain instead of UserDefaults
-                let key = "volumesDirectoryBookmark"
-                // Also in UserDefaults: a failed Keychain write (seen in the
-                // signed sandboxed build) lost the grant at every quit, so
-                // BitMatch asked again at every launch. The bookmark is not a
-                // secret: only this app's signature can resolve it.
-                _ = KeychainHelper.save(bookmarkData, forKey: key)
-                self?.defaults.set(bookmarkData, forKey: key)
-                SharedLogger.info("Saved volumes directory bookmark for: \(selectedURL.path)", category: .transfer)
-
-                // Start accessing the security-scoped resource immediately
-                if selectedURL.startAccessingSecurityScopedResource() {
-                    self?.trackSecurityScope(selectedURL)
-                    SharedLogger.info("Started accessing volumes directory: \(selectedURL.path)", category: .transfer)
-
-                    // Trigger a fresh volume scan
-                    self?.volumeMonitor.refreshVolumes()
+            guard let self, self.accessRequestGeneration == generation else { return }
+            let worker = self.driveAccessWorker
+            let jobKey = "\(self.workerNamespace).volume-grant"
+            let mountKey = DriveAccessWorker.mountKey(for: selectedURL)
+            self.grantTask = Task { [weak self] in
+                do {
+                    let result = try await worker.perform(mountKey: mountKey, jobKey: jobKey) {
+                        let bookmarkData = try selectedURL.bookmarkData(
+                            options: [.withSecurityScope],
+                            includingResourceValuesForKeys: nil,
+                            relativeTo: nil
+                        )
+                        _ = KeychainHelper.save(bookmarkData, forKey: "volumesDirectoryBookmark")
+                        let lease = MacSecurityScopeLease(startingAccessTo: selectedURL)
+                        return MacVolumesGrantResult(bookmarkData: bookmarkData,
+                            lease: lease.didStart ? lease : nil,
+                            isVolumesDirectory: lease.isVolumesDirectory)
+                    }
+                    guard let self, !Task.isCancelled, self.accessRequestGeneration == generation else { return }
+                    // UserDefaults is kept on MainActor; bookmark creation and
+                    // Keychain persistence happened on the bounded worker.
+                    self.defaults.set(result.bookmarkData, forKey: "volumesDirectoryBookmark")
+                    self.hasVolumeAccess = true
+                    if let lease = result.lease {
+                        self.trackSecurityScope(lease)
+                        self.volumeMonitor.refreshVolumes()
+                    }
+                    SharedLogger.info("Saved volumes directory bookmark for selected folder", category: .transfer)
+                    completion?(DriveAccessPolicy.grantsAccess(
+                        isVolumesDirectory: result.isVolumesDirectory,
+                        hasActiveVolumesScope: self.hasActiveVolumesScope))
+                } catch {
+                    guard let self, self.accessRequestGeneration == generation else { return }
+                    SharedLogger.error("Could not create volumes directory access bookmark", category: .transfer)
+                    completion?(false)
                 }
-
-                let granted = DriveAccessPolicy.grantsAccess(
-                    chosenPath: selectedURL.path,
-                    hasActiveVolumesScope: self?.hasActiveVolumesScope == true
-                )
-                completion?(granted)
-
-            } catch {
-                SharedLogger.error("Failed to create bookmark for \(selectedURL.path): \(error)", category: .transfer)
-                completion?(false)
             }
         }
         #else
@@ -449,93 +516,103 @@ final class MacVolumeAccessModel: ObservableObject {
     }
     
     func loadSavedBookmarks() {
-        // Security 17: load bookmark from Keychain (fall back to UserDefaults for migration)
-        let bookmarkData = KeychainHelper.load(forKey: "volumesDirectoryBookmark") ?? defaults.data(forKey: "volumesDirectoryBookmark")
-        if let bookmarkData = bookmarkData {
+        bookmarkLoadGeneration &+= 1
+        let generation = bookmarkLoadGeneration
+        bookmarkLoadTask?.cancel()
+        let fallbackBookmark = defaults.data(forKey: "volumesDirectoryBookmark")
+        let legacyBookmarks = defaults.dictionaryRepresentation().keys
+            .filter { $0.hasPrefix("bookmark_") }
+            .compactMap { key in defaults.data(forKey: key).map { (key, $0) } }
+        let worker = driveAccessWorker
+        let jobKey = "\(workerNamespace).bookmark-load"
+        let mountKey = DriveAccessWorker.mountKey(for: URL(fileURLWithPath: "/Volumes"))
+        bookmarkLoadTask = Task { [weak self] in
             do {
-                var isStale = false
-                #if os(macOS)
-                let resolveOptions: URL.BookmarkResolutionOptions = [.withSecurityScope]
-                #else
-                let resolveOptions: URL.BookmarkResolutionOptions = []
-                #endif
-                
-                let url = try URL(
-                    resolvingBookmarkData: bookmarkData,
-                    options: resolveOptions,
-                    relativeTo: nil,
-                    bookmarkDataIsStale: &isStale
-                )
-                
-                if !isStale && FileManager.default.fileExists(atPath: url.path) {
-                    SharedLogger.info("Restored volumes directory bookmark: \(url.path)", category: .transfer)
-
-                    // Start accessing the security-scoped resource
-                    if url.startAccessingSecurityScopedResource() {
-                        trackSecurityScope(url)
-                        SharedLogger.info("Started accessing volumes directory: \(url.path)", category: .transfer)
-                        // Trigger volume scan; specific write checks happen when starting a copy
-                        volumeMonitor.refreshVolumes()
-                        // Don't stop accessing - we want persistent access
-                        return // We have volumes access, no need to check individual bookmarks
-                    }
-                } else {
-                    SharedLogger.debug("Removing stale volumes directory bookmark", category: .transfer)
-                    KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
-                    defaults.removeObject(forKey: "volumesDirectoryBookmark")
-                }
-            } catch {
-                SharedLogger.error("Failed to resolve volumes directory bookmark: \(error)", category: .transfer)
-                KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
-                defaults.removeObject(forKey: "volumesDirectoryBookmark")
-            }
-        }
-        
-        // Fallback: Check for individual volume bookmarks (legacy support)
-        let allKeys = defaults.dictionaryRepresentation().keys
-        for key in allKeys {
-            if key.hasPrefix("bookmark_"), let bookmarkData = defaults.data(forKey: key) {
-                do {
-                    var isStale = false
-                    #if os(macOS)
-                    let resolveOptions: URL.BookmarkResolutionOptions = [.withSecurityScope]
-                    #else
-                    let resolveOptions: URL.BookmarkResolutionOptions = []
-                    #endif
-                    
-                    let url = try URL(
-                        resolvingBookmarkData: bookmarkData,
-                        options: resolveOptions,
-                        relativeTo: nil,
-                        bookmarkDataIsStale: &isStale
-                    )
-                    
-                    if !isStale && FileManager.default.fileExists(atPath: url.path) {
-                        SharedLogger.info("Restored individual bookmark for: \(url.lastPathComponent)", category: .transfer)
-
-                        // Start accessing the security-scoped resource
-                        if url.startAccessingSecurityScopedResource() {
-                            trackSecurityScope(url)
-                            SharedLogger.info("Started accessing: \(url.path)", category: .transfer)
-
-                            // Analyze the volume
-                            volumeMonitor.forceAnalyzeVolume(at: url)
+                let result = try await worker.perform(mountKey: mountKey, jobKey: jobKey) {
+                    let options: URL.BookmarkResolutionOptions = [.withSecurityScope]
+                    var volumesLease: MacSecurityScopeLease?
+                    var shouldDeleteVolumesBookmark = false
+                    let storedBookmark = KeychainHelper.load(forKey: "volumesDirectoryBookmark") ?? fallbackBookmark
+                    if let data = storedBookmark {
+                        do {
+                            var isStale = false
+                            let url = try URL(resolvingBookmarkData: data, options: options,
+                                              relativeTo: nil, bookmarkDataIsStale: &isStale)
+                            if !isStale {
+                                let lease = MacSecurityScopeLease(startingAccessTo: url)
+                                if lease.didStart {
+                                    if FileManager.default.fileExists(atPath: url.path) {
+                                        volumesLease = lease
+                                    } else {
+                                        shouldDeleteVolumesBookmark = true
+                                        _ = KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
+                                    }
+                                }
+                            } else {
+                                shouldDeleteVolumesBookmark = true
+                                _ = KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
+                            }
+                        } catch {
+                            shouldDeleteVolumesBookmark = true
+                            _ = KeychainHelper.delete(forKey: "volumesDirectoryBookmark")
                         }
-                    } else {
-                        SharedLogger.debug("Removing stale bookmark for: \(key)", category: .transfer)
-                        defaults.removeObject(forKey: key)
                     }
-                } catch {
-                    SharedLogger.error("Failed to resolve bookmark \(key): \(error)", category: .transfer)
-                    defaults.removeObject(forKey: key)
+
+                    var legacyLeases: [MacSecurityScopeLease] = []
+                    var legacyURLsToAnalyze: [URL] = []
+                    var staleLegacyKeys: [String] = []
+                    if volumesLease == nil {
+                        for (key, data) in legacyBookmarks {
+                            do {
+                                var isStale = false
+                                let url = try URL(resolvingBookmarkData: data, options: options,
+                                                  relativeTo: nil, bookmarkDataIsStale: &isStale)
+                                guard !isStale else {
+                                    staleLegacyKeys.append(key)
+                                    continue
+                                }
+                                let lease = MacSecurityScopeLease(startingAccessTo: url)
+                                if lease.didStart && FileManager.default.fileExists(atPath: url.path) {
+                                    legacyLeases.append(lease)
+                                    legacyURLsToAnalyze.append(url)
+                                } else if lease.didStart {
+                                    staleLegacyKeys.append(key)
+                                }
+                            } catch {
+                                staleLegacyKeys.append(key)
+                            }
+                        }
+                    }
+                    return MacBookmarkLoadResult(volumesLease: volumesLease,
+                        legacyLeases: legacyLeases, legacyURLsToAnalyze: legacyURLsToAnalyze,
+                        staleLegacyKeys: staleLegacyKeys,
+                        shouldDeleteVolumesBookmark: shouldDeleteVolumesBookmark,
+                        hasStoredVolumesBookmark: storedBookmark != nil && !shouldDeleteVolumesBookmark)
                 }
+                guard let self, !Task.isCancelled, self.bookmarkLoadGeneration == generation else { return }
+                self.hasVolumeAccess = result.hasStoredVolumesBookmark
+                if result.shouldDeleteVolumesBookmark {
+                    self.defaults.removeObject(forKey: "volumesDirectoryBookmark")
+                }
+                for key in result.staleLegacyKeys { self.defaults.removeObject(forKey: key) }
+                if let lease = result.volumesLease {
+                    self.trackSecurityScope(lease)
+                    self.volumeMonitor.refreshVolumes()
+                    self.restoreLastDestinations()
+                    return
+                }
+                for (lease, url) in zip(result.legacyLeases, result.legacyURLsToAnalyze) {
+                    self.trackSecurityScope(lease)
+                    self.volumeMonitor.forceAnalyzeVolume(at: url)
+                }
+                self.restoreLastDestinations()
+            } catch {
+                // A saturated worker is a temporary unavailable result. The
+                // next volume event or explicit access request can retry.
+                guard let self, !Task.isCancelled, self.bookmarkLoadGeneration == generation else { return }
+                self.restoreLastDestinations()
             }
         }
-    }
-    
-    var hasVolumeAccess: Bool {
-        return KeychainHelper.load(forKey: "volumesDirectoryBookmark") != nil
-            || defaults.data(forKey: "volumesDirectoryBookmark") != nil
     }
     
     // MARK: - Smart Defaults Methods
@@ -548,26 +625,54 @@ final class MacVolumeAccessModel: ObservableObject {
         defaults.set(paths, forKey: lastDestinationsKey)
     }
     
-    /// Last time's backups, all or nothing (`LastBackupsRestorePolicy`):
-    /// empty when any of them is not mounted now.
-    /// Also empty when `BackupTargetPolicy` refuses any of them for a
-    /// restore (the stress test's temp folder, a system volume an older
-    /// build auto-added and saved).
-    func loadLastDestinations() -> [URL] {
-        let facts = volumeFacts
-        return LastBackupsRestorePolicy.backupsToRestore(
-            savedPaths: defaults.stringArray(forKey: lastDestinationsKey) ?? [],
-            exists: { FileManager.default.fileExists(atPath: $0) },
-            refusal: { BackupTargetPolicy.refusal(for: $0, origin: .restored, source: nil, facts: facts) }
-        )
-    }
-
-    /// Called once at launch, while no backup is chosen yet.
+    /// Called at launch after saved access bookmarks have been resolved. All
+    /// filesystem and volume-policy work runs in the bounded worker.
     func restoreLastDestinations() {
         guard destinationURLs.isEmpty else { return }
-        for dest in loadLastDestinations() {
-            shared?.addDestination(dest, origin: .restored, facts: volumeFacts)
+        let savedPaths = defaults.stringArray(forKey: lastDestinationsKey) ?? []
+        guard !savedPaths.isEmpty, savedPaths.count <= maxRememberedDestinations else { return }
+        restoreGeneration &+= 1
+        let generation = restoreGeneration
+        restoreTask?.cancel()
+        let worker = driveAccessWorker
+        let facts = volumeFacts
+        let pathExists = restorePathExists
+        let namespace = workerNamespace
+        restoreTask = Task { [weak self] in
+            do {
+                var restored: [URL] = []
+                for (index, path) in savedPaths.enumerated() {
+                    guard !Task.isCancelled else { return }
+                    let url = URL(fileURLWithPath: path, isDirectory: true)
+                    let one = try await worker.perform(
+                        mountKey: DriveAccessWorker.mountKey(for: url),
+                        jobKey: "\(namespace).last-destinations.\(generation).\(index)"
+                    ) {
+                        LastBackupsRestorePolicy.backupsToRestore(
+                            savedPaths: [path],
+                            exists: { pathExists(URL(fileURLWithPath: $0, isDirectory: true)) },
+                            refusal: {
+                                BackupTargetPolicy.refusal(
+                                    for: $0, origin: .restored, source: nil, facts: facts
+                                )
+                            }
+                        )
+                    }
+                    guard let accepted = one.first, !Task.isCancelled else { return }
+                    restored.append(accepted)
+                }
+                guard let self, !Task.isCancelled, self.restoreGeneration == generation,
+                      self.destinationURLs.isEmpty else { return }
+                _ = self.shared?.applyRestoredDestinations(restored, expectedCurrent: [])
+            } catch {
+                // A busy or failed worker leaves the saved selection absent;
+                // a later launch or explicit retry can attempt restoration.
+            }
         }
     }
-    
+
+    func waitForRestoreForTesting() async {
+        await restoreTask?.value
+    }
+
 }

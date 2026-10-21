@@ -215,75 +215,103 @@ struct ReportView: View {
 
     var pdfBlocks: [ReportPDFBlock] {
         var blocks: [ReportPDFBlock] = []
-        func append<V: View>(_ view: V, separated: Bool = true, manifest: Bool = false) {
-            blocks.append(ReportPDFBlock(view: AnyView(
-                VStack(alignment: .leading, spacing: 0) {
+        func append<V: View>(separated: Bool = true, manifest: Bool = false,
+                             nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)? = nil,
+                             makeView: @escaping @MainActor (ReportView) -> V) {
+            blocks.append(ReportPDFBlock(continuesManifest: manifest, nativeRow: nativeRow) { report in
+                AnyView(VStack(alignment: .leading, spacing: 0) {
                     if separated { Divider().padding(.vertical, 12) }
-                    view
-                }
-            ), continuesManifest: manifest))
+                    makeView(report)
+                })
+            })
         }
 
-        append(headerSection, separated: false)
-        append(pdfOutcomeSection)
-        append(pdfSummarySection)
+        append(separated: false) { $0.headerSection }
+        append { $0.pdfOutcomeSection }
+        append { $0.pdfSummarySection }
         if let notes = s.notes, !notes.isEmpty {
             let lines = notes.replacingOccurrences(of: "\r\n", with: "\n")
                 .replacingOccurrences(of: "\r", with: "\n")
                 .components(separatedBy: "\n")
             for (index, line) in lines.enumerated() {
-                append(VStack(alignment: .leading, spacing: 5) {
-                    if index == 0 { Text("Notes").font(.system(size: 12, weight: .semibold)) }
-                    Text(line.isEmpty ? " " : line).font(.system(size: 10))
-                        .fixedSize(horizontal: false, vertical: true)
-                }, separated: index == 0)
+                append(separated: index == 0) { _ in
+                    VStack(alignment: .leading, spacing: 5) {
+                        if index == 0 { Text("Notes").font(.system(size: 12, weight: .semibold)) }
+                        Text(line.isEmpty ? " " : line).font(.system(size: 10))
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
         }
-        if s.photographyJob != nil { append(photographyJobSection) }
-        append(pdfLocationsSection)
+        if s.photographyJob != nil { append { $0.photographyJobSection } }
+        append { $0.pdfLocationsSection }
         if thumbnails.requestedCount > 0 {
-            append(Text(thumbnails.notice).font(.system(size: 9)).foregroundColor(.secondary))
+            append { report in
+                Text(report.thumbnails.notice).font(.system(size: 9)).foregroundColor(.secondary)
+            }
         }
         // The qualified PDF stays focused on footage. Exact excluded paths
         // remain in the original evidence rows, CSV/JSON and History details.
-        let manifestRows = selectedFilesVerified
-            ? rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble } : rows
-        if manifestRows.isEmpty {
-            append(VStack(alignment: .leading, spacing: 10) {
-                Text("File results").font(.system(size: 14, weight: .semibold))
-                Text("No result rows were recorded in this run.")
-                    .font(.system(size: 10)).foregroundColor(.secondary)
-            })
+        let selectedFilesVerified = self.selectedFilesVerified
+        let manifestRowIndices = selectedFilesVerified
+            ? rows.indices.filter { ResultOutcome(statusText: rows[$0].status) != .excludedAppleDouble }
+            : Array(rows.indices)
+        if manifestRowIndices.isEmpty {
+            append { _ in
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("File results").font(.system(size: 14, weight: .semibold))
+                    Text("No result rows were recorded in this run.")
+                        .font(.system(size: 10)).foregroundColor(.secondary)
+                }
+            }
         } else {
             // The first row carries its header so the header cannot be stranded.
             var previewed: Set<String> = []
-            for (index, row) in manifestRows.enumerated() {
-                let showPreview = previewed.insert(row.path).inserted
-                append(VStack(alignment: .leading, spacing: 0) {
-                    if index == 0 {
-                        Text("File results")
-                            .font(.system(size: 14, weight: .semibold))
-                            .padding(.bottom, 10)
+            for (index, rowIndex) in manifestRowIndices.enumerated() {
+                let path = rows[rowIndex].path
+                let showPreview = previewed.insert(path).inserted
+                let nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)?
+                if index > 0 {
+                    nativeRow = { report in
+                        report.pdfNativeManifestRow(report.rows[rowIndex], showPreview: showPreview)
                     }
-                    VStack(spacing: 0) {
-                        if index == 0 { pdfManifestHeader }
-                        Divider()
-                        pdfManifestRow(row, showPreview: showPreview)
-                    }.padding(.horizontal, 8)
-                }, separated: index == 0, manifest: index > 0)
+                } else {
+                    nativeRow = nil
+                }
+                append(separated: index == 0, manifest: index > 0, nativeRow: nativeRow) { report in
+                    VStack(alignment: .leading, spacing: 0) {
+                        if index == 0 {
+                            Text("File results")
+                                .font(.system(size: 14, weight: .semibold))
+                                .padding(.bottom, 10)
+                        }
+                        VStack(spacing: 0) {
+                            if index == 0 { report.pdfManifestHeader }
+                            Divider()
+                            report.pdfManifestRow(report.rows[rowIndex], showPreview: showPreview)
+                        }.padding(.horizontal, 8)
+                    }
+                }
             }
         }
+        let issueCount = self.issueCount
         if issueCount > 0 {
-            append(Text("Issues Detail (\(issueCount))").font(.system(size: 14, weight: .semibold)))
+            append { _ in Text("Issues Detail (\(issueCount))").font(.system(size: 14, weight: .semibold)) }
             for group in ResultPresentation.issueGroups(reportIssueRows) {
+                let groupStatus = group.status
+                let groupCount = group.rows.count
                 for (index, row) in group.rows.prefix(10).enumerated() {
-                    append(VStack(alignment: .leading, spacing: 4) {
-                        if index == 0 { issueGroupHeader(group) }
-                        issueDataRow(row).padding(.leading, 16)
-                    }.padding(.top, index == 0 ? 12 : 4), separated: false)
+                    append(separated: false) { report in
+                        VStack(alignment: .leading, spacing: 4) {
+                            if index == 0 { report.issueGroupHeader(status: groupStatus, count: groupCount) }
+                            report.issueDataRow(row).padding(.leading, 16)
+                        }.padding(.top, index == 0 ? 12 : 4)
+                    }
                 }
-                if group.rows.count > 10 {
-                    append(issueOverflowNotice(group).padding(.leading, 16), separated: false)
+                if groupCount > 10 {
+                    append(separated: false) { report in
+                        report.issueOverflowNotice(count: groupCount).padding(.leading, 16)
+                    }
                 }
             }
         }
@@ -311,10 +339,12 @@ struct ReportView: View {
 
     /// Unusually large identity text remains ordinary paginated content.
     var pdfPaginatedIdentity: ReportPDFBlock {
-        ReportPDFBlock(view: AnyView(VStack(alignment: .leading, spacing: 0) {
-            Divider().padding(.vertical, 12)
-            pdfIdentity.foregroundColor(.secondary)
-        }), continuesManifest: false)
+        ReportPDFBlock(continuesManifest: false) { report in
+            AnyView(VStack(alignment: .leading, spacing: 0) {
+                Divider().padding(.vertical, 12)
+                report.pdfIdentity.foregroundColor(.secondary)
+            })
+        }
     }
 
     private var pdfLocationsSection: some View {
@@ -352,13 +382,35 @@ struct ReportView: View {
         }.font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary).padding(.vertical, 6)
     }
 
+    func pdfNativeManifestRow(_ row: ResultRow, showPreview: Bool) -> ReportPDFNativeRow? {
+        if showPreview, thumbnails.images[row.path] != nil { return nil }
+        let status = statusPresentation(for: row)
+        let source = ResultPathMatch.comparablePath(s.source)
+        let path = ResultPathMatch.comparablePath(row.path)
+        let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
+        let native = ReportPDFNativeRow.makeIfFits(
+            fileName: display,
+            destination: pdfDestination(for: row),
+            size: ByteCountPresentation.fileSize(row.size),
+            glyph: pdfStatusGlyph(for: status.tone),
+            tone: status.tone
+        )
+        return native ?? ReportPDFNativeRow.makeWrapping(
+            fileName: display,
+            destination: pdfDestination(for: row),
+            size: ByteCountPresentation.fileSize(row.size),
+            glyph: pdfStatusGlyph(for: status.tone),
+            tone: status.tone
+        )
+    }
+
     private func pdfManifestRow(_ row: ResultRow, showPreview: Bool) -> some View {
         let status = statusPresentation(for: row)
         let source = ResultPathMatch.comparablePath(s.source)
         let path = ResultPathMatch.comparablePath(row.path)
         let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
         return HStack(spacing: 8) {
-            Image(systemName: status.symbol).foregroundColor(status.color)
+            Text(pdfStatusGlyph(for: status.tone)).foregroundColor(status.color)
                 .font(.system(size: 10)).frame(width: 18, alignment: .leading)
             HStack(spacing: 8) {
                 if showPreview, let data = thumbnails.images[row.path],
@@ -372,6 +424,17 @@ struct ReportView: View {
                 .lineLimit(2).truncationMode(.middle).frame(width: 150, alignment: .leading)
             Text(ByteCountPresentation.fileSize(row.size)).font(.system(size: 10)).frame(width: 70, alignment: .trailing)
         }.padding(.vertical, 5)
+    }
+
+    private func pdfStatusGlyph(for tone: ResultStatusTone) -> String {
+        switch tone {
+        case .verified: "✓"
+        case .unverified: "–"
+        case .inProgress: "…"
+        case .warning: "!"
+        case .failure: "×"
+        case .neutral: "?"
+        }
     }
 
     private var pdfOutcomeSection: some View {
@@ -896,12 +959,16 @@ struct ReportView: View {
     }
     
     private func issueGroupHeader(_ group: ResultIssueGroup) -> some View {
+        issueGroupHeader(status: group.status, count: group.rows.count)
+    }
+
+    private func issueGroupHeader(status: String, count: Int) -> some View {
         HStack {
-            let status = ResultStatusPresentation.make(status: group.status)
-            Image(systemName: status.symbol)
-                .foregroundColor(status.color)
+            let presentation = ResultStatusPresentation.make(status: status)
+            Image(systemName: presentation.symbol)
+                .foregroundColor(presentation.color)
                 .font(.system(size: 10))
-            Text("\(group.status) (\(group.rows.count))")
+            Text("\(status) (\(count))")
                 .font(.system(size: 11, weight: .medium))
         }
     }
@@ -932,7 +999,11 @@ struct ReportView: View {
     }
 
     private func issueOverflowNotice(_ group: ResultIssueGroup) -> some View {
-        Text("Showing 10 of \(group.rows.count) files; \(group.rows.count - 10) more in the complete result manifest.")
+        issueOverflowNotice(count: group.rows.count)
+    }
+
+    private func issueOverflowNotice(count: Int) -> some View {
+        Text("Showing 10 of \(count) files; \(count - 10) more in the complete result manifest.")
             .font(.system(size: 9))
             .foregroundColor(.secondary)
             .italic()

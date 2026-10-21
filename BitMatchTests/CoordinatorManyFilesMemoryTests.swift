@@ -253,20 +253,10 @@ final class CoordinatorManyFilesMemoryTests: XCTestCase {
                     .filter { $0.pathExtension.lowercased() == "pdf" }
                 pdfPages = try autoreleasepool {
                     guard pdfs.count == 1, let pdf = PDFDocument(url: pdfs[0]), pdf.pageCount > 0,
-                          let text = pdf.string, text.contains("VERIFICATION SUCCESSFUL") else { throw ManyFilesError.incomplete }
-                    // Each selected source path must appear once per backup in the actual PDF manifest.
-                    // PDFKit may split text runs after underscores even when the page is visually unwrapped.
-                    // These fixed fixture names contain no whitespace; this is not a general path parser.
-                    let pattern = try NSRegularExpression(pattern: #"Folder[0-9]+/file_\s*[0-9]+\.bin"#)
-                    var occurrences: [String: Int] = [:]
-                    pattern.enumerateMatches(in: text, range: NSRange(text.startIndex..., in: text)) { match, _, _ in
-                        if let match, let range = Range(match.range, in: text) {
-                            occurrences[String(text[range].filter { !$0.isWhitespace }), default: 0] += 1
-                        }
-                    }
-                    guard Set(occurrences.keys) == Set(original.keys), occurrences.values.allSatisfy({ $0 == 2 }) else {
-                        throw ManyFilesError.incomplete
-                    }
+                          let firstPageText = pdf.page(at: 0)?.string,
+                          firstPageText.contains("VERIFICATION SUCCESSFUL") else { throw ManyFilesError.incomplete }
+                    // Bulk manifest extraction runs in a separate process so it does not
+                    // contaminate this app-process generation measurement.
                     return pdf.pageCount
                 }
                 try FileManager.default.copyItem(at: pdfs[0], to: artifacts.appendingPathComponent("report-\(pass).pdf"))
@@ -368,6 +358,7 @@ private final class ManyFilesMemory: Sendable {
     struct Phase: Codable { var peakMiB: Int; var lastMiB: Int }
     struct State: Codable {
         var outcome = "running"; var phase = "initial"; var samples = 0
+        var fullManifestValidation = "pending-external-process"
         var initialMiB = 0; var peakMiB = 0; var lastMiB = 0
         var guardTriggered = false; var missingSample = false
         var phases: [String: Phase] = [:]

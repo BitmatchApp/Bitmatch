@@ -189,7 +189,10 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Published State
     @Published var currentMode: AppMode = .copyAndVerify
     @Published var verificationMode: VerificationMode = .standard {
-        didSet { if oldValue != verificationMode { clearCompareOutcome() } }
+        didSet {
+            if oldValue != verificationMode { clearCompareOutcome() }
+            scheduleReadinessAssessment()
+        }
     }
     /// The camera label for the next transfer: suggested from the card,
     /// remembered per camera and saved across launches (thesis decision).
@@ -233,10 +236,14 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var queueIsRunning = false
     @Published private(set) var queueMessage: String?
     @Published private(set) var isReplayingQueuedTransfer = false
-    @Published private(set) var queueSessionRecordIDs: Set<UUID> = []
+    @Published private(set) var queueSessionRecordIDs: Set<UUID> = [] {
+        didSet { scheduleSourceAvailability() }
+    }
     @Published private(set) var reviewedQueueAttentionIDs: Set<UUID> = []
     @Published private(set) var skippedQueueAttentionIDs: Set<UUID> = []
-    @Published private(set) var ejectedQueueSourceIDs: Set<UUID> = []
+    @Published private(set) var ejectedQueueSourceIDs: Set<UUID> = [] {
+        didSet { scheduleSourceAvailability() }
+    }
     @Published private(set) var standaloneAttentionRecordIDsSinceLaunch: Set<UUID> = []
     @Published private(set) var queuePausedRecordID: UUID?
     @Published private(set) var reviewedQueueRecordID: UUID?
@@ -249,7 +256,9 @@ class SharedAppCoordinator: ObservableObject {
     private var queueInvocationID: UUID?
     private var cancelledQueueInvocationID: UUID?
     private var queuedSourceScanTask: Task<[FileEntry], Error>?
-    private var activeJournalRecordID: UUID?
+    private var activeJournalRecordID: UUID? {
+        didSet { scheduleSourceAvailability() }
+    }
     private(set) var activeRunContext: TransferRunContext?
     private var queueFinishNotificationWasPosted = false
     private var queueStopWasRequested = false
@@ -372,40 +381,367 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - File Selection State
     private var selectedSourceIdentity: LocalTransferResource?
     private var selectedDestinationIdentities: [URL: LocalTransferResource] = [:]
+    private let driveAccessWorker: DriveAccessWorker
+    private let driveJobNamespace = UUID().uuidString
+    private let sourceAvailability: SourceAvailabilityModel
+    private var selectionGeneration = 0
+    private var selectionTask: Task<Void, Never>?
+    private var readinessGeneration = 0
+    private var readinessTask: Task<Void, Never>?
+    private var sourceAvailabilityTask: Task<Void, Never>?
+    @Published private(set) var isPreparingSelection = false
+    @Published private(set) var selectionPreparationError: String?
+    @Published private(set) var isCommittingSelection = false
+    private var cachedReadiness = TransferReadiness(status: .needsSource, blockers: [], warnings: [])
     @Published var sourceURL: URL? {
-        didSet { selectedSourceIdentity = sourceURL.flatMap { try? LocalTransferResource(url: $0) } }
+        didSet {
+            selectedSourceIdentity = nil
+            scheduleSelectionPreparation()
+        }
     }
     @Published var destinationURLs: [URL] = [] {
         didSet {
-            // Retain the identity of unchanged picks when another backup is added.
-            selectedDestinationIdentities = destinationURLs.reduce(into: [:]) { identities, url in
-                identities[url] = selectedDestinationIdentities[url] ?? (try? LocalTransferResource(url: url))
-            }
-            destinationVolumeNames = destinationURLs.map(DestinationVolumeLabel.resolve)
+            // An unchanged pick retains its original identity, including when
+            // another backup is added. Never rebaseline it at the same path.
+            selectedDestinationIdentities = selectedDestinationIdentities.filter { destinationURLs.contains($0.key) }
+            destinationVolumeNames = destinationURLs.map { DestinationVolumeLabel.name(for: $0) }
+            destinationCapacities = [:]
+            scheduleSelectionPreparation()
             scheduleDestinationIndependenceAssessment()
         }
     }
-    private func validateComposerSelection(source: URL, destinations: [URL]) throws {
-        let scoped = ([source] + destinations).filter { $0.startAccessingSecurityScopedResource() }
-        defer { scoped.forEach { $0.stopAccessingSecurityScopedResource() } }
-        guard let selectedSourceIdentity else { throw LocalTransferJournalError.unavailable(source.lastPathComponent) }
-        try selectedSourceIdentity.validateIdentity(at: source)
-        for destination in destinations {
-            guard let identity = selectedDestinationIdentities[destination] else {
-                throw LocalTransferJournalError.unavailable(destination.lastPathComponent)
-            }
-            try identity.validateIdentity(at: destination)
+
+    private func scheduleSelectionPreparation() {
+        selectionGeneration &+= 1
+        let generation = selectionGeneration
+        selectionTask?.cancel()
+        selectionPreparationError = nil
+        let source = sourceURL
+        let destinations = destinationURLs
+        let sourceIdentity = selectedSourceIdentity
+        let destinationIdentities = selectedDestinationIdentities
+        let worker = driveAccessWorker
+        let jobKey = driveJobNamespace + ".selection"
+        isPreparingSelection = source != nil || !destinations.isEmpty
+        scheduleReadinessAssessment()
+        guard source != nil || !destinations.isEmpty else {
+            selectionTask = nil
+            return
         }
+        selectionTask = Task { [weak self] in
+            do {
+                let prepared = try await worker.perform(mountKeys: Set(([source].compactMap { $0 } + destinations).map { DriveAccessWorker.mountKey(for: $0) }), jobKey: jobKey) {
+                    try Task.checkCancellation()
+                    return try TransferSelectionPreparation.prepare(
+                        source: source, destinations: destinations,
+                        sourceIdentity: sourceIdentity, destinationIdentities: destinationIdentities
+                    )
+                }
+                guard let self, !Task.isCancelled, self.selectionGeneration == generation,
+                      self.sourceURL == source, self.destinationURLs == destinations else { return }
+                self.selectedSourceIdentity = prepared.sourceIdentity
+                self.selectedDestinationIdentities = prepared.destinationIdentities
+                self.destinationVolumeNames = prepared.destinationNames
+                self.destinationCapacities = prepared.destinationCapacities
+                self.isPreparingSelection = false
+                self.selectionTask = nil
+                self.scheduleReadinessAssessment()
+            } catch {
+                guard let self, !Task.isCancelled, self.selectionGeneration == generation else { return }
+                self.isPreparingSelection = false
+                self.selectionPreparationError = error.localizedDescription
+                self.selectionTask = nil
+                self.scheduleReadinessAssessment()
+            }
+        }
+    }
+
+    /// Rendering reads only a snapshot. The full readiness rule, including
+    /// resolved paths, writability and free space, runs on the bounded worker.
+    private func scheduleReadinessAssessment() {
+        readinessGeneration &+= 1
+        let generation = readinessGeneration
+        readinessTask?.cancel()
+        cachedReadiness = TransferReadiness(
+            status: sourceURL == nil ? .needsSource : .analysing,
+            blockers: [], warnings: destinationIndependence.warnings
+        )
+        let worker = driveAccessWorker
+        let jobKey = driveJobNamespace + ".readiness"
+        readinessTask = Task { [weak self] in
+            // Combine announces before replacing its value. Read after that
+            // synchronous publication, and coalesce the latest inputs.
+            await Task.yield()
+            guard let self, !Task.isCancelled, self.readinessGeneration == generation else { return }
+            guard !self.isPreparingSelection else { return }
+            let source = self.sourceURL
+            let destinations = self.destinationURLs
+            let count = self.sourceFolderInfo?.fileCount
+            let bytes = self.sourceFolderInfo?.totalSize
+            let analysing = self.isAnalysingSource
+            let settings = self.cameraLabelSettings
+            let mode = self.verificationMode
+            let issue = self.selectionPreparationError ?? self.folderInfoService.sourceScanError ?? self.appleDoubleSelection.error
+            let warnings = self.destinationIndependence.warnings
+            do {
+                let result = try await worker.perform(
+                    mountKeys: Set(([source].compactMap { $0 } + destinations).map { DriveAccessWorker.mountKey(for: $0) }),
+                    jobKey: jobKey
+                ) {
+                    try Task.checkCancellation()
+                    return TransferReadiness.assess(
+                        source: source, sourceFileCount: count, sourceBytes: bytes,
+                        isAnalysingSource: analysing, destinations: destinations,
+                        settings: settings, verificationMode: mode, sourceIssue: issue,
+                        destinationWarnings: warnings,
+                        availableBytes: Self.driveCapacity, isWritable: TransferReadiness.isWritableFolder
+                    )
+                }
+                guard !Task.isCancelled, self.readinessGeneration == generation else { return }
+                self.objectWillChange.send()
+                self.cachedReadiness = result
+                self.readinessTask = nil
+            } catch {
+                guard !Task.isCancelled, self.readinessGeneration == generation else { return }
+                self.objectWillChange.send()
+                self.cachedReadiness = TransferReadiness(status: .blocked, blockers: [error.localizedDescription], warnings: warnings)
+                self.readinessTask = nil
+            }
+        }
+    }
+
+    private func validateComposerSelection(source: URL, destinations: [URL]) throws {
+        guard let identity = selectedSourceIdentity else { throw LocalTransferJournalError.unavailable(source.lastPathComponent) }
+        try TransferSelectionPreparation.validate(
+            sourceIdentity: identity,
+            destinationIdentities: try destinations.map { url in
+                guard let resource = selectedDestinationIdentities[url] else {
+                    throw LocalTransferJournalError.unavailable(url.lastPathComponent)
+                }
+                return resource
+            }, settings: cameraLabelSettings, requireNonempty: false
+        )
+    }
+
+    var selectionWorker: DriveAccessWorker { driveAccessWorker }
+
+    @discardableResult
+    func applyPreparedSource(expectedSource: URL?, expectedDestinations: [URL], newSource: URL) -> Bool {
+        guard !isDestinationSelectionLocked, sourceURL == expectedSource,
+              destinationURLs == expectedDestinations else { return false }
+        sourceURL = newSource
+        return true
+    }
+
+    @discardableResult
+    func applyPreparedDestinations(_ urls: [URL], expectedCurrent: [URL], expectedSource: URL?) -> Bool {
+        guard !isDestinationSelectionLocked, sourceURL == expectedSource,
+              destinationURLs == expectedCurrent else { return false }
+        destinationURLs = urls
+        return true
+    }
+
+    /// Applies an all-or-nothing restore that already passed the worker's
+    /// policies. Do not repeat those filesystem checks on the UI actor.
+    @discardableResult
+    func applyRestoredDestinations(_ urls: [URL], expectedCurrent: [URL]) -> Bool {
+        guard !isDestinationSelectionLocked, destinationURLs == expectedCurrent else { return false }
+        destinationURLs = urls
+        return true
+    }
+
+    /// Mount events invalidate hints immediately. Reconciliation reads the
+    /// latest journal only after its @Published change has finished.
+    func refreshSourceAvailability() {
+        sourceAvailability.invalidate()
+        scheduleSourceAvailability()
+    }
+
+    private func scheduleSourceAvailability() {
+        sourceAvailabilityTask?.cancel()
+        sourceAvailabilityTask = Task { [weak self] in
+            await Task.yield()
+            guard let self, !Task.isCancelled else { return }
+            let ids = self.queueSessionRecordIDs.union([self.activeJournalRecordID].compactMap { $0 })
+            let eligible = self.transferJournal.queuePresentation(
+                sessionIDs: ids, progress: nil, mountedSourceIDs: ids,
+                ejectedSourceIDs: self.ejectedQueueSourceIDs
+            ).ejectableCardIDs
+            let eligibleIDs = Set(eligible)
+            self.sourceAvailability.update(resources: Dictionary(uniqueKeysWithValues:
+                self.transferJournal.records.filter { eligibleIDs.contains($0.id) }.map { ($0.id, $0.source) }
+            ))
+            self.sourceAvailabilityTask = nil
+        }
+    }
+
+    private func preparedComposer() async throws -> TransferSelectionPreparation.Prepared {
+        let generation = selectionGeneration
+        await selectionTask?.value
+        try Task.checkCancellation()
+        guard generation == selectionGeneration, let source = selectedSourceIdentity,
+              source.url == sourceURL else {
+            throw FileOperationError.unsafeOperation(selectionPreparationError ?? "The selection changed. Review the folders and try again.")
+        }
+        let destinations = try destinationURLs.map { url in
+            guard let resource = selectedDestinationIdentities[url] else {
+                throw LocalTransferJournalError.unavailable(url.lastPathComponent)
+            }
+            return resource
+        }
+        return .init(sourceIdentity: source, destinationIdentities: selectedDestinationIdentities,
+                     orderedDestinationIdentities: destinations, destinationNames: destinationVolumeNames)
+    }
+
+    @discardableResult
+    func enqueueSelectionPrepared() async throws -> UUID {
+        guard !isCommittingSelection else { throw LocalTransferJournalError.busy }
+        isCommittingSelection = true
+        defer { isCommittingSelection = false }
+        let generation = selectionGeneration
+        let prepared = try await preparedComposer()
+        await readinessTask?.value
+        guard cachedReadiness.isReady, !usesProjectWorkflow,
+              !photographerJobViewModel.hasPreparedIngestAwaitingStart,
+              let source = prepared.sourceIdentity else {
+            throw FileOperationError.unsafeOperation("Choose a source and destinations for a one-time transfer first.")
+        }
+        let destinations = destinationURLs
+        let settings = cameraLabelSettings
+        let mode = verificationMode
+        let reports = reportSettings
+        let mhl = generateASCMHL
+        let editingID = editingSetupTransferID
+        let bytes = sourceFolderInfo?.totalSize
+        try await driveAccessWorker.perform(
+            mountKeys: Set(([source.url] + destinations).map { DriveAccessWorker.mountKey(for: $0) }), jobKey: driveJobNamespace + ".admission"
+        ) {
+            try Task.checkCancellation()
+            try TransferSelectionPreparation.validate(sourceIdentity: source,
+                destinationIdentities: prepared.orderedDestinationIdentities,
+                settings: settings, requireNonempty: true)
+        }
+        try Task.checkCancellation()
+        guard !usesProjectWorkflow, !photographerJobViewModel.hasPreparedIngestAwaitingStart,
+              selectionGeneration == generation, sourceURL == source.url,
+              destinationURLs == destinations, editingSetupTransferID == editingID else {
+            throw FileOperationError.unsafeOperation("The selection changed. Review the folders and try again.")
+        }
+        let id: UUID
+        if let editingID {
+            try await transferJournal.replaceQueuedPrepared(
+                id: editingID, source: source, destinations: prepared.orderedDestinationIdentities,
+                verificationMode: mode, cameraSettings: settings, reportSettings: reports,
+                generateASCMHL: mhl, estimatedSourceBytes: bytes,
+                using: driveAccessWorker, jobKey: driveJobNamespace + ".commit"
+            )
+            id = editingID
+        } else {
+            id = try await transferJournal.enqueuePrepared(
+                source: source, destinations: prepared.orderedDestinationIdentities,
+                verificationMode: mode, cameraSettings: settings, reportSettings: reports,
+                generateASCMHL: mhl, estimatedSourceBytes: bytes,
+                using: driveAccessWorker, jobKey: driveJobNamespace + ".commit"
+            )
+            if let running = runningOneTimeTransfer {
+                addQueueSessionRecord(running.id)
+                if let volumeID = running.source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+            }
+            queueSessionEnded = false
+            addQueueSessionRecord(id)
+            if let volumeID = source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+            persistQueueSession()
+        }
+        // A committed immutable card is retained even if the user selected
+        // the next card while the journal was being saved.
+        if selectionGeneration == generation, sourceURL == source.url, destinationURLs == destinations {
+            editingSetupTransferID = nil
+            composerBeforeEditing = nil
+            editingOriginalAccess = nil
+            isClearingSnapshottedComposerSource = true
+            cameraLabels.clearDetectionPreservingSettings()
+            sourceURL = nil
+            isClearingSnapshottedComposerSource = false
+        }
+        if !Task.isCancelled && (isOperationInProgress || queueIsRunning) { startQueue() }
+        return id
+    }
+
+    @discardableResult
+    func startSetupTransfersPrepared() async throws -> UUID? {
+        guard !usesProjectWorkflow, !photographerJobViewModel.hasPreparedIngestAwaitingStart else {
+            throw FileOperationError.unsafeOperation("Finish setting up the project card before starting.")
+        }
+        let id = sourceURL == nil ? nil : try await enqueueSelectionPrepared()
+        guard !stagedSetupTransfers.isEmpty else {
+            throw FileOperationError.unsafeOperation("Choose a source and destinations first.")
+        }
+        try Task.checkCancellation()
+        startQueue()
+        return id
+    }
+
+    func editSetupTransferPrepared(id: UUID) async throws {
+        guard editingSetupTransferID == nil,
+              let record = stagedSetupTransfers.first(where: { $0.id == id }) else {
+            throw FileOperationError.unsafeOperation("Only a waiting setup transfer can be edited.")
+        }
+        let generation = selectionGeneration
+        let access = try await transferJournal.prepareToRun(id: id, using: driveAccessWorker,
+                                                          jobKey: driveJobNamespace + ".edit")
+        guard !Task.isCancelled, selectionGeneration == generation, editingSetupTransferID == nil,
+              stagedSetupTransfers.contains(where: { $0.id == id && $0.createdAt == record.createdAt }) else {
+            access.release()
+            throw CancellationError()
+        }
+        loadSetupTransfer(record, access: access)
+    }
+
+    private func loadSetupTransfer(_ record: LocalTransferRecord, access: LocalTransferAccess) {
+        editingOriginalAccess = access
+        if queueSessionEnded && showsOutcomeSummary {
+            resetForNewOperation()
+            sourceURL = nil
+        }
+        composerBeforeEditing = SetupComposerSnapshot(
+            sourceIdentity: selectedSourceIdentity, destinationIdentities: selectedDestinationIdentities,
+            source: sourceURL, destinations: destinationURLs, verificationMode: verificationMode,
+            cameraSettings: cameraLabelSettings, reportSettings: reportSettings, generateASCMHL: generateASCMHL
+        )
+        editingSetupTransferID = record.id
+        cameraLabels.clearDetectionPreservingSettings()
+        isReplayingQueuedTransfer = true
+        sourceURL = access.sourceURL
+        isReplayingQueuedTransfer = false
+        destinationURLs = access.destinationURLs
+        selectedSourceIdentity = record.source
+        selectedDestinationIdentities = Dictionary(uniqueKeysWithValues: zip(access.destinationURLs, record.destinations))
+        scheduleSelectionPreparation()
+        verificationMode = record.verificationMode
+        cameraLabelSettings = record.cameraSettings
+        reportSettings = record.reportSettings
+        generateASCMHL = record.generateASCMHL
     }
 
     /// Resolved once per selection change, never once per progress tick.
     private(set) var destinationVolumeNames: [String] = []
+    private var destinationCapacities: [URL: SetupLocationsPresentation.Capacity] = [:]
+    func destinationCapacity(for url: URL) -> SetupLocationsPresentation.Capacity? {
+        destinationCapacities[url]
+    }
     /// Resolved off the main actor when selection changes and confirmed when
     /// Start snapshots a run. SwiftUI rendering never performs disk lookup.
     @Published private(set) var destinationIndependence = BackupIndependencePolicy.assess(destinations: [])
     private var destinationIndependenceGeneration = 0
+    private var destinationIndependenceTask: Task<Void, Never>?
+
+    /// Pending selection work, without querying a drive from the caller.
+    var isPreparingTransferSetup: Bool {
+        isPreparingSelection || readinessTask != nil || destinationIndependenceTask != nil
+    }
 
     private func scheduleDestinationIndependenceAssessment() {
+        destinationIndependenceTask?.cancel()
         destinationIndependenceGeneration &+= 1
         let generation = destinationIndependenceGeneration
         let destinations = destinationURLs
@@ -418,32 +754,41 @@ class SharedAppCoordinator: ObservableObject {
             names: names,
             provider: UnresolvedPhysicalDiskIdentityProvider()
         )
-        Task { [weak self] in
-            let assessment = await Self.resolveDestinationIndependence(
+        destinationIndependenceTask = Task { [weak self] in
+            guard let self else { return }
+            let assessment = await self.resolveDestinationIndependence(
                 destinations: destinations,
                 names: names,
                 provider: provider
             )
-            guard let self,
+            guard !Task.isCancelled,
                   self.destinationIndependenceGeneration == generation,
                   self.destinationURLs == destinations else { return }
             self.destinationIndependence = assessment
+            self.destinationIndependenceTask = nil
+            self.scheduleReadinessAssessment()
         }
     }
 
-    private nonisolated static func resolveDestinationIndependence(
+    private func resolveDestinationIndependence(
         destinations: [URL],
         names: [String],
         provider: any PhysicalDiskIdentityProviding
     ) async -> BackupIndependenceAssessment {
-        await Task.detached(priority: .userInitiated) {
-            BackupIndependencePolicy.assess(
-                destinations: destinations,
-                names: names,
-                provider: provider
-            )
-        }.value
+        do {
+            return try await driveAccessWorker.perform(
+                mountKeys: Set(destinations.map { DriveAccessWorker.mountKey(for: $0) }),
+                jobKey: driveJobNamespace + ".independence." + UUID().uuidString
+            ) {
+                try Task.checkCancellation()
+                return BackupIndependencePolicy.assess(destinations: destinations, names: names, provider: provider)
+            }
+        } catch {
+            return BackupIndependencePolicy.assess(destinations: destinations, names: names,
+                provider: UnresolvedPhysicalDiskIdentityProvider())
+        }
     }
+
     var presentedSourceURL: URL? {
         // With no run at all, both IDs are nil and compare equal; only a
         // real run context may stand in for the composer.
@@ -458,8 +803,11 @@ class SharedAppCoordinator: ObservableObject {
         }
         return outcomeRecord?.destinations.map(\.url) ?? destinationURLs
     }
+    private var runDestinationNames: [URL: String] = [:]
     var presentedDestinationNames: [String] {
-        presentedDestinationURLs.map(DestinationVolumeLabel.resolve)
+        let urls = presentedDestinationURLs
+        if urls == destinationURLs { return destinationVolumeNames }
+        return urls.map { runDestinationNames[$0] ?? DestinationVolumeLabel.name(for: $0) }
     }
     @Published var leftURL: URL? { // For folder comparison
         didSet {
@@ -566,9 +914,13 @@ class SharedAppCoordinator: ObservableObject {
         photographerJobViewModel: PhotographerJobViewModel? = nil,
         defaults: UserDefaults = .standard,
         physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider(),
-        sourceEjectability: (@Sendable (URL) -> Bool)? = nil
+        sourceEjectability: (@Sendable (URL) -> Bool)? = nil,
+        driveAccessWorker: DriveAccessWorker? = nil
     ) {
         self.platformManager = platformManager
+        let worker = driveAccessWorker ?? DriveAccessWorker()
+        self.driveAccessWorker = worker
+        self.sourceAvailability = SourceAvailabilityModel(worker: worker, ejectabilityProbe: sourceEjectability)
         self.sourceEjectability = sourceEjectability
         self.physicalDiskIdentityProvider = physicalDiskIdentityProvider
         self.defaults = defaults
@@ -658,20 +1010,28 @@ class SharedAppCoordinator: ObservableObject {
             verificationMode = .standard
         }
         setupBindings()
-        self.transferJournal.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        self.transferJournal.objectWillChange.sink { [weak self] _ in
+            self?.objectWillChange.send()
+            self?.sourceAvailability.invalidate()
+            self?.scheduleSourceAvailability()
+        }
             .store(in: &cancellables)
         // operationState lives in stateService; views observing this
         // coordinator must still refresh when it changes.
         stateService.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
-        appleDoubleSelection.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }.store(in: &cancellables)
-        cameraLabels.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+        appleDoubleSelection.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send(); self?.scheduleReadinessAssessment() }.store(in: &cancellables)
+        cameraLabels.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send(); self?.scheduleReadinessAssessment() }
             .store(in: &cancellables)
         generalSettings.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
         // Views read the job view model through this coordinator too.
         self.photographerJobViewModel.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        sourceAvailability.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
+            .store(in: &cancellables)
+        scheduleSourceAvailability()
+        scheduleReadinessAssessment()
         setupProgressPresentation()
         stateService.automaticPauseHandler = { [weak self] reason in
             Task { await self?.pauseOperation(reason: reason) }
@@ -758,6 +1118,7 @@ class SharedAppCoordinator: ObservableObject {
         folderInfoService.objectWillChange
             .sink { [weak self] _ in
                 self?.objectWillChange.send()
+                self?.scheduleReadinessAssessment()
             }
             .store(in: &cancellables)
 
@@ -995,7 +1356,7 @@ class SharedAppCoordinator: ObservableObject {
     /// waits for it on every platform (the Mac's stricter rule, decided).
     var isAnalysingSource: Bool {
         guard let sourceURL else { return false }
-        return folderInfoService.isAwaitingSourceInfo(for: sourceURL) || appleDoubleSelection.isReviewing
+        return isPreparingSelection || folderInfoService.isAwaitingSourceInfo(for: sourceURL) || appleDoubleSelection.isReviewing
     }
 
     var isSelectedSourceKnownEmpty: Bool {
@@ -1089,7 +1450,7 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     var canEnqueueSelection: Bool {
-        operationReadinessAssessment.isReady
+        operationReadinessAssessment.isReady && !isCommittingSelection
             && !usesProjectWorkflow && !photographerJobViewModel.hasPreparedIngestAwaitingStart
     }
 
@@ -1201,33 +1562,7 @@ class SharedAppCoordinator: ObservableObject {
         // Resolve before changing the composer. A new drive at the saved path
         // must never be silently adopted by Edit.
         let access = try transferJournal.prepareToRun(id: id)
-        editingOriginalAccess = access
-        // A stopped queue may still be showing the preceding card's outcome.
-        // Return to Setup before loading the waiting snapshot into its composer.
-        if queueSessionEnded && showsOutcomeSummary {
-            resetForNewOperation()
-            sourceURL = nil
-        }
-        composerBeforeEditing = SetupComposerSnapshot(
-            sourceIdentity: selectedSourceIdentity,
-            destinationIdentities: selectedDestinationIdentities,
-            source: sourceURL,
-            destinations: destinationURLs,
-            verificationMode: verificationMode,
-            cameraSettings: cameraLabelSettings,
-            reportSettings: reportSettings,
-            generateASCMHL: generateASCMHL
-        )
-        editingSetupTransferID = id
-        cameraLabels.clearDetectionPreservingSettings()
-        isReplayingQueuedTransfer = true
-        sourceURL = access.sourceURL
-        isReplayingQueuedTransfer = false
-        destinationURLs = access.destinationURLs
-        verificationMode = record.verificationMode
-        cameraLabelSettings = record.cameraSettings
-        reportSettings = record.reportSettings
-        generateASCMHL = record.generateASCMHL
+        loadSetupTransfer(record, access: access)
     }
 
     func cancelSetupTransferEdit() {
@@ -1239,6 +1574,7 @@ class SharedAppCoordinator: ObservableObject {
         destinationURLs = snapshot.destinations
         selectedSourceIdentity = snapshot.sourceIdentity
         selectedDestinationIdentities = snapshot.destinationIdentities
+        scheduleSelectionPreparation()
         verificationMode = snapshot.verificationMode
         cameraLabelSettings = snapshot.cameraSettings
         reportSettings = snapshot.reportSettings
@@ -1267,6 +1603,64 @@ class SharedAppCoordinator: ObservableObject {
         return committedID
     }
 
+    /// For connected-card and inline Queue actions. Template destinations
+    /// retain their recorded identity; no changed disk is adopted at its path.
+    private func enqueuePreparedSnapshot(
+        source: URL, destinations: [URL], originalDestinations: [LocalTransferResource] = [],
+        mode: VerificationMode, settings: CameraLabelSettings, reports: ReportPrefs, mhl: Bool
+    ) async throws -> UUID {
+        let key = driveJobNamespace + ".snapshot." + UUID().uuidString
+        let originals = Dictionary(uniqueKeysWithValues: originalDestinations.map { ($0.url, $0) })
+        let prepared = try await driveAccessWorker.perform(
+            mountKeys: Set(([source] + destinations).map { DriveAccessWorker.mountKey(for: $0) }), jobKey: key
+        ) {
+            try Task.checkCancellation()
+            let prepared = try TransferSelectionPreparation.prepare(source: source, destinations: destinations,
+                sourceIdentity: nil, destinationIdentities: originals)
+            guard let identity = prepared.sourceIdentity else { throw LocalTransferJournalError.invalidState }
+            try TransferSelectionPreparation.validate(sourceIdentity: identity,
+                destinationIdentities: prepared.orderedDestinationIdentities,
+                settings: settings, requireNonempty: true)
+            return prepared
+        }
+        try Task.checkCancellation()
+        guard let identity = prepared.sourceIdentity else { throw LocalTransferJournalError.invalidState }
+        let id = try await transferJournal.enqueuePrepared(source: identity,
+            destinations: prepared.orderedDestinationIdentities, verificationMode: mode,
+            cameraSettings: settings, reportSettings: reports, generateASCMHL: mhl,
+            using: driveAccessWorker, jobKey: key + ".commit")
+        queueSessionEnded = false
+        addQueueSessionRecord(id)
+        if let volumeID = identity.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+        persistQueueSession()
+        return id
+    }
+
+    func enqueueAutomaticallyDetectedCardPrepared(source: URL) async throws {
+        guard let record = queueTemplateRecord else {
+            throw FileOperationError.unsafeOperation("A one-time queue must be running to add the card.")
+        }
+        _ = try await enqueuePreparedSnapshot(source: source, destinations: record.destinations.map(\.url),
+            originalDestinations: record.destinations, mode: record.verificationMode,
+            settings: record.cameraSettings, reports: record.reportSettings, mhl: record.generateASCMHL)
+        addQueueSessionRecord(record.id)
+        if let volumeID = record.source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+        persistQueueSession()
+        startQueue()
+    }
+
+    func enqueueInlineCardPrepared(source: URL, destinations: [URL], verificationMode: VerificationMode,
+                                   generateASCMHL: Bool) async throws {
+        _ = try await enqueuePreparedSnapshot(source: source, destinations: destinations,
+            mode: verificationMode, settings: cameraLabelSettings, reports: reportSettings, mhl: generateASCMHL)
+        if let running = runningOneTimeTransfer {
+            addQueueSessionRecord(running.id)
+            if let volumeID = running.source.volumeID { queueSessionSourceVolumeIDs.insert(volumeID) }
+            persistQueueSession()
+        }
+        if isOperationInProgress || queueIsRunning { startQueue() }
+    }
+
     var runningOneTimeTransfer: LocalTransferRecord? {
         guard isOperationInProgress, let record = outcomeRecord,
               record.state == .running, record.projectID == nil,
@@ -1278,12 +1672,12 @@ class SharedAppCoordinator: ObservableObject {
         guard let record = queueTemplateRecord else { return [] }
         return ConnectedDrivesPresentation.queueCandidates(
             volumes: volumes,
-            sourceURL: record.source.url.standardizedFileURL.resolvingSymlinksKeepingCase(),
-            destinationURLs: record.destinations.map { $0.url.standardizedFileURL.resolvingSymlinksKeepingCase() },
+            sourceURL: record.source.url.standardizedFileURL,
+            destinationURLs: record.destinations.map { $0.url.standardizedFileURL },
             queuedSourceURLs: transferJournal.records.filter {
                 $0.state == .queued || queueSessionRecordIDs.contains($0.id)
             }
-                .map { $0.source.url.standardizedFileURL.resolvingSymlinksKeepingCase() }
+                .map { $0.source.url.standardizedFileURL }
         )
     }
 
@@ -1590,20 +1984,11 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     var queuePresentation: QueueSessionPresentation {
-        let records = transferJournal.records.filter { queueSessionRecordIDs.contains($0.id) }
-        let mounted = Set(records.compactMap { record -> UUID? in
-            guard let access = try? transferJournal.prepareSourceForEjection(id: record.id) else { return nil }
-            defer { access.release() }
-            #if os(macOS)
-            guard (sourceEjectability?(access.sourceURL) ?? CardEjectService.isEjectable(access.sourceURL)) else { return nil }
-            #endif
-            return record.id
-        })
         return transferJournal.queuePresentation(
             sessionIDs: queueSessionRecordIDs,
             sessionRecordIDsInOrder: queueSessionRecordOrder,
             progress: progress,
-            mountedSourceIDs: mounted,
+            mountedSourceIDs: sourceAvailability.availableIDs,
             ejectedSourceIDs: ejectedQueueSourceIDs,
             pausedRecordID: queuePausedRecordID
         )
@@ -1688,6 +2073,46 @@ class SharedAppCoordinator: ObservableObject {
         try transferJournal.reauthorize(id: id, resourceIndex: resourceIndex, newURL: url)
     }
 
+    func reauthorizationStatusPrepared(id: UUID) async throws -> [Int] {
+        try await transferJournal.staleResourceIndexes(id: id, using: driveAccessWorker,
+                                                       jobKey: driveJobNamespace + ".reconnect.\(id)")
+    }
+
+    func reauthorizeTransferPrepared(_ id: UUID, resourceIndex: Int, url: URL) async throws {
+        try await transferJournal.reauthorize(id: id, resourceIndex: resourceIndex, newURL: url,
+            using: driveAccessWorker, jobKey: driveJobNamespace + ".reauthorize.\(id)")
+    }
+
+    private var pendingRetryIDs = Set<UUID>()
+    func retryTransferPrepared(_ id: UUID, generateASCMHL: Bool? = nil) async {
+        guard pendingRetryIDs.insert(id).inserted else { return }
+        defer { pendingRetryIDs.remove(id) }
+        // Project retry prepares an in-memory card setup, then Start performs
+        // its ordinary worker preflight. It does not enqueue a new attempt yet.
+        if let record = transferJournal.records.first(where: { $0.id == id }), record.projectID != nil {
+            retryTransfer(id, generateASCMHL: generateASCMHL)
+            return
+        }
+        do {
+            let retryID = try await transferJournal.requeue(id: id, generateASCMHL: generateASCMHL,
+                using: driveAccessWorker, jobKey: driveJobNamespace + ".retry.\(id)")
+            standaloneAttentionRecordIDsSinceLaunch.remove(id)
+            queueSessionRecordIDs.remove(id)
+            queueSessionRecordIDs.insert(retryID)
+            if let index = queueSessionRecordOrder.firstIndex(of: id) { queueSessionRecordOrder[index] = retryID }
+            else { queueSessionRecordOrder.append(retryID) }
+            skippedQueueAttentionIDs.remove(id)
+            if queuePausedRecordID == id { queuePausedRecordID = nil }
+            reviewedQueueRecordID = nil
+            queueMessage = nil
+            persistQueueSession()
+            startQueue()
+        } catch is CancellationError {
+            // Nothing was admitted; a later durable save reports its actual
+            // outcome through LocalTransferJournal's mutation wrapper.
+        } catch { queueMessage = error.localizedDescription }
+    }
+
     private func processNextQueuedTransfer() async {
         guard queueIsRunning, !isProcessingQueue, !isOperationInProgress, activeStartID == nil else { return }
         #if os(iOS)
@@ -1724,22 +2149,36 @@ class SharedAppCoordinator: ObservableObject {
             if queueIsRunning { Task { await self.processNextQueuedTransfer() } }
         }
         do {
-            if (try? transferJournal.staleResourceIndexes(id: record.id).contains(0)) == true {
+            let stale = try await transferJournal.staleResourceIndexes(
+                id: record.id, using: driveAccessWorker, jobKey: driveJobNamespace + ".replay-stale.\(invocationID)"
+            )
+            try requireCurrentQueuePreparation(invocationID)
+            if stale.contains(0) {
                 let message = "\(record.title) is not connected"
                 try transferJournal.fail(id: record.id, summary: message)
                 handleAttemptTerminal(recordID: record.id)
                 return
             }
-            let access = try transferJournal.prepareToRun(id: record.id)
+            let access = try await transferJournal.prepareToRun(
+                id: record.id, using: driveAccessWorker, jobKey: driveJobNamespace + ".replay.\(invocationID)"
+            )
             defer { access.release() }
+            try requireCurrentQueuePreparation(invocationID)
             isReplayingQueuedTransfer = true
             // Queued backups were the user's picks; the rule still applies,
             // since a record can predate it.
-            if let refusal = access.destinationURLs.lazy.compactMap({
-                BackupTargetPolicy.refusal(for: $0, origin: .userChoice, source: access.sourceURL)
-            }).first {
-                throw FileOperationError.unsafeOperation(refusal)
+            let destinationURLs = access.destinationURLs
+            let queuedSource = access.sourceURL
+            try await driveAccessWorker.perform(mountKeys: Set(([queuedSource] + destinationURLs).map { DriveAccessWorker.mountKey(for: $0) }),
+                                                jobKey: driveJobNamespace + ".replay-policy.\(invocationID)") {
+                for destination in destinationURLs {
+                    try Task.checkCancellation()
+                    if let refusal = BackupTargetPolicy.refusal(for: destination, origin: .userChoice, source: queuedSource) {
+                        throw FileOperationError.unsafeOperation(refusal)
+                    }
+                }
             }
+            try requireCurrentQueuePreparation(invocationID)
             currentMode = .copyAndVerify
             photographerReportFinalizer = nil
             activeProjectCardID = nil
@@ -1760,7 +2199,7 @@ class SharedAppCoordinator: ObservableObject {
             }
             let sourceBytes = sourceManifest.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
             let destinationNames = access.destinationURLs.map { DestinationIdentityPresentation.title(for: $0) }
-            let independence = await Self.resolveDestinationIndependence(
+            let independence = await resolveDestinationIndependence(
                 destinations: access.destinationURLs,
                 names: destinationNames,
                 provider: physicalDiskIdentityProvider
@@ -1814,6 +2253,9 @@ class SharedAppCoordinator: ObservableObject {
         guard let invocationID = queueInvocationID else { return }
         cancelledQueueInvocationID = invocationID
         queuedSourceScanTask?.cancel()
+        for phase in ["replay-stale", "replay", "replay-policy"] {
+            driveAccessWorker.cancel(jobKey: driveJobNamespace + ".\(phase).\(invocationID)")
+        }
     }
 
     private static func isQueueProblem(_ record: LocalTransferRecord) -> Bool {
@@ -1850,20 +2292,35 @@ class SharedAppCoordinator: ObservableObject {
             return
         }
         let selectedDestinations = destinationURLs
+        let selectedGeneration = selectionGeneration
+        let validationSettings = runCameraSettings
         let independence: BackupIndependenceAssessment
         if let preResolvedIndependence {
             independence = preResolvedIndependence
         } else {
-            independence = await Self.resolveDestinationIndependence(
+            independence = await resolveDestinationIndependence(
                 destinations: selectedDestinations,
                 names: selectedDestinations.map { DestinationIdentityPresentation.title(for: $0) },
                 provider: physicalDiskIdentityProvider
             )
         }
-        guard self.sourceURL == sourceURL,
+        guard selectionGeneration == selectedGeneration, self.sourceURL == sourceURL,
               destinationURLs == selectedDestinations,
               verificationMode == selectedVerificationMode else { return }
-        do { try validateComposerSelection(source: sourceURL, destinations: selectedDestinations) }
+        do {
+            let prepared = try await preparedComposer()
+            guard let identity = prepared.sourceIdentity else { throw LocalTransferJournalError.invalidState }
+            try await driveAccessWorker.perform(mountKeys: Set(([sourceURL] + selectedDestinations).map { DriveAccessWorker.mountKey(for: $0) }),
+                                                jobKey: driveJobNamespace + ".start-validate") {
+                try Task.checkCancellation()
+                try TransferSelectionPreparation.validate(sourceIdentity: identity,
+                    destinationIdentities: prepared.orderedDestinationIdentities,
+                    settings: validationSettings, requireNonempty: true)
+            }
+            try Task.checkCancellation()
+            guard selectionGeneration == selectedGeneration, self.sourceURL == sourceURL, destinationURLs == selectedDestinations,
+                  verificationMode == selectedVerificationMode else { return }
+        }
         catch {
             operationState = .failed
             queueMessage = error.localizedDescription
@@ -1905,7 +2362,7 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     private func executeOperation(_ initialContext: TransferRunContext, queuedInvocationID: UUID? = nil) async {
-        guard activeStartID == nil, !isOperationInProgress else { return }
+        guard !Task.isCancelled, activeStartID == nil, !isOperationInProgress else { return }
         if let queuedInvocationID {
             guard queueInvocationID == queuedInvocationID,
                   cancelledQueueInvocationID != queuedInvocationID else { return }
@@ -1923,6 +2380,14 @@ class SharedAppCoordinator: ObservableObject {
 
         let sourceURL = initialContext.sourceURL
         let destinationURLs = initialContext.destinationURLs
+        let preparedSource = selectedSourceIdentity
+        let preparedDestinations = destinationURLs.compactMap { selectedDestinationIdentities[$0] }
+        runDestinationNames = Dictionary(uniqueKeysWithValues: destinationURLs.map { url in
+            let name = self.destinationURLs.firstIndex(of: url).flatMap { index in
+                self.destinationVolumeNames.indices.contains(index) ? self.destinationVolumeNames[index] : nil
+            } ?? DestinationVolumeLabel.name(for: url)
+            return (url, name)
+        })
 
         let startID = UUID()
         activeStartID = startID
@@ -1963,15 +2428,27 @@ class SharedAppCoordinator: ObservableObject {
         // never leave a transfer running without a recoverable record.
         let context: TransferRunContext
         do {
-            let recordID = try initialContext.journalRecordID ?? transferJournal.enqueue(
-                sourceURL: sourceURL, destinationURLs: destinationURLs,
-                verificationMode: initialContext.verificationMode,
-                cameraSettings: initialContext.cameraLabelSettings,
-                reportSettings: initialContext.reportSettings,
-                generateASCMHL: initialContext.generateASCMHL,
-                projectID: initialContext.projectID,
-                projectCardID: initialContext.projectCardID
-            )
+            let recordID: UUID
+            if let existingID = initialContext.journalRecordID {
+                recordID = existingID
+            } else {
+                guard let preparedSource, preparedSource.url == sourceURL,
+                      preparedDestinations.count == destinationURLs.count else {
+                    throw LocalTransferJournalError.unavailable(sourceURL.lastPathComponent)
+                }
+                guard activeStartID == startID, !startCancellationRequested, !Task.isCancelled else {
+                    throw CancellationError()
+                }
+                recordID = try await transferJournal.enqueuePrepared(
+                    source: preparedSource, destinations: preparedDestinations,
+                    verificationMode: initialContext.verificationMode,
+                    cameraSettings: initialContext.cameraLabelSettings,
+                    reportSettings: initialContext.reportSettings,
+                    generateASCMHL: initialContext.generateASCMHL,
+                    projectID: initialContext.projectID, projectCardID: initialContext.projectCardID,
+                    using: driveAccessWorker, jobKey: driveJobNamespace + ".start-commit"
+                )
+            }
             try transferJournal.markRunning(
                 id: recordID,
                 independentDestinationCount: initialContext.independentDestinationCount,
@@ -2379,7 +2856,16 @@ class SharedAppCoordinator: ObservableObject {
         }
         let access: LocalTransferAccess
         do {
-            access = try transferJournal.prepareSourceForEjection(id: id)
+            access = try await transferJournal.prepareSourceForEjection(
+                id: id, using: driveAccessWorker, jobKey: driveJobNamespace + ".eject.\(id)"
+            )
+            try Task.checkCancellation()
+            guard let current = transferJournal.records.first(where: { $0.id == id }),
+                  current.source.bookmark == record.source.bookmark,
+                  TransferLibraryPresentation.safetyState(for: current) == .safeToErase else {
+                access.release()
+                return "The saved transfer changed. Review its results before ejecting."
+            }
         } catch {
             return error.localizedDescription
         }
@@ -2418,10 +2904,8 @@ class SharedAppCoordinator: ObservableObject {
     }
 
     var outcomeSourceIsEjectable: Bool {
-        guard let id = outcomeRecord?.id,
-              let access = try? transferJournal.prepareSourceForEjection(id: id) else { return false }
-        defer { access.release() }
-        return CardEjectService.isEjectable(access.sourceURL)
+        guard let id = outcomeRecord?.id else { return false }
+        return sourceAvailability.availableIDs.contains(id) && !ejectedQueueSourceIDs.contains(id)
     }
     #endif
 
@@ -2454,12 +2938,13 @@ class SharedAppCoordinator: ObservableObject {
     @discardableResult
     func startProjectOperation() async -> Bool {
         let selectedDestinations = destinationURLs
-        let independence = await Self.resolveDestinationIndependence(
+        let independence = await resolveDestinationIndependence(
             destinations: selectedDestinations,
             names: selectedDestinations.map { DestinationIdentityPresentation.title(for: $0) },
             provider: physicalDiskIdentityProvider
         )
         guard destinationURLs == selectedDestinations else { return false }
+        await readinessTask?.value
         destinationIndependence = independence
         guard activeStartID == nil, !isOperationInProgress,
               operationReadinessAssessment.isReady,
@@ -3062,7 +3547,7 @@ class SharedAppCoordinator: ObservableObject {
         return folderInfoService.isFolderInfoLoading(for: url)
     }
     
-    private func getDriveCapacity(for url: URL) -> Int64? {
+    private nonisolated static func driveCapacity(for url: URL) -> Int64? {
         do {
             let values = try url.resourceValues(forKeys: [
                 .volumeAvailableCapacityForImportantUsageKey,
@@ -3092,20 +3577,10 @@ class SharedAppCoordinator: ObservableObject {
     /// The one readiness rule (`TransferReadiness`, UI plan step 4.5) for
     /// the current selection, with this disk's free space and writability.
     var transferReadiness: TransferReadiness {
-        let independence = destinationIndependence
-        return TransferReadiness.assess(
-            source: sourceURL,
-            sourceFileCount: sourceFolderInfo?.fileCount,
-            sourceBytes: sourceFolderInfo?.totalSize,
-            isAnalysingSource: isAnalysingSource,
-            destinations: destinationURLs,
-            settings: cameraLabelSettings,
-            verificationMode: verificationMode,
-            sourceIssue: folderInfoService.sourceScanError ?? appleDoubleSelection.error,
-            destinationWarnings: independence.warnings,
-            availableBytes: { self.getDriveCapacity(for: $0) },
-            isWritable: TransferReadiness.isWritableFolder
-        )
+        if isCommittingSelection {
+            return TransferReadiness(status: .analysing, blockers: [], warnings: cachedReadiness.warnings)
+        }
+        return cachedReadiness
     }
 
     var alreadyBackedUpLine: String? {

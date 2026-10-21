@@ -83,10 +83,10 @@ struct MobileTransferActionPresentationTests {
         }
         try #require(ready)
         var transitionCount = 0
-        let actions = CoordinatorSetupActions.make(coordinator: coordinator) { operation in
+        let actions = CoordinatorSetupActions.make(coordinator: coordinator, performQueueTransition: { operation in
             transitionCount += 1
             _ = operation()
-        }
+        })
 
         coordinator.destinationURLs = []
         actions.start()
@@ -112,10 +112,10 @@ struct MobileTransferActionPresentationTests {
         }
         try #require(ready)
         var transitionCount = 0
-        let actions = CoordinatorSetupActions.make(coordinator: coordinator) { operation in
+        let actions = CoordinatorSetupActions.make(coordinator: coordinator, performQueueTransition: { operation in
             transitionCount += 1
             _ = operation()
-        }
+        })
 
         coordinator.currentMode = .compareFolders
         actions.start()

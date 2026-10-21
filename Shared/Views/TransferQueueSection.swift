@@ -14,6 +14,9 @@ struct TransferQueueSection: View {
     @State private var selectedWaitingID: UUID?
     @State private var heroID: UUID?
     @State private var heroDismissTask: Task<Void, Never>?
+    @State private var editTask: Task<Void, Never>?
+    @State private var addCardTask: Task<Void, Never>?
+    @State private var retryTask: Task<Void, Never>?
     @State private var confirmingCancel = false
     @State private var errorMessage: String?
     @State private var exportDocument: TransferHistoryDocument?
@@ -96,6 +99,8 @@ struct TransferQueueSection: View {
         }
         .onDisappear {
             heroDismissTask?.cancel()
+            addCardTask?.cancel()
+            retryTask?.cancel()
         }
         .fileImporter(
             isPresented: $choosingSource,
@@ -309,7 +314,9 @@ struct TransferQueueSection: View {
             }
             if row.isEditable {
                 Text("Waiting").font(.caption).foregroundStyle(.secondary)
-                Button("Edit") { edit(row.id) }.buttonStyle(.borderless)
+                Button("Edit") { edit(row.id) }
+                    .buttonStyle(.borderless)
+                    .disabled(editTask != nil)
             } else {
                 compactAction(row)
                 expandButton(row)
@@ -367,6 +374,7 @@ struct TransferQueueSection: View {
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.accentColor)
                         .fixedSize()
+                        .disabled(editTask != nil)
                 } else {
                     compactAction(row)
                     expandButton(row)
@@ -450,6 +458,7 @@ struct TransferQueueSection: View {
     private func waitingContextMenu(_ row: QueueSessionRow) -> some View {
         if row.isEditable {
             Button("Edit") { edit(row.id) }
+                .disabled(editTask != nil)
             Button("Move to Top") { moveToTop(row.id) }
             Button("Remove", role: .destructive) { remove(row.id) }
         }
@@ -685,7 +694,9 @@ struct TransferQueueSection: View {
     @ViewBuilder
     private func finishedActionButtons(_ row: QueueSessionRow, outcome: TransferOutcomePresentation) -> some View {
         if outcome.canRetry {
-            Button("Retry") { coordinator.retryTransfer(row.id) }.buttonStyle(.borderedProminent)
+            Button("Retry") { retry(row.id) }
+                .buttonStyle(.borderedProminent)
+                .disabled(retryTask != nil)
         }
         if outcome.canExport {
             #if os(macOS)
@@ -718,7 +729,7 @@ struct TransferQueueSection: View {
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.bordered)
-            .disabled(!canAddCard)
+            .disabled(!canAddCard || addCardTask != nil)
             .accessibilityHint("Choose another card to run with the current destinations")
         }
     }
@@ -745,12 +756,27 @@ struct TransferQueueSection: View {
     private func addCard(_ result: Result<[URL], Error>) {
         do {
             guard let source = try result.get().first else { return }
-            try coordinator.enqueueInlineCard(
-                source: source,
-                destinations: queueDestinations,
-                verificationMode: queueTemplate?.verificationMode ?? coordinator.verificationMode,
-                generateASCMHL: queueTemplate?.generateASCMHL ?? coordinator.generateASCMHL
-            )
+            // Keep the queue's transfer settings fixed while the worker prepares
+            // the selected source and destination identities.
+            let destinations = queueDestinations
+            let mode = queueTemplate?.verificationMode ?? coordinator.verificationMode
+            let mhl = queueTemplate?.generateASCMHL ?? coordinator.generateASCMHL
+            guard addCardTask == nil else { return }
+            addCardTask = Task { @MainActor in
+                defer { addCardTask = nil }
+                do {
+                    try await coordinator.enqueueInlineCardPrepared(
+                        source: source,
+                        destinations: destinations,
+                        verificationMode: mode,
+                        generateASCMHL: mhl
+                    )
+                } catch is CancellationError {
+                    return
+                } catch {
+                    errorMessage = error.localizedDescription
+                }
+            }
         } catch {
             errorMessage = error.localizedDescription
         }
@@ -826,19 +852,28 @@ struct TransferQueueSection: View {
     private func remove(_ id: UUID) { perform { try coordinator.removeQueuedTransfer(id) } }
     private func removeFinished(_ id: UUID) { perform { try coordinator.removeFinishedQueueRow(id) } }
     private func edit(_ id: UUID) {
-        guard let transferTransitionContext else {
-            perform { try coordinator.editSetupTransfer(id) }
-            return
-        }
-        transferTransitionContext.perform(reduceMotion) {
+        guard editTask == nil else { return }
+        let previousEditingID = coordinator.editingSetupTransferID
+        editTask = Task { @MainActor in
+            defer { editTask = nil }
             do {
-                try coordinator.editSetupTransfer(id)
+                try await coordinator.editSetupTransferPrepared(id: id)
                 errorMessage = nil
-                return id
+                transferTransitionContext?.performCompleted?(
+                    reduceMotion,
+                    previousEditingID,
+                    id
+                )
             } catch {
                 errorMessage = error.localizedDescription
-                return nil
             }
+        }
+    }
+    private func retry(_ id: UUID) {
+        guard retryTask == nil else { return }
+        retryTask = Task { @MainActor in
+            defer { retryTask = nil }
+            await coordinator.retryTransferPrepared(id)
         }
     }
     private func removePausedCard(_ id: UUID) { perform { try coordinator.removePausedCardFromQueue(id) } }

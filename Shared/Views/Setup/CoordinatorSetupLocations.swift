@@ -20,14 +20,16 @@ struct SetupConnectedVolume: Identifiable, Equatable {
 /// What differs per platform in the source and backup boxes: how a folder
 /// is picked, how a backup is added and removed, and how a refusal is shown.
 ///
-/// `addBackup` must go through `BackupTargetPolicy`: the Mac passes
-/// `MacVolumeAccessModel.addDestination` (which also forgets a dismissed
-/// drive), iOS passes `SharedAppCoordinator.addDestination`. Both return the
-/// refusal to show.
+/// `addBackup` is retained for the synchronous compatibility API. Production
+/// selection checks run through the drive worker and commit prepared URLs;
+/// `didApproveBackup` updates platform discovery bookkeeping afterward.
 struct SetupLocationsPlatform {
     var pickSource: @MainActor () async -> URL?
     var pickBackups: @MainActor () async -> [URL]
     var addBackup: @MainActor (URL) -> String?
+    /// Updates platform discovery bookkeeping after a worker-approved selection
+    /// has already passed policy and been committed to coordinator state.
+    var didApproveBackup: @MainActor ([URL], URL?) -> Void = { _, _ in }
     var removeBackup: @MainActor (URL) -> Void
     var connectedSources: [SetupConnectedVolume] = []
     var connectedDestinations: [SetupConnectedVolume] = []
@@ -47,15 +49,16 @@ struct SetupLocationsPlatform {
 }
 
 /// Choosing a source or backups from a pick or a drop, the same on every
-/// platform: `DestinationSelectionPolicy` first, then the platform's add,
-/// which applies `BackupTargetPolicy`. A running one-time transfer owns an
-/// immutable snapshot, so these choices can compose the next card while it
-/// runs. Project transfers retain their existing lock.
+/// platform. Production selection policy runs on the drive worker and applies
+/// only if the captured source and destination selection is still current. A
+/// running one-time transfer owns an immutable snapshot, so these choices can
+/// compose the next card while it runs. Project transfers retain their lock.
 @MainActor
 struct SetupLocationSelection {
     let coordinator: SharedAppCoordinator
     let addBackup: (URL) -> String?
     let removeBackup: (URL) -> Void
+    var didApproveBackup: ([URL], URL?) -> Void = { _, _ in }
     var kind: (URL) -> DestinationSelectionPolicy.ItemKind = DestinationSelectionPolicy.itemKind
     var isSystemFolder: (URL) -> Bool = DestinationSelectionPolicy.isMacSystemFolder
     var backupRefusal: (URL, URL?) -> String? = DestinationSelectionPolicy.userChoiceRefusal
@@ -124,6 +127,117 @@ struct SetupLocationSelection {
         }
         return []
     }
+
+    func chooseSourcePrepared(_ url: URL, worker: DriveAccessWorker, jobKey: String) async throws -> [String] {
+        guard !coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow else { return [] }
+        let expectedSource = coordinator.sourceURL
+        let expectedDestinations = coordinator.destinationURLs
+        let editingID = coordinator.editingSetupTransferID
+        let stagedSources = coordinator.stagedSetupTransfers
+            .filter { $0.id != editingID }
+            .map(\.source.url)
+        let mounts = Set(([url] + expectedDestinations + stagedSources).map(DriveAccessWorker.mountKey(for:)))
+        let reason = try await worker.perform(
+            mountKeys: mounts,
+            jobKey: jobKey
+        ) { () -> String? in
+            let selectedPath = BackupTargetPolicy.canonicalPath(url)
+            if stagedSources.contains(where: { BackupTargetPolicy.canonicalPath($0) == selectedPath }) {
+                return "This card is already staged."
+            }
+            return DestinationSelectionPolicy.evaluateSource(url, backups: expectedDestinations).reason
+        }
+        try Task.checkCancellation()
+        if let reason { return [reason] }
+        guard coordinator.applyPreparedSource(
+            expectedSource: expectedSource,
+            expectedDestinations: expectedDestinations,
+            newSource: url
+        ) else { throw CancellationError() }
+        return []
+    }
+
+    func addBackupsPrepared(_ urls: [URL], worker: DriveAccessWorker, jobKey: String) async throws -> [String] {
+        guard !coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow else { return [] }
+        guard !urls.isEmpty else { return [] }
+        let source = coordinator.sourceURL
+        let current = coordinator.destinationURLs
+        let mounts = Set((urls + current + [source].compactMap { $0 }).map(DriveAccessWorker.mountKey(for:)))
+        let result = try await worker.perform(
+            mountKeys: mounts,
+            jobKey: jobKey
+        ) { () -> PreparedBackupSelection in
+            var candidate = current
+            var accepted: [URL] = []
+            var refusals: [String] = []
+            for url in urls {
+                if let reason = DestinationSelectionPolicy.evaluateBackup(
+                    url, source: source, existing: candidate
+                ).reason {
+                    refusals.append(reason)
+                } else {
+                    candidate.append(url)
+                    accepted.append(url)
+                }
+            }
+            return PreparedBackupSelection(candidate: candidate, accepted: accepted, refusals: refusals)
+        }
+        try Task.checkCancellation()
+        if !result.accepted.isEmpty {
+            guard coordinator.applyPreparedDestinations(
+                result.candidate, expectedCurrent: current, expectedSource: source
+            ) else { throw CancellationError() }
+            didApproveBackup(result.accepted, nil)
+        }
+        return result.refusals
+    }
+
+    func replaceBackupPrepared(
+        at index: Int, with url: URL, worker: DriveAccessWorker, jobKey: String
+    ) async throws -> [String] {
+        guard (!coordinator.isOperationInProgress || !coordinator.usesProjectWorkflow),
+              coordinator.destinationURLs.indices.contains(index) else { return [] }
+        let source = coordinator.sourceURL
+        let current = coordinator.destinationURLs
+        let old = current[index]
+        let mounts = Set(([url, old] + current + [source].compactMap { $0 }).map(DriveAccessWorker.mountKey(for:)))
+        let result = try await worker.perform(
+            mountKeys: mounts,
+            jobKey: jobKey
+        ) { () -> PreparedBackupReplacement in
+            let decision = DestinationSelectionPolicy.evaluateBackup(
+                url, source: source, existing: current, replacing: index
+            )
+            guard decision.reason == nil else {
+                return PreparedBackupReplacement(candidate: current, refusal: decision.reason, isNoOp: false)
+            }
+            guard BackupTargetPolicy.canonicalPath(old) != BackupTargetPolicy.canonicalPath(url) else {
+                return PreparedBackupReplacement(candidate: current, refusal: nil, isNoOp: true)
+            }
+            var candidate = current
+            candidate[index] = url
+            return PreparedBackupReplacement(candidate: candidate, refusal: nil, isNoOp: false)
+        }
+        try Task.checkCancellation()
+        guard result.refusal == nil, !result.isNoOp else { return result.refusal.map { [$0] } ?? [] }
+        guard coordinator.applyPreparedDestinations(
+            result.candidate, expectedCurrent: current, expectedSource: source
+        ) else { throw CancellationError() }
+        didApproveBackup([url], old)
+        return []
+    }
+}
+
+private struct PreparedBackupSelection: Sendable {
+    let candidate: [URL]
+    let accepted: [URL]
+    let refusals: [String]
+}
+
+private struct PreparedBackupReplacement: Sendable {
+    let candidate: [URL]
+    let refusal: String?
+    let isNoOp: Bool
 }
 
 /// The source and backup boxes wired to `SharedAppCoordinator`, for every
@@ -138,6 +252,11 @@ struct CoordinatorSetupLocations: View {
     let advanced: AnyView
     let platform: SetupLocationsPlatform
     let transferTransitionContext: QueueTransferTransitionContext?
+    @State private var sourceSelectionTask: Task<Void, Never>?
+    @State private var backupSelectionTask: Task<Void, Never>?
+    @State private var sourceSelectionGeneration = UUID()
+    @State private var backupSelectionGeneration = UUID()
+    @State private var selectionJobNamespace = UUID().uuidString
 
     init(
         coordinator: SharedAppCoordinator,
@@ -167,31 +286,31 @@ struct CoordinatorSetupLocations: View {
             drops: platform.acceptsDrops ? drops : nil,
             transferTransitionContext: transferTransitionContext
         )
+        .onDisappear {
+            sourceSelectionTask?.cancel()
+            backupSelectionTask?.cancel()
+            coordinator.selectionWorker.cancel(jobKey: sourceSelectionJobKey)
+            coordinator.selectionWorker.cancel(jobKey: backupSelectionJobKey)
+        }
     }
 
     private var eligibleConnectedSources: [SetupConnectedVolume] {
         platform.connectedSources.filter { volume in
-            let root = BackupTargetPolicy.canonicalPath(volume.url)
+            let root = volume.url.standardizedFileURL.path
             if let source = coordinator.sourceURL {
-                let sourcePath = BackupTargetPolicy.canonicalPath(source)
+                let sourcePath = source.standardizedFileURL.path
                 if sourcePath == root || sourcePath.hasPrefix(root + "/") { return true }
             }
             return !coordinator.destinationURLs.contains { destination in
-                let destinationPath = BackupTargetPolicy.canonicalPath(destination)
+                let destinationPath = destination.standardizedFileURL.path
                 return destinationPath == root || destinationPath.hasPrefix(root + "/")
             }
         }
     }
 
     private var eligibleConnectedDestinations: [SetupConnectedVolume] {
-        platform.connectedDestinations.filter { volume in
-            guard !coordinator.destinationURLs.contains(where: {
-                BackupTargetPolicy.canonicalPath($0) == BackupTargetPolicy.canonicalPath(volume.url)
-            }) else { return true }
-            return BackupTargetPolicy.refusal(
-                for: volume.url, origin: .userChoice, source: coordinator.sourceURL
-            ) == nil
-        }
+        // Show connected volumes; the worker enforces destination policy on choice.
+        platform.connectedDestinations
     }
 
     private var presentation: SetupLocationsPresentation {
@@ -208,7 +327,11 @@ struct CoordinatorSetupLocations: View {
             omitsSourceSize: review.enabled && review.paths?.isEmpty != true,
             stagedSources: platform.showsStagedQueue ? stagedPresentations : [],
             destinationURLs: coordinator.destinationURLs,
-            capacity: platform.capacity,
+            destinationNames: Dictionary(
+                zip(coordinator.destinationURLs, coordinator.destinationVolumeNames),
+                uniquingKeysWith: { _, latest in latest }
+            ),
+            capacity: { coordinator.destinationCapacity(for: $0) },
             isOperationInProgress: coordinator.isOperationInProgress,
             keepsComposerEditableDuringOperation: !coordinator.usesProjectWorkflow,
             showsAddAnotherCard: !coordinator.isOperationInProgress
@@ -224,9 +347,9 @@ struct CoordinatorSetupLocations: View {
 
     private var connectedSourceDetail: String? {
         guard let source = coordinator.sourceURL else { return nil }
-        let sourcePath = BackupTargetPolicy.canonicalPath(source)
+        let sourcePath = source.standardizedFileURL.path
         return platform.connectedSources.first { volume in
-            let root = BackupTargetPolicy.canonicalPath(volume.url)
+            let root = volume.url.standardizedFileURL.path
             return sourcePath == root || sourcePath.hasPrefix(root + "/")
         }?.detail.replacingOccurrences(of: " card ·", with: " ·")
     }
@@ -269,20 +392,98 @@ struct CoordinatorSetupLocations: View {
         SetupLocationSelection(
             coordinator: coordinator,
             addBackup: { url in platform.addBackup(url) },
-            removeBackup: { url in platform.removeBackup(url) }
+            removeBackup: { url in platform.removeBackup(url) },
+            didApproveBackup: { urls, replaced in platform.didApproveBackup(urls, replaced) }
         )
+    }
+
+    private var sourceSelectionJobKey: String { "setup.selection.\(selectionJobNamespace).source" }
+    private var backupSelectionJobKey: String { "setup.selection.\(selectionJobNamespace).backup" }
+
+    private func chooseSourcePrepared(_ url: URL) {
+        sourceSelectionTask?.cancel()
+        coordinator.selectionWorker.cancel(jobKey: sourceSelectionJobKey)
+        let request = UUID()
+        sourceSelectionGeneration = request
+        let selection = self.selection
+        let platform = self.platform
+        let worker = coordinator.selectionWorker
+        sourceSelectionTask = Task { @MainActor in
+            defer { if sourceSelectionGeneration == request { sourceSelectionTask = nil } }
+            do {
+                let refusals = try await selection.chooseSourcePrepared(
+                    url, worker: worker, jobKey: sourceSelectionJobKey
+                )
+                guard !Task.isCancelled, sourceSelectionGeneration == request else { return }
+                presentRefusals(refusals, platform: platform)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard sourceSelectionGeneration == request else { return }
+                presentRefusals([error.localizedDescription], platform: platform)
+            }
+        }
+    }
+
+    private func addBackupsPrepared(_ urls: [URL]) {
+        backupSelectionTask?.cancel()
+        coordinator.selectionWorker.cancel(jobKey: backupSelectionJobKey)
+        let request = UUID()
+        backupSelectionGeneration = request
+        let selection = self.selection
+        let platform = self.platform
+        let worker = coordinator.selectionWorker
+        backupSelectionTask = Task { @MainActor in
+            defer { if backupSelectionGeneration == request { backupSelectionTask = nil } }
+            do {
+                let refusals = try await selection.addBackupsPrepared(
+                    urls, worker: worker, jobKey: backupSelectionJobKey
+                )
+                guard !Task.isCancelled, backupSelectionGeneration == request else { return }
+                presentRefusals(refusals, platform: platform)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard backupSelectionGeneration == request else { return }
+                presentRefusals([error.localizedDescription], platform: platform)
+            }
+        }
+    }
+
+    private func replaceBackupPrepared(at index: Int, with url: URL) {
+        backupSelectionTask?.cancel()
+        coordinator.selectionWorker.cancel(jobKey: backupSelectionJobKey)
+        let request = UUID()
+        backupSelectionGeneration = request
+        let selection = self.selection
+        let platform = self.platform
+        let worker = coordinator.selectionWorker
+        backupSelectionTask = Task { @MainActor in
+            defer { if backupSelectionGeneration == request { backupSelectionTask = nil } }
+            do {
+                let refusals = try await selection.replaceBackupPrepared(
+                    at: index, with: url, worker: worker, jobKey: backupSelectionJobKey
+                )
+                guard !Task.isCancelled, backupSelectionGeneration == request else { return }
+                presentRefusals(refusals, platform: platform)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard backupSelectionGeneration == request else { return }
+                presentRefusals([error.localizedDescription], platform: platform)
+            }
+        }
     }
 
     private var actions: SetupLocationsActions {
         let coordinator = self.coordinator
         let platform = self.platform
-        let selection = self.selection
         return SetupLocationsActions(
             pickSource: {
                 Task { @MainActor in
                     // A cancelled picker keeps the current source.
                     guard let url = await platform.pickSource() else { return }
-                    presentRefusals(selection.chooseSource(url), platform: platform)
+                    chooseSourcePrepared(url)
                 }
             },
             clearSource: {
@@ -290,9 +491,14 @@ struct CoordinatorSetupLocations: View {
                 coordinator.sourceURL = nil
             },
             addAnotherCard: {
+                // Retain the synchronous bridge for existing presentations;
+                // production SetupLocationsView prefers the async action.
+                nil
+            },
+            addAnotherCardAsync: {
                 guard coordinator.canEnqueueSelection else { return nil }
                 do {
-                    return try coordinator.enqueueSelection()
+                    return try await coordinator.enqueueSelectionPrepared()
                 } catch {
                     platform.showRefusals([error.localizedDescription])
                     return nil
@@ -301,7 +507,7 @@ struct CoordinatorSetupLocations: View {
             chooseConnectedSource: { url in
                 Task { @MainActor in
                     guard await platform.ensureDriveAccess() else { return }
-                    presentRefusals(selection.chooseSource(url), platform: platform)
+                    chooseSourcePrepared(url)
                 }
             },
             chooseFolderOnSource: { oldURL in
@@ -309,13 +515,13 @@ struct CoordinatorSetupLocations: View {
                     let startingAt = containingVolumeURL(for: oldURL, in: platform.connectedSources) ?? oldURL
                     guard await platform.ensureDriveAccess(),
                           let url = await platform.pickFolderOnDrive(startingAt) else { return }
-                    presentRefusals(selection.chooseSource(url), platform: platform)
+                    chooseSourcePrepared(url)
                 }
             },
             chooseConnectedBackup: { url in
                 Task { @MainActor in
                     guard await platform.ensureDriveAccess() else { return }
-                    presentRefusals(selection.addBackups([url]), platform: platform)
+                    addBackupsPrepared([url])
                 }
             },
             chooseFolderOnBackup: { oldURL in
@@ -324,16 +530,21 @@ struct CoordinatorSetupLocations: View {
                     guard await platform.ensureDriveAccess(),
                           let url = await platform.pickFolderOnDrive(startingAt),
                           let index = coordinator.destinationURLs.firstIndex(of: oldURL) else { return }
-                    presentRefusals(selection.replaceBackup(at: index, with: url), platform: platform)
+                    replaceBackupPrepared(at: index, with: url)
                 }
             },
             editStagedCard: { id in
+                // Retain the synchronous bridge for existing presentations;
+                // production SetupLocationsView prefers the async action.
+                false
+            },
+            editStagedCardAsync: { id in
                 do {
-                    try coordinator.editSetupTransfer(id)
-                    return true
+                    try await coordinator.editSetupTransferPrepared(id: id)
+                    return id
                 } catch {
                     platform.showRefusals([error.localizedDescription])
-                    return false
+                    return nil
                 }
             },
             cancelEdit: { coordinator.cancelSetupTransferEdit() },
@@ -348,7 +559,7 @@ struct CoordinatorSetupLocations: View {
             pickBackups: {
                 Task { @MainActor in
                     let urls = await platform.pickBackups()
-                    presentRefusals(selection.addBackups(urls), platform: platform)
+                    addBackupsPrepared(urls)
                 }
             },
             removeBackup: { url in
@@ -360,7 +571,6 @@ struct CoordinatorSetupLocations: View {
 
     private var drops: SetupLocationsDrops {
         let platform = self.platform
-        let selection = self.selection
         return SetupLocationsDrops(
             source: { providers in
                 guard providers.count == 1 else {
@@ -372,7 +582,7 @@ struct CoordinatorSetupLocations: View {
                         presentRefusals(["Could not read the dropped folder"], platform: platform)
                         return
                     }
-                    presentRefusals(selection.chooseSource(url), platform: platform)
+                    chooseSourcePrepared(url)
                 }
                 return true
             },
@@ -382,7 +592,7 @@ struct CoordinatorSetupLocations: View {
                         presentRefusals(["Could not read the dropped folder"], platform: platform)
                         return
                     }
-                    presentRefusals(selection.addBackups(urls), platform: platform)
+                    addBackupsPrepared(urls)
                 }
                 return true
             },
@@ -396,7 +606,7 @@ struct CoordinatorSetupLocations: View {
                         presentRefusals(["Could not read the dropped folder"], platform: platform)
                         return
                     }
-                    presentRefusals(selection.replaceBackup(at: index, with: url), platform: platform)
+                    replaceBackupPrepared(at: index, with: url)
                 }
                 return true
             }
@@ -405,9 +615,9 @@ struct CoordinatorSetupLocations: View {
 }
 
 private func containingVolumeURL(for selection: URL, in volumes: [SetupConnectedVolume]) -> URL? {
-    let selectionPath = BackupTargetPolicy.canonicalPath(selection)
+    let selectionPath = selection.standardizedFileURL.path
     return volumes.first { volume in
-        let root = BackupTargetPolicy.canonicalPath(volume.url)
+        let root = volume.url.standardizedFileURL.path
         return selectionPath == root || selectionPath.hasPrefix(root + "/")
     }?.url
 }

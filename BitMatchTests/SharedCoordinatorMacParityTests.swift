@@ -206,6 +206,12 @@ struct SharedCoordinatorMacParityTests {
 
         await fixture.coordinator.startCurrentMode()
 
+        #expect(await fixture.operations.starts.isEmpty)
+        let readinessSettled = await waitUntil(timeout: .seconds(5)) {
+            fixture.coordinator.transferReadiness.status != .analysing
+                && !fixture.coordinator.operationReadinessAssessment.blockingIssues.isEmpty
+        }
+        #expect(readinessSettled)
         #expect(!fixture.coordinator.operationReadinessAssessment.blockingIssues.isEmpty)
         #expect(await fixture.operations.starts.isEmpty)
         #expect(!fixture.coordinator.isOperationInProgress)
