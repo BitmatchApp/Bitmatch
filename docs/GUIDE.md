@@ -37,7 +37,7 @@ BitMatch ignores recognized AppleDouble `._` metadata companions by default. The
 
 Verified transfers count only selected files; recognized metadata exclusions stay in details and reports instead of adding a main-screen warning. A `._` filename alone isn't enough: unrecognized files and camera sidecars stay in the copy. If that list changes before Start, the transfer refuses to run until the source is reviewed again.
 
-The option follows the transfer into the queue and history. Reports list the exclusions, and ASC MHL describes the selected destination files. **Keep the source:** “selected files verified” does not mean the whole card is backed up or safe to erase. Existing destination metadata is left alone, including companions macOS creates itself. This option doesn't repair conflicting files or filter an existing checksum inventory during Check.
+The option follows the transfer into the queue and history. When every selected file and requested handoff checks out, PDFs show the selected files with a small metadata count. Details and CSV/JSON keep the full exclusion list, and ASC MHL describes the selected destination files. **Keep the source:** “selected files verified” does not mean the whole card is backed up or safe to erase. Existing destination metadata is left alone, including companions macOS creates itself. This option doesn't repair conflicting files or filter an existing checksum inventory during Check.
 
 ## Move Transfer Settings Between Devices
 
