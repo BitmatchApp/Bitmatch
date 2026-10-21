@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Reduced memory use when generating PDF reports with many files, including long filenames. Reports keep their file results, previews and verification verdicts.
 - Mac drive discovery runs listing and drive checks off the main thread, with bounded workers and serialized checks for one mount path.
 - Camera hints scan large folders incrementally and check cancellation between entries.
 - Auto-detected cards are checked for readable access off the main thread. Late checks cannot replace an operator's selection or select a removed card.
