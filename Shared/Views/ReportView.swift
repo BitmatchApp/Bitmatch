@@ -216,8 +216,9 @@ struct ReportView: View {
     var pdfBlocks: [ReportPDFBlock] {
         var blocks: [ReportPDFBlock] = []
         func append<V: View>(separated: Bool = true, manifest: Bool = false,
+                             nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)? = nil,
                              makeView: @escaping @MainActor (ReportView) -> V) {
-            blocks.append(ReportPDFBlock(continuesManifest: manifest) { report in
+            blocks.append(ReportPDFBlock(continuesManifest: manifest, nativeRow: nativeRow) { report in
                 AnyView(VStack(alignment: .leading, spacing: 0) {
                     if separated { Divider().padding(.vertical, 12) }
                     makeView(report)
@@ -269,7 +270,10 @@ struct ReportView: View {
             for (index, rowIndex) in manifestRowIndices.enumerated() {
                 let path = rows[rowIndex].path
                 let showPreview = previewed.insert(path).inserted
-                append(separated: index == 0, manifest: index > 0) { report in
+                let nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)? = index > 0
+                    ? { report in report.pdfNativeManifestRow(report.rows[rowIndex], showPreview: showPreview) }
+                    : nil
+                append(separated: index == 0, manifest: index > 0, nativeRow: nativeRow) { report in
                     VStack(alignment: .leading, spacing: 0) {
                         if index == 0 {
                             Text("File results")
@@ -371,6 +375,21 @@ struct ReportView: View {
             Text("Destination").frame(width: 150, alignment: .leading)
             Text("Size").frame(width: 70, alignment: .trailing)
         }.font(.system(size: 9, weight: .semibold)).foregroundColor(.secondary).padding(.vertical, 6)
+    }
+
+    func pdfNativeManifestRow(_ row: ResultRow, showPreview: Bool) -> ReportPDFNativeRow? {
+        if showPreview, thumbnails.images[row.path] != nil { return nil }
+        let status = statusPresentation(for: row)
+        let source = ResultPathMatch.comparablePath(s.source)
+        let path = ResultPathMatch.comparablePath(row.path)
+        let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
+        return ReportPDFNativeRow.makeIfFits(
+            fileName: display,
+            destination: pdfDestination(for: row),
+            size: ByteCountPresentation.fileSize(row.size),
+            glyph: pdfStatusGlyph(for: status.tone),
+            tone: status.tone
+        )
     }
 
     private func pdfManifestRow(_ row: ResultRow, showPreview: Bool) -> some View {

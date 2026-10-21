@@ -406,7 +406,7 @@ struct ReportPDFLayoutTests {
         }
     }
 
-    @Test func asyncPDFRendererComposesMultipleChunksWithEveryManifestRow() async throws {
+    @Test func asyncPDFRendererPreservesEveryLargeManifestRow() async throws {
         let destinations = ["/Volumes/Backup-A", "/Volumes/Backup-B"]
         let rows = (0..<2_000).map { index in
             let destination = destinations[index % destinations.count]
@@ -424,7 +424,7 @@ struct ReportPDFLayoutTests {
         let layout = try await ReportPDFRenderer.layoutAsync(ReportView(s: summary, rows: rows))
         let pdf = try await ReportPDFRenderer.renderPDFAsync(summary: summary, results: rows)
         let document = try #require(PDFDocument(data: pdf))
-        #expect(layout.pages.count > ReportPDFRenderer.maximumPagesPerPDFContext)
+        #expect(layout.pages.count > 64)
         #expect(document.pageCount == layout.pages.count)
         for index in 0..<document.pageCount {
             let page = try #require(document.page(at: index))

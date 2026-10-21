@@ -2,17 +2,100 @@ import Foundation
 import Darwin
 import SwiftUI
 import CoreGraphics
-import PDFKit
+import CoreText
+#if os(macOS)
+import AppKit
+#else
+import UIKit
+#endif
 import BitMatchEngine
 
 @MainActor
 struct ReportPDFBlock {
     let makeView: @MainActor (ReportView) -> AnyView
     let continuesManifest: Bool
+    let nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)?
 
-    init(continuesManifest: Bool, makeView: @escaping @MainActor (ReportView) -> AnyView) {
+    init(continuesManifest: Bool,
+         nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)? = nil,
+         makeView: @escaping @MainActor (ReportView) -> AnyView) {
         self.makeView = makeView
         self.continuesManifest = continuesManifest
+        self.nativeRow = nativeRow
+    }
+}
+
+/// Simple single-line manifest cells share a few fonts instead of creating a
+/// SwiftUI drawing resource graph for every row. Complex rows keep their view.
+@MainActor
+struct ReportPDFNativeRow {
+    let fileName: String
+    let destination: String
+    let size: String
+    let glyph: String
+    let tone: ResultStatusTone
+
+    private static func font(_ size: CGFloat, medium: Bool = false) -> CTFont {
+        #if os(macOS)
+        let platform = NSFont.systemFont(ofSize: size, weight: medium ? .medium : .regular)
+        #else
+        let platform = UIFont.systemFont(ofSize: size, weight: medium ? .medium : .regular)
+        #endif
+        return CTFontCreateWithName(platform.fontName as CFString, size, nil)
+    }
+    private static let fileFont = font(10, medium: true)
+    private static let valueFont = font(10)
+    private static let destinationFont = font(9)
+    private static let black = CGColor(gray: 0.13, alpha: 1)
+    private static let secondary = CGColor(gray: 0.5, alpha: 1)
+
+    private static func line(_ text: String, font: CTFont, color: CGColor) -> CTLine {
+        let attributes: [NSAttributedString.Key: Any] = [
+            NSAttributedString.Key(kCTFontAttributeName as String): font,
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color
+        ]
+        return CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes) as CFAttributedString)
+    }
+
+    static func makeIfFits(fileName: String, destination: String, size: String,
+                           glyph: String, tone: ResultStatusTone) -> ReportPDFNativeRow? {
+        let cells = [(fileName, fileFont, 250.0), (destination, destinationFont, 150.0), (size, valueFont, 70.0)]
+        for (text, font, width) in cells {
+            guard !text.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
+                  CTLineGetTypographicBounds(line(text, font: font, color: black), nil, nil, nil) <= width else { return nil }
+        }
+        return ReportPDFNativeRow(fileName: fileName, destination: destination, size: size, glyph: glyph, tone: tone)
+    }
+
+    func draw(in context: CGContext, top: CGFloat, height: CGFloat) {
+        let color: CGColor
+        switch tone {
+        case .verified: color = CGColor(srgbRed: 0.204, green: 0.78, blue: 0.349, alpha: 1)
+        case .warning: color = CGColor(srgbRed: 1, green: 0.58, blue: 0, alpha: 1)
+        case .failure: color = CGColor(srgbRed: 1, green: 0.23, blue: 0.188, alpha: 1)
+        default: color = Self.secondary
+        }
+        context.saveGState()
+        defer { context.restoreGState() }
+        context.textMatrix = .identity
+        context.setStrokeColor(CGColor(gray: 0.85, alpha: 1))
+        context.setLineWidth(0.5)
+        context.move(to: CGPoint(x: 40, y: ReportPDFRenderer.pageHeight - top - 0.25))
+        context.addLine(to: CGPoint(x: 572, y: ReportPDFRenderer.pageHeight - top - 0.25))
+        context.strokePath()
+        let cells = [(glyph, Self.valueFont, color, CGFloat(50), false),
+                     (fileName, Self.fileFont, Self.black, CGFloat(76), false),
+                     (destination, Self.destinationFont, Self.secondary, CGFloat(334), false),
+                     (size, Self.valueFont, Self.black, CGFloat(562), true)]
+        for (text, font, color, edge, rightAligned) in cells {
+            let line = Self.line(text, font: font, color: color)
+            var ascent: CGFloat = 0, descent: CGFloat = 0
+            let width = CTLineGetTypographicBounds(line, &ascent, &descent, nil)
+            let baselineFromTop = top + (height - ascent - descent) / 2 + ascent
+            context.textPosition = CGPoint(x: rightAligned ? edge - CGFloat(width) : edge,
+                                           y: ReportPDFRenderer.pageHeight - baselineFromTop)
+            CTLineDraw(line, context)
+        }
     }
 }
 
@@ -70,6 +153,15 @@ private final class ReportPDFFileSink: @unchecked Sendable {
             throw ReportPDFRenderer.RenderingError.temporaryFileCreationFailed(code)
         }
 
+        // Keep only the descriptor: an abrupt exit must not leave a plaintext
+        // report in the temporary directory. The open file remains mappable.
+        guard unlinkat(dirFD, "report.pdf", 0) == 0 else {
+            let code = errno
+            _ = close(fd)
+            _ = close(dirFD)
+            _ = directory.withCString { rmdir($0) }
+            throw ReportPDFRenderer.RenderingError.temporaryFileCreationFailed(code)
+        }
         self.directoryPath = directory
         self.directoryDescriptor = dirFD
         self.fileDescriptor = fd
@@ -254,7 +346,6 @@ enum ReportPDFRenderer {
         }
     }
 
-    static let maximumPagesPerPDFContext = 64
     static let pageWidth: CGFloat = 612
     static let pageHeight: CGFloat = 792
     static let horizontalMargin: CGFloat = 32
@@ -396,6 +487,10 @@ enum ReportPDFRenderer {
         let page = layout.pages[pageIndex]
         let firstCapacity = pageHeight - verticalMargin - layout.bottomMargin
         autoreleasepool {
+            let nativeRows: [Int: ReportPDFNativeRow] = Dictionary(uniqueKeysWithValues: page.blocks.compactMap { index in
+                guard let make = layout.blocks[index].nativeRow, let row = make(report) else { return nil }
+                return (index, row)
+            })
             let view = VStack(alignment: .leading, spacing: 0) {
                 if pageIndex > 0 {
                     report.pdfContinuationHeader(manifest: page.blocks.first.map { layout.blocks[$0].continuesManifest } ?? false)
@@ -403,10 +498,16 @@ enum ReportPDFRenderer {
                 }
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(page.blocks, id: \.self) { index in
-                        layout.blocks[index].makeView(report)
-                            .frame(width: pageWidth - 2 * horizontalMargin, alignment: .leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(height: layout.heights[index], alignment: .topLeading)
+                        Group {
+                            if nativeRows[index] != nil {
+                                Color.clear
+                            } else {
+                                layout.blocks[index].makeView(report)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                        }
+                        .frame(width: pageWidth - 2 * horizontalMargin, alignment: .leading)
+                        .frame(height: layout.heights[index], alignment: .topLeading)
                     }
                 }
                 .fixedSize(horizontal: false, vertical: true)
@@ -437,7 +538,20 @@ enum ReportPDFRenderer {
             let renderer = ImageRenderer(content: view)
             renderer.proposedSize = ProposedViewSize(width: pageWidth, height: pageHeight)
             context.beginPDFPage(nil)
+            context.saveGState()
             renderer.render { _, render in render(context) }
+            context.restoreGState()
+            context.saveGState()
+            let startTop = verticalMargin + (pageIndex > 0 ? continuationHeight : 0)
+            context.clip(to: CGRect(x: horizontalMargin, y: layout.bottomMargin,
+                                    width: pageWidth - 2 * horizontalMargin,
+                                    height: pageHeight - startTop - layout.bottomMargin))
+            var top = startTop - page.offset
+            for index in page.blocks {
+                nativeRows[index]?.draw(in: context, top: top, height: layout.heights[index])
+                top += layout.heights[index]
+            }
+            context.restoreGState()
             context.endPDFPage()
         }
     }
@@ -478,58 +592,6 @@ enum ReportPDFRenderer {
         let data = try sink.mappedData()
         try sink.cleanupOwnedFiles()
         return data
-    }
-
-    @MainActor
-    private static func renderPDFChunk(_ pageRange: Range<Int>, layout: Layout, report: ReportView,
-                                       phaseObserver: ((Phase) -> Void)?,
-                                       fileWriter: ReportPDFFileSink.WriteOperation?) async throws -> Data {
-        let sink = try ReportPDFFileSink(writer: fileWriter)
-        defer { sink.cleanup() }
-        var context: CGContext? = try makePDFContext(sink: sink)
-        defer {
-            context?.closePDF()
-            context = nil
-        }
-
-        for pageIndex in pageRange {
-            if pageIndex.isMultiple(of: 8) { try Task.checkCancellation() }
-            guard let context else { throw RenderingError.contextCreationFailed }
-            renderPage(pageIndex, layout: layout, report: report, context: context)
-            try sink.throwIfFailed()
-            let completed = pageIndex + 1
-            if completed.isMultiple(of: 16) || completed == layout.pages.count {
-                phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))
-            }
-            if completed.isMultiple(of: 8) || completed == layout.pages.count {
-                try Task.checkCancellation()
-                try await Task.sleep(for: .milliseconds(1))
-                try Task.checkCancellation()
-            }
-        }
-        return try closeAndRead(context: &context, sink: sink)
-    }
-
-    @MainActor
-    private static func appendPDFChunk(_ data: Data, pageCount: Int, to destination: PDFDocument) throws {
-        try autoreleasepool {
-            guard let source = PDFDocument(data: data), source.pageCount == pageCount else {
-                throw RenderingError.invalidPDFChunk
-            }
-            let insertionIndex = destination.pageCount
-            for sourceIndex in (0..<pageCount).reversed() {
-                try Task.checkCancellation()
-                guard let sourcePage = source.page(at: sourceIndex) else {
-                    throw RenderingError.invalidPDFChunk
-                }
-                destination.insert(sourcePage, at: insertionIndex)
-                let expectedPageCount = insertionIndex + pageCount - sourceIndex
-                guard destination.pageCount == expectedPageCount,
-                      destination.page(at: insertionIndex)?.document === destination else {
-                    throw RenderingError.invalidPDFChunk
-                }
-            }
-        }
     }
 
     @MainActor
@@ -585,38 +647,33 @@ enum ReportPDFRenderer {
         let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
         let layout = try await layoutAsync(report, phaseObserver: phaseObserver)
         try Task.checkCancellation()
-        phaseObserver?(.pageRenderingStarted(pageCount: layout.pages.count, blockCount: layout.blocks.count))
-        var chunks: [(data: Data, pageCount: Int)] = []
-        var firstPage = 0
-        while firstPage < layout.pages.count {
-            try Task.checkCancellation()
-            let endPage = min(firstPage + maximumPagesPerPDFContext, layout.pages.count)
-            let chunk = try await renderPDFChunk(firstPage..<endPage, layout: layout, report: report,
-                                                 phaseObserver: phaseObserver, fileWriter: fileWriter)
-            chunks.append((data: chunk, pageCount: endPage - firstPage))
-            firstPage = endPage
+        let sink = try ReportPDFFileSink(writer: fileWriter)
+        defer { sink.cleanup() }
+        var context: CGContext? = try makePDFContext(sink: sink)
+        defer {
+            context?.closePDF()
+            context = nil
         }
 
-        let finalDocument = PDFDocument()
-        finalDocument.documentAttributes = [
-            PDFDocumentAttribute.creatorAttribute: "BitMatch",
-            PDFDocumentAttribute.titleAttribute: "BitMatch Verification Report"
-        ]
-        phaseObserver?(.pageCompositionStarted(chunkCount: chunks.count, pageCount: layout.pages.count))
-        for index in chunks.indices {
-            try Task.checkCancellation()
-            try appendPDFChunk(chunks[index].data, pageCount: chunks[index].pageCount, to: finalDocument)
-            chunks[index].data = Data()
-            phaseObserver?(.pageCompositionProgress(completed: index + 1, total: chunks.count))
-            try await Task.sleep(for: .milliseconds(1))
+        phaseObserver?(.pageRenderingStarted(pageCount: layout.pages.count, blockCount: layout.blocks.count))
+        for pageIndex in layout.pages.indices {
+            if pageIndex.isMultiple(of: 8) { try Task.checkCancellation() }
+            guard let context else { throw RenderingError.contextCreationFailed }
+            renderPage(pageIndex, layout: layout, report: report, context: context)
+            try sink.throwIfFailed()
+            let completed = pageIndex + 1
+            if completed.isMultiple(of: 16) || completed == layout.pages.count {
+                phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))
+            }
+            if completed.isMultiple(of: 8) || completed == layout.pages.count {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(1))
+                try Task.checkCancellation()
+            }
         }
-        guard finalDocument.pageCount == layout.pages.count else { throw RenderingError.invalidPDFChunk }
-        try Task.checkCancellation()
-        guard let data = finalDocument.dataRepresentation(), !data.isEmpty else {
-            throw RenderingError.pdfDocumentSerializationFailed
-        }
-        try Task.checkCancellation()
+        let data = try closeAndRead(context: &context, sink: sink)
         phaseObserver?(.finalPDFData(bytes: data.count, pageCount: layout.pages.count, blockCount: layout.blocks.count))
+        try Task.checkCancellation()
         return data
     }
 
