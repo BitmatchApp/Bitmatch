@@ -131,10 +131,17 @@ final class ReportPDFMemoryTests: XCTestCase {
         }
         let fileManager = FileManager.default
         let privateRoot = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
-            .resolvingSymlinksInPath().standardizedFileURL
-        let requestedRoot = URL(fileURLWithPath: artifactsPath, isDirectory: true)
-            .standardizedFileURL.resolvingSymlinksInPath()
-        guard requestedRoot.path.hasPrefix(privateRoot.path + "/"),
+            .resolvingSymlinksInPath()
+        let requested = URL(fileURLWithPath: artifactsPath, isDirectory: true)
+        // Canonicalize the existing parent using the same operation as the
+        // scratch root. The output child does not exist yet; mixing standardize
+        // and resolve orders can compare /tmp against its /private/tmp alias.
+        let parent = requested.deletingLastPathComponent().resolvingSymlinksInPath()
+        let requestedRoot = parent.appendingPathComponent(requested.lastPathComponent, isDirectory: true)
+        let contained = parent.path.hasPrefix(privateRoot.path + "/")
+        print("PDF_PROBE_ARTIFACT_CHECK contained=\(contained) exists=\(fileManager.fileExists(atPath: requestedRoot.path))")
+        guard artifactsPath.hasPrefix("/"), contained,
+              (try parent.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true,
               !requestedRoot.path.hasPrefix("/Volumes/"),
               !fileManager.fileExists(atPath: requestedRoot.path) else {
             throw ReportPDFMemoryError.invalidArtifacts
