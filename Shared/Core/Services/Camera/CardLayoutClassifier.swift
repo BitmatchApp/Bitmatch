@@ -29,31 +29,47 @@ struct CardListing {
     static let maxEntries = 20_000
 
     /// Breadth-first listing of `root`, skipping hidden entries. Stops at
-    /// `maxDepth`, `maxEntries`, or task cancellation.
-    static func scan(_ root: URL) -> CardListing {
+    /// `maxDepth`, `maxEntries`, or task cancellation. Each directory is
+    /// enumerated shallowly so a wide directory is not materialized in full.
+    static func scan(
+        _ root: URL,
+        maxDepth: Int = CardListing.maxDepth,
+        maxEntries: Int = CardListing.maxEntries,
+        isCancelled: () -> Bool = { Task.isCancelled },
+        directoryStream: ((URL) -> AnyIterator<URL>?)? = nil
+    ) -> CardListing {
         var listing = CardListing()
         let fm = FileManager.default
+        let streamForDirectory: (URL) -> AnyIterator<URL>? = directoryStream ?? { directory in
+            guard let enumerator = fm.enumerator(
+                at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey],
+                options: [.skipsHiddenFiles, .skipsSubdirectoryDescendants]
+            ) else { return nil }
+            return AnyIterator { enumerator.nextObject() as? URL }
+        }
         var queue: [(url: URL, path: String, depth: Int)] = [(root, "", 1)]
         var next = 0
         var seen = 0
         while next < queue.count {
-            if Task.isCancelled { return listing }
+            if isCancelled() { return listing }
             let current = queue[next]
             next += 1
-            guard let children = try? fm.contentsOfDirectory(
-                at: current.url,
-                includingPropertiesForKeys: [.isDirectoryKey],
-                options: [.skipsHiddenFiles]
-            ) else { continue }
-            for child in children {
+            guard let children = streamForDirectory(current.url) else { continue }
+            while true {
+                // Check before asking the stream for another item: the cap
+                // bounds requested entries as well as processed entries.
+                if isCancelled() { return listing }
                 if seen >= maxEntries {
                     SharedLogger.debug("CardListing: entry cap (\(maxEntries)) reached at \(root.path)", category: .transfer)
                     return listing
                 }
+                guard let child = children.next() else { break }
                 seen += 1
                 let name = child.lastPathComponent.uppercased()
                 let path = current.path.isEmpty ? name : current.path + "/" + name
-                let isDirectory = (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
+                let facts = try? child.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey])
+                let isDirectory = facts?.isDirectory == true && facts?.isSymbolicLink != true
                 if isDirectory {
                     listing.directories.insert(path)
                     if current.depth < maxDepth {
