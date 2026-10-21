@@ -230,6 +230,73 @@ struct MacCameraAutoSourceTests {
         #expect(shared.sourceURL == nil)
     }
 
+    /// A card removed while its readability check is still queued must not
+    /// auto-select when capacity later frees up. The surviving card still can.
+    @Test func removedCardDropsItsQueuedReadabilityProbe() async throws {
+        let gate = ReadabilityGate()
+        let removedProbeRuns = LockedReadabilityCount()
+        let folders = try CoordinatorFolders()
+        let detectionService = CameraCardDetectionService()
+        defer { detectionService.stopMonitoring(); gate.release(); folders.cleanup() }
+        let shared = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
+            projectStore: InMemoryPhotographerJobStore(),
+            defaults: folders.defaults
+        )
+        allowAutomaticSelection(shared)
+
+        detectionService.volumeEventCenter = NotificationCenter()
+        detectionService.listVolumes = { [] }
+        // Hoisted: CoordinatorFolders is not Sendable, so the @Sendable
+        // detector and probe closures capture plain URLs only.
+        let firstVolume = folders.source
+        let secondVolume = folders.secondary
+        detectionService.detectCard = { url in
+            CameraCard(
+                name: url.lastPathComponent, manufacturer: "Canon", model: nil, fileCount: 1,
+                totalSize: 1, detectionConfidence: 1, metadata: [:],
+                volumeURL: url, cameraType: .canon, mediaPath: url
+            )
+        }
+
+        // One probe at a time, so the second card's check stays queued
+        // behind the first card's held check.
+        let scheduler = BoundedVolumeProbeScheduler(maxConcurrent: 1, maxQueued: 8, reservedQueueSlots: 1)
+        let controller = MacCameraAutoSourceController(
+            shared: shared,
+            detectionService: detectionService,
+            startMonitoring: false,
+            testReadabilityScheduler: scheduler,
+            readabilityProbe: { url in
+                if url == firstVolume { return gate.hold() }
+                _ = removedProbeRuns.increment()
+                return true
+            }
+        )
+        detectionService.startMonitoring()
+
+        await detectionService.handleVolumeEvent(
+            VolumeEvent(type: .mounted, volume: firstVolume, timestamp: Date())
+        )
+        #expect(await gate.waitUntilEnteredAsync())
+
+        await detectionService.handleVolumeEvent(
+            VolumeEvent(type: .mounted, volume: secondVolume, timestamp: Date())
+        )
+        #expect(await waitForCondition { scheduler.queuedCount == 1 })
+
+        await detectionService.handleVolumeEvent(
+            VolumeEvent(type: .unmounted, volume: secondVolume, timestamp: Date())
+        )
+        #expect(scheduler.queuedCount == 0)
+
+        gate.release()
+        #expect(await controller.waitForReadabilityProbesForTesting())
+        #expect(removedProbeRuns.count == 0)
+        #expect(shared.sourceURL == firstVolume)
+    }
+
     @Test func healthySecondMountProbeStartsWhileFirstMountIsHeld() async throws {
         let firstGate = ReadabilityGate()
         let secondGate = ReadabilityGate()

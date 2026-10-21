@@ -115,4 +115,14 @@ struct TransferExitGuardPolicyTests {
         #expect(!delegate.focusExistingContentWindow())
         #expect(delegate.applicationShouldHandleReopen(NSApplication.shared, hasVisibleWindows: false))
     }
+
+    @Test @MainActor func idleQuitTerminatesNowWithoutPrompt() {
+        let delegate = AppDelegate()
+        delegate.coordinator = SharedAppCoordinator(
+            platformManager: MacOSPlatformManager.shared,
+            defaults: .isolatedWorkflowDefaults()
+        )
+        #expect(delegate.applicationShouldTerminate(NSApplication.shared) == .terminateNow)
+    }
+
 }

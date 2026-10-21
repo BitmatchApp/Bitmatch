@@ -134,7 +134,7 @@ final class DockTileController {
             reviewedIDs: coordinator.reviewedQueueAttentionIDs,
             standaloneAttentionIDs: coordinator.standaloneAttentionRecordIDsSinceLaunch
         )
-        let label = count == 0 ? nil : String(count)
+        let label = QueueDockBadgePolicy.badgeLabel(forCount: count)
         guard NSApp.dockTile.badgeLabel != label else { return }
         NSApp.dockTile.badgeLabel = label
         NSApp.dockTile.display()
