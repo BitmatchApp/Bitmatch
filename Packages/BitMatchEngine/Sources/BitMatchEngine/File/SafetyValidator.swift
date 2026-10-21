@@ -506,7 +506,11 @@ public final class SafetyValidator {
     }
 
     private static func canonicalPath(_ url: URL) -> String {
-        url.standardizedFileURL.resolvingSymlinksKeepingCase().path
+        // A destination's final folders may not exist yet. Resolve existing
+        // symlink prefixes before appending that missing tail; whole-URL
+        // resolution can otherwise leave an alias into the source unresolved.
+        // This preflight check does not replace the no-follow pinned opener.
+        canonicalPathResolvingExistingPrefixes(url)
     }
 }
 
