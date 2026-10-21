@@ -722,6 +722,22 @@ struct QueueSessionPresentationTests {
         #expect(q2.rows.map(\.id) == [done.id, retry.id])
     }
 
+    @Test func completedAttemptsThatNeedAttentionCollapse() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let first = try fixture.record(name: "A7IV_CARD1", state: .completed, outcome: .failed, at: 1)
+        let second = try fixture.record(name: "A7IV_CARD1", state: .completed, outcome: .failed, at: 2)
+        let third = try fixture.record(name: "A7IV_CARD1", state: .completed, outcome: .failed, at: 3)
+        #expect(TransferLibraryPresentation.safetyState(for: first) == .needsAttention)
+        let queue = QueueSessionPresentation.make(
+            records: [third, second, first], sessionIDs: [first.id, second.id, third.id],
+            sessionRecordIDsInOrder: [first.id, second.id, third.id],
+            progress: nil, mountedSourceIDs: [])
+        #expect(queue.rows.count == 1)
+        #expect(queue.rows[0].id == third.id)
+        #expect(queue.rows[0].earlierAttemptIDs == [first.id, second.id])
+    }
+
     @Test func dockBadgeIncludesStandaloneAttentionSinceLaunch() {
         #expect(QueueDockBadgePolicy.totalUnresolvedCount(
             rows: [], reviewedIDs: [], standaloneAttentionIDs: [UUID(), UUID()]

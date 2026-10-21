@@ -189,7 +189,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         var lastAttempt: [String: Int] = [:]
         for record in session {
             let key = attemptKey(for: record)
-            if let index = lastAttempt[key], collapsesIntoLaterAttempt(attempts[index].record.state) {
+            if let index = lastAttempt[key], collapsesIntoLaterAttempt(attempts[index].record) {
                 attempts[index] = (record, attempts[index].earlier + [attempts[index].record.id])
             } else {
                 attempts.append((record, []))
@@ -294,10 +294,13 @@ struct QueueSessionPresentation: Equatable, Sendable {
         return "\(volumeID)/\(resourceID)"
     }
 
-    private static func collapsesIntoLaterAttempt(_ state: LocalTransferState) -> Bool {
-        switch state {
-        case .failed, .interrupted, .cancelled, .issues: true
-        default: false
+    /// Judged by what the user sees, not the journal state: a completed run
+    /// that still needs attention is as unsettled as a failed one.
+    private static func collapsesIntoLaterAttempt(_ record: LocalTransferRecord) -> Bool {
+        guard record.state != .queued, record.state != .running else { return false }
+        switch TransferLibraryPresentation.safetyState(for: record) {
+        case .needsAttention, .failed, .interrupted, .copiedNotVerified: return true
+        default: return false
         }
     }
 
