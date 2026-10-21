@@ -11,8 +11,8 @@ All notable changes to this project will be documented in this file.
 - Check rejects classic MHL records that give conflicting modification dates for the same file.
 - Saved path comparisons stay consistent when files or symlinks appear or disappear. Safety checks recognize source-folder aliases even when final child folders do not exist yet.
 - Ordinary test runs no longer touch real drives: real-volume policy checks are opt-in (`BITMATCH_REAL_VOLUME_POLICY=1`), and the test launcher strips drive-access probe controls from ordinary jobs.
-- Check reads MD5-only and SHA-1-only classic MHL inventories from an independent writer; size-only and XXH64 record shapes stay explicitly unsupported.
-- Dock badge shows the unresolved-attention count (nothing when clean); idle Quit never prompts, and removing a card retires its queued readability check.
+- Check gains reader coverage for MD5-only and SHA-1-only classic MHL inventories from an independent writer; size-only and XXH64 record shapes stay explicitly unsupported.
+- Dock badge behavior is pinned by tests: the unresolved-attention count, nothing when clean. Idle Quit and queued-card removal semantics are covered by tests without behavior change.
 - Selection re-preparation on the bounded worker rechecks identities, names, capacities and readiness after mount changes; last-known free space is dropped while re-probing.
 - History profiling now covers model preparation and collapsed/empty window attach on Mac plus an opt-in iPad simulator probe. Attach/show dominates main-actor stalls even for empty journals; no loading, persistence or retention changes.
 
