@@ -92,8 +92,6 @@ struct TransferOutcomePresentation: Equatable, Sendable {
     let copySummary: String
     /// The hero's one evidence sentence. Claims exactly what the mode did.
     let heroSubtitle: String
-    /// The button that starts the next card on the same backups.
-    let nextCardLabel: String
 
     var isInterrupted: Bool { safetyState == .interrupted }
 
@@ -336,8 +334,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 backupCount: destinations.count,
                 verificationMode: verificationMode,
                 duration: duration
-            ),
-            nextCardLabel: "Next card"
+            )
         )
     }
 
@@ -361,8 +358,10 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             sentence = "\(files) read back from \(readBackFrom) and matched to the card"
         case .paranoid:
             sentence = "\(files) compared byte for byte and matched to the card on \(counted)"
-        case .quick, nil:
+        case .quick:
             sentence = "\(files) copied to \(counted); sizes checked, not verified"
+        case nil:
+            sentence = "\(files) copied to \(readBackFrom); verification not recorded"
         }
         sentence += "."
         if let duration { sentence += " \(durationText(duration))." }

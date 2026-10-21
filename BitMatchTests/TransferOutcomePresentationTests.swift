@@ -61,7 +61,7 @@ struct TransferOutcomePresentationTests {
     /// A clean, fully verified card of `files` files on `destinations` backups.
     private func make(
         state: OperationState,
-        mode: VerificationMode,
+        mode: VerificationMode?,
         files: Int,
         destinations count: Int,
         seconds: TimeInterval,
@@ -87,7 +87,6 @@ struct TransferOutcomePresentationTests {
     @Test func heroSubtitleIsExactForStandardVerify() {
         let outcome = make(state: done, mode: .standard, files: 486, destinations: 2, seconds: 95)
         #expect(outcome.heroSubtitle == "486 files read back from both backups and matched to the card. 1m 35s.")
-        #expect(outcome.nextCardLabel == "Next card")
     }
 
     @Test func heroSubtitleNamesThreeBackupsAndParanoid() {
@@ -104,6 +103,11 @@ struct TransferOutcomePresentationTests {
         #expect(one.heroSubtitle == "2 files compared byte for byte and matched to the card on the backup. 5s.")
         #expect(!many.heroSubtitle.contains("byte for byte"))
         #expect(!quick.heroSubtitle.contains("matched"))
+    }
+
+    @Test func heroSubtitleWithoutRecordedModeClaimsNoVerification() {
+        let outcome = make(state: done, mode: nil, files: 4, destinations: 2, seconds: 9)
+        #expect(outcome.heroSubtitle == "4 files copied to both backups; verification not recorded. 9s.")
     }
 
     @Test func destinationLineIsVolumeThenFolder() {
