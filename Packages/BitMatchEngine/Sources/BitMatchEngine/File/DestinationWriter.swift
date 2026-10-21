@@ -1057,6 +1057,8 @@ public final class DestinationWriter {
                 let requested = min(chunkSize, Int(sourceSize - bytesRead))
                 var data = try sourceHandle.read(upToCount: requested) ?? Data()
                 guard !data.isEmpty else {
+                    recordSourceStabilityFailure(.copyReadShort, sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: false)
                     throw sourceChangedError()
                 }
                 bytesRead += Int64(data.count)
@@ -1064,7 +1066,11 @@ public final class DestinationWriter {
                 if let sourceDidRead = hooks?.sourceDidRead {
                     let readCount = data.count
                     data = try await sourceDidRead(source, data)
-                    guard data.count == readCount else { throw sourceChangedError() }
+                    guard data.count == readCount else {
+                        recordSourceStabilityFailure(.copyReadLengthMismatch, sourceIdentityPresent: true,
+                                                     currentSourceIdentityPresent: false)
+                        throw sourceChangedError()
+                    }
                 }
                 sourceHasher.update(data)
                 let chunkData = data
@@ -1123,18 +1129,68 @@ public final class DestinationWriter {
 
             if !active.isEmpty {
                 let trailingData = try sourceHandle.read(upToCount: 1) ?? Data()
-                let finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
+                let finalSourceAttributes: [FileAttributeKey: Any]
+                do {
+                    finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
+                } catch {
+                    if !(error is CancellationError) {
+                        recordSourceStabilityFailure(.copyPathChanged,
+                                                     sourceIdentityPresent: true,
+                                                     currentSourceIdentityPresent: false,
+                                                     lookupError: error)
+                    }
+                    throw error
+                }
                 var finalSourceStat = stat()
-                guard bytesRead == sourceSize,
-                      trailingData.isEmpty,
-                      fstat(sourceHandle.fileDescriptor, &finalSourceStat) == 0,
-                      pinnedFileRemainedStable(initialSourceStat, finalSourceStat),
-                      sourceRemainedStable(
-                        initialSize: sourceSize,
-                        initialModificationDate: sourceModificationDate,
-                        initialIdentity: sourceIdentity,
-                        finalAttributes: finalSourceAttributes
-                      ) else {
+                guard bytesRead == sourceSize else {
+                    recordSourceStabilityFailure(.copyFinalCoverage,
+                                                 changedFields: sourceAttributeChangedFields(
+                                                    initialSize: sourceSize,
+                                                    initialModificationDate: sourceModificationDate,
+                                                    initialIdentity: sourceIdentity,
+                                                    finalAttributes: finalSourceAttributes),
+                                                 sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: true)
+                    throw sourceChangedError()
+                }
+                guard trailingData.isEmpty else {
+                    recordSourceStabilityFailure(.copyFinalTrailingData,
+                                                 changedFields: sourceAttributeChangedFields(
+                                                    initialSize: sourceSize,
+                                                    initialModificationDate: sourceModificationDate,
+                                                    initialIdentity: sourceIdentity,
+                                                    finalAttributes: finalSourceAttributes),
+                                                 sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: true)
+                    throw sourceChangedError()
+                }
+                guard fstat(sourceHandle.fileDescriptor, &finalSourceStat) == 0 else {
+                    let failure = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                    recordSourceStabilityFailure(.copyFinalDescriptorLookup, initial: verifiedIdentity(from: initialSourceStat),
+                                                 currentSourceIdentityPresent: false, lookupError: failure)
+                    throw sourceChangedError()
+                }
+                let finalDescriptorIdentity = verifiedIdentity(from: finalSourceStat)
+                guard pinnedFileRemainedStable(initialSourceStat, finalSourceStat) else {
+                    recordSourceStabilityFailure(.copyDescriptorChanged,
+                                                 initial: verifiedIdentity(from: initialSourceStat),
+                                                 current: finalDescriptorIdentity)
+                    throw sourceChangedError()
+                }
+                guard sourceRemainedStable(
+                    initialSize: sourceSize,
+                    initialModificationDate: sourceModificationDate,
+                    initialIdentity: sourceIdentity,
+                    finalAttributes: finalSourceAttributes
+                ) else {
+                    recordSourceStabilityFailure(.copyPathChanged,
+                                                 changedFields: sourceAttributeChangedFields(
+                                                    initialSize: sourceSize,
+                                                    initialModificationDate: sourceModificationDate,
+                                                    initialIdentity: sourceIdentity,
+                                                    finalAttributes: finalSourceAttributes),
+                                                 sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: true)
                     throw sourceChangedError()
                 }
                 if verificationMode == .thorough {
@@ -1295,6 +1351,63 @@ public final class DestinationWriter {
             code: -4,
             userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; keep the source and inspect the backup for a partial file"]
         )
+    }
+
+    private static func recordSourceStabilityFailure(
+        _ stage: SharedLogger.SourceStabilityStage,
+        initial: VerifiedFileIdentity? = nil,
+        current: VerifiedFileIdentity? = nil,
+        changedFields suppliedFields: [SharedLogger.IdentityField]? = nil,
+        sourceIdentityPresent: Bool? = nil,
+        currentSourceIdentityPresent: Bool? = nil,
+        lookupError: Error? = nil
+    ) {
+        let fields = suppliedFields ?? sourceIdentityChangedFields(initial, current)
+        SharedLogger.sourceStabilityRejected(
+            run: TransferDiagnostics.runID,
+            stage: stage,
+            ordinal: TransferDiagnostics.verifyOrdinal,
+            changedFields: fields,
+            sourceIdentityPresent: sourceIdentityPresent ?? (initial != nil),
+            currentSourceIdentityPresent: currentSourceIdentityPresent ?? (current != nil),
+            lookupError: lookupError
+        )
+    }
+
+    private static func sourceIdentityChangedFields(
+        _ initial: VerifiedFileIdentity?, _ current: VerifiedFileIdentity?
+    ) -> [SharedLogger.IdentityField] {
+        guard let initial, let current else { return [] }
+        var fields: [SharedLogger.IdentityField] = []
+        if initial.device != current.device { fields.append(.device) }
+        if initial.inode != current.inode { fields.append(.inode) }
+        if initial.size != current.size { fields.append(.size) }
+        if initial.modificationSeconds != current.modificationSeconds
+            || initial.modificationNanoseconds != current.modificationNanoseconds { fields.append(.modificationTime) }
+        if initial.changeSeconds != current.changeSeconds
+            || initial.changeNanoseconds != current.changeNanoseconds { fields.append(.changeTime) }
+        return fields
+    }
+
+    private static func sourceAttributeChangedFields(
+        initialSize: Int64,
+        initialModificationDate: Date?,
+        initialIdentity: (volume: UInt64?, file: UInt64?),
+        finalAttributes: [FileAttributeKey: Any]
+    ) -> [SharedLogger.IdentityField] {
+        var fields: [SharedLogger.IdentityField] = []
+        let finalSize = (finalAttributes[.size] as? NSNumber)?.int64Value ?? -1
+        if initialSize != finalSize { fields.append(.size) }
+        let finalIdentity = fileIdentity(from: finalAttributes)
+        if let before = initialIdentity.volume, let after = finalIdentity.volume, before != after {
+            fields.append(.device)
+        }
+        if let before = initialIdentity.file, let after = finalIdentity.file, before != after {
+            fields.append(.inode)
+        }
+        let finalModificationDate = finalAttributes[.modificationDate] as? Date
+        if initialModificationDate != finalModificationDate { fields.append(.modificationTime) }
+        return fields
     }
     #endif
 
@@ -1626,7 +1739,10 @@ public final class DestinationWriter {
             }
         }
         if let sourceReadEvidence {
-            guard try sourceIdentity(at: source) == sourceReadEvidence.identity else {
+            let beforeIdentity = try sourceIdentity(at: source, stage: .checksumIdentityBefore)
+            guard beforeIdentity == sourceReadEvidence.identity else {
+                recordSourceStabilityFailure(.checksumIdentityBefore,
+                                             initial: sourceReadEvidence.identity, current: beforeIdentity)
                 throw sourceChangedError()
             }
             for type in requiredTypes {
@@ -1636,7 +1752,10 @@ public final class DestinationWriter {
                     sourceValues[type] = try await sourceChecksum(type)
                 }
             }
-            guard try sourceIdentity(at: source) == sourceReadEvidence.identity else {
+            let afterIdentity = try sourceIdentity(at: source, stage: .checksumIdentityAfter)
+            guard afterIdentity == sourceReadEvidence.identity else {
+                recordSourceStabilityFailure(.checksumIdentityAfter,
+                                             initial: sourceReadEvidence.identity, current: afterIdentity)
                 throw sourceChangedError()
             }
         } else {
@@ -1862,21 +1981,50 @@ public final class DestinationWriter {
             let count = try autoreleasepool { () throws -> Int in
                 let read = try handle.read(upToCount: requested) ?? Data()
                 let data = try hooks?.transformVerificationSourceRead?(relativePath, read) ?? read
-                guard data.count == read.count else { throw sourceChangedError() }
+                guard data.count == read.count else {
+                    recordSourceStabilityFailure(.thoroughReadLengthMismatch,
+                                                 initial: verifiedIdentity(from: initial),
+                                                 currentSourceIdentityPresent: false)
+                    throw sourceChangedError()
+                }
                 if !data.isEmpty { hasher.update(data) }
                 return data.count
             }
-            guard count > 0 else { throw sourceChangedError() }
+            guard count > 0 else {
+                recordSourceStabilityFailure(.thoroughReadShort,
+                                             initial: verifiedIdentity(from: initial),
+                                             currentSourceIdentityPresent: false)
+                throw sourceChangedError()
+            }
             hooks?.verificationSourceDidRead?(relativePath, count)
             onIOBytes?(-1, relativePath, .sourceVerifying, count, 0, ProcessInfo.processInfo.systemUptime)
             bytesRead += Int64(count)
         }
         let trailingData = try handle.read(upToCount: 1) ?? Data()
         var final = stat()
-        guard trailingData.isEmpty,
-              bytesRead == Int64(initial.st_size),
-              fstat(handle.fileDescriptor, &final) == 0,
-              pinnedFileRemainedStable(initial, final) else {
+        guard trailingData.isEmpty else {
+            recordSourceStabilityFailure(.thoroughFinalTrailingData,
+                                         initial: verifiedIdentity(from: initial),
+                                         currentSourceIdentityPresent: false)
+            throw sourceChangedError()
+        }
+        guard bytesRead == Int64(initial.st_size) else {
+            recordSourceStabilityFailure(.thoroughFinalCoverage,
+                                         initial: verifiedIdentity(from: initial),
+                                         currentSourceIdentityPresent: false)
+            throw sourceChangedError()
+        }
+        guard fstat(handle.fileDescriptor, &final) == 0 else {
+            let failure = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            recordSourceStabilityFailure(.thoroughFinalDescriptorLookup,
+                                         initial: verifiedIdentity(from: initial),
+                                         currentSourceIdentityPresent: false, lookupError: failure)
+            throw sourceChangedError()
+        }
+        guard pinnedFileRemainedStable(initial, final) else {
+            recordSourceStabilityFailure(.thoroughDescriptorChanged,
+                                         initial: verifiedIdentity(from: initial),
+                                         current: verifiedIdentity(from: final))
             throw sourceChangedError()
         }
         return SourceReadEvidence(
@@ -1975,7 +2123,12 @@ public final class DestinationWriter {
             let (sourceCount, destinationCount, same, readSeconds, readEnded) = try autoreleasepool { () throws -> (Int, Int, Bool, TimeInterval, TimeInterval) in
                 let sourceRead = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
                 let sourceData = try hooks?.transformVerificationSourceRead?(relativePath, sourceRead) ?? sourceRead
-                guard sourceData.count == sourceRead.count else { throw sourceChangedError() }
+                guard sourceData.count == sourceRead.count else {
+                    recordSourceStabilityFailure(.comparisonReadLengthMismatch,
+                                                 sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: false)
+                    throw sourceChangedError()
+                }
                 let readStarted = ProcessInfo.processInfo.systemUptime
                 let destinationData = try destinationHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
                 let readEnded = ProcessInfo.processInfo.systemUptime
@@ -1983,6 +2136,11 @@ public final class DestinationWriter {
                         readEnded - readStarted, readEnded)
             }
             guard sourceCount > 0, destinationCount > 0 else {
+                if sourceCount <= 0 {
+                    recordSourceStabilityFailure(.comparisonReadShort,
+                                                 sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: false)
+                }
                 throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
             }
             hooks?.verificationSourceDidRead?(relativePath, sourceCount)
@@ -1996,15 +2154,44 @@ public final class DestinationWriter {
         let sourceTrailingData = try sourceHandle.read(upToCount: 1) ?? Data()
         let destinationTrailingData = try destinationHandle.read(upToCount: 1) ?? Data()
         let destinationFinal = try pinnedDestination.snapshot()
-        guard sourceTrailingData.isEmpty,
-              destinationTrailingData.isEmpty,
-              sourceRemainedStable(
-                initialSize: sourceSize,
-                initialModificationDate: sourceModificationDate,
-                initialIdentity: sourceIdentity,
-                finalAttributes: try FileManager.default.attributesOfItem(atPath: source.path)
-              ),
-              pinnedFileRemainedStable(destinationInitial, destinationFinal) else {
+        guard sourceTrailingData.isEmpty else {
+            recordSourceStabilityFailure(.comparisonSourceTrailingData,
+                                         sourceIdentityPresent: true,
+                                         currentSourceIdentityPresent: false)
+            throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
+        }
+        guard destinationTrailingData.isEmpty else {
+            throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
+        }
+        let sourceFinalAttributes: [FileAttributeKey: Any]
+        do {
+            sourceFinalAttributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        } catch {
+            if !(error is CancellationError) {
+                recordSourceStabilityFailure(.comparisonSourceChanged,
+                                             sourceIdentityPresent: true,
+                                             currentSourceIdentityPresent: false,
+                                             lookupError: error)
+            }
+            throw error
+        }
+        guard sourceRemainedStable(
+            initialSize: sourceSize,
+            initialModificationDate: sourceModificationDate,
+            initialIdentity: sourceIdentity,
+            finalAttributes: sourceFinalAttributes
+        ) else {
+            recordSourceStabilityFailure(.comparisonSourceChanged,
+                                         changedFields: sourceAttributeChangedFields(
+                                            initialSize: sourceSize,
+                                            initialModificationDate: sourceModificationDate,
+                                            initialIdentity: sourceIdentity,
+                                            finalAttributes: sourceFinalAttributes),
+                                         sourceIdentityPresent: true,
+                                         currentSourceIdentityPresent: true)
+            throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
+        }
+        guard pinnedFileRemainedStable(destinationInitial, destinationFinal) else {
             throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
         }
         return true
@@ -2015,9 +2202,19 @@ public final class DestinationWriter {
         return (attributes[.size] as? NSNumber)?.int64Value ?? 0
     }
 
-    private static func sourceIdentity(at source: URL) throws -> VerifiedFileIdentity {
+    private static func sourceIdentity(
+        at source: URL, stage: SharedLogger.SourceStabilityStage
+    ) throws -> VerifiedFileIdentity {
         var info = stat()
-        guard lstat(source.path, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+        guard lstat(source.path, &info) == 0 else {
+            let failure = NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            recordSourceStabilityFailure(stage, sourceIdentityPresent: true,
+                                         currentSourceIdentityPresent: false, lookupError: failure)
+            throw sourceChangedError()
+        }
+        guard (info.st_mode & S_IFMT) == S_IFREG else {
+            recordSourceStabilityFailure(stage, sourceIdentityPresent: true,
+                                         currentSourceIdentityPresent: true)
             throw sourceChangedError()
         }
         return verifiedIdentity(from: info)
