@@ -2,9 +2,15 @@ import SwiftUI
 import CoreGraphics
 import BitMatchEngine
 
+@MainActor
 struct ReportPDFBlock {
-    let view: AnyView
+    let makeView: @MainActor (ReportView) -> AnyView
     let continuesManifest: Bool
+
+    init(continuesManifest: Bool, makeView: @escaping @MainActor (ReportView) -> AnyView) {
+        self.makeView = makeView
+        self.continuesManifest = continuesManifest
+    }
 }
 
 /// Renders shared report sections one page at a time on every platform.
@@ -39,8 +45,9 @@ enum ReportPDFRenderer {
     }
 
     @MainActor
-    private static func height(of view: AnyView) -> CGFloat {
+    private static func height(of block: ReportPDFBlock, report: ReportView) -> CGFloat {
         autoreleasepool {
+            let view = block.makeView(report)
             let renderer = ImageRenderer(content: view
                 .frame(width: pageWidth - 2 * horizontalMargin, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)
@@ -53,12 +60,13 @@ enum ReportPDFRenderer {
     }
 
     @MainActor
-    static func blockHeights(_ blocks: [ReportPDFBlock], phaseObserver: ((Phase) -> Void)? = nil) -> [CGFloat] {
+    static func blockHeights(_ blocks: [ReportPDFBlock], report: ReportView,
+                             phaseObserver: ((Phase) -> Void)? = nil) -> [CGFloat] {
         var heights: [CGFloat] = []
         heights.reserveCapacity(blocks.count)
         if phaseObserver != nil { phaseObserver?(.measurementProgress(completed: 0, total: blocks.count)) }
         for (index, block) in blocks.enumerated() {
-            heights.append(height(of: block.view))
+            heights.append(height(of: block, report: report))
             let completed = index + 1
             if completed.isMultiple(of: 128) || completed == blocks.count {
                 phaseObserver?(.measurementProgress(completed: completed, total: blocks.count))
@@ -71,13 +79,16 @@ enum ReportPDFRenderer {
     static func layout(_ report: ReportView, phaseObserver: ((Phase) -> Void)? = nil) -> Layout {
         // Reserve enough width for any page counter before measuring wrapping.
         // Actual counters are shorter, so their footer cannot need more height.
-        let identityHeight = height(of: AnyView(report.pdfPageFooter(page: Int.max, total: Int.max)))
+        let identityBlock = ReportPDFBlock(continuesManifest: false) { report in
+            AnyView(report.pdfPageFooter(page: Int.max, total: Int.max))
+        }
+        let identityHeight = height(of: identityBlock, report: report)
         let repeatsIdentity = identityHeight <= contentHeight / 3
         // Very large metadata must paginate rather than consume the page or clip.
         phaseObserver?(.blockConstructionStarted(rowCount: report.rows.count))
         let blocks = report.pdfBlocks + (repeatsIdentity ? [] : [report.pdfPaginatedIdentity])
         phaseObserver?(.blockConstructionFinished(blockCount: blocks.count))
-        let heights = blockHeights(blocks, phaseObserver: phaseObserver)
+        let heights = blockHeights(blocks, report: report, phaseObserver: phaseObserver)
         let bottomMargin = repeatsIdentity ? max(verticalMargin, identityHeight + 20) : verticalMargin
         let firstCapacity = pageHeight - verticalMargin - bottomMargin
         phaseObserver?(.paginationStarted(blockCount: blocks.count))
@@ -119,7 +130,7 @@ enum ReportPDFRenderer {
                     }
                     VStack(alignment: .leading, spacing: 0) {
                         ForEach(page.blocks, id: \.self) { index in
-                            blocks[index].view
+                            blocks[index].makeView(report)
                                 .frame(width: pageWidth - 2 * horizontalMargin, alignment: .leading)
                                 .fixedSize(horizontal: false, vertical: true)
                                 .frame(height: heights[index], alignment: .topLeading)

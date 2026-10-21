@@ -3,6 +3,7 @@ import PDFKit
 import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
+import SwiftUI
 import Testing
 @testable import BitMatch
 import BitMatchEngine
@@ -157,6 +158,99 @@ struct ReportPDFLayoutTests {
         let pages = ReportPDFLayout.pages(blockHeights: [], contentHeight: 100)
         #expect(pages == [ReportPDFLayout.Page(blocks: 0..<0, offset: 0)])
         #expect(ReportPDFLayout.pages(blockHeights: [0, 0], contentHeight: 100).map(\.blocks) == [0..<2])
+    }
+
+    @Test func pdfBlockFactoryIsLazyAndRebuiltForEachMeasurement() {
+        let summary = ReportSummary(
+            jobID: UUID(), started: Date(), finished: Date(), mode: .copyAndVerify,
+            source: "/card", destinations: [], totalFiles: 0, matched: 0, issues: 0, workers: 1,
+            appVersion: "test", osVersion: "test", client: "", production: "", company: "",
+            verificationMethod: "Standard", totalBytesProcessed: 0, averageSpeed: 0,
+            clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase
+        )
+        let report = ReportView(s: summary, rows: [])
+        var viewConstructions = 0
+        let block = ReportPDFBlock(continuesManifest: false) { _ in
+            viewConstructions += 1
+            return AnyView(Text("lazy block"))
+        }
+
+        #expect(viewConstructions == 0)
+        _ = ReportPDFRenderer.blockHeights([block], report: report)
+        #expect(viewConstructions == 1)
+        _ = ReportPDFRenderer.blockHeights([block], report: report)
+        #expect(viewConstructions == 2)
+    }
+
+    @Test func qualifiedPDFFiltersAppleDoubleRowsWithoutDroppingFollowingRows() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("lazy-pdf-appledouble-\(UUID())")
+        let source = root.appendingPathComponent("Card", isDirectory: true)
+        let backup = root.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["._metadata.mov"]
+        let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: backup, settings: settings)
+        let started = Date(timeIntervalSince1970: 10)
+        let finished = Date(timeIntervalSince1970: 20)
+        let rows = [
+            ResultRow(path: source.appendingPathComponent("first.mov").path,
+                status: ResultOutcome.verified.statusText, size: 10, checksum: "first-digest",
+                destination: backup.path, destinationPath: output.appendingPathComponent("first.mov").path),
+            ResultRow(path: source.appendingPathComponent("._metadata.mov").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 1, checksum: nil,
+                destination: backup.path, destinationPath: output.appendingPathComponent("._metadata.mov").path),
+            ResultRow(path: source.appendingPathComponent("last.mov").path,
+                status: ResultOutcome.verified.statusText, size: 11, checksum: "last-digest",
+                destination: backup.path, destinationPath: output.appendingPathComponent("last.mov").path)
+        ]
+        var record = LocalTransferRecord(id: UUID(), createdAt: started,
+            source: try LocalTransferResource(url: source), destinations: [try LocalTransferResource(url: backup)],
+            verificationMode: .standard, cameraSettings: settings, reportSettings: ReportPrefs())
+        record.state = .issues
+        record.startedAt = started
+        record.endedAt = finished
+        record.sourceFingerprint = "lazy-pdf-fixture"
+        record.plannedFileCounts = [2]
+        record.expectedExclusionQueueQualification = .ordinaryTransfer
+        record.results = rows
+        let proof = try #require(VerifiedReportSelection.saved(record))
+        let summary = ReportSummary(jobID: record.id, started: started, finished: finished,
+            mode: .copyAndVerify, source: source.path, destinations: [backup.path], totalFiles: rows.count,
+            matched: 2, issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "",
+            production: "", company: "", verificationMethod: "SHA-256", verificationMode: .standard,
+            verificationScope: VerificationScopeEvidence(selectedMode: .standard, results: rows),
+            totalBytesProcessed: 21, averageSpeed: 0, clientLogoData: nil, companyLogoData: nil,
+            photographyJob: nil, safetyState: .needsAttention, verifiedSelection: proof)
+
+        let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
+        let text = try #require(document.string)
+        #expect(text.contains("first.mov"))
+        #expect(text.contains("last.mov"))
+        #expect(!text.contains("._metadata.mov"))
+        let first = try #require(document.findString("first.mov", withOptions: []).first)
+        let last = try #require(document.findString("last.mov", withOptions: []).first)
+        #expect(first.pages == last.pages)
+        #expect(first.pages.first.map { first.bounds(for: $0).minY > last.bounds(for: $0).minY } == true)
+    }
+
+    @Test func issueOverflowRetainsGroupCountsAndEveryManifestRow() throws {
+        let rows = (0..<12).map { index in
+            ResultRow(path: String(format: "/card/failure-%02d.mov", index), status: ResultOutcome.failed.statusText,
+                size: 1, checksum: nil, destination: "/Volumes/Backup")
+        }
+        let summary = ReportSummary(jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1),
+            mode: .copyAndVerify, source: "/card", destinations: ["/Volumes/Backup"], totalFiles: rows.count,
+            matched: 0, issues: rows.count, workers: 1, appVersion: "test", osVersion: "test", client: "",
+            production: "", company: "", verificationMethod: "SHA-256", totalBytesProcessed: 0,
+            averageSpeed: 0, clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .failed)
+        let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
+        let text = try #require(document.string)
+        #expect(text.contains("Failed (12)"))
+        #expect(text.contains("Showing 10 of 12 files; 2 more in the complete result manifest."))
+        for row in rows { #expect(document.findString(row.fileName, withOptions: []).isEmpty == false) }
     }
 
     @Test func largeReportPageCountMatchesPackingAndContainsEveryRow() throws {
