@@ -10,6 +10,7 @@ enum ClassicMHLReader {
     struct File: Equatable, Sendable {
         let path: String
         let size: Int64
+        let lastModificationDate: Date?
         let digests: [SavedChecksumCheck.Digest]
     }
 
@@ -85,6 +86,7 @@ enum ClassicMHLReader {
         private struct Item {
             var path: String?
             var size: Int64?
+            var lastModificationDate: Date?
             var digests: [SavedChecksumCheck.Digest] = []
             var fields: Set<String> = []
         }
@@ -106,6 +108,20 @@ enum ClassicMHLReader {
         private(set) var recordedDate: Date?
         private(set) var failure: SavedChecksumCheck.CheckError?
         private(set) var completed = false
+        // XMLParser invokes this delegate synchronously on the parsing thread.
+        // Reuse per-parser formatters; creating one for every row is costly on
+        // large inventories, while a shared formatter would introduce mutable
+        // cross-parse state.
+        private let fractionalDateFormatter: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            return formatter
+        }()
+        private let wholeSecondDateFormatter: ISO8601DateFormatter = {
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime]
+            return formatter
+        }()
 
         private func reject(_ parser: XMLParser, _ error: SavedChecksumCheck.CheckError = .unreadableEvidence) {
             if failure == nil { failure = error }
@@ -212,9 +228,9 @@ enum ClassicMHLReader {
             let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
             switch stack {
             case ["hashlist", "creationdate"]:
-                recordedDate = Self.date(value)
+                recordedDate = date(value)
             case ["hashlist", "creatorinfo", "finishdate"]:
-                if recordedDate == nil { recordedDate = Self.date(value) }
+                if recordedDate == nil { recordedDate = date(value) }
             case ["hashlist", "creatorinfo"]:
                 guard Self.requiredCreatorFields.isSubset(of: creatorFields) else { reject(parser); return }
             case ["hashlist", "hash", "file"]:
@@ -225,6 +241,8 @@ enum ClassicMHLReader {
                 guard !value.isEmpty, value.allSatisfy({ $0.isASCII && $0.isNumber }),
                       let size = Int64(value), size >= 0 else { reject(parser); return }
                 item?.size = size
+            case ["hashlist", "hash", "lastmodificationdate"]:
+                item?.lastModificationDate = date(value)
             case ["hashlist", "hash", "md5"], ["hashlist", "hash", "sha1"]:
                 let algorithm: SavedChecksumCheck.Algorithm = name == "md5" ? .md5 : .sha1
                 let length = name == "md5" ? 32 : 40
@@ -244,7 +262,16 @@ enum ClassicMHLReader {
                     // Swift String equality folds canonical Unicode forms.
                     // A byte-distinct name must not inherit another path's
                     // digests on a filesystem that distinguishes those names.
-                    guard previous.path.utf8.elementsEqual(path.utf8), previous.size == size else {
+                    let modificationDatesConflict: Bool
+                    if let previousDate = previous.lastModificationDate,
+                       let currentDate = item.lastModificationDate {
+                        modificationDatesConflict = previousDate != currentDate
+                    } else {
+                        // Missing or unparseable metadata makes no timestamp claim.
+                        modificationDatesConflict = false
+                    }
+                    guard previous.path.utf8.elementsEqual(path.utf8), previous.size == size,
+                          !modificationDatesConflict else {
                         reject(parser); return
                     }
                     var digests = previous.digests
@@ -253,11 +280,15 @@ enum ClassicMHLReader {
                             guard existing == digest else { reject(parser); return }
                         } else { digests.append(digest) }
                     }
-                    files[index] = File(path: path, size: size, digests: Self.ordered(digests))
+                    files[index] = File(path: path, size: size,
+                                        lastModificationDate: previous.lastModificationDate ?? item.lastModificationDate,
+                                        digests: Self.ordered(digests))
                 } else {
                     guard files.count < Self.maximumFiles else { reject(parser, .unsupportedEvidence); return }
                     byPath[path] = files.count
-                    files.append(File(path: path, size: size, digests: Self.ordered(item.digests)))
+                    files.append(File(path: path, size: size,
+                                      lastModificationDate: item.lastModificationDate,
+                                      digests: Self.ordered(item.digests)))
                 }
                 self.item = nil
             case ["hashlist"]:
@@ -278,12 +309,8 @@ enum ClassicMHLReader {
                 .allSatisfy { !$0.isEmpty && $0 != "." && $0 != ".." }
         }
 
-        private static func date(_ text: String) -> Date? {
-            let format = ISO8601DateFormatter()
-            format.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            if let value = format.date(from: text) { return value }
-            format.formatOptions = [.withInternetDateTime]
-            return format.date(from: text)
+        private func date(_ text: String) -> Date? {
+            fractionalDateFormatter.date(from: text) ?? wholeSecondDateFormatter.date(from: text)
         }
     }
 }

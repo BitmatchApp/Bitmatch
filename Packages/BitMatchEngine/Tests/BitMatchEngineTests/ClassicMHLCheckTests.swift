@@ -445,7 +445,7 @@ struct ClassicMHLCheckTests {
     /// missing digest as a usable subset of the inventory.
     @Test(arguments: ["truncated", "empty", "missing-file", "missing-size", "negative-size", "fractional-size",
         "overflow-size", "invalid-md5", "invalid-sha1", "no-digest", "duplicate-file", "duplicate-size",
-        "conflicting-digest", "conflicting-size", "absolute", "traversal", "dot", "double-slash", "backslash"])
+        "conflicting-digest", "conflicting-size", "conflicting-modification-date", "absolute", "traversal", "dot", "double-slash", "backslash"])
     func malformedClassicEvidenceFailsClosed(kind: String) async throws {
         let fixture = try ClassicFixture(files: [("clip.mov", Data("original".utf8))])
         defer { fixture.remove() }
@@ -469,6 +469,8 @@ struct ClassicMHLCheckTests {
             let conflict = one.replacingOccurrences(of: digest(fixture.files[0].1, algorithm: "md5"), with: String(repeating: "0", count: 32))
             changed = classicXML(entries: [one, conflict])
         case "conflicting-size": changed = classicXML(entries: [one, one.replacingOccurrences(of: "<size>8</size>", with: "<size>9</size>")])
+        case "conflicting-modification-date":
+            changed = classicXML(entries: [one, one.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-21T00:00:00Z")])
         default:
             let paths = ["absolute": "/clip.mov", "traversal": "../clip.mov", "dot": "./clip.mov",
                 "double-slash": "Camera//clip.mov", "backslash": "Camera\\clip.mov"]
@@ -481,6 +483,76 @@ struct ClassicMHLCheckTests {
             _ = try await checker.discover(under: fixture.media)
         }
         #expect(try fixture.snapshot() == before)
+    }
+
+    @Test(arguments: ["equivalent-timezone", "equivalent-fraction", "empty-timestamp"])
+    func duplicateRecordsWithoutConflictingTimestampClaimsRemainUsable(kind: String) async throws {
+        let fixture = try ClassicFixture(files: [("clip.mov", Data("original".utf8))])
+        defer { fixture.remove() }
+        let one = entry(path: "clip.mov", data: fixture.files[0].1)
+        let second: String
+        switch kind {
+        case "equivalent-timezone":
+            second = one.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-20T02:00:00+02:00")
+        case "equivalent-fraction":
+            second = one.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-20T00:00:00.000Z")
+        default:
+            second = one.replacingOccurrences(of: "<lastmodificationdate>2026-10-20T00:00:00Z</lastmodificationdate>",
+                                              with: "<lastmodificationdate></lastmodificationdate>")
+        }
+        try Data(classicXML(entries: [one, second]).utf8).write(to: fixture.manifest)
+        let result = try await run(fixture.media)
+        #expect(result.isIntact)
+        #expect(result.matchingPaths == ["clip.mov"])
+    }
+
+    @Test(arguments: ["empty-middle", "invalid-middle", "empty-middle-reversed", "invalid-middle-reversed"])
+    func missingTimestampCannotEraseAnEarlierConflictingClaim(kind: String) async throws {
+        let fixture = try ClassicFixture(files: [("clip.mov", Data("original".utf8))])
+        defer { fixture.remove() }
+        let base = entry(path: "clip.mov", data: fixture.files[0].1)
+        let changedDate = base.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-21T00:00:00Z")
+        let emptyDate = base.replacingOccurrences(of: "<lastmodificationdate>2026-10-20T00:00:00Z</lastmodificationdate>",
+                                                  with: "<lastmodificationdate></lastmodificationdate>")
+        let invalidDate = base.replacingOccurrences(of: "<lastmodificationdate>2026-10-20T00:00:00Z</lastmodificationdate>",
+                                                    with: "<lastmodificationdate>not-a-date</lastmodificationdate>")
+        let middle = kind.hasPrefix("empty") ? emptyDate : invalidDate
+        let entries = kind.hasSuffix("reversed") ? [changedDate, middle, base] : [base, middle, changedDate]
+        try Data(classicXML(entries: entries).utf8).write(to: fixture.manifest)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.discover(under: fixture.media)
+        }
+    }
+
+    @Test func manyClassicRowsRetainCoverageAndRejectConflictingTail() throws {
+        // Exercise only XML parsing and the date-consistency merge with a
+        // bounded synthetic inventory; no media tree traversal or timing
+        // threshold is involved.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-classic-parser-many-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manifest = root.appendingPathComponent("inventory.mhl")
+        let rows = (0..<2_000).map { index in
+            entry(path: String(format: "Camera/clip-%04d.mov", index),
+                  data: Data("synthetic row \(index)".utf8), algorithms: "md5")
+        }
+        let validXML = classicXML(entries: rows)
+        try Data(validXML.utf8).write(to: manifest)
+
+        let parsed = try ClassicMHLReader.read(at: manifest)
+        #expect(parsed.files.count == 2_000)
+        #expect(parsed.files.first?.path == "Camera/clip-0000.mov")
+        #expect(parsed.files.last?.path == "Camera/clip-1999.mov")
+        #expect(Set(parsed.files.map(\.path)).count == 2_000)
+
+        let conflictingTail = entry(path: "Camera/clip-0000.mov",
+                                    data: Data("synthetic row 0".utf8), algorithms: "md5")
+            .replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-21T00:00:00Z")
+        try Data(classicXML(entries: rows + [conflictingTail]).utf8).write(to: manifest)
+        #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try ClassicMHLReader.read(at: manifest)
+        }
     }
 
     /// Plant: ignore unsupported record kinds or declarations and use only
