@@ -2,6 +2,7 @@ import Foundation
 import Darwin
 import SwiftUI
 import CoreGraphics
+import PDFKit
 import BitMatchEngine
 
 @MainActor
@@ -199,6 +200,7 @@ enum ReportPDFRenderer {
         case sinkCleanupFailed(Int32)
         case invalidSinkOutput
         case invalidPDFChunk
+        case pdfDocumentSerializationFailed
 
         var errorDescription: String? {
             switch self {
@@ -211,6 +213,7 @@ enum ReportPDFRenderer {
             case .sinkCleanupFailed(let code): return "Could not remove the private PDF sink (errno \(code))."
             case .invalidSinkOutput: return "The private PDF sink did not contain a complete report."
             case .invalidPDFChunk: return "A temporary PDF page group could not be read completely."
+            case .pdfDocumentSerializationFailed: return "The completed PDF report could not be serialized."
             }
         }
     }
@@ -471,20 +474,24 @@ enum ReportPDFRenderer {
         return try closeAndRead(context: &context, sink: sink)
     }
 
-    private static func appendPDFChunk(_ data: Data, pageCount: Int, context: CGContext,
-                                       sink: ReportPDFFileSink) throws {
+    @MainActor
+    private static func appendPDFChunk(_ data: Data, pageCount: Int, to destination: PDFDocument) throws {
         try autoreleasepool {
-            guard let provider = CGDataProvider(data: data as CFData),
-                  let document = CGPDFDocument(provider), document.numberOfPages == pageCount else {
+            guard let source = PDFDocument(data: data), source.pageCount == pageCount else {
                 throw RenderingError.invalidPDFChunk
             }
-            for pageNumber in 1...pageCount {
+            let insertionIndex = destination.pageCount
+            for sourceIndex in (0..<pageCount).reversed() {
                 try Task.checkCancellation()
-                guard let page = document.page(at: pageNumber) else { throw RenderingError.invalidPDFChunk }
-                context.beginPDFPage(nil)
-                context.drawPDFPage(page)
-                context.endPDFPage()
-                try sink.throwIfFailed()
+                guard let sourcePage = source.page(at: sourceIndex) else {
+                    throw RenderingError.invalidPDFChunk
+                }
+                destination.insert(sourcePage, at: insertionIndex)
+                let expectedPageCount = insertionIndex + pageCount - sourceIndex
+                guard destination.pageCount == expectedPageCount,
+                      destination.page(at: insertionIndex)?.document === destination else {
+                    throw RenderingError.invalidPDFChunk
+                }
             }
         }
     }
@@ -554,26 +561,26 @@ enum ReportPDFRenderer {
             firstPage = endPage
         }
 
-        let sink = try ReportPDFFileSink(writer: fileWriter)
-        defer { sink.cleanup() }
-        var context: CGContext? = try makePDFContext(sink: sink)
-        defer {
-            context?.closePDF()
-            context = nil
-        }
+        let finalDocument = PDFDocument()
+        finalDocument.documentAttributes = [
+            PDFDocumentAttribute.creatorAttribute: "BitMatch",
+            PDFDocumentAttribute.titleAttribute: "BitMatch Verification Report"
+        ]
         phaseObserver?(.pageCompositionStarted(chunkCount: chunks.count, pageCount: layout.pages.count))
         for index in chunks.indices {
             try Task.checkCancellation()
-            guard let compositionContext = context else { throw RenderingError.contextCreationFailed }
-            try appendPDFChunk(chunks[index].data, pageCount: chunks[index].pageCount, context: compositionContext, sink: sink)
-            try sink.throwIfFailed()
+            try appendPDFChunk(chunks[index].data, pageCount: chunks[index].pageCount, to: finalDocument)
             chunks[index].data = Data()
             phaseObserver?(.pageCompositionProgress(completed: index + 1, total: chunks.count))
             try await Task.sleep(for: .milliseconds(1))
         }
-        let data = try closeAndRead(context: &context, sink: sink)
-        phaseObserver?(.finalPDFData(bytes: data.count, pageCount: layout.pages.count, blockCount: layout.blocks.count))
+        guard finalDocument.pageCount == layout.pages.count else { throw RenderingError.invalidPDFChunk }
         try Task.checkCancellation()
+        guard let data = finalDocument.dataRepresentation(), !data.isEmpty else {
+            throw RenderingError.pdfDocumentSerializationFailed
+        }
+        try Task.checkCancellation()
+        phaseObserver?(.finalPDFData(bytes: data.count, pageCount: layout.pages.count, blockCount: layout.blocks.count))
         return data
     }
 
