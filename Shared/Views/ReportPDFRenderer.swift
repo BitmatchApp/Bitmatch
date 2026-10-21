@@ -198,6 +198,7 @@ enum ReportPDFRenderer {
         case sinkCloseFailed(Int32)
         case sinkCleanupFailed(Int32)
         case invalidSinkOutput
+        case invalidPDFChunk
 
         var errorDescription: String? {
             switch self {
@@ -209,6 +210,7 @@ enum ReportPDFRenderer {
             case .sinkCloseFailed(let code): return "Could not close the private PDF sink (errno \(code))."
             case .sinkCleanupFailed(let code): return "Could not remove the private PDF sink (errno \(code))."
             case .invalidSinkOutput: return "The private PDF sink did not contain a complete report."
+            case .invalidPDFChunk: return "A temporary PDF page group could not be read completely."
             }
         }
     }
@@ -231,6 +233,8 @@ enum ReportPDFRenderer {
         case paginationFinished(blockCount: Int, pageCount: Int)
         case pageRenderingStarted(pageCount: Int, blockCount: Int)
         case pageRenderProgress(completed: Int, total: Int)
+        case pageCompositionStarted(chunkCount: Int, pageCount: Int)
+        case pageCompositionProgress(completed: Int, total: Int)
         case finalPDFData(bytes: Int, pageCount: Int, blockCount: Int)
     }
 
@@ -437,6 +441,54 @@ enum ReportPDFRenderer {
     }
 
     @MainActor
+    private static func renderPDFChunk(_ pageRange: Range<Int>, layout: Layout, report: ReportView,
+                                       phaseObserver: ((Phase) -> Void)?,
+                                       fileWriter: ReportPDFFileSink.WriteOperation?) async throws -> Data {
+        let sink = try ReportPDFFileSink(writer: fileWriter)
+        defer { sink.cleanup() }
+        var context: CGContext? = try makePDFContext(sink: sink)
+        defer {
+            context?.closePDF()
+            context = nil
+        }
+
+        for pageIndex in pageRange {
+            if pageIndex.isMultiple(of: 8) { try Task.checkCancellation() }
+            guard let context else { throw RenderingError.contextCreationFailed }
+            renderPage(pageIndex, layout: layout, report: report, context: context)
+            try sink.throwIfFailed()
+            let completed = pageIndex + 1
+            if completed.isMultiple(of: 16) || completed == layout.pages.count {
+                phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))
+            }
+            if completed.isMultiple(of: 8) || completed == layout.pages.count {
+                try Task.checkCancellation()
+                try await Task.sleep(for: .milliseconds(1))
+                try Task.checkCancellation()
+            }
+        }
+        return try closeAndRead(context: &context, sink: sink)
+    }
+
+    private static func appendPDFChunk(_ data: Data, pageCount: Int, context: CGContext,
+                                       sink: ReportPDFFileSink) throws {
+        try autoreleasepool {
+            guard let provider = CGDataProvider(data: data as CFData),
+                  let document = CGPDFDocument(provider), document.numberOfPages == pageCount else {
+                throw RenderingError.invalidPDFChunk
+            }
+            for pageNumber in 1...pageCount {
+                try Task.checkCancellation()
+                guard let page = document.page(at: pageNumber) else { throw RenderingError.invalidPDFChunk }
+                context.beginPDFPage(nil)
+                context.drawPDFPage(page)
+                context.endPDFPage()
+                try sink.throwIfFailed()
+            }
+        }
+    }
+
+    @MainActor
     static func renderPDF(summary: ReportSummary, results: [ResultRow], thumbnails: ReportThumbnails = ReportThumbnails(),
                           phaseObserver: ((Phase) -> Void)? = nil) throws -> Data {
         let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
@@ -489,6 +541,18 @@ enum ReportPDFRenderer {
         let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
         let layout = try await layoutAsync(report, phaseObserver: phaseObserver)
         try Task.checkCancellation()
+        phaseObserver?(.pageRenderingStarted(pageCount: layout.pages.count, blockCount: layout.blocks.count))
+        var chunks: [(data: Data, pageCount: Int)] = []
+        var firstPage = 0
+        while firstPage < layout.pages.count {
+            try Task.checkCancellation()
+            let endPage = min(firstPage + 8, layout.pages.count)
+            let chunk = try await renderPDFChunk(firstPage..<endPage, layout: layout, report: report,
+                                                 phaseObserver: phaseObserver, fileWriter: fileWriter)
+            chunks.append((data: chunk, pageCount: endPage - firstPage))
+            firstPage = endPage
+        }
+
         let sink = try ReportPDFFileSink(writer: fileWriter)
         defer { sink.cleanup() }
         var context: CGContext? = try makePDFContext(sink: sink)
@@ -496,22 +560,15 @@ enum ReportPDFRenderer {
             context?.closePDF()
             context = nil
         }
-
-        phaseObserver?(.pageRenderingStarted(pageCount: layout.pages.count, blockCount: layout.blocks.count))
-        for pageIndex in layout.pages.indices {
-            if pageIndex.isMultiple(of: 8) { try Task.checkCancellation() }
-            guard let context else { throw RenderingError.contextCreationFailed }
-            renderPage(pageIndex, layout: layout, report: report, context: context)
+        phaseObserver?(.pageCompositionStarted(chunkCount: chunks.count, pageCount: layout.pages.count))
+        for index in chunks.indices {
+            try Task.checkCancellation()
+            guard let compositionContext = context else { throw RenderingError.contextCreationFailed }
+            try appendPDFChunk(chunks[index].data, pageCount: chunks[index].pageCount, context: compositionContext, sink: sink)
             try sink.throwIfFailed()
-            let completed = pageIndex + 1
-            if completed.isMultiple(of: 16) || completed == layout.pages.count {
-                phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))
-            }
-            if completed.isMultiple(of: 8) || completed == layout.pages.count {
-                try Task.checkCancellation()
-                try await Task.sleep(for: .milliseconds(1))
-                try Task.checkCancellation()
-            }
+            chunks[index].data = Data()
+            phaseObserver?(.pageCompositionProgress(completed: index + 1, total: chunks.count))
+            try await Task.sleep(for: .milliseconds(1))
         }
         let data = try closeAndRead(context: &context, sink: sink)
         phaseObserver?(.finalPDFData(bytes: data.count, pageCount: layout.pages.count, blockCount: layout.blocks.count))

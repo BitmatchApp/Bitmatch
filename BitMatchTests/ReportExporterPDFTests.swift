@@ -311,6 +311,10 @@ private final class ReportPDFMemoryMetrics: Sendable {
             event = Event(phase: "pageRenderingStarted", completed: nil, total: pageCount, value: blockCount)
         case .pageRenderProgress(let completed, let total):
             event = Event(phase: "pageRender", completed: completed, total: total, value: nil)
+        case .pageCompositionStarted(let chunks, let pages):
+            event = Event(phase: "pageCompositionStarted", completed: nil, total: chunks, value: pages)
+        case .pageCompositionProgress(let completed, let total):
+            event = Event(phase: "pageComposition", completed: completed, total: total, value: nil)
         case .finalPDFData(let bytes, let pageCount, let blockCount):
             event = Event(phase: "finalPDFData", completed: blockCount, total: pageCount, value: bytes)
         }
