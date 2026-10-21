@@ -16,6 +16,7 @@ All notable changes to this project will be documented in this file.
 - Selection re-preparation on the bounded worker rechecks identities, names, capacities and readiness after mount changes; last-known free space is dropped while re-probing.
 - History profiling now covers model preparation and collapsed/empty window attach on Mac plus an opt-in iPad simulator probe. Attach/show dominates main-actor stalls even for empty journals; no loading, persistence or retention changes.
 - History opens faster with large journals: collapsed rows no longer build their full details until expanded, and each row scans its verification evidence once. Window attachment dropped from about 2 seconds to under half a second in the 50,000-row app-host probe; search is unchanged.
+- A copied file that fails readback verification is now renamed to `<name>.bitmatch-failed` on the destination, so bad output is unmistakable on disk. This only happens for files this attempt wrote, after identity checks prove the file is unchanged; reused files and read errors are never moved, and the bytes are preserved.
 
 ## [0.2.11] - 2026-10-20
 
