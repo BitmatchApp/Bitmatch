@@ -52,22 +52,17 @@ struct TransferLibraryView: View {
         })
     }
 
-    private var visibleRecords: [LocalTransferRecord] {
-        visibleMatches.map(\.record)
-    }
-
     private var tabCounts: (queue: Int, history: Int) {
         TransferLibraryPresentation.tabCounts(journal.records)
     }
 
-    /// Search only makes sense once History has something to search, and it
-    /// never grabs focus on its own — `.searchable` never autofocuses.
-    private var searchIsAvailable: Bool {
-        tabCounts.history > 0
-    }
-
     var body: some View {
-        listContent
+        // One scan set per body pass: visibleMatches/tabCounts used to be
+        // recomputed by every property the body touched (list, placeholder,
+        // review target, searchable gate).
+        let matches = visibleMatches
+        let counts = tabCounts
+        return listContent(matches: matches, historyCount: counts.history)
             #if os(macOS)
             .navigationTitle("History")
             #else
@@ -75,7 +70,9 @@ struct TransferLibraryView: View {
             .navigationBarTitleDisplayMode(.inline)
             .toolbar { toolbarContent }
             #endif
-            .modifier(OptionalSearchable(isActive: searchIsAvailable, text: searchBinding))
+            // Search only makes sense once History has something to search,
+            // and it never grabs focus on its own — `.searchable` never autofocuses.
+            .modifier(OptionalSearchable(isActive: counts.history > 0, text: searchBinding))
             .onAppear { historySearch.resume(records: journal.records, query: search) }
             .onReceive(journal.$records) { records in
                 historySearch.replaceRecords(records)
@@ -102,7 +99,7 @@ struct TransferLibraryView: View {
     }
 
     @ViewBuilder
-    private var listContent: some View {
+    private func listContent(matches: [TransferLibraryPresentation.SearchMatch], historyCount: Int) -> some View {
         VStack(spacing: 0) {
             if let message = coordinator.queueMessage ?? journal.persistenceError ?? errorMessage {
                 VStack(alignment: .leading, spacing: 8) {
@@ -115,14 +112,14 @@ struct TransferLibraryView: View {
                 .padding(.vertical, 12)
             }
 
-            if let placeholder = searchPlaceholder {
+            if let placeholder = searchPlaceholder(matches: matches, historyCount: historyCount) {
                 TransferHistorySearchPlaceholderView(state: placeholder) {
                     historySearch.resume(records: journal.records, query: search)
                 }
             } else {
                 ScrollViewReader { proxy in
                     List {
-                        ForEach(visibleMatches) { match in
+                        ForEach(matches) { match in
                             rowView(match.record, clipLine: match.clipLine)
                                 .id(match.id)
                                 .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
@@ -131,10 +128,10 @@ struct TransferLibraryView: View {
                                 .alignmentGuide(.listRowSeparatorTrailing) { dimensions in dimensions.width }
                         }
                     }
-                    .task(id: reviewTargetID) {
-                        guard let reviewTargetID else { return }
+                    .task(id: reviewTargetID(matches: matches)) {
+                        guard let targetID = reviewTargetID(matches: matches) else { return }
                         await Task.yield()
-                        proxy.scrollTo(reviewTargetID, anchor: .center)
+                        proxy.scrollTo(targetID, anchor: .center)
                     }
                     #if os(macOS)
                     .listStyle(.inset)
@@ -164,17 +161,19 @@ struct TransferLibraryView: View {
         }
     }
 
-    private var searchPlaceholder: TransferHistorySearchPlaceholder? {
+    private func searchPlaceholder(
+        matches: [TransferLibraryPresentation.SearchMatch], historyCount: Int
+    ) -> TransferHistorySearchPlaceholder? {
         if historySearch.isSearching { return .searching }
         if historySearch.searchFailed { return .failed }
-        guard visibleRecords.isEmpty else { return nil }
-        return searchIsAvailable ? .noMatches : .emptyHistory
+        guard matches.isEmpty else { return nil }
+        return historyCount > 0 ? .noMatches : .emptyHistory
     }
 
-    private var reviewTargetID: UUID? {
+    private func reviewTargetID(matches: [TransferLibraryPresentation.SearchMatch]) -> UUID? {
         TransferLibraryPresentation.reviewTargetRecordID(
             requested: initialRecordID,
-            visibleRecords: visibleRecords
+            visibleRecords: matches.map(\.record)
         )
     }
 
@@ -193,7 +192,9 @@ struct TransferLibraryView: View {
     private func rowView(_ record: LocalTransferRecord, clipLine: String?) -> some View {
         let actions = TransferLibraryPresentation.actions(for: record)
         return DisclosureGroup(isExpanded: expandedBinding(record.id)) {
-            detailsView(record, actions: actions)
+            if expandedIDs.contains(record.id) {
+                detailsView(record, actions: actions)
+            }
         } label: {
             TransferRecordRow(record: record, clipMatchLine: clipLine) {
                 Menu {

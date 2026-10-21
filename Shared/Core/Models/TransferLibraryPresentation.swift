@@ -280,11 +280,34 @@ enum TransferLibraryPresentation {
     }
 
     static func stateLabel(for record: LocalTransferRecord) -> StateLabel {
-        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+        stateLabel(for: record, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+    }
+
+    private static func stateLabel(for record: LocalTransferRecord, hasVerifiedSelectedFiles: Bool) -> StateLabel {
+        if hasVerifiedSelectedFiles {
             return StateLabel(title: "Selected files verified", accessibilityLabel: "Selected files verified",
                 systemImage: "checkmark.circle", tint: .gray, rowDetail: nil)
         }
         return stateLabel(safetyState(for: record))
+    }
+
+    /// A collapsed row's label and detail line from one evidence scan set.
+    /// `hasVerifiedSelectedFiles` decides both, so computing them separately
+    /// scanned every result row twice per row per body pass.
+    struct RowPresentation: Equatable, Sendable {
+        let stateLabel: StateLabel
+        let detailLine: String
+    }
+
+    static func rowPresentation(for record: LocalTransferRecord) -> RowPresentation {
+        let verified = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+        return RowPresentation(
+            stateLabel: stateLabel(for: record, hasVerifiedSelectedFiles: verified),
+            detailLine: detailLine(
+                destinationCount: record.destinations.count,
+                fileCount: fileCount(for: record, hasVerifiedSelectedFiles: verified)
+            )
+        )
     }
 
     private static func stateLabel(_ safetyState: CardSafetyState) -> StateLabel {
@@ -463,7 +486,11 @@ enum TransferLibraryPresentation {
     /// Files on the card, not result rows: each file has one row per
     /// destination, so two destinations showed "38 files" for a 19-file card.
     static func fileCount(for record: LocalTransferRecord) -> Int {
-        let rows = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+        fileCount(for: record, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+    }
+
+    private static func fileCount(for record: LocalTransferRecord, hasVerifiedSelectedFiles: Bool) -> Int {
+        let rows = hasVerifiedSelectedFiles
             ? record.results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
             : record.results
         return Set(rows.map(\.path)).count
