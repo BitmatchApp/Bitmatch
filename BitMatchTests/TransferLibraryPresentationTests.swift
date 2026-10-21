@@ -72,6 +72,20 @@ struct TransferLibraryPresentationTests {
         #expect(label.title == "Copied, not verified")
     }
 
+    @Test func failedReadbackMarkingIsSurfacedInHistoryWords() {
+        let marked = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
+                               size: 4, checksum: nil, destination: "Backup", failedOutputMarking: "marked")
+        #expect(TransferHistoryResultPresentation.statusText(for: marked, mode: .standard)
+            == "⚠️ Checksum Mismatch · failed file renamed with .bitmatch-failed suffix")
+        let occupied = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
+                                 size: 4, checksum: nil, destination: "Backup", failedOutputMarking: "nameOccupied")
+        #expect(TransferHistoryResultPresentation.statusText(for: occupied, mode: .standard)
+            .contains("could not be renamed (marked name already in use), still at original name"))
+        let unmarked = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
+                                 size: 4, checksum: nil, destination: "Backup")
+        #expect(TransferHistoryResultPresentation.statusText(for: unmarked, mode: .standard) == "⚠️ Checksum Mismatch")
+    }
+
     @Test func journalQuickResultUsesCopiedNotVerifiedWords() {
         var record = PresentationTestSupport.record(state: .issues, verificationMode: .quick)
         record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]

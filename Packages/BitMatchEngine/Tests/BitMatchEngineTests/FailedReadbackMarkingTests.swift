@@ -76,6 +76,18 @@ final class FailedReadbackMarkingTests: XCTestCase {
                        "previous-mark")
     }
 
+    /// Rows persisted before marking existed have no marking field; they
+    /// must still decode, with marking absent.
+    func testResultRowWithoutMarkingFieldDecodes() throws {
+        let legacy = #"{"id":"00000000-0000-0000-0000-000000000001","path":"/card/clip.mov","status":"⚠️ Checksum Mismatch","size":4}"#
+        let row = try JSONDecoder().decode(ResultRow.self, from: Data(legacy.utf8))
+        XCTAssertNil(row.failedOutputMarking)
+        let marked = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
+                               size: 4, checksum: nil, destination: "Backup", failedOutputMarking: "nameOccupied")
+        let decoded = try JSONDecoder().decode(ResultRow.self, from: JSONEncoder().encode(marked))
+        XCTAssertEqual(decoded.failedOutputMarking, "nameOccupied")
+    }
+
     func testMissingFileReportsMissing() throws {
         let (_, pinned) = try fixture()
         let identity = VerifiedFileIdentity(device: 1, inode: 2, size: 3, modificationSeconds: 4,

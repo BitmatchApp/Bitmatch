@@ -203,14 +203,28 @@ private actor ReusedFileKeyStore {
 /// ctime all compared again inside the mark). Read errors never reach here:
 /// they throw out of verification instead of producing a mismatch. Returns
 /// the URL the result row should report.
-private func markedDestinationURL(pinnedRoot: PinnedDestinationDirectory, relativePath: String,
-                                  identityBeforeVerify: VerifiedFileIdentity?, originalURL: URL) -> URL {
+private func markedDestination(pinnedRoot: PinnedDestinationDirectory, relativePath: String,
+                               identityBeforeVerify: VerifiedFileIdentity?, originalURL: URL)
+    -> (url: URL, marking: String?) {
     guard let identityBeforeVerify,
           let identityAfterVerify = (try? pinnedRoot.currentRegularFileIdentity(at: relativePath)) ?? nil,
-          identityAfterVerify == identityBeforeVerify,
-          let outcome = try? pinnedRoot.markFailedReadbackOutput(at: relativePath, expectedIdentity: identityAfterVerify),
-          case .marked(let markedPath) = outcome else { return originalURL }
-    return pinnedRoot.logicalRootURL.appendingPathComponent(markedPath)
+          identityAfterVerify == identityBeforeVerify
+    else { return (originalURL, "fileChanged") }
+    let outcome: PinnedDestinationDirectory.FailedReadbackMarkOutcome
+    do {
+        outcome = try pinnedRoot.markFailedReadbackOutput(at: relativePath, expectedIdentity: identityAfterVerify)
+    } catch {
+        return (originalURL, "markingFailed")
+    }
+    switch outcome {
+    case .marked(let markedPath):
+        return (pinnedRoot.logicalRootURL.appendingPathComponent(markedPath), "marked")
+    case .missing: return (originalURL, "fileMissing")
+    case .identityChanged: return (originalURL, "fileChanged")
+    case .markedNameOccupied: return (originalURL, "nameOccupied")
+    case .markedNameTooLong: return (originalURL, "nameTooLong")
+    case .swappedDuringMark: return (originalURL, "swapped")
+    }
 }
 
 private actor SourceReadEvidenceStore {
@@ -715,11 +729,14 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 if checked.verification.matches { workMeter.verified(path: job.relativePath, destination: job.destinationIndex) }
                 let verificationResult = checked.verification
                 var effectiveDestination = job.destination
+                var failedOutputMarking: String?
                 if !verificationResult.matches,
                    await !reusedFileKeys.contains(destinationIndex: job.destinationIndex, relativePath: job.relativePath) {
-                    effectiveDestination = markedDestinationURL(
+                    let marked = markedDestination(
                         pinnedRoot: job.pinnedRoot, relativePath: job.relativePath,
                         identityBeforeVerify: identityBeforeVerify, originalURL: job.destination)
+                    effectiveDestination = marked.url
+                    failedOutputMarking = marked.marking
                 }
                 let verified = FileOperationResult(
                     sourceURL: job.source,
@@ -729,7 +746,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     fileSize: job.fileSize,
                     verificationResult: verificationResult,
                     processingTime: Date().timeIntervalSince(verificationStarted),
-                    clipIntegrity: checked.clipIntegrity
+                    clipIntegrity: checked.clipIntegrity,
+                    failedOutputMarking: failedOutputMarking
                 )
                 let event = await ledger.recordVerify(
                     verified,
@@ -1023,11 +1041,14 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                 if checked.verification.matches { workMeter.verified(path: relativePath, destination: destIndex) }
                                 let verificationResult = checked.verification
                                 var effectiveDestination = destinationFileURL
+                                var failedOutputMarking: String?
                                 if !verificationResult.matches,
                                    await !reusedFileKeys.contains(destinationIndex: destIndex, relativePath: relativePath) {
-                                    effectiveDestination = markedDestinationURL(
+                                    let marked = markedDestination(
                                         pinnedRoot: pinnedDestination, relativePath: relativePath,
                                         identityBeforeVerify: identityBeforeVerify, originalURL: destinationFileURL)
+                                    effectiveDestination = marked.url
+                                    failedOutputMarking = marked.marking
                                 }
 
                                 let fileSize = sizeForVerify
@@ -1039,7 +1060,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     fileSize: fileSize,
                                     verificationResult: verificationResult,
                                     processingTime: Date().timeIntervalSince(fileStartTime),
-                                    clipIntegrity: checked.clipIntegrity
+                                    clipIntegrity: checked.clipIntegrity,
+                                    failedOutputMarking: failedOutputMarking
                                 )
                                 await ledger.record(
                                     result,

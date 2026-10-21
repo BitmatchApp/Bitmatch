@@ -134,6 +134,10 @@ public struct FileOperationResult: Sendable {
     /// True when the destination file already existed and was proven identical,
     /// so this run verified it without writing a new copy.
     public let wasReused: Bool
+    /// Failed-readback marking outcome (`marked`, `nameOccupied`,
+    /// `fileChanged`, `fileMissing`, `nameTooLong`, `swapped`) when a
+    /// checksum mismatch triggered marking; otherwise nil.
+    public let failedOutputMarking: String?
     
     public var excludedAppleDouble: Bool = false
 
@@ -147,7 +151,7 @@ public struct FileOperationResult: Sendable {
 
     public var statusDescription: String { outcome.statusText }
 
-    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil, wasReused: Bool = false) {
+    public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil, wasReused: Bool = false, failedOutputMarking: String? = nil) {
         self.sourceURL = sourceURL
         self.destinationURL = destinationURL
         self.success = success
@@ -157,6 +161,7 @@ public struct FileOperationResult: Sendable {
         self.processingTime = processingTime
         self.clipIntegrity = clipIntegrity
         self.wasReused = wasReused
+        self.failedOutputMarking = failedOutputMarking
     }
 
     func preservingReuse(_ reused: Bool) -> Self {
@@ -164,7 +169,8 @@ public struct FileOperationResult: Sendable {
             sourceURL: sourceURL, destinationURL: destinationURL, success: success,
             error: error, fileSize: fileSize, verificationResult: verificationResult,
             processingTime: processingTime, clipIntegrity: clipIntegrity,
-            wasReused: success && (wasReused || reused)
+            wasReused: success && (wasReused || reused),
+            failedOutputMarking: failedOutputMarking
         )
         result.excludedAppleDouble = excludedAppleDouble
         return result
