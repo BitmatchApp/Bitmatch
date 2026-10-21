@@ -619,6 +619,81 @@ struct ClassicMHLCheckTests {
         #expect(FileManager.default.fileExists(atPath: special.path))
     }
 
+    /// Plant: trim filename whitespace or ignore either digest from an independent classic writer.
+    @Test func independentClassicWriterPreservesPaddedPathAndBothDigests() async throws {
+        let intactRoot = try paddedIndependentFixture()
+        defer { try? FileManager.default.removeItem(at: intactRoot) }
+        let intactBefore = try Data(contentsOf: intactRoot.appendingPathComponent(" padded name.txt "))
+        let discovery = try await checker.discover(under: intactRoot)
+        let record = try #require(discovery.expectedFiles[" padded name.txt "])
+        #expect(record.relativePath == " padded name.txt ")
+        #expect(record.expectedSize == 30)
+        #expect(record.requiredDigests.count == 2)
+        #expect(record.requiredDigests.contains {
+            $0.algorithm == .md5 && $0.value == "300d5c3d929f8697d3f916a449a51ead"
+        })
+        #expect(record.requiredDigests.contains {
+            $0.algorithm == .sha1 && $0.value == "79da2a02fa18fccf3ae906fb0775119b14ebbd32"
+        })
+        let intact = try await checker.check(discovery) { _ in }
+        #expect(intact.isIntact)
+        #expect(intact.matchingPaths == [" padded name.txt "])
+        #expect(intact.newPaths.isEmpty)
+        #expect(try Data(contentsOf: intactRoot.appendingPathComponent(" padded name.txt ")) == intactBefore)
+
+        let changedRoot = try paddedIndependentFixture()
+        defer { try? FileManager.default.removeItem(at: changedRoot) }
+        var corrupted = intactBefore
+        corrupted[corrupted.startIndex] ^= 1
+        #expect(corrupted.count == intactBefore.count)
+        try corrupted.write(to: changedRoot.appendingPathComponent(" padded name.txt "))
+        let changed = try await run(changedRoot)
+        #expect(!changed.isIntact)
+        #expect(changed.changedPaths == [" padded name.txt "])
+        #expect(changed.missingPaths.isEmpty)
+
+        // Alter only one recorded digest at a time. A media mutation changes
+        // both hashes and would not detect a checker silently ignoring one.
+        for (original, replacement) in [
+            ("300d5c3d929f8697d3f916a449a51ead", String(repeating: "0", count: 32)),
+            ("79da2a02fa18fccf3ae906fb0775119b14ebbd32", String(repeating: "0", count: 40))
+        ] {
+            let digestRoot = try paddedIndependentFixture()
+            defer { try? FileManager.default.removeItem(at: digestRoot) }
+            let manifest = digestRoot.appendingPathComponent("padded-independent.mhl")
+            let xml = try String(contentsOf: manifest, encoding: .utf8)
+            #expect(xml.components(separatedBy: original).count == 2)
+            try xml.replacingOccurrences(of: original, with: replacement)
+                .write(to: manifest, atomically: false, encoding: .utf8)
+            let rejected = try await run(digestRoot)
+            #expect(!rejected.isIntact)
+            #expect(rejected.changedPaths == [" padded name.txt "])
+            #expect(rejected.missingPaths.isEmpty)
+            #expect(try Data(contentsOf: digestRoot.appendingPathComponent(" padded name.txt ")) == intactBefore)
+        }
+
+        let missingRoot = try paddedIndependentFixture()
+        defer { try? FileManager.default.removeItem(at: missingRoot) }
+        try FileManager.default.removeItem(at: missingRoot.appendingPathComponent(" padded name.txt "))
+        let missing = try await run(missingRoot)
+        #expect(!missing.isIntact)
+        #expect(missing.missingPaths == [" padded name.txt "])
+        #expect(missing.changedPaths.isEmpty)
+    }
+
+    private func paddedIndependentFixture() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-classic-independent-padded-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bundled = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/EvidenceCompatibility/classic-padded-independent")
+        try FileManager.default.copyItem(at: bundled.appendingPathComponent("padded-independent.mhl"),
+                                         to: root.appendingPathComponent("padded-independent.mhl"))
+        try FileManager.default.copyItem(at: bundled.appendingPathComponent(" padded name.txt "),
+                                         to: root.appendingPathComponent(" padded name.txt "))
+        return root
+    }
+
     private func run(_ root: URL) async throws -> SavedChecksumCheck.Result {
         try await checker.check(checker.discover(under: root)) { _ in }
     }

@@ -1,0 +1,19 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<hashlist version="1.1">
+  <creatorinfo>
+    <username>synthetic-generator</username>
+    <hostname>synthetic-host</hostname>
+    <tool>simple-mhl 1.4.0</tool>
+    <startdate>2026-10-20T23:29:34-04:00</startdate>
+    <finishdate>2026-10-20T23:29:34-04:00</finishdate>
+    <log>synthetic fixture; no device context</log>
+  </creatorinfo>
+  <hash>
+    <file> padded name.txt </file>
+    <size>30</size>
+    <lastmodificationdate>2026-01-01T22:04:05-05:00</lastmodificationdate>
+    <md5>300d5c3d929f8697d3f916a449a51ead</md5>
+    <sha1>79da2a02fa18fccf3ae906fb0775119b14ebbd32</sha1>
+    <hashdate>2026-10-20T23:29:34-04:00</hashdate>
+  </hash>
+</hashlist>
