@@ -572,7 +572,7 @@ final class VolumeMonitorService: ObservableObject {
     /// Groups probes beneath one lexical /Volumes entry without resolving
     /// symlinks or touching the filesystem on MainActor.
     nonisolated static func probeSerialGroup(for url: URL) -> String {
-        let path = url.standardizedFileURL.path
+        let path = PathContainment.comparablePath(url.path)
         let prefix = "/Volumes/"
         guard path.hasPrefix(prefix) else { return "path:\(path)" }
         let name = path.dropFirst(prefix.count)

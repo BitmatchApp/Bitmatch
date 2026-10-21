@@ -136,6 +136,26 @@ private final class LockedURLReadLog: @unchecked Sendable {
 struct VolumeMonitorReconciliationTests {
     private let path = URL(fileURLWithPath: "/Volumes/REUSED-CARD")
 
+    /// Plant: use Foundation URL standardization instead of lexical path
+    /// normalization when grouping probes; an existing link can change it.
+    @Test func probeGroupingDoesNotResolveExistingSymlinks() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("bitmatch-probe-group-\(UUID())")
+        defer { try? fm.removeItem(at: root) }
+        let parent = root.appendingPathComponent("parent")
+        let elsewhere = root.appendingPathComponent("elsewhere")
+        try fm.createDirectory(at: parent, withIntermediateDirectories: true)
+        try fm.createDirectory(at: elsewhere, withIntermediateDirectories: true)
+        let link = parent.appendingPathComponent("link")
+        let candidate = URL(fileURLWithPath: link.path + "/../leaf")
+        let expected = VolumeMonitorService.probeSerialGroup(for: parent.appendingPathComponent("leaf"))
+        #expect(VolumeMonitorService.probeSerialGroup(for: candidate) == expected)
+        try fm.createSymbolicLink(at: link, withDestinationURL: elsewhere)
+        try Data("lexical".utf8).write(to: parent.appendingPathComponent("leaf"))
+        try Data("resolved".utf8).write(to: root.appendingPathComponent("leaf"))
+        #expect(VolumeMonitorService.probeSerialGroup(for: candidate) == expected)
+    }
+
     private func mount(_ identity: String?) -> VolumeMonitorService.MountedVolume {
         .init(url: path, identity: identity)
     }
