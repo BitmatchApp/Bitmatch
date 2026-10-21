@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import PDFKit
 import CoreGraphics
 import ImageIO
@@ -369,7 +370,7 @@ struct ReportPDFLayoutTests {
         let thumbnails = ReportThumbnails(images: Dictionary(uniqueKeysWithValues: rows.map { ($0.path, data as Data) }), requestedCount: clipCount)
         let layout = ReportPDFRenderer.layout(ReportView(s: summary, rows: rows, thumbnails: thumbnails))
         #expect(layout.repeatsIdentity == !oversizedIdentity)
-        let pdf = ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: thumbnails)
+        let pdf = try ReportPDFRenderer.renderPDF(summary: summary, results: rows, thumbnails: thumbnails)
         let document = try #require(PDFDocument(data: pdf))
         let text = try #require(document.string)
         #expect(text.contains("VERIFICATION SUCCESSFUL"))
@@ -443,4 +444,57 @@ struct ReportPDFLayoutTests {
         #expect(threwCancellation)
     }
 
+    @Test func pdfSinkShortWriteFailurePropagatesWithoutReturningPartialPDF() async {
+        let rows = [ResultRow(path: "/card/sink-error.mov", status: ResultOutcome.verified.statusText,
+            size: 1, checksum: "digest", destination: "/Volumes/Backup")]
+        let summary = ReportSummary(jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1),
+            mode: .copyAndVerify, source: "/card", destinations: ["/Volumes/Backup"], totalFiles: 1,
+            matched: 1, issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "",
+            production: "", company: "", verificationMethod: "SHA-256", totalBytesProcessed: 0,
+            averageSpeed: 0, clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
+        let writer = PDFShortWriteFailureInjector()
+        var returnedPDF: Data?
+        var reportedErrno: Int32?
+        do {
+            returnedPDF = try await ReportPDFRenderer.renderPDFAsyncForTesting(summary: summary, results: rows) {
+                writer.write(fd: $0, buffer: $1, count: $2)
+            }
+        } catch let error as ReportPDFRenderer.RenderingError {
+            if case .sinkWriteFailed(let code) = error { reportedErrno = code }
+        } catch {
+            Issue.record("Unexpected sink error: \(error)")
+        }
+        #expect(writer.didWritePartialChunk)
+        #expect(reportedErrno == ENOSPC)
+        #expect(returnedPDF == nil)
+    }
+
+
+}
+
+private final class PDFShortWriteFailureInjector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var writeCalls = 0
+    private var partialChunkWritten = false
+
+    var didWritePartialChunk: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return partialChunkWritten
+    }
+
+    func write(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Int {
+        lock.lock()
+        writeCalls += 1
+        let call = writeCalls
+        lock.unlock()
+        if call == 1 {
+            let written = Darwin.write(fd, buffer, max(1, count / 2))
+            lock.lock()
+            partialChunkWritten = written > 0 && written < count
+            lock.unlock()
+            return written
+        }
+        errno = ENOSPC
+        return -1
+    }
 }

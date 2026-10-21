@@ -1,3 +1,5 @@
+import Foundation
+import Darwin
 import SwiftUI
 import CoreGraphics
 import BitMatchEngine
@@ -13,11 +15,194 @@ struct ReportPDFBlock {
     }
 }
 
+private final class ReportPDFFileSink: @unchecked Sendable {
+    typealias WriteOperation = (Int32, UnsafeRawPointer, Int) -> Int
+
+    private let lock = NSLock()
+    private let directoryPath: String
+    private var directoryDescriptor: Int32
+    private var fileDescriptor: Int32
+    private let device: dev_t
+    private let inode: ino_t
+    private let writer: WriteOperation
+    private var bytesWritten: Int64 = 0
+    private var failureCode: Int32?
+    private var finished = false
+
+    init(writer: WriteOperation? = nil) throws {
+        var template = Array(FileManager.default.temporaryDirectory
+            .appendingPathComponent("BitMatchPDF.XXXXXX", isDirectory: true).path.utf8CString)
+        let directory = template.withUnsafeMutableBufferPointer { buffer -> String? in
+            guard let base = buffer.baseAddress, let path = mkdtemp(base) else { return nil }
+            return String(cString: path)
+        }
+        guard let directory else { throw ReportPDFRenderer.RenderingError.temporaryFileCreationFailed(errno) }
+
+        let dirFD = directory.withCString { open($0, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW) }
+        guard dirFD >= 0 else {
+            let code = errno
+            _ = directory.withCString { rmdir($0) }
+            throw ReportPDFRenderer.RenderingError.temporaryFileCreationFailed(code)
+        }
+
+        let fd = openat(dirFD, "report.pdf", O_RDWR | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC,
+                        S_IRUSR | S_IWUSR)
+        guard fd >= 0 else {
+            let code = errno
+            _ = close(dirFD)
+            _ = directory.withCString { rmdir($0) }
+            throw ReportPDFRenderer.RenderingError.temporaryFileCreationFailed(code)
+        }
+
+        var attributes = stat()
+        let statSucceeded = fstat(fd, &attributes) == 0
+        guard statSucceeded, (attributes.st_mode & S_IFMT) == S_IFREG else {
+            let code = statSucceeded ? EIO : errno
+            _ = close(fd)
+            _ = unlinkat(dirFD, "report.pdf", 0)
+            _ = close(dirFD)
+            _ = directory.withCString { rmdir($0) }
+            throw ReportPDFRenderer.RenderingError.temporaryFileCreationFailed(code)
+        }
+
+        self.directoryPath = directory
+        self.directoryDescriptor = dirFD
+        self.fileDescriptor = fd
+        self.device = attributes.st_dev
+        self.inode = attributes.st_ino
+        self.writer = writer ?? { fd, buffer, count in Darwin.write(fd, buffer, count) }
+    }
+
+    func consume(_ buffer: UnsafeRawPointer, count: Int) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        guard count > 0 else { return 0 }
+        guard fileDescriptor >= 0, !finished, failureCode == nil else { return 0 }
+
+        var completed = 0
+        while completed < count {
+            let result = writer(fileDescriptor, buffer.advanced(by: completed), count - completed)
+            if result > 0, result <= count - completed {
+                completed += result
+                bytesWritten += Int64(result)
+                continue
+            }
+            if result > count - completed {
+                failureCode = EIO
+                break
+            }
+            if result < 0, errno == EINTR { continue }
+            failureCode = result == 0 ? EIO : errno
+            break
+        }
+        return completed
+    }
+
+    func finish() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let failureCode { throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode) }
+        guard fileDescriptor >= 0, !finished else {
+            throw ReportPDFRenderer.RenderingError.invalidSinkOutput
+        }
+        while fsync(fileDescriptor) != 0 {
+            if errno == EINTR { continue }
+            failureCode = errno
+            throw ReportPDFRenderer.RenderingError.sinkWriteFailed(errno)
+        }
+        finished = true
+        if let failureCode { throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode) }
+    }
+
+    func mappedData() throws -> Data {
+        lock.lock()
+        defer { lock.unlock() }
+        if let failureCode { throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode) }
+        guard finished, fileDescriptor >= 0 else {
+            throw ReportPDFRenderer.RenderingError.invalidSinkOutput
+        }
+
+        var attributes = stat()
+        guard fstat(fileDescriptor, &attributes) == 0 else {
+            throw ReportPDFRenderer.RenderingError.sinkReadFailed(errno)
+        }
+        guard attributes.st_dev == device, attributes.st_ino == inode,
+              (attributes.st_mode & S_IFMT) == S_IFREG,
+              attributes.st_size > 0, attributes.st_size == bytesWritten,
+              let size = Int(exactly: attributes.st_size) else {
+            throw ReportPDFRenderer.RenderingError.invalidSinkOutput
+        }
+
+        guard let mapping = mmap(nil, size, PROT_READ, MAP_PRIVATE, fileDescriptor, 0),
+              mapping != MAP_FAILED else {
+            throw ReportPDFRenderer.RenderingError.sinkReadFailed(errno)
+        }
+
+        let fd = fileDescriptor
+        fileDescriptor = -1
+        guard close(fd) == 0 else {
+            let code = errno
+            _ = munmap(mapping, size)
+            failureCode = code
+            throw ReportPDFRenderer.RenderingError.sinkCloseFailed(code)
+        }
+        let data = Data(bytesNoCopy: mapping, count: size, deallocator: .custom { pointer, length in
+            _ = munmap(pointer, length)
+        })
+        if let failureCode { throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode) }
+        return data
+    }
+
+    func cleanup() {
+        try? cleanupOwnedFiles()
+    }
+
+    func cleanupOwnedFiles() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        var firstError: Int32?
+        if fileDescriptor >= 0 {
+            if close(fileDescriptor) != 0 { firstError = errno }
+            fileDescriptor = -1
+        }
+        if directoryDescriptor >= 0 {
+            if unlinkat(directoryDescriptor, "report.pdf", 0) != 0, errno != ENOENT, firstError == nil {
+                firstError = errno
+            }
+            if close(directoryDescriptor) != 0, firstError == nil { firstError = errno }
+            directoryDescriptor = -1
+        }
+        if directoryPath.withCString({ rmdir($0) }) != 0, errno != ENOENT, firstError == nil {
+            firstError = errno
+        }
+        if let firstError { throw ReportPDFRenderer.RenderingError.sinkCleanupFailed(firstError) }
+    }
+}
+
 /// Renders shared report sections one page at a time on every platform.
 enum ReportPDFRenderer {
     enum RenderingError: LocalizedError {
         case contextCreationFailed
-        var errorDescription: String? { "Could not create the PDF report." }
+        case consumerCreationFailed
+        case temporaryFileCreationFailed(Int32)
+        case sinkWriteFailed(Int32)
+        case sinkReadFailed(Int32)
+        case sinkCloseFailed(Int32)
+        case sinkCleanupFailed(Int32)
+        case invalidSinkOutput
+
+        var errorDescription: String? {
+            switch self {
+            case .contextCreationFailed, .consumerCreationFailed:
+                return "Could not create the PDF report."
+            case .temporaryFileCreationFailed(let code): return "Could not create the private PDF sink (errno \(code))."
+            case .sinkWriteFailed(let code): return "Could not write the private PDF sink (errno \(code))."
+            case .sinkReadFailed(let code): return "Could not map the completed private PDF (errno \(code))."
+            case .sinkCloseFailed(let code): return "Could not close the private PDF sink (errno \(code))."
+            case .sinkCleanupFailed(let code): return "Could not remove the private PDF sink (errno \(code))."
+            case .invalidSinkOutput: return "The private PDF sink did not contain a complete report."
+            }
+        }
     }
 
     static let pageWidth: CGFloat = 612
@@ -205,34 +390,67 @@ enum ReportPDFRenderer {
         }
     }
 
-    @MainActor
-    static func renderPDF(summary: ReportSummary, results: [ResultRow], thumbnails: ReportThumbnails = ReportThumbnails(),
-                          phaseObserver: ((Phase) -> Void)? = nil) -> Data {
-        let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
-        let layout = layout(report, phaseObserver: phaseObserver)
-        let pdfMetadata = [
+    private static let sinkPutBytes: CGDataConsumerPutBytesCallback = { info, buffer, count in
+        guard let info, let buffer else { return 0 }
+        let sink = Unmanaged<ReportPDFFileSink>.fromOpaque(info).takeUnretainedValue()
+        return sink.consume(buffer, count: count)
+    }
+
+    private static let sinkReleaseInfo: CGDataConsumerReleaseInfoCallback = { info in
+        guard let info else { return }
+        Unmanaged<ReportPDFFileSink>.fromOpaque(info).release()
+    }
+
+    private static func makePDFContext(sink: ReportPDFFileSink) throws -> CGContext {
+        let info = Unmanaged.passRetained(sink).toOpaque()
+        var callbacks = CGDataConsumerCallbacks(putBytes: sinkPutBytes, releaseConsumer: sinkReleaseInfo)
+        guard let consumer = CGDataConsumer(info: info, cbks: &callbacks) else {
+            Unmanaged<ReportPDFFileSink>.fromOpaque(info).release()
+            throw RenderingError.consumerCreationFailed
+        }
+        var mediaBox = CGRect(origin: .zero, size: CGSize(width: pageWidth, height: pageHeight))
+        let metadata = [
             kCGPDFContextCreator: "BitMatch",
             kCGPDFContextTitle: "BitMatch Verification Report"
         ] as CFDictionary
+        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, metadata) else {
+            throw RenderingError.contextCreationFailed
+        }
+        return context
+    }
 
-        let mutableData = NSMutableData()
-        guard let consumer = CGDataConsumer(data: mutableData as CFMutableData) else { return Data() }
-        var mediaBox = CGRect(origin: .zero, size: CGSize(width: pageWidth, height: pageHeight))
-        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, pdfMetadata) else { return Data() }
-        var contextClosed = false
-        defer { if !contextClosed { context.closePDF() } }
+    private static func closeAndRead(context: inout CGContext?, sink: ReportPDFFileSink) throws -> Data {
+        context?.closePDF()
+        context = nil
+        try sink.finish()
+        let data = try sink.mappedData()
+        try sink.cleanupOwnedFiles()
+        return data
+    }
+
+    @MainActor
+    static func renderPDF(summary: ReportSummary, results: [ResultRow], thumbnails: ReportThumbnails = ReportThumbnails(),
+                          phaseObserver: ((Phase) -> Void)? = nil) throws -> Data {
+        let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
+        let layout = layout(report, phaseObserver: phaseObserver)
+        let sink = try ReportPDFFileSink()
+        defer { sink.cleanup() }
+        var context: CGContext? = try makePDFContext(sink: sink)
+        defer {
+            context?.closePDF()
+            context = nil
+        }
 
         phaseObserver?(.pageRenderingStarted(pageCount: layout.pages.count, blockCount: layout.blocks.count))
         for pageIndex in layout.pages.indices {
+            guard let context else { throw RenderingError.contextCreationFailed }
             renderPage(pageIndex, layout: layout, report: report, context: context)
             let completed = pageIndex + 1
             if completed.isMultiple(of: 16) || completed == layout.pages.count {
                 phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))
             }
         }
-        context.closePDF()
-        contextClosed = true
-        let data = mutableData as Data
+        let data = try closeAndRead(context: &context, sink: sink)
         phaseObserver?(.finalPDFData(bytes: data.count, pageCount: layout.pages.count, blockCount: layout.blocks.count))
         return data
     }
@@ -241,25 +459,39 @@ enum ReportPDFRenderer {
     static func renderPDFAsync(summary: ReportSummary, results: [ResultRow],
                                thumbnails: ReportThumbnails = ReportThumbnails(),
                                phaseObserver: ((Phase) -> Void)? = nil) async throws -> Data {
+        try await renderPDFAsyncCore(summary: summary, results: results, thumbnails: thumbnails,
+                                     phaseObserver: phaseObserver, fileWriter: nil)
+    }
+
+    /// Internal failure-injection seam for proving sink errors never return partial PDF data.
+    @MainActor
+    static func renderPDFAsyncForTesting(summary: ReportSummary, results: [ResultRow],
+                                         fileWriter: @escaping (Int32, UnsafeRawPointer, Int) -> Int) async throws -> Data {
+        try await renderPDFAsyncCore(summary: summary, results: results, thumbnails: ReportThumbnails(),
+                                     phaseObserver: nil, fileWriter: fileWriter)
+    }
+
+    @MainActor
+    private static func renderPDFAsyncCore(summary: ReportSummary, results: [ResultRow],
+                                           thumbnails: ReportThumbnails,
+                                           phaseObserver: ((Phase) -> Void)?,
+                                           fileWriter: ReportPDFFileSink.WriteOperation?) async throws -> Data {
         try Task.checkCancellation()
         let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
         let layout = try await layoutAsync(report, phaseObserver: phaseObserver)
         try Task.checkCancellation()
-        let pdfMetadata = [
-            kCGPDFContextCreator: "BitMatch",
-            kCGPDFContextTitle: "BitMatch Verification Report"
-        ] as CFDictionary
-
-        let mutableData = NSMutableData()
-        guard let consumer = CGDataConsumer(data: mutableData as CFMutableData) else { throw RenderingError.contextCreationFailed }
-        var mediaBox = CGRect(origin: .zero, size: CGSize(width: pageWidth, height: pageHeight))
-        guard let context = CGContext(consumer: consumer, mediaBox: &mediaBox, pdfMetadata) else { throw RenderingError.contextCreationFailed }
-        var contextClosed = false
-        defer { if !contextClosed { context.closePDF() } }
+        let sink = try ReportPDFFileSink(writer: fileWriter)
+        defer { sink.cleanup() }
+        var context: CGContext? = try makePDFContext(sink: sink)
+        defer {
+            context?.closePDF()
+            context = nil
+        }
 
         phaseObserver?(.pageRenderingStarted(pageCount: layout.pages.count, blockCount: layout.blocks.count))
         for pageIndex in layout.pages.indices {
             if pageIndex.isMultiple(of: 8) { try Task.checkCancellation() }
+            guard let context else { throw RenderingError.contextCreationFailed }
             renderPage(pageIndex, layout: layout, report: report, context: context)
             let completed = pageIndex + 1
             if completed.isMultiple(of: 16) || completed == layout.pages.count {
@@ -271,9 +503,7 @@ enum ReportPDFRenderer {
                 try Task.checkCancellation()
             }
         }
-        context.closePDF()
-        contextClosed = true
-        let data = mutableData as Data
+        let data = try closeAndRead(context: &context, sink: sink)
         phaseObserver?(.finalPDFData(bytes: data.count, pageCount: layout.pages.count, blockCount: layout.blocks.count))
         try Task.checkCancellation()
         return data
