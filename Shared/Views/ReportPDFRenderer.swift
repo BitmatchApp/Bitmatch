@@ -67,14 +67,18 @@ struct ReportPDFNativeRow {
         return ReportPDFNativeRow(fileName: fileName, destination: destination, size: size, glyph: glyph, tone: tone)
     }
 
-    func draw(in context: CGContext, top: CGFloat, height: CGFloat) {
-        let color: CGColor
+    var statusColor: CGColor {
         switch tone {
-        case .verified: color = CGColor(srgbRed: 0.204, green: 0.78, blue: 0.349, alpha: 1)
-        case .warning: color = CGColor(srgbRed: 1, green: 0.58, blue: 0, alpha: 1)
-        case .failure: color = CGColor(srgbRed: 1, green: 0.23, blue: 0.188, alpha: 1)
-        default: color = Self.secondary
+        case .verified: CGColor(srgbRed: 0.204, green: 0.78, blue: 0.349, alpha: 1)
+        case .inProgress: CGColor(srgbRed: 0, green: 0.478, blue: 1, alpha: 1)
+        case .warning: CGColor(srgbRed: 1, green: 0.58, blue: 0, alpha: 1)
+        case .failure: CGColor(srgbRed: 1, green: 0.23, blue: 0.188, alpha: 1)
+        default: Self.secondary
         }
+    }
+
+    func draw(in context: CGContext, top: CGFloat, height: CGFloat) {
+        let color = statusColor
         context.saveGState()
         defer { context.restoreGState() }
         context.textMatrix = .identity
@@ -327,8 +331,6 @@ enum ReportPDFRenderer {
         case sinkCloseFailed(Int32)
         case sinkCleanupFailed(Int32)
         case invalidSinkOutput
-        case invalidPDFChunk
-        case pdfDocumentSerializationFailed
 
         var errorDescription: String? {
             switch self {
@@ -340,8 +342,6 @@ enum ReportPDFRenderer {
             case .sinkCloseFailed(let code): return "Could not close the private PDF sink (errno \(code))."
             case .sinkCleanupFailed(let code): return "Could not remove the private PDF sink (errno \(code))."
             case .invalidSinkOutput: return "The private PDF sink did not contain a complete report."
-            case .invalidPDFChunk: return "A temporary PDF page group could not be read completely."
-            case .pdfDocumentSerializationFailed: return "The completed PDF report could not be serialized."
             }
         }
     }
@@ -364,8 +364,6 @@ enum ReportPDFRenderer {
         case paginationFinished(blockCount: Int, pageCount: Int)
         case pageRenderingStarted(pageCount: Int, blockCount: Int)
         case pageRenderProgress(completed: Int, total: Int)
-        case pageCompositionStarted(chunkCount: Int, pageCount: Int)
-        case pageCompositionProgress(completed: Int, total: Int)
         case finalPDFData(bytes: Int, pageCount: Int, blockCount: Int)
     }
 
