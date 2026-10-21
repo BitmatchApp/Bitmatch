@@ -2,7 +2,7 @@
 
 ## Working agreement
 
-Mike needs this Mac on set. Work is limited to small source reads, documentation and a local PR draft until he authorizes more. Reconnecting T9 subsequently authorized read-only recovery of its known result image; that image was closed afterward. No builds, tests, rendering, simulators, user-media scans, writable image mounts, large cleanup or background test jobs. No merge, release, tag, signing, updater or GitHub Actions changes.
+Mike needs this Mac on set. Work is limited to small source reads, documentation and a local PR draft until he authorizes more. Reconnecting T9 subsequently authorized read-only recovery of its known result image; that image was closed afterward. No app builds/tests, rendering, simulators, user-media scans, writable image mounts, large cleanup or background app-test jobs. The later parallel follow-up permits small synthetic Python parser checks only. No merge, release, tag, signing, updater or GitHub Actions changes.
 
 Production candidate: `1f73beba5d17bc1ce5b259ac67ab9243dd8b9c1c` on `fix/pdf-report-memory-20261021`. The documentation update changes no app or test source. [Exact observed results and evidence limits](report-memory-2026-10-21.md) are recorded separately.
 
@@ -15,7 +15,7 @@ The review covered `ReportPDFRenderer.swift`, the report's native/fallback row f
 - The sink checks partial writes and EINTR, retains write failures, verifies final bytes and file identity, and returns data only after finalization. Cancellation remains throwing. The sink buffer and private ownership checks have a purpose; replacing them with an in-memory buffer would undo the measured improvement.
 - Lazy row factories, the native text path and the bounded file sink address different allocations. No safe simplification was identified from this review. Earlier unused composition phase/error cases were already removed in `296663ef`; the final source uses one PDF context.
 
-Three questions remain for later checks, not confirmed production defects: direct row-local ellipsis/wrapped-Unicode assertions; actual PDF rendering of control-bearing fallback filenames; and resolved-color parity between native fixed colors and SwiftUI fallback colors. The last question does not establish a visible mismatch. No code was changed speculatively.
+The Mac/iPad wrapped-row test now contains row-local ellipsis and Unicode head/tail assertions (`100e0411`), but those changes have not been compiled or executed. Remaining review questions concern actual fallback rendering of control-bearing filenames and resolved-color parity between native fixed colors and SwiftUI colors; no visible mismatch is established. Production renderer code is unchanged.
 
 ## Local PR draft — not submitted
 
@@ -51,14 +51,14 @@ When approved gates and review are complete, merge in dependency order. After ea
 - [ ] Recover other available raw PDFs, detailed memory/manifest receipts and physical-engine logs, or identify the minimal probes needed to replace missing evidence. The archive inventory inspected so far covers older PDF experiments.
 - [ ] Preserve the app-wrapper rejection and correct its `TEST EXECUTE SUCCEEDED` recognition. The one-test pass and trial/settlement markers were recovered independently; the original eleven external artifact files were not. Do not rerun media copying solely to alter wrapper bookkeeping or fabricate those artifacts from a passing summary.
 - [ ] Finish independent content/visual checks for the final mixed artifact. If its PDF did not survive, regenerate only the necessary probe after approval.
-- [ ] Add direct native-row ellipsis/wrapped-Unicode assertions, check fallback control text and compare resolved native/fallback colors. Compile and run the affected Mac and iOS tests; the current generic app build did not compile or execute the iOS test target.
+- [ ] Compile and run the added native-row ellipsis/wrapped-Unicode assertions on Mac and iOS, check fallback control text and compare resolved colors. These test edits remain unvalidated; the earlier generic app build did not compile or execute the iOS test target.
 - [ ] Repeat the 20,000-file coordinator report-off/on probe on final production source. The recorded 682 MiB pass predates wrapped-row support.
 - [x] Confirm the current PR bases, heads and local ancestry through read-only metadata and Git checks. This does not approve merging.
 - [ ] Finish the relevant signed-app/manual and mobile checks, review the final combined diff and recheck PR dependencies after any source/base change. Record what remains untested rather than treating an automated app-host pass as a manual walkthrough.
 
 Keep #10, #23, the unexplained Thorough source-stability rejection and the diagnostic-recorder error as separate open investigations. Passing later runs do not identify their causes. Existing source identity, readback, coverage and no-overwrite rules stay strict. Merge and publication remain on hold.
 
-The tracked large-app receipt validator and History probe runner also expect the build-and-test success banner. Their current wrappers invoke `test`, so this does not establish a failure in normal tracked usage. Any future support for `test-without-building` should handle its different banner with focused parser fixtures, while retaining exit-status, exact-test, zero-skip, workload, receipt and artifact requirements. A banner alone is never sufficient evidence.
+The tracked large-app validator and History runner were hardened in `29124b5c`. Both accept one exact success banner for `test` or `test-without-building`, reject failure/mixed/duplicate banners and require the exact focused test to pass once. Existing exit-status, skip, workload and receipt checks remain. Synthetic checks passed: 14 large-app helper tests and 11 History helper tests; the latter took 7.841 seconds at low process priority. Three new History controls first failed against the old checker (valid execute-only success rejected, duplicate pass accepted, mixed success/failure accepted), then passed after correction. Fixtures include the normal started-plus-passed sequence. They run fake Xcode commands, not app builds or real media. The lost private prebuilt runner was not repaired or rerun; these are tracked-helper fixes, not new physical evidence.
 
 ## Documentation audit
 

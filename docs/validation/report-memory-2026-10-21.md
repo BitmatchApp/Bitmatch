@@ -43,7 +43,7 @@ Four deliberate regressions each caused the expected focused assertion failure: 
 
 Source-only review found no evident row-data or status-mapping defect. Remaining limits:
 
-- Wrapped-row assertions check head/tail and geometry, but not the native row's ellipsis or wrapped Unicode directly. A private proposed patch was not applied and disappeared with temporary files.
+- Row-local ellipsis and wrapped-Unicode assertions were later added to both test targets in `100e0411`, replacing the lost private proposal. They remain uncompiled/unexecuted; existing earlier passes do not validate these new assertions.
 - Native helpers reject control characters; this does not verify how the SwiftUI fallback prints those names. Large control-heavy manifests lack equivalent scale coverage.
 - Native fixed colors and fallback SwiftUI colors have not received a resolved-color parity check across platforms. A visible mismatch is not established.
 - The buffer is bounded, but results, layout and PDF resources still grow with report size. No constant-memory claim is made.
@@ -80,4 +80,4 @@ The earlier physical matrix stopped after five successful operations with two ge
 
 Before reboot, seven closed PDF gates were archived and verified on the SSD. Removing ten archived PDF/PNG files recovered 521,621,504 allocated host bytes. Two passed large synthetic drive children were removed after evidence/identity checks: 239,200,093,336 logical bytes across the SSDs. Their allocated bytes were not recorded and are not estimated. Unresolved physical fixtures and the current matrix children were preserved at cleanup; post-reboot availability has not been checked.
 
-Today remains limited to low-impact work: small source reads, documentation and the authorized read-only result recovery above. Finish the remaining artifact and platform gaps before merging; see the [review and PR draft](report-memory-review-2026-10-21.md). No post-reboot build, test, rendering, user-media scan, large cleanup, signing change or Actions run was performed for these updates.
+Today remains limited to low-impact work: small source reads, documentation and the authorized read-only result recovery above. Finish the remaining artifact and platform gaps before merging; see the [review and PR draft](report-memory-review-2026-10-21.md). No post-reboot app build/test, rendering, user-media scan, large cleanup, signing change or Actions run was performed. A later low-priority synthetic parser pass ran 25 Python tests with fake Xcode commands; exact scope is in the merge checklist.
