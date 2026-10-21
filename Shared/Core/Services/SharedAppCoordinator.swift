@@ -2879,6 +2879,9 @@ class SharedAppCoordinator: ObservableObject {
         _ id: UUID,
         using ejector: @Sendable (URL) async -> String? = { await CardEjectService.eject($0) }
     ) async -> String? {
+        // An unmount for this card is already running; a second one would
+        // clear its ejecting flag early.
+        if ejectingQueueSourceIDs.contains(id) { return nil }
         guard let record = transferJournal.records.first(where: { $0.id == id }),
               TransferLibraryPresentation.safetyState(for: record) == .safeToErase else {
             return "Only a verified card that is safe to erase can be ejected."
@@ -2902,7 +2905,10 @@ class SharedAppCoordinator: ObservableObject {
         ejectingQueueSourceIDs.insert(id)
         let ejectError = await ejector(access.sourceURL)
         ejectingQueueSourceIDs.remove(id)
-        if let error = ejectError { return error }
+        if let error = ejectError {
+            removedQueueSourceIDs.remove(id)
+            return error
+        }
         markQueueSourceEjected(id)
         return nil
     }

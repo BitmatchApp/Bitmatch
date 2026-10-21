@@ -179,6 +179,46 @@ struct MainScreenQueueTests {
         return (fixture, coordinator, record)
     }
 
+    private actor EjectGate {
+        var calls = 0
+        private var continuation: CheckedContinuation<Void, Never>?
+        func suspend() async { calls += 1; await withCheckedContinuation { continuation = $0 } }
+        func release() { continuation?.resume(); continuation = nil }
+        func noteCall() { calls += 1 }
+    }
+
+    @Test func aSecondEjectOfTheSameCardIsIgnoredWhileTheFirstRuns() async throws {
+        let (fixture, coordinator, record) = try await makeCoordinatorWithSafeMountedCard()
+        defer { fixture.folders.cleanup() }
+        let gate = EjectGate()
+        let first = Task { await coordinator.ejectQueueSource(record.id, using: { _ in await gate.suspend(); return nil }) }
+        for _ in 0..<200 where !coordinator.ejectingQueueSourceIDs.contains(record.id) {
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        #expect(coordinator.ejectingQueueSourceIDs.contains(record.id))
+        let second = await coordinator.ejectQueueSource(record.id, using: { _ in await gate.noteCall(); return nil })
+        #expect(second == nil)
+        #expect(await gate.calls == 1)
+        #expect(coordinator.ejectingQueueSourceIDs.contains(record.id))
+        await gate.release()
+        #expect(await first.value == nil)
+        #expect(coordinator.ejectedQueueSourceIDs.contains(record.id))
+        #expect(!coordinator.ejectingQueueSourceIDs.contains(record.id))
+    }
+
+    @Test func aFailedEjectClearsRemovedEvenIfTheVolumeVanishedFirst() async throws {
+        let (fixture, coordinator, record) = try await makeCoordinatorWithSafeMountedCard()
+        defer { fixture.folders.cleanup() }
+        let volumeID = try #require(record.source.volumeID)
+        let error = await coordinator.ejectQueueSource(record.id, using: { _ in
+            await MainActor.run { coordinator.markQueueSourceRemoved(volumeID: volumeID) }
+            return "Busy"
+        })
+        #expect(error == "Busy")
+        #expect(!coordinator.removedQueueSourceIDs.contains(record.id))
+        #expect(!coordinator.ejectedQueueSourceIDs.contains(record.id))
+    }
+
     @Test func ejectMarksEjectingThenEjectedThenRemoved() async throws {
         let (fixture, coordinator, record) = try await makeCoordinatorWithSafeMountedCard()
         defer { fixture.folders.cleanup() }

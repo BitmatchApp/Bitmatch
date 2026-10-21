@@ -278,7 +278,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             headerDetail: detail,
             summaryTitle: summaryTitle,
             copySummary: ([firstLine] + rows.map(\.copySummary)).joined(separator: "\n"),
-            ejectableCardIDs: rows.filter { $0.safetyState.canEject && mountedSourceIDs.contains($0.id) && !ejectedSourceIDs.contains($0.id) }.map(\.id),
+            ejectableCardIDs: rows.filter { $0.safetyState.canEject && mountedSourceIDs.contains($0.id) && !ejectedSourceIDs.contains($0.id) && !ejectingSourceIDs.contains($0.id) }.map(\.id),
             showsExportReport: session.contains {
                 $0.reportSettings.makeReport && $0.state != .queued && $0.state != .running
                     && !$0.summary.localizedCaseInsensitiveContains("report could not be saved")

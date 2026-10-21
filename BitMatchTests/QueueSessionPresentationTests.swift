@@ -761,6 +761,8 @@ struct QueueSessionPresentationTests {
         let notEjected = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
             progress: nil, mountedSourceIDs: [], removedSourceIDs: [record.id])
         #expect(notEjected.rows[0].action != .removed)
+        // Eject All must not pick a card that is already unmounting.
+        #expect(ejecting.ejectableCardIDs.isEmpty)
     }
 }
 
