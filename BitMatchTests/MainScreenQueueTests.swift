@@ -192,10 +192,15 @@ struct MainScreenQueueTests {
         defer { fixture.folders.cleanup() }
         let gate = EjectGate()
         let first = Task { await coordinator.ejectQueueSource(record.id, using: { _ in await gate.suspend(); return nil }) }
-        for _ in 0..<200 where !coordinator.ejectingQueueSourceIDs.contains(record.id) {
+        // The flag is claimed before the first await (the journal prepare), so it
+        // is set as soon as the first call has run to its first suspension; a
+        // second call can never slip in during prepare.
+        await Task.yield()
+        #expect(coordinator.ejectingQueueSourceIDs.contains(record.id))
+        for _ in 0..<200 where await gate.calls < 1 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
-        #expect(coordinator.ejectingQueueSourceIDs.contains(record.id))
+        #expect(await gate.calls == 1)
         let second = await coordinator.ejectQueueSource(record.id, using: { _ in await gate.noteCall(); return nil })
         #expect(second == nil)
         #expect(await gate.calls == 1)
@@ -211,7 +216,10 @@ struct MainScreenQueueTests {
         defer { fixture.folders.cleanup() }
         let volumeID = try #require(record.source.volumeID)
         let error = await coordinator.ejectQueueSource(record.id, using: { _ in
-            await MainActor.run { coordinator.markQueueSourceRemoved(volumeID: volumeID) }
+            await MainActor.run {
+                coordinator.markQueueSourceRemoved(volumeID: volumeID)
+                #expect(coordinator.removedQueueSourceIDs.contains(record.id))
+            }
             return "Busy"
         })
         #expect(error == "Busy")

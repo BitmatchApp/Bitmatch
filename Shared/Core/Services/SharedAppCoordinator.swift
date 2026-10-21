@@ -2886,6 +2886,10 @@ class SharedAppCoordinator: ObservableObject {
               TransferLibraryPresentation.safetyState(for: record) == .safeToErase else {
             return "Only a verified card that is safe to erase can be ejected."
         }
+        // Claim the card before the first await so a second call arriving
+        // during prepare is refused; every exit path clears the flag.
+        ejectingQueueSourceIDs.insert(id)
+        defer { ejectingQueueSourceIDs.remove(id) }
         let access: LocalTransferAccess
         do {
             access = try await transferJournal.prepareSourceForEjection(
@@ -2902,9 +2906,7 @@ class SharedAppCoordinator: ObservableObject {
             return error.localizedDescription
         }
         defer { access.release() }
-        ejectingQueueSourceIDs.insert(id)
         let ejectError = await ejector(access.sourceURL)
-        ejectingQueueSourceIDs.remove(id)
         if let error = ejectError {
             removedQueueSourceIDs.remove(id)
             return error
