@@ -14,6 +14,7 @@ All notable changes to this project will be documented in this file.
 - Check reads MD5-only and SHA-1-only classic MHL inventories from an independent writer; size-only and XXH64 record shapes stay explicitly unsupported.
 - Dock badge shows the unresolved-attention count (nothing when clean); idle Quit never prompts, and removing a card retires its queued readability check.
 - Selection re-preparation on the bounded worker rechecks identities, names, capacities and readiness after mount changes; last-known free space is dropped while re-probing.
+- History profiling now covers model preparation and collapsed/empty window attach on Mac plus an opt-in iPad simulator probe. Attach/show dominates main-actor stalls even for empty journals; no loading, persistence or retention changes.
 
 ## [0.2.11] - 2026-10-20
 
