@@ -188,6 +188,31 @@ private struct VerifyJob: Sendable {
     let ordinal: Int
 }
 
+/// Files this attempt did not write (pre-existing files proven identical and
+/// reused). A reused file must never be marked or moved after a failed
+/// readback: this attempt does not own it.
+private actor ReusedFileKeyStore {
+    private var keys: Set<String> = []
+    func record(destinationIndex: Int, relativePath: String) { keys.insert("\(destinationIndex)|\(relativePath)") }
+    func contains(destinationIndex: Int, relativePath: String) -> Bool { keys.contains("\(destinationIndex)|\(relativePath)") }
+}
+
+/// After a checksum mismatch, make the failed file unmistakable on disk —
+/// but only when the file at the final name is still byte-identical in
+/// identity to the one present before readback (device, inode, size, mtime,
+/// ctime all compared again inside the mark). Read errors never reach here:
+/// they throw out of verification instead of producing a mismatch. Returns
+/// the URL the result row should report.
+private func markedDestinationURL(pinnedRoot: PinnedDestinationDirectory, relativePath: String,
+                                  identityBeforeVerify: VerifiedFileIdentity?, originalURL: URL) -> URL {
+    guard let identityBeforeVerify,
+          let identityAfterVerify = (try? pinnedRoot.currentRegularFileIdentity(at: relativePath)) ?? nil,
+          identityAfterVerify == identityBeforeVerify,
+          let outcome = try? pinnedRoot.markFailedReadbackOutput(at: relativePath, expectedIdentity: identityAfterVerify),
+          case .marked(let markedPath) = outcome else { return originalURL }
+    return pinnedRoot.logicalRootURL.appendingPathComponent(markedPath)
+}
+
 private actor SourceReadEvidenceStore {
     private var values: [String: DestinationWriter.SourceReadEvidence] = [:]
 
@@ -648,6 +673,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
 
         let sourceFileURLs = sourceManifest.map(\.url)
         let sourceReadEvidence = SourceReadEvidenceStore()
+        let reusedFileKeys = ReusedFileKeyStore()
         var pinnedDestinations = Array<PinnedDestinationDirectory?>(
             repeating: nil,
             count: destinationCount
@@ -668,6 +694,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             do {
                 try Task.checkCancellation()
                 try await self.waitIfPaused()
+                let identityBeforeVerify = (try? job.pinnedRoot.currentRegularFileIdentity(at: job.relativePath)) ?? nil
                 let checked = try await TransferDiagnostics.$runID.withValue(diagnosticRun) {
                     try await TransferDiagnostics.$verifyOrdinal.withValue(job.ordinal) {
                         try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
@@ -687,9 +714,16 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 diagnosticOutcome = checked.verification.matches ? .matched : .mismatched
                 if checked.verification.matches { workMeter.verified(path: job.relativePath, destination: job.destinationIndex) }
                 let verificationResult = checked.verification
+                var effectiveDestination = job.destination
+                if !verificationResult.matches,
+                   await !reusedFileKeys.contains(destinationIndex: job.destinationIndex, relativePath: job.relativePath) {
+                    effectiveDestination = markedDestinationURL(
+                        pinnedRoot: job.pinnedRoot, relativePath: job.relativePath,
+                        identityBeforeVerify: identityBeforeVerify, originalURL: job.destination)
+                }
                 let verified = FileOperationResult(
                     sourceURL: job.source,
-                    destinationURL: job.destination,
+                    destinationURL: effectiveDestination,
                     success: verificationResult.matches,
                     error: nil,
                     fileSize: job.fileSize,
@@ -868,6 +902,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     await sourceReadEvidence.record(evidence, for: relativePath)
                 },
                 onProgress: { destIndex, relativePath, fileSize, wasReused in
+                    if wasReused { await reusedFileKeys.record(destinationIndex: destIndex, relativePath: relativePath) }
                     guard let pinnedDestination = pinnedByIndex[destIndex] else { return }
                     let srcURL = manifestURLByRelativePath[relativePath]
                         ?? operation.sourceURL.appendingPathComponent(relativePath)
@@ -967,6 +1002,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                         Double(event.snapshot.filesVerified) / Double(max(1, totalFiles))
                                     )
                                 }
+                                let identityBeforeVerify = (try? pinnedDestination.currentRegularFileIdentity(at: relativePath)) ?? nil
                                 let checked = try await TransferDiagnostics.$runID.withValue(diagnosticRun) {
                                     try await TransferDiagnostics.$verifyOrdinal.withValue(ordinal) {
                                         try await DestinationWriter.verifyPinnedDestinationFileAndInspectClip(
@@ -986,11 +1022,18 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                 diagnosticOutcome = checked.verification.matches ? .matched : .mismatched
                                 if checked.verification.matches { workMeter.verified(path: relativePath, destination: destIndex) }
                                 let verificationResult = checked.verification
+                                var effectiveDestination = destinationFileURL
+                                if !verificationResult.matches,
+                                   await !reusedFileKeys.contains(destinationIndex: destIndex, relativePath: relativePath) {
+                                    effectiveDestination = markedDestinationURL(
+                                        pinnedRoot: pinnedDestination, relativePath: relativePath,
+                                        identityBeforeVerify: identityBeforeVerify, originalURL: destinationFileURL)
+                                }
 
                                 let fileSize = sizeForVerify
                                 let result = FileOperationResult(
                                     sourceURL: fileURL,
-                                    destinationURL: destinationFileURL,
+                                    destinationURL: effectiveDestination,
                                     success: verificationResult.matches,
                                     error: nil,
                                     fileSize: fileSize,

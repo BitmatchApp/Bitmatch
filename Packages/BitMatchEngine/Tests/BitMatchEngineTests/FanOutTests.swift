@@ -406,11 +406,15 @@ struct FanOutTests {
 
             #expect(operation.results.count == fixture.destinations.count)
             #expect(operation.results.filter { $0.success }.count == 1)
+            // The failed file was made unmistakable on disk: it now lives at
+            // the marked name, with its corrupted bytes preserved.
             let corruptedFile = SafetyValidator.resolvedDestinationRoot(
                 source: fixture.source,
                 destination: fixture.destinations[1],
                 settings: settings
-            ).appendingPathComponent("clip.bin")
+            ).appendingPathComponent("clip.bin.bitmatch-failed")
+            #expect(!FileManager.default.fileExists(
+                atPath: corruptedFile.deletingPathExtension().path))
             let corruptedData = try Data(contentsOf: corruptedFile)
             #expect(corruptedData.count == expected.count)
             #expect(corruptedData != expected)
@@ -944,12 +948,21 @@ struct FanOutTests {
                 $0.verificationResult?.matches == expectsSafeVerdict
             })
             for destination in fixture.destinations {
-                let output = SafetyValidator.resolvedDestinationRoot(
+                let root = SafetyValidator.resolvedDestinationRoot(
                     source: fixture.source,
                     destination: destination,
                     settings: CameraLabelSettings()
-                ).appendingPathComponent("clip.bin")
-                #expect(try Data(contentsOf: output) != original)
+                )
+                if expectsSafeVerdict {
+                    let output = root.appendingPathComponent("clip.bin")
+                    #expect(try Data(contentsOf: output) != original)
+                } else {
+                    // Caught corruption is marked on disk, not left at the
+                    // normal name, and its bytes are preserved.
+                    #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("clip.bin").path))
+                    let marked = root.appendingPathComponent("clip.bin.bitmatch-failed")
+                    #expect(try Data(contentsOf: marked) != original)
+                }
             }
             #else
             #expect(true)
