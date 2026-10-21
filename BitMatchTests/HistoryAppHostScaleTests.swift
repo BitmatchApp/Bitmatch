@@ -341,9 +341,10 @@ final class HistoryAppHostScaleTests: XCTestCase {
             .appendingPathComponent("bitmatch-history-root-\(UUID())", isDirectory: true)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
         defer { try? FileManager.default.removeItem(at: root) }
-        XCTAssertEqual(try validatedEvidenceRoot(root.path), root)
+        let canonical = root.resolvingSymlinksInPath()
+        XCTAssertEqual(try validatedEvidenceRoot(root.path), canonical)
         let alias = "/tmp/" + root.lastPathComponent
-        XCTAssertEqual(try validatedEvidenceRoot(alias), root)
+        XCTAssertEqual(try validatedEvidenceRoot(alias), canonical)
         XCTAssertThrowsError(try validatedEvidenceRoot("/private/tmp"))
         XCTAssertThrowsError(try validatedEvidenceRoot(root.appendingPathComponent("missing").path))
     }
