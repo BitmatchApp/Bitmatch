@@ -14,6 +14,25 @@ The pinned `pyproject.toml` SHA-256 is `0323684799faf0236992bc5fb03e4784a697e429
 
 The separate build backend used Hatchling 1.32.4, pluggy 1.6.0, tomlkit 0.15.2 and trove-classifiers 2026.9.21.13, with the already locked packaging/pathspec versions. Its hash-checked requirements receipt is `2b75731359f6167bfb7786b040a9ec95fd5cba50379bddfd704b98b16a061b0d`. No backend or dependency is part of the fixture or BitMatch runtime.
 
+The repository's offline validator checks the exact fixture file set, both
+manifest and license pins, strict UTF-8 XML, the padded path, and every recorded
+size and digest without editing the fixture:
+
+```sh
+python3 Scripts/ascmhl/validate_independent_classic_fixture.py
+python3 Scripts/test_independent_classic_fixture.py
+```
+
+The validator can also check the primary classic MHL 1.1 XSD and XML signature
+XSD when both local files are supplied. It requires their pinned SHA-256 values
+and uses an offline resolver that accepts only the pinned signature-schema URL.
+It does not invoke `simple-mhl`: a hash of that launcher alone would not pin its
+installed Python package and dependencies. The upstream CLI checks above remain
+the documented reproduction record. The validator never downloads, installs,
+or builds tools or schemas. Its synthetic Unicode and XML-escaping controls are
+parser test inputs only and are not represented as output from `mhl-suite` or
+another independent writer.
+
 Create a disposable `MEDIA` directory containing only the exact payload and padded filename above. In the isolated installed environment, with the optional updater disabled:
 
 ```sh
