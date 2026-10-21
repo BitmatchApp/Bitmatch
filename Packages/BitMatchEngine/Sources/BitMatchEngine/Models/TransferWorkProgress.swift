@@ -95,8 +95,8 @@ final class TransferWorkMeter: Sendable {
         let selectedWork = plannedFiles.values.reduce(0.0) { $0 + $1.size }
         // This denominator conservatively reserves the extra reads needed if
         // files are reused. It is estimated work, not byte-count evidence. On a
-        // fresh one-file copy, unused reserves may settle near the successful
-        // verdict; they settle only after every destination has a valid verdict.
+        // fresh copy, known-unused destination reserves settle at publication.
+        // Remaining reserves settle only after every destination has a valid verdict.
         let sharedWork = selectedWork * (1 + sourceRereadPasses)
         state = Mutex(State(files: plannedFiles,
             total: sharedWork + selectedWork * Double(destinationCount) * (1 + destinationPasses + sourceHashesPerDestination + reuseHashesPerDestination + sourceReuseComparisonsPerDestination + destinationReuseComparisonsPerDestination),
@@ -158,7 +158,18 @@ final class TransferWorkMeter: Sendable {
         state.withLock { state in
             guard var file = state.files[path], file.copied.indices.contains(destination) else { return }
             let previous = file
-            if !wasReused { file.sourceRead = file.size }
+            if !wasReused {
+                // DestinationWriter reports a fresh publication only after it
+                // has recorded the fan-out SourceReadEvidence for this file.
+                // That evidence makes this destination's reuse-only hashes
+                // and comparisons unnecessary. Settle just those reserves;
+                // readback and the final verdict remain outstanding.
+                file.sourceRead = file.size
+                file.sourceHashing[destination] = file.size * sourceHashesPerDestination
+                file.sourceReuseHashing[destination] = file.size * reuseHashesPerDestination
+                file.sourceReuseComparing[destination] = file.size * sourceReuseComparisonsPerDestination
+                file.destinationReuseComparing[destination] = file.size * destinationReuseComparisonsPerDestination
+            }
             file.copied[destination] = file.size
             state.replace(file, at: path, previous: previous)
         }

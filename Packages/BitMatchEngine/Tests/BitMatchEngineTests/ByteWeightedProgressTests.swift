@@ -27,7 +27,7 @@ struct ByteWeightedProgressTests {
         let meter = TransferWorkMeter(files: [entry("clip", 100)], destinationCount: 1, mode: .standard)
         _ = meter.record(path: "clip", destination: 0, phase: .sourceValidatingExisting, bytes: 100, now: 1)
         _ = meter.record(path: "clip", destination: 0, phase: .validatingExisting, bytes: 100, now: 2)
-        meter.copied(path: "clip", destination: 0)
+        meter.copied(path: "clip", destination: 0, wasReused: true)
         #expect(abs(meter.snapshot().fraction - 0.4) < 0.0001)
         _ = meter.record(path: "clip", destination: 0, phase: .readingBack, bytes: 50, now: 3)
         #expect(abs(meter.snapshot().fraction - 0.5) < 0.0001)
@@ -56,7 +56,7 @@ struct ByteWeightedProgressTests {
                          bytes: 25 * hashesPerDestination, now: 1)
         #expect(meter.snapshot().completed - baseline == Double(50 * hashesPerDestination))
 
-        for destination in 0..<2 { meter.copied(path: "clip", destination: destination) }
+        for destination in 0..<2 { meter.copied(path: "clip", destination: destination, wasReused: true) }
         meter.verified(path: "clip", destination: 0)
         #expect(meter.snapshot().completed < meter.snapshot().total)
         meter.verified(path: "clip", destination: 1)
@@ -68,7 +68,7 @@ struct ByteWeightedProgressTests {
     @Test func destinationReadCompletionDoesNotSettleAnotherPendingVerdictsBudget() {
         let meter = TransferWorkMeter(files: [entry("clip", 100)], destinationCount: 2, mode: .standard)
         for destination in 0..<2 {
-            meter.copied(path: "clip", destination: destination)
+            meter.copied(path: "clip", destination: destination, wasReused: true)
             _ = meter.record(path: "clip", destination: destination, phase: .readingBack,
                              bytes: 100, now: Double(destination))
         }
@@ -79,6 +79,40 @@ struct ByteWeightedProgressTests {
         #expect(meter.snapshot().completed < meter.snapshot().total)
         meter.verified(path: "clip", destination: 1)
         #expect(meter.snapshot().completed == meter.snapshot().total)
+    }
+
+    // A fresh publication makes only that destination's reuse-only reserves
+    // unnecessary; another reused file still has source hashing to complete.
+    // Without verified callbacks, even completed readback bytes cannot finish
+    // the meter after a failed or pending verdict.
+    @Test func freshCopySettlesOnlyItsOwnReuseReservesAndKeepsVerdictPending() {
+        let meter = TransferWorkMeter(files: [entry("mixed", 100), entry("reusedOnly", 100)],
+                                      destinationCount: 2, mode: .paranoid)
+
+        for phase in [TransferIOPhase.sourceReuseHashing, .sourceReuseComparing,
+                      .destinationReuseComparing, .validatingExisting] {
+            _ = meter.record(path: "mixed", destination: 0, phase: phase, bytes: 100, now: 1)
+        }
+        meter.copied(path: "mixed", destination: 0, wasReused: true)
+        let beforeFresh = meter.snapshot()
+        let destinationZeroBeforeFresh = beforeFresh.perDestination[0]
+
+        meter.copied(path: "mixed", destination: 1, wasReused: false)
+        let afterFresh = meter.snapshot()
+        // Shared source evidence + the fresh copy + only this destination's
+        // four unused Paranoid hash/comparison reserves (100 bytes each).
+        #expect(afterFresh.completed - beforeFresh.completed == 600)
+        // The fresh publication contributes only its share of the shared read
+        // to the already-reused destination; its own reuse work stays credited.
+        let expectedSharedReadShare = 50 / (afterFresh.total / 2)
+        #expect(abs(afterFresh.perDestination[0] - destinationZeroBeforeFresh - expectedSharedReadShare) < 0.0001)
+
+        _ = meter.record(path: "mixed", destination: 1, phase: .readingBack, bytes: 200, now: 2)
+        let beforeReusedHash = meter.snapshot().completed
+        meter.copied(path: "reusedOnly", destination: 0, wasReused: true)
+        _ = meter.record(path: "reusedOnly", destination: 0, phase: .sourceHashing, bytes: 50, now: 3)
+        #expect(meter.snapshot().completed == beforeReusedHash + 150)
+        #expect(meter.snapshot().fraction < 0.99)
     }
 
     // Plant: ignore wasReused and credit a fresh source read in copied().
@@ -238,7 +272,7 @@ struct ByteWeightedProgressTests {
         meter.copied(path: "clip", destination: 0)
         meter.copied(path: "clip", destination: 0)
         #expect(meter.snapshot().total == 500)
-        #expect(meter.snapshot().completed == 200)
+        #expect(meter.snapshot().completed == 400)
     }
 
     /// The large source waits until the tiny sidecar has verified. The old
