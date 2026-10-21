@@ -35,15 +35,60 @@ final class VolumeMonitorService: ObservableObject {
     /// happen between directory notifications. Keep the mounted filesystem's
     /// best available identity, rather than the path, beside each row.
     private var publishedMountIdentities: [String: String] = [:]
+    private var publishedRowMountPaths: [String: String] = [:]
+    private var publishedRowMountURLs: [String: URL] = [:]
     private var pendingMountIdentities: [String: String] = [:]
     private var pendingAnalysisRequests: [String: UInt64] = [:]
     private var nextAnalysisRequest: UInt64 = 0
+    private let probeScheduler: BoundedVolumeProbeScheduler
+    private let mountedPathsReader: @Sendable () -> [URL]?
+    private let identityReader: @Sendable (URL) -> MountedVolume?
+    private let analysisReader: @Sendable (URL, DiskFacts?) -> VolumeAnalysisResult
+    private let testPublicationObserver: (@MainActor @Sendable (String) -> Void)?
+    private var snapshotGeneration: UInt64 = 0
+    private var snapshotScanNeeded = false
+    private var snapshotForceAnalysis = false
+    private var analysisRescanNeeded = false
+    private var currentlyListedMountPaths = Set<String>()
+    private var pendingDiskFacts: [String: DiskFacts] = [:]
+    private var forcedAnalysisPaths = Set<String>()
+    private var nextValidationRequest: UInt64 = 0
+    private var discoveredVolumeCapacityWaiter: ProbeCapacityWaiter?
+    private var nextSelectionIdentityRequest: UInt64 = 0
+    private var latestSelectionIdentityRequest: UInt64 = 0
+    private var selectionIdentityCapacityWaiter: SelectionIdentityCapacityWaiter?
+    private var selectionIdentityContinuations: [UInt64: CheckedContinuation<(Bool, String?), Never>] = [:]
+
+    private struct SelectionIdentityCapacityWaiter {
+        let requestID: UInt64
+        let serialGroup: String
+        let continuation: CheckedContinuation<Bool, Never>
+    }
+
+    private struct ProbeCapacityWaiter {
+        let serialGroup: String
+        let continuation: CheckedContinuation<Bool, Never>
+    }
 
     struct MountedVolume: Sendable {
         let url: URL
         let identity: String?
+        let volumeID: String?
 
-        var path: String { url.standardizedFileURL.resolvingSymlinksInPath().path }
+        // This value is used on MainActor for dictionary bookkeeping. Keep it
+        // lexical; resolving symlinks here can itself touch a mounted disk.
+        var path: String { url.standardizedFileURL.path }
+
+        init(url: URL, identity: String?, volumeID: String? = nil) {
+            self.url = url
+            self.identity = identity
+            self.volumeID = volumeID
+        }
+    }
+
+    struct VolumeAnalysisResult: Sendable {
+        let connected: ConnectedDrivesPresentation.Volume?
+        let detected: DetectedVolume?
     }
 
     struct Reconciliation: Sendable {
@@ -79,6 +124,10 @@ final class VolumeMonitorService: ObservableObject {
 
     nonisolated static func acceptsAnalysisRequest(_ request: UInt64, current: UInt64?) -> Bool {
         current == request
+    }
+
+    nonisolated static func probeKey(path: String, identity: String) -> String {
+        "analysis|\(path)|\(identity)"
     }
 
     struct DetectedVolume: Identifiable, Equatable, Sendable {
@@ -138,6 +187,12 @@ final class VolumeMonitorService: ObservableObject {
     // A singleton: it lives as long as the app, so it never tears monitoring
     // down, and the Disk Arbitration context below never dangles.
     private init() {
+        probeScheduler = BoundedVolumeProbeScheduler(maxConcurrent: 2, maxQueued: 8, reservedQueueSlots: 1)
+        mountedPathsReader = Self.readMountedPaths
+        identityReader = Self.readMountedVolume
+        analysisReader = Self.defaultVolumeAnalysis
+        testPublicationObserver = nil
+        probeScheduler.setCapacityHandler { [weak self] in self?.probeCapacityAvailable() }
         #if DEBUG
         // Test models and MacSetupLocations reference this singleton even
         // when their own monitoring is off. The app-hosted unit-test process
@@ -254,8 +309,17 @@ final class VolumeMonitorService: ObservableObject {
         
         // Mounted volumes are analysed; unmounted ones are left alone.
         if let volumePath = facts.volumePath {
+            guard !VolumeAnalysis.isSystemVolume(facts) else {
+                vlog("⏭️ Skipping system volume: \(volumePath)")
+                return
+            }
             vlog("📂 Volume already mounted at: \(volumePath)")
-            analyzeAndAddVolume(at: volumePath, facts: facts)
+            let path = MountedVolume(url: volumePath, identity: nil).path
+            pendingDiskFacts[path] = facts
+            forcedAnalysisPaths.insert(path)
+            currentlyListedMountPaths.insert(path)
+            probeMounts([volumePath])
+            checkForVolumeChanges()
         } else if isUnmountedSystemDisk(facts, volumeName: volumeName) {
             // DA reports every disk at launch, including the APFS Recovery,
             // Preboot, VM and Update volumes that macOS leaves unmounted.
@@ -278,6 +342,27 @@ final class VolumeMonitorService: ObservableObject {
         removeDetectedVolume(devicePath: devicePath)
         checkForVolumeChanges()
     }
+
+    /// Deterministic seam for a held mount enumeration/identity read. Tests
+    /// construct this monitor without starting Disk Arbitration or watchers.
+    init(
+        testMountedPathsReader: @escaping @Sendable () -> [URL]?,
+        testIdentityReader: @escaping @Sendable (URL) -> MountedVolume?,
+        testProbeScheduler: BoundedVolumeProbeScheduler? = nil,
+        testAnalysisReader: @escaping @Sendable (URL, DiskFacts?) -> VolumeAnalysisResult = { _, _ in
+            VolumeAnalysisResult(connected: nil, detected: nil)
+        },
+        testPublicationObserver: (@MainActor @Sendable (String) -> Void)? = nil
+    ) {
+        probeScheduler = testProbeScheduler ?? BoundedVolumeProbeScheduler(
+            maxConcurrent: 2, maxQueued: 8, reservedQueueSlots: 1
+        )
+        mountedPathsReader = testMountedPathsReader
+        identityReader = testIdentityReader
+        analysisReader = testAnalysisReader
+        self.testPublicationObserver = testPublicationObserver
+        probeScheduler.setCapacityHandler { [weak self] in self?.probeCapacityAvailable() }
+    }
     
     /// An unmounted disk BitMatch must not mount: a system-named volume, or
     /// any volume on an internal, non-removable device.
@@ -286,47 +371,61 @@ final class VolumeMonitorService: ObservableObject {
         return facts.isInternal == true && !facts.isRemovable && !facts.isEjectable
     }
 
-    private func analyzeAndAddVolume(at volumePath: URL, facts: DiskFacts) {
-        // Skip system volumes and hidden volumes
-        if VolumeAnalysis.isSystemVolume(facts) {
-            vlog("⏭️ Skipping system volume: \(volumePath)")
-            return
-        }
-        analyzeInBackground(
-            [MountedVolume(url: volumePath, identity: Self.mountIdentity(for: volumePath))],
-            facts: facts, forceAnalysis: true
-        )
-    }
     #endif
     
     // MARK: - Volume Analysis
     
-    /// Reads each volume off the main actor and adds what it finds.
-    private func analyzeInBackground(
-        _ volumes: [MountedVolume], facts: DiskFacts? = nil, forceAnalysis: Bool = false
+    /// Identity, classification, and final identity validation occupy one
+    /// bounded worker. A held volume cannot block probes for other mounts.
+    private func probeMounts(
+        _ urls: [URL], forceAnalysis: Bool = false
     ) {
         #if os(macOS)
-        let fresh = volumes.compactMap { volume -> (MountedVolume, UInt64)? in
-            guard let identity = volume.identity else { return nil }
-            guard forceAnalysis || pendingMountIdentities[volume.path] != identity else { return nil }
+        let identityProbe = identityReader
+        let analyze = analysisReader
+        for url in urls {
+            let path = MountedVolume(url: url, identity: nil).path
+            guard forceAnalysis || forcedAnalysisPaths.contains(path)
+                    || pendingAnalysisRequests[path] == nil else { continue }
+            let forceThisProbe = forceAnalysis || forcedAnalysisPaths.contains(path)
+            let facts = pendingDiskFacts[path]
             nextAnalysisRequest &+= 1
-            pendingMountIdentities[volume.path] = identity
-            pendingAnalysisRequests[volume.path] = nextAnalysisRequest
-            return (volume, nextAnalysisRequest)
-        }
-        Task.detached(priority: .utility) { [weak self] in
-            for (volume, request) in fresh {
-                let volumeURL = volume.url
-                Self.vlog("🔬 Analyzing volume at: \(volumeURL.path)")
-                let connected = VolumeAnalysis.connectedVolume(at: volumeURL, facts: facts)
-                let detected = VolumeAnalysis.analyzeVolume(at: volumeURL, facts: facts, cameraInfo: connected?.cameraName)
+            let request = nextAnalysisRequest
+            let key = "mount-probe|\(path)"
+            let accepted = probeScheduler.enqueue(key: key, serialGroup: Self.mountProbeSerialGroup(path: path)) { [weak self] in
+                guard let self else { return }
+                guard let volume = identityProbe(url) else {
+                    await self.rejectUnidentifiedMount(path: path, request: request)
+                    return
+                }
+                guard await self.prepareAnalysis(of: volume, request: request, force: forceThisProbe) else { return }
+                Self.vlog("🔬 Analyzing volume at: \(url.path)")
+                // Capture the Sendable worker closure before leaving the
+                // actor. Accessing an actor-isolated stored closure here
+                // would hop back to MainActor and run the filesystem scan
+                // there, defeating the worker bound.
+                let result = analyze(volume.url, facts)
+                let connected = result.connected
+                let detected = result.detected
                 if let detected {
                     Self.vlog("✅ Volume detected as \(detected.type): \(detected.displayName)")
                 } else {
                     Self.vlog("❌ Volume not recognized as camera card or backup drive")
                 }
-                await self?.publishAnalysis(connected: connected, detected: detected, for: volume, request: request)
+                // The final identity read runs in this same bounded worker.
+                let live = identityProbe(url)
+                await self.publishAnalysis(
+                    connected: connected, detected: detected, for: volume,
+                    request: request, liveMount: live
+                )
             }
+            guard accepted else {
+                analysisRescanNeeded = true
+                continue
+            }
+            pendingDiskFacts.removeValue(forKey: path)
+            forcedAnalysisPaths.remove(path)
+            pendingAnalysisRequests[path] = request
         }
         #else
         vlog("⚠️ Volume analysis not available on iOS")
@@ -334,31 +433,110 @@ final class VolumeMonitorService: ObservableObject {
     }
 
     private func checkForVolumeChanges(forceAnalysis: Bool = false) {
-        vlog("🔍 Checking for volume changes...")
-        guard let currentVolumes = Self.mountedVolumes() else { return }
-        let mounted = currentVolumes.map { MountedVolume(url: $0, identity: Self.mountIdentity(for: $0)) }
-        let currentIdentities = Dictionary(mounted.compactMap { volume in
-            volume.identity.map { (volume.path, $0) }
-        }, uniquingKeysWith: { _, newer in newer })
-        pendingMountIdentities = pendingMountIdentities.filter { currentIdentities[$0.key] == $0.value }
-        pendingAnalysisRequests = pendingAnalysisRequests.filter { pendingMountIdentities[$0.key] != nil }
-        let knownPaths = Set(connectedVolumes.map { $0.url.path })
-            .union((availableCameraCards + availableBackupDrives).map { $0.url.path })
-        let plan = Self.reconciliation(
-            mounted: mounted, published: publishedMountIdentities,
-            pending: pendingMountIdentities, knownPaths: knownPaths,
-            forceAnalysis: forceAnalysis
-        )
-        if !plan.stalePaths.isEmpty {
-            connectedVolumes.removeAll { plan.stalePaths.contains($0.url.path) }
-            availableCameraCards.removeAll { plan.stalePaths.contains($0.url.path) }
-            availableBackupDrives.removeAll { plan.stalePaths.contains($0.url.path) }
-            for path in plan.stalePaths { publishedMountIdentities.removeValue(forKey: path) }
+        snapshotGeneration &+= 1
+        snapshotScanNeeded = true
+        snapshotForceAnalysis = snapshotForceAnalysis || forceAnalysis
+        scheduleMountedSnapshotIfNeeded()
+    }
+
+    private func scheduleMountedSnapshotIfNeeded() {
+        guard snapshotScanNeeded else { return }
+        let request = snapshotGeneration
+        let forceAnalysis = snapshotForceAnalysis
+        let reader = mountedPathsReader
+        let accepted = probeScheduler.enqueue(
+            key: Self.snapshotProbeKey, serialGroup: Self.snapshotProbeGroup, reserved: true
+        ) { [weak self] in
+            let paths = reader()
+            await self?.receiveMountedPaths(paths, request: request, forceAnalysis: forceAnalysis)
         }
-        for volume in plan.toAnalyze {
-            vlog("🔍 New or replaced volume detected: \(volume.url.lastPathComponent)")
+        if accepted { snapshotScanNeeded = false }
+    }
+
+    private func probeCapacityAvailable() {
+        if snapshotScanNeeded {
+            scheduleMountedSnapshotIfNeeded()
+        } else if analysisRescanNeeded {
+            analysisRescanNeeded = false
+            checkForVolumeChanges()
         }
-        analyzeInBackground(plan.toAnalyze, forceAnalysis: forceAnalysis)
+        resumeProbeCapacityWaitersIfPossible()
+    }
+
+    private func receiveMountedPaths(
+        _ urls: [URL]?, request: UInt64, forceAnalysis: Bool
+    ) {
+        guard request == snapshotGeneration else { return }
+        snapshotForceAnalysis = false
+        guard let urls else {
+            SharedLogger.error("Could not scan /Volumes directory", category: .transfer)
+            return
+        }
+        let paths = Set(urls.map { MountedVolume(url: $0, identity: nil).path })
+        currentlyListedMountPaths = paths
+        probeScheduler.discardQueued { key in
+            key.hasPrefix("mount-probe|") && !paths.contains(String(key.dropFirst("mount-probe|".count)))
+        }
+        pendingMountIdentities = pendingMountIdentities.filter { paths.contains($0.key) }
+        pendingAnalysisRequests = pendingAnalysisRequests.filter { paths.contains($0.key) }
+        pendingDiskFacts = pendingDiskFacts.filter { paths.contains($0.key) }
+        let knownPaths = Set(connectedVolumes.map { mountPath(forPublishedRowURL: $0.url) })
+            .union((availableCameraCards + availableBackupDrives).map { mountPath(forPublishedRowURL: $0.url) })
+        let disappeared = knownPaths.union(publishedMountIdentities.keys).subtracting(paths)
+        if !disappeared.isEmpty {
+            removePublishedMounts(at: disappeared)
+            for path in disappeared {
+                publishedMountIdentities.removeValue(forKey: path)
+                pendingMountIdentities.removeValue(forKey: path)
+                pendingAnalysisRequests.removeValue(forKey: path)
+                forcedAnalysisPaths.remove(path)
+                pendingDiskFacts.removeValue(forKey: path)
+            }
+        }
+        forcedAnalysisPaths.formIntersection(paths)
+        probeMounts(urls, forceAnalysis: forceAnalysis)
+    }
+
+    private func prepareAnalysis(of mount: MountedVolume, request: UInt64, force: Bool) -> Bool {
+        let path = mount.path
+        guard currentlyListedMountPaths.contains(path),
+              Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[path]),
+              let identity = mount.identity else { return false }
+        let prior = publishedMountIdentities[path]
+        if prior != nil && prior != identity {
+            removePublishedMounts(at: [path])
+            publishedMountIdentities.removeValue(forKey: path)
+        }
+        pendingMountIdentities[path] = identity
+        if prior == identity && !force {
+            pendingMountIdentities.removeValue(forKey: path)
+            pendingAnalysisRequests.removeValue(forKey: path)
+            return false
+        }
+        return true
+    }
+
+    private func rejectUnidentifiedMount(path: String, request: UInt64) {
+        guard Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[path]) else { return }
+        removePublishedMounts(at: [path])
+        publishedMountIdentities.removeValue(forKey: path)
+        pendingMountIdentities.removeValue(forKey: path)
+        pendingAnalysisRequests.removeValue(forKey: path)
+    }
+
+    private func removePublishedMounts(at paths: Set<String>) {
+        connectedVolumes.removeAll { paths.contains(mountPath(forPublishedRowURL: $0.url)) }
+        availableCameraCards.removeAll { paths.contains(mountPath(forPublishedRowURL: $0.url)) }
+        availableBackupDrives.removeAll { paths.contains(mountPath(forPublishedRowURL: $0.url)) }
+        for rowPath in Array(publishedRowMountPaths.keys) where paths.contains(publishedRowMountPaths[rowPath] ?? "") {
+            publishedRowMountPaths.removeValue(forKey: rowPath)
+            publishedRowMountURLs.removeValue(forKey: rowPath)
+        }
+    }
+
+    private func mountPath(forPublishedRowURL url: URL) -> String {
+        let rowPath = url.standardizedFileURL.path
+        return publishedRowMountPaths[rowPath] ?? rowPath
     }
     
     private func scanExistingVolumes() {
@@ -391,36 +569,83 @@ final class VolumeMonitorService: ObservableObject {
         filesystemIdentity(for: url)
     }
 
+    /// Groups probes beneath one lexical /Volumes entry without resolving
+    /// symlinks or touching the filesystem on MainActor.
+    nonisolated static func probeSerialGroup(for url: URL) -> String {
+        let path = url.standardizedFileURL.path
+        let prefix = "/Volumes/"
+        guard path.hasPrefix(prefix) else { return "path:\(path)" }
+        let name = path.dropFirst(prefix.count)
+            .split(separator: "/", omittingEmptySubsequences: true).first
+        guard let name else { return "path:\(path)" }
+        return "mount:/Volumes/\(name)"
+    }
+
     private nonisolated static func filesystemIdentity(for url: URL) -> String? {
         #if os(macOS)
         var current = url
         current.removeAllCachedResourceValues()
-        var info = stat()
-        guard stat(current.path, &info) == 0 else { return nil }
-        let uuid = (try? current.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString ?? ""
-        return "\(UInt64(info.st_dev)):\(uuid)"
+        let uuid = (try? current.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString
+        return filesystemIdentity(for: current, volumeID: uuid)
         #else
         return nil
         #endif
     }
 
-    private nonisolated static func mountedVolumes() -> [URL]? {
+    private nonisolated static func filesystemIdentity(for url: URL, volumeID: String?) -> String? {
+        #if os(macOS)
+        var current = url
+        current.removeAllCachedResourceValues()
+        var info = stat()
+        guard stat(current.path, &info) == 0 else { return nil }
+        return "\(UInt64(info.st_dev)):\(volumeID ?? "")"
+        #else
+        return nil
+        #endif
+    }
+
+    private nonisolated static func readMountedPaths() -> [URL]? {
         guard let volumes = try? FileManager.default.contentsOfDirectory(
             at: URL(fileURLWithPath: "/Volumes"),
-            includingPropertiesForKeys: [.volumeTotalCapacityKey, .volumeAvailableCapacityKey],
+            includingPropertiesForKeys: nil,
             options: [.skipsHiddenFiles]
         ) else {
-            SharedLogger.error("Could not scan /Volumes directory", category: .transfer)
             return nil
         }
         return volumes
     }
+
+    private nonisolated static func readMountedVolume(_ url: URL) -> MountedVolume? {
+        var current = url
+        current.removeAllCachedResourceValues()
+        guard let values = try? current.resourceValues(forKeys: [.volumeURLKey, .volumeUUIDStringKey]),
+              let mountRoot = values.allValues[.volumeURLKey] as? URL,
+              mountRoot.standardizedFileURL.resolvingSymlinksInPath().path
+                == current.standardizedFileURL.resolvingSymlinksInPath().path else { return nil }
+        let volumeID = values.volumeUUIDString
+        guard let identity = filesystemIdentity(for: current, volumeID: volumeID) else { return nil }
+        return MountedVolume(url: url, identity: identity, volumeID: volumeID)
+    }
+
+    private nonisolated static func defaultVolumeAnalysis(
+        _ url: URL, _ facts: DiskFacts?
+    ) -> VolumeAnalysisResult {
+        #if os(macOS)
+        let connected = VolumeAnalysis.connectedVolume(at: url, facts: facts)
+        let detected = VolumeAnalysis.analyzeVolume(at: url, facts: facts, cameraInfo: connected?.cameraName)
+        return VolumeAnalysisResult(connected: connected, detected: detected)
+        #else
+        return VolumeAnalysisResult(connected: nil, detected: nil)
+        #endif
+    }
+
+    nonisolated private static let snapshotProbeKey = "mounted-volume-snapshot"
     
     // MARK: - Volume Management
     
     private func publishAnalysis(
         connected: ConnectedDrivesPresentation.Volume?, detected: DetectedVolume?,
-        for mount: MountedVolume, request: UInt64
+        for mount: MountedVolume, request: UInt64, liveMount: MountedVolume?
     ) {
         defer {
             if Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[mount.path]) {
@@ -429,22 +654,51 @@ final class VolumeMonitorService: ObservableObject {
             }
         }
         guard Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[mount.path]),
+              currentlyListedMountPaths.contains(mount.path),
               let identity = mount.identity,
-              let live = Self.mountedVolumes()?.map({ MountedVolume(url: $0, identity: Self.mountIdentity(for: $0)) }),
-              Self.acceptsAnalysis(mount, mounted: live) else { return }
-        if publishedMountIdentities[mount.path] != nil,
-           publishedMountIdentities[mount.path] != identity {
-            connectedVolumes.removeAll { $0.url.path == mount.path }
-            availableCameraCards.removeAll { $0.url.path == mount.path }
-            availableBackupDrives.removeAll { $0.url.path == mount.path }
+              let liveMount,
+              Self.acceptsAnalysis(mount, mounted: [liveMount]) else {
+            if Self.acceptsAnalysisRequest(request, current: pendingAnalysisRequests[mount.path]) {
+                removePublishedMounts(at: [mount.path])
+                publishedMountIdentities.removeValue(forKey: mount.path)
+                checkForVolumeChanges()
+            }
+            return
         }
-        if let connected { updateConnectedVolume(connected) }
-        if let detected { addDetectedVolume(detected) }
-        if connected != nil || detected != nil { publishedMountIdentities[mount.path] = identity }
+        var publishedAnyRow = false
+        if let connected, canAssociatePublishedRow(at: connected.url, with: mount) {
+            let rowPath = connected.url.standardizedFileURL.path
+            publishedRowMountPaths[rowPath] = mount.path
+            publishedRowMountURLs[rowPath] = mount.url
+            updateConnectedVolume(connected)
+            publishedAnyRow = true
+        }
+        if let detected, canAssociatePublishedRow(at: detected.url, with: mount) {
+            let rowPath = detected.url.standardizedFileURL.path
+            publishedRowMountPaths[rowPath] = mount.path
+            publishedRowMountURLs[rowPath] = mount.url
+            addDetectedVolume(detected)
+            publishedAnyRow = true
+        }
+        if publishedAnyRow {
+            publishedMountIdentities[mount.path] = identity
+            testPublicationObserver?(mount.path)
+        }
+    }
+
+    /// Analysis may return a symlink-resolved URL. Keep one lexical mount key
+    /// per published row; if two mounts collapse to the same row URL, refuse
+    /// the alias rather than transferring one mount's identity to another.
+    private func canAssociatePublishedRow(at url: URL, with mount: MountedVolume) -> Bool {
+        let rowPath = url.standardizedFileURL.path
+        return publishedRowMountPaths[rowPath].map { $0 == mount.path } ?? true
     }
 
     private func updateConnectedVolume(_ volume: ConnectedDrivesPresentation.Volume) {
-        if let index = connectedVolumes.firstIndex(where: { $0.url == volume.url }) {
+        let lexicalMountPath = mountPath(forPublishedRowURL: volume.url)
+        if let index = connectedVolumes.firstIndex(where: {
+            $0.url == volume.url || mountPath(forPublishedRowURL: $0.url) == lexicalMountPath
+        }) {
             connectedVolumes[index] = volume
         } else {
             connectedVolumes.append(volume)
@@ -454,14 +708,20 @@ final class VolumeMonitorService: ObservableObject {
     private func addDetectedVolume(_ volume: DetectedVolume) {
         switch volume.type {
         case .cameraCard:
-            if let index = availableCameraCards.firstIndex(where: { $0.url.path == volume.url.path }) {
+            let lexicalMountPath = mountPath(forPublishedRowURL: volume.url)
+            if let index = availableCameraCards.firstIndex(where: {
+                mountPath(forPublishedRowURL: $0.url) == lexicalMountPath
+            }) {
                 availableCameraCards[index] = volume
             } else if !availableCameraCards.contains(where: { $0.devicePath == volume.devicePath }) {
                 availableCameraCards.append(volume)
                 vlog("📷 Camera card detected: \(volume.displayName) (\(volume.capacityFormatted))")
             }
         case .backupDrive:
-            if let index = availableBackupDrives.firstIndex(where: { $0.url.path == volume.url.path }) {
+            let lexicalMountPath = mountPath(forPublishedRowURL: volume.url)
+            if let index = availableBackupDrives.firstIndex(where: {
+                mountPath(forPublishedRowURL: $0.url) == lexicalMountPath
+            }) {
                 availableBackupDrives[index] = volume
             } else if !availableBackupDrives.contains(where: { $0.devicePath == volume.devicePath }) {
                 availableBackupDrives.append(volume)
@@ -487,22 +747,282 @@ final class VolumeMonitorService: ObservableObject {
     
     func forceAnalyzeVolume(at url: URL) {
         vlog("🔧 Force analyzing volume: \(url)")
-        analyzeInBackground(
-            [MountedVolume(url: url, identity: Self.mountIdentity(for: url))], forceAnalysis: true
-        )
+        let path = MountedVolume(url: url, identity: nil).path
+        forcedAnalysisPaths.insert(path)
+        currentlyListedMountPaths.insert(path)
+        probeMounts([url])
+        checkForVolumeChanges()
+    }
+
+    /// Deterministic settlement hook for injected probe tests.
+    func waitForProbeSettlementForTesting(timeout: TimeInterval = 4) async -> Bool {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        while probeScheduler.runningCount > 0 || probeScheduler.queuedCount > 0 {
+            guard ProcessInfo.processInfo.systemUptime < deadline else { return false }
+            try? await Task.sleep(for: .milliseconds(10))
+        }
+        return true
     }
 
     /// Auto-queue may only act on a row while its published mount is still
     /// the mounted filesystem, even if a change notification is in flight.
-    func isCurrentDiscoveredVolume(_ row: ConnectedDrivesPresentation.Row) -> Bool {
-        var current = row.url
-        current.removeAllCachedResourceValues()
-        let path = current.standardizedFileURL.resolvingSymlinksInPath().path
-        guard let published = publishedMountIdentities[path], let rowID = row.volumeID,
-              let liveID = (try? current.resourceValues(forKeys: [.volumeUUIDStringKey]))?.volumeUUIDString else {
-            return false
+    func isCurrentDiscoveredVolume(_ row: ConnectedDrivesPresentation.Row) async -> Bool {
+        let rowPath = row.url.standardizedFileURL.path
+        let path = publishedRowMountPaths[rowPath] ?? MountedVolume(url: row.url, identity: nil).path
+        guard let published = publishedMountIdentities[path], let rowID = row.volumeID else { return false }
+        let probeURL = publishedRowMountURLs[rowPath] ?? row.url
+        let serialGroup = Self.mountProbeSerialGroup(path: path)
+        let identityProbe = identityReader
+        while true {
+            nextValidationRequest &+= 1
+            let key = "identity-validation|\(nextValidationRequest)|\(path)"
+            let result: Bool? = await withCheckedContinuation { continuation in
+                let accepted = probeScheduler.enqueue(key: key, serialGroup: serialGroup) { [weak self] in
+                    let mounted = identityProbe(probeURL)
+                    guard let self else { continuation.resume(returning: false); return }
+                    await self.finishDiscoveredVolumeValidation(
+                        path: path, rowPath: rowPath, expectedIdentity: published, expectedVolumeID: rowID,
+                        mounted: mounted, continuation: continuation
+                    )
+                }
+                if !accepted { continuation.resume(returning: nil) }
+            }
+            if let result { return result }
+            guard await waitForProbeCapacity(serialGroup: serialGroup),
+                  publishedMountIdentities[path] == published,
+                  (publishedRowMountPaths[rowPath] ?? rowPath) == path else { return false }
         }
-        return rowID == liveID && Self.mountIdentity(for: current) == published
+    }
+
+    private func waitForProbeCapacity(serialGroup: String) async -> Bool {
+        if probeScheduler.hasRegularQueueCapacity(for: serialGroup) { return true }
+        return await withCheckedContinuation { continuation in
+            guard probeScheduler.hasRegularQueueCapacity(for: serialGroup) else {
+                if discoveredVolumeCapacityWaiter == nil {
+                    discoveredVolumeCapacityWaiter = ProbeCapacityWaiter(
+                        serialGroup: serialGroup, continuation: continuation
+                    )
+                } else {
+                    continuation.resume(returning: false)
+                }
+                return
+            }
+            continuation.resume(returning: true)
+        }
+    }
+
+    private func resumeProbeCapacityWaitersIfPossible() {
+        if let discovered = discoveredVolumeCapacityWaiter,
+           probeScheduler.hasRegularQueueCapacity(for: discovered.serialGroup) {
+            discoveredVolumeCapacityWaiter = nil
+            discovered.continuation.resume(returning: true)
+        }
+        if let selection = selectionIdentityCapacityWaiter,
+           probeScheduler.hasRegularQueueCapacity(for: selection.serialGroup) {
+            selectionIdentityCapacityWaiter = nil
+            selection.continuation.resume(returning: selection.requestID == latestSelectionIdentityRequest)
+        }
+    }
+
+    private func finishDiscoveredVolumeValidation(
+        path: String, rowPath: String, expectedIdentity: String, expectedVolumeID: String,
+        mounted: MountedVolume?, continuation: CheckedContinuation<Bool?, Never>
+    ) {
+        let current = mounted?.path == path ? mounted : nil
+        let accepted = publishedMountIdentities[path] == expectedIdentity
+            && (publishedRowMountPaths[rowPath] ?? rowPath) == path
+            && current?.identity == expectedIdentity
+            && current?.volumeID == expectedVolumeID
+        continuation.resume(returning: accepted)
+    }
+
+    func selectionIdentity(
+        at url: URL, using probe: @escaping @Sendable (URL) -> String? = VolumeMonitorService.selectionIdentity
+    ) async -> String? {
+        nextSelectionIdentityRequest &+= 1
+        let requestID = nextSelectionIdentityRequest
+        latestSelectionIdentityRequest = requestID
+        let serialGroup = Self.probeSerialGroup(for: url)
+
+        // Only the newest selected source may wait for a worker or occupy a
+        // queued slot. A running syscall remains bounded and cannot be
+        // cancelled, but its superseded caller settles immediately.
+        if let waiter = selectionIdentityCapacityWaiter {
+            selectionIdentityCapacityWaiter = nil
+            waiter.continuation.resume(returning: false)
+        }
+        let supersededContinuations = Array(selectionIdentityContinuations.values)
+        selectionIdentityContinuations.removeAll()
+        for continuation in supersededContinuations {
+            continuation.resume(returning: (false, nil))
+        }
+        probeScheduler.discardQueued { $0 == Self.selectionIdentityProbeKey }
+
+        while true {
+            guard requestID == latestSelectionIdentityRequest else { return nil }
+            let result = await withCheckedContinuation { (continuation: CheckedContinuation<(Bool, String?), Never>) in
+                let accepted = probeScheduler.enqueue(
+                    key: Self.selectionIdentityProbeKey, serialGroup: serialGroup
+                ) { [weak self] in
+                    let identity = probe(url)
+                    await self?.finishSelectionIdentityRequest(requestID, identity: identity)
+                }
+                if accepted {
+                    selectionIdentityContinuations[requestID] = continuation
+                } else {
+                    continuation.resume(returning: (false, nil))
+                }
+            }
+            guard result.0 else {
+                guard requestID == latestSelectionIdentityRequest,
+                      await waitForSelectionIdentityCapacity(
+                        requestID: requestID, serialGroup: serialGroup
+                      ) else { return nil }
+                continue
+            }
+            return result.1
+        }
+    }
+
+    private func finishSelectionIdentityRequest(_ requestID: UInt64, identity: String?) {
+        guard let continuation = selectionIdentityContinuations.removeValue(forKey: requestID) else { return }
+        continuation.resume(returning: (requestID == latestSelectionIdentityRequest, identity))
+    }
+
+    private func waitForSelectionIdentityCapacity(requestID: UInt64, serialGroup: String) async -> Bool {
+        guard requestID == latestSelectionIdentityRequest else { return false }
+        if probeScheduler.hasRegularQueueCapacity(for: serialGroup) { return true }
+        return await withCheckedContinuation { continuation in
+            guard requestID == latestSelectionIdentityRequest else {
+                continuation.resume(returning: false)
+                return
+            }
+            guard !probeScheduler.hasRegularQueueCapacity(for: serialGroup) else {
+                continuation.resume(returning: true)
+                return
+            }
+            if let previous = selectionIdentityCapacityWaiter {
+                selectionIdentityCapacityWaiter = nil
+                previous.continuation.resume(returning: false)
+            }
+            selectionIdentityCapacityWaiter = SelectionIdentityCapacityWaiter(
+                requestID: requestID, serialGroup: serialGroup, continuation: continuation
+            )
+        }
+    }
+
+    var selectionIdentityCapacityWaiterRequestIDForTesting: UInt64? {
+        selectionIdentityCapacityWaiter?.requestID
+    }
+
+    nonisolated private static let selectionIdentityProbeKey = "selection-identity-current"
+    nonisolated private static let snapshotProbeGroup = "mounted-volume-snapshot"
+
+    nonisolated private static func mountProbeSerialGroup(path: String) -> String {
+        "mount:\(URL(fileURLWithPath: path).standardizedFileURL.path)"
+    }
+}
+
+/// Runs synchronous volume probes with a hard bound on both running work and
+/// queued work. A blocked kernel filesystem call occupies one slot until it
+/// returns; replacing a request never pretends to cancel that call.
+@MainActor
+final class BoundedVolumeProbeScheduler {
+    typealias Operation = @Sendable () async -> Void
+
+    private struct QueuedProbe {
+        let key: String
+        let serialGroup: String
+        let operation: Operation
+    }
+
+    private let maxConcurrent: Int
+    private let maxQueued: Int
+    private let reservedQueueSlots: Int
+    private var running = 0
+    private var runningSerialGroups = Set<String>()
+    private var queued: [QueuedProbe] = []
+    private var capacityHandler: (@MainActor () -> Void)?
+
+    var runningCount: Int { running }
+    var queuedCount: Int { queued.count }
+    func hasRegularQueueCapacity(for serialGroup: String) -> Bool {
+        let regularQueueLimit = max(0, maxQueued - reservedQueueSlots)
+        return (running < maxConcurrent && !runningSerialGroups.contains(serialGroup))
+            || queued.count < regularQueueLimit
+    }
+
+    init(maxConcurrent: Int, maxQueued: Int, reservedQueueSlots: Int = 0) {
+        precondition(maxConcurrent > 0)
+        precondition(maxQueued >= 0)
+        precondition(reservedQueueSlots >= 0 && reservedQueueSlots <= maxQueued)
+        self.maxConcurrent = maxConcurrent
+        self.maxQueued = maxQueued
+        self.reservedQueueSlots = reservedQueueSlots
+    }
+
+    /// Replaces a queued probe for the same mount. Running probes remain in
+    /// place because synchronous filesystem calls cannot be cancelled safely.
+    @discardableResult
+    func enqueue(
+        key: String, serialGroup: String? = nil, reserved: Bool = false,
+        operation: @escaping Operation
+    ) -> Bool {
+        let serialGroup = serialGroup ?? key
+        if let index = queued.firstIndex(where: { $0.key == key }) {
+            queued[index] = QueuedProbe(key: key, serialGroup: serialGroup, operation: operation)
+            return true
+        }
+        let regularQueueLimit = max(0, maxQueued - reservedQueueSlots)
+        let queueLimit = reserved ? maxQueued : regularQueueLimit
+        let canStartNow = running < maxConcurrent && !runningSerialGroups.contains(serialGroup)
+        guard queued.count < queueLimit || canStartNow else { return false }
+        let probe = QueuedProbe(key: key, serialGroup: serialGroup, operation: operation)
+        if queued.count >= queueLimit {
+            start(probe)
+            return true
+        }
+        queued.append(probe)
+        startAvailableProbes()
+        return true
+    }
+
+    /// Unmounted or replaced mounts may be removed from the waiting list.
+    /// Already running calls continue and their result is checked at publish.
+    func discardQueued(where shouldDiscard: (String) -> Bool) {
+        let priorCount = queued.count
+        queued.removeAll { shouldDiscard($0.key) }
+        if queued.count != priorCount { capacityHandler?() }
+    }
+
+    func setCapacityHandler(_ handler: @escaping @MainActor () -> Void) {
+        capacityHandler = handler
+    }
+
+    private func startAvailableProbes() {
+        while running < maxConcurrent {
+            guard let index = queued.firstIndex(where: { !runningSerialGroups.contains($0.serialGroup) }) else {
+                return
+            }
+            let probe = queued.remove(at: index)
+            start(probe)
+        }
+    }
+
+    private func start(_ probe: QueuedProbe) {
+        running += 1
+        runningSerialGroups.insert(probe.serialGroup)
+        Task.detached(priority: .utility) { [weak self] in
+            await probe.operation()
+            await self?.probeFinished(serialGroup: probe.serialGroup)
+        }
+    }
+
+    private func probeFinished(serialGroup: String) {
+        running -= 1
+        runningSerialGroups.remove(serialGroup)
+        startAvailableProbes()
+        capacityHandler?()
     }
 }
 
