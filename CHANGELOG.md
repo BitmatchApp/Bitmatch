@@ -19,6 +19,7 @@ All notable changes to this project will be documented in this file.
 - A copied file that fails readback verification is now renamed to `<name>.bitmatch-failed` on the destination, so bad output is unmistakable on disk. This only happens for files this attempt wrote, after identity checks prove the file is unchanged; reused files and read errors are never moved, and the bytes are preserved.
 - Diagnostic exports now count dropped events, so a support bundle shows how much diagnostic history was lost under drive contention, not just that some was.
 - History now says what happened to a failed file: renamed with the `.bitmatch-failed` suffix, or why it could not be renamed and that it is still at its original name.
+- Safety counts are stricter: only destinations proven to be on different physical drives count toward required backup copies. Folders whose drive cannot be identified can still be used, but no longer prove independence on their own.
 
 ## [0.2.11] - 2026-10-20
 
