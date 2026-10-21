@@ -2,7 +2,7 @@
 
 ## Status and evidence boundary
 
-The local PDF candidate is `1f73beba5d17bc1ce5b259ac67ab9243dd8b9c1c`, following the layout/status tests in `296663ef`. It fixes memory growth reproduced in synthetic reports. It does **not** reproduce or resolve field issue #23. Issues #10 and #23 remain open; PRs #79–81 and the PDF work remain held for review. No merge or release is authorized.
+The local PDF candidate is `1f73beba5d17bc1ce5b259ac67ab9243dd8b9c1c`, following the layout/status tests in `296663ef`. It fixes memory growth reproduced in synthetic reports. It does **not** reproduce or resolve field issue #23. Issues #10 and #23 remain open. The original record held PRs #79–81 and the PDF work pending review; current authorized merge gates are tracked in the forthcoming [drive UI validation record](drive-ui-validation-2026-10-21.md). No release is authorized.
 
 These results were observed before the Mac reboot. The first documentation update used source and the recorded conversation only. The reboot removed temporary progress records, private runners and host-side artifacts. A later authorized read-only T9 recovery recovered nine saved app-test records, as detailed below. Do not assume every raw PDF, memory sample, visual-review receipt or failure fixture survived. Gate names identify original runs; the recovery does not count as another test execution.
 
@@ -43,7 +43,7 @@ Four deliberate regressions each caused the expected focused assertion failure: 
 
 Source-only review found no evident row-data or status-mapping defect. Remaining limits:
 
-- Row-local ellipsis and wrapped-Unicode assertions were later added to both test targets in `100e0411`, replacing the lost private proposal. They remain uncompiled/unexecuted; existing earlier passes do not validate these new assertions.
+- Row-local ellipsis and wrapped-Unicode assertions were added to both test targets in `100e0411`. The later Mac run failed only because PDFKit's text selection omitted the drawn ellipsis token; Unicode and geometry checks passed. Inspection of the saved PDF confirmed a visible middle ellipsis, so both assertions now normalize extracted whitespace and verify that the complete no-space fixture path is absent. The corrected Mac/iOS assertions still await their current focused gates.
 - Native helpers reject control characters; this does not verify how the SwiftUI fallback prints those names. Large control-heavy manifests lack equivalent scale coverage.
 - Native fixed colors and fallback SwiftUI colors have not received a resolved-color parity check across platforms. A visible mismatch is not established.
 - The buffer is bounded, but results, layout and PDF resources still grow with report size. No constant-memory claim is made.
@@ -68,6 +68,12 @@ The modern summary command tried to create a SQLite cache for some bundles and r
 
 The final raw PDFs, preview JPEGs, detailed memory JSON and eleven physical app artifacts were **not recovered** by this pass. The saved archive inventory covers seven older PDF experiments, not those final artifacts; its compressed payload was not decompressed or rehashed. The physical engine matrix used a separate direct-test log and is not revalidated by these app bundles. Recover any other available evidence before deciding which missing artifacts require a new bounded probe.
 
+## Post-reboot mixed PDF validation
+
+The authorized mixed 40,000-row rerun produced `rendered-unvalidated.pdf` and its receipt under the private `mixed40k-artifacts` directory. The cooperative probe passed at 143 MiB peak and generated 1,513 pages (8,902,166 bytes). Independent text validation checked every ordered source/destination/status row: all 20,000 files appeared once with each of two destinations, for 40,000 exact pairs; status totals were 36,000 verified, 2,000 failed and 2,000 unverified. Unicode filenames, retained wrapped-name heads/tails and absence of the complete wrapped paths were checked. PDF SHA-256: `6da4998617a10e28aef59842c12834fc88d1ba56624097f48a3b079e01483b80`; probe receipt SHA-256: `7d6dbce25d6f43177889d7ec072c439b1731d7ac236b96c294977f343b1fec5e`; independent validator output SHA-256: `7c36e2ab43c0e3cc1e425370a0d0a913b0913db3e961186585f5482ca28f01d4`.
+
+Rendered pages 1, 757, 1,512 and 1,513 were visually inspected. The first and middle pages show the visible middle ellipsis; the final issue detail and last-page footer remain clear. This is representative visual review, not page-by-page visual inspection. Full-manifest text checks covered all pages. Evidence and rendered samples are saved in `.codex-evidence-recovery/20261021-drive-ui-a9352519-e12b-4091-9bae-17a1cd1cf044/`. A PDFKit selection omits Core Text's drawn ellipsis glyph, so the row-local assertion now checks the visible artifact separately and compares whitespace-normalized selected text against the full fixture path to reject an untruncated filename despite line wrapping. The corrected assertion has not yet passed its current Mac/iOS gates; see the forthcoming [drive UI validation record](drive-ui-validation-2026-10-21.md) for gate status.
+
 ## Earlier failures and cleanup
 
 The original app-host gate `mac-manyfiles-20261021T053629Z` failed its guard during reporting: copy/verification drained at 392 MiB, reporting started at 421 MiB, the guard latched at 1,099 MiB and diagnostics later reached 1,309 MiB. MHL/previews were off. It was not an OS crash or #23 reproduction; that run did not isolate the allocation cause.
@@ -80,4 +86,4 @@ The earlier physical matrix stopped after five successful operations with two ge
 
 Before reboot, seven closed PDF gates were archived and verified on the SSD. Removing ten archived PDF/PNG files recovered 521,621,504 allocated host bytes. Two passed large synthetic drive children were removed after evidence/identity checks: 239,200,093,336 logical bytes across the SSDs. Their allocated bytes were not recorded and are not estimated. Unresolved physical fixtures and the current matrix children were preserved at cleanup; post-reboot availability has not been checked.
 
-Today remains limited to low-impact work: small source reads, documentation and the authorized read-only result recovery above. Finish the remaining artifact and platform gaps before merging; see the [review and PR draft](report-memory-review-2026-10-21.md). No post-reboot app build/test, rendering, user-media scan, large cleanup, signing change or Actions run was performed. A later low-priority synthetic parser pass ran 25 Python tests with fake Xcode commands; exact scope is in the merge checklist.
+At the time of the original recovery, work was limited to small source reads, documentation and read-only result recovery. Subsequent authorized PDF and app gates, their remaining status, and the merge decision are tracked in the forthcoming [drive UI validation record](drive-ui-validation-2026-10-21.md) and the [review and PR draft](report-memory-review-2026-10-21.md). No release is authorized. No user-media scan, large cleanup, signing change or Actions run is recorded here. A later low-priority synthetic parser pass ran 25 Python tests with fake Xcode commands; exact scope is in the merge checklist.
