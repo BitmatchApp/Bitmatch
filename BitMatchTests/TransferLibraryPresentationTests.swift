@@ -84,6 +84,10 @@ struct TransferLibraryPresentationTests {
         let unmarked = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
                                  size: 4, checksum: nil, destination: "Backup")
         #expect(TransferHistoryResultPresentation.statusText(for: unmarked, mode: .standard) == "⚠️ Checksum Mismatch")
+        let unrestored = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
+                                   size: 4, checksum: nil, destination: "Backup", failedOutputMarking: "swappedNotRestored")
+        #expect(TransferHistoryResultPresentation.statusText(for: unrestored, mode: .standard)
+            .contains("moved to the .bitmatch-failed name after changing during renaming"))
     }
 
     @Test func journalQuickResultUsesCopiedNotVerifiedWords() {

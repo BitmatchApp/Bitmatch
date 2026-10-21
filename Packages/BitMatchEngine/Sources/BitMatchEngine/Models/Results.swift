@@ -71,6 +71,22 @@ public struct ResultRow: Identifiable, Sendable {
         self.failedOutputMarking = failedOutputMarking
     }
     
+    /// Canonical History/report suffix for the marking outcome, shared by
+    /// every surface so the words cannot drift.
+    public var markingNote: String? {
+        switch failedOutputMarking {
+        case "marked": "failed file renamed with .bitmatch-failed suffix"
+        case "nameOccupied": "failed file could not be renamed (marked name already in use), still at original name"
+        case "fileChanged": "failed file could not be renamed (file changed after checking), still at original name"
+        case "fileMissing": "failed file could not be renamed (file no longer there)"
+        case "nameTooLong": "failed file could not be renamed (marked name too long), still at original name"
+        case "swapped": "failed file could not be renamed (file changed during renaming), still at original name"
+        case "swappedNotRestored": "failed file was moved to the .bitmatch-failed name after changing during renaming; check that file before trusting it"
+        case nil: nil
+        default: "failed file could not be renamed, still at original name"
+        }
+    }
+
     public var fileName: String {
         URL(fileURLWithPath: path).lastPathComponent
     }

@@ -223,7 +223,13 @@ private func markedDestination(pinnedRoot: PinnedDestinationDirectory, relativeP
     case .identityChanged: return (originalURL, "fileChanged")
     case .markedNameOccupied: return (originalURL, "nameOccupied")
     case .markedNameTooLong: return (originalURL, "nameTooLong")
-    case .swappedDuringMark: return (originalURL, "swapped")
+    case .swappedDuringMark(let restored):
+        if restored { return (originalURL, "swapped") }
+        // Restore failed: the swapped-in file remains at the marked name.
+        // Report that real path, never the original name.
+        let components = relativePath.split(separator: "/").map(String.init)
+        let markedRelative = (components.dropLast() + [(components.last ?? "") + ".bitmatch-failed"]).joined(separator: "/")
+        return (pinnedRoot.logicalRootURL.appendingPathComponent(markedRelative), "swappedNotRestored")
     }
 }
 

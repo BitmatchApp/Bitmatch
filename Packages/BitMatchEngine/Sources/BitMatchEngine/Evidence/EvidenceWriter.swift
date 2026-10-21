@@ -267,7 +267,7 @@ public struct JSONReportItem: Codable, Sendable {
     public init(from row: ResultRow) {
         self.path = row.path
         self.target = row.destinationPath ?? row.destination
-        self.status = row.status.isEmpty ? "Unknown" : row.status
+        self.status = row.status.isEmpty ? "Unknown" : (row.markingNote.map { row.status + " · " + $0 } ?? row.status)
         self.fileExtension = URL(fileURLWithPath: row.path).pathExtension.uppercased()
         self.checksum = row.checksum
         self.byteCount = row.size
@@ -518,7 +518,7 @@ public enum EvidenceWriter: Sendable {
         dateFormatter.formatOptions = [.withInternetDateTime]
         
         for result in results {
-            let status = result.status
+            let status = result.markingNote.map { result.status + " · " + $0 } ?? result.status
             let path = result.path
             let target = result.destinationPath ?? result.destination ?? "—"
             let job = project?.job ?? ""

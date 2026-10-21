@@ -143,6 +143,17 @@ final class ResultPresentationTests: XCTestCase {
         XCTAssertFalse(summary.isSuccessful)
     }
 
+    func testCompletedTrueWithNoRowsResolvesToIssues() {
+        let verdict = CompletionVerdict.resolve(
+            state: .completed(OperationCompletionInfo(success: true, message: "Done")),
+            rows: [],
+            hasErrors: false,
+            hasCriticalErrors: false
+        )
+
+        XCTAssertEqual(verdict, .issues)
+    }
+
     func testCompletedFalseResolvesToIssuesWithoutDiagnosticError() {
         let verdict = CompletionVerdict.resolve(
             state: .completed(OperationCompletionInfo(success: false, message: "1 issue")),

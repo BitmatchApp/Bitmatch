@@ -2973,7 +2973,9 @@ class SharedAppCoordinator: ObservableObject {
         }
 
         let analysis = photographerJobViewModel.preliminaryAnalysis
-        let independentDestinationCount = destinationIndependence.independentCopyCount
+        // Safety gates may only count destinations proven to be on distinct
+        // physical storage; unresolved identity must not inflate the count.
+        let independentDestinationCount = destinationIndependence.provenIndependentCopyCount
         photographerReportFinalizer = { [weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results in
             guard let photographerJobViewModel, let analysis,
                   let state = photographerJobViewModel.projectCardState(jobID: jobID, cardID: cardID),

@@ -46,6 +46,23 @@ struct BackupIndependencePolicyTests {
         #expect(result.warnings.isEmpty)
     }
 
+    /// Safety gates must use the proven count: unresolved identity never
+    /// satisfies a required copy count, however the policy count reads.
+    @Test func provenCountExcludesUnresolvedDestinations() {
+        let first = URL(fileURLWithPath: "/Volumes/A")
+        let second = URL(fileURLWithPath: "/Volumes/B")
+        let third = URL(fileURLWithPath: "/Volumes/C")
+        let unknown = BackupIndependencePolicy.assess(
+            destinations: [first, second], provider: FakeProvider(identities: [:]))
+        #expect(unknown.provenIndependentCopyCount == 0)
+        #expect(unknown.independentCopyCount == 2)
+        let mixed = BackupIndependencePolicy.assess(
+            destinations: [first, second, third],
+            provider: FakeProvider(identities: [first.path: "disk4", second.path: "disk4"]))
+        #expect(mixed.provenIndependentCopyCount == 1)
+        #expect(mixed.independentCopyCount == 2)
+    }
+
     @Test func unresolvedIdentityIsEvidenceGapNotProofOfSharedStorage() {
         let first = URL(fileURLWithPath: "/Volumes/A")
         let second = URL(fileURLWithPath: "/Volumes/B")

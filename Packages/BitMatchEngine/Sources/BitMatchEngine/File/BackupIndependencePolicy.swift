@@ -81,6 +81,10 @@ public struct BackupIndependenceAssessment: Equatable, Sendable {
     /// Current product-policy count. Unresolved destinations each count once;
     /// this is not proof that they live on separate physical devices.
     public let independentCopyCount: Int
+    /// Proven-independent count for safety gates: only destinations whose
+    /// physical identity resolved into distinct groups. Unresolved identity
+    /// is an evidence gap and must never satisfy a required copy count.
+    public var provenIndependentCopyCount: Int { resolvedIdentityGroupCount }
     public let warnings: [String]
 
     /// A quiet setup note, separate from warnings and the safety verdict.
