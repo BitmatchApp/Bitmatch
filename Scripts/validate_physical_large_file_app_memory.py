@@ -19,6 +19,9 @@ WORKLOADS = {
 }
 TEST_NAME = "testOptInLargeFilePhysicalAppMemory"
 TEST_CLASS = "PhysicalLargeFileAppMemoryTests"
+TEST_CASE_LINE = f"Test Case '-[BitMatchTests.{TEST_CLASS} {TEST_NAME}]'"
+SUCCESS_BANNERS = {"** TEST SUCCEEDED **", "** TEST EXECUTE SUCCEEDED **"}
+FAILURE_BANNERS = {"** TEST FAILED **", "** TEST EXECUTE FAILED **"}
 MAX_LOG_BYTES = 64 * 1024 * 1024
 MAX_RECEIPT_BYTES = 8 * 1024 * 1024
 
@@ -146,14 +149,21 @@ def validate_receipt(receipt: object, workload: str) -> None:
 def validate_run(log_text: str, receipt_paths: list[Path], workload: str, xcode_status: int) -> dict:
     if xcode_status != 0:
         raise ValidationError(f"xcodebuild exited with status {xcode_status}")
-    matching = [line for line in log_text.splitlines()
-                if TEST_CLASS in line and TEST_NAME in line]
-    passed = [line for line in matching if re.search(r"\bpassed\s*\(", line, re.IGNORECASE)]
-    skipped = [line for line in matching if "skip" in line.lower()]
-    if len(passed) != 1 or skipped:
+    matching = [line for line in log_text.splitlines() if line.startswith(TEST_CASE_LINE)]
+    started_pattern = re.compile(r"^" + re.escape(TEST_CASE_LINE) + r"\s+started\.?\s*$", re.IGNORECASE)
+    terminal_pattern = re.compile(r"^" + re.escape(TEST_CASE_LINE) + r"\s+(passed|failed|skipped)\b", re.IGNORECASE)
+    started = [line for line in matching if started_pattern.match(line)]
+    terminals = [terminal_pattern.match(line) for line in matching]
+    terminal_statuses = [match.group(1).lower() for match in terminals if match]
+    if (len(started) > 1 or len(started) + len(terminal_statuses) != len(matching)
+            or terminal_statuses != ["passed"]):
         raise ValidationError("Focused XCTest was skipped, missing, or did not pass exactly once")
-    if "** TEST SUCCEEDED **" not in log_text or "** TEST FAILED **" in log_text:
-        raise ValidationError("Xcode did not report a successful test run")
+    banners = [line.strip() for line in log_text.splitlines()
+               if line.strip() in SUCCESS_BANNERS | FAILURE_BANNERS]
+    successes = [banner for banner in banners if banner in SUCCESS_BANNERS]
+    failures = [banner for banner in banners if banner in FAILURE_BANNERS]
+    if len(successes) != 1 or failures:
+        raise ValidationError("Xcode must report exactly one successful test banner and no failure banner")
     if len(receipt_paths) != 1:
         raise ValidationError("Expected exactly one physical app-memory receipt")
     try:

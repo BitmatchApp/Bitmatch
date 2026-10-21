@@ -60,16 +60,21 @@ fi
 
 python3 - "$LOG" "$RUN_ROOT" "$ATTEMPTS" <<'PY'
 import json
+import re
 import sys
 from pathlib import Path
 
 log_path, run_root, attempts_text = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
 log = log_path.read_text(errors="replace")
-test_lines = [line for line in log.splitlines()
-              if "HistoryAppHostScaleTests" in line and "testActualHistoryAppHostScaleProbe" in line]
-if not any("passed" in line.lower() for line in test_lines):
-    raise SystemExit("The focused app-host probe did not report a passing test case")
-if any("skip" in line.lower() for line in test_lines) or "TEST SUCCEEDED" not in log:
+test_prefix = "Test Case '-[BitMatchTests.HistoryAppHostScaleTests testActualHistoryAppHostScaleProbe]' "
+test_lines = [line.strip() for line in log.splitlines() if line.strip().startswith(test_prefix)]
+passed = [line for line in test_lines if re.search(r"\bpassed\s*\(", line, re.IGNORECASE)]
+if len(passed) != 1 or any(re.search(r"\b(?:failed|skipped)\b", line, re.IGNORECASE) for line in test_lines):
+    raise SystemExit("The focused app-host probe must pass exactly once without a failed or skipped result")
+success_banners = {"** TEST SUCCEEDED **", "** TEST EXECUTE SUCCEEDED **"}
+failure_banners = {"** TEST FAILED **", "** TEST EXECUTE FAILED **"}
+banners = [line.strip() for line in log.splitlines()]
+if sum(line in success_banners for line in banners) != 1 or any(line in failure_banners for line in banners):
     raise SystemExit("Xcode did not report a non-skipped successful focused test run")
 
 receipts = list(run_root.glob("history-app-host-probe-*.json"))

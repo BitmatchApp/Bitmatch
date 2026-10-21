@@ -85,16 +85,40 @@ with Path(os.environ["STUB_XCODE_CAPTURE"]).open("w") as output:
     json.dump({"args": args, "env": {key: os.environ.get(key) for key in keys}}, output)
 
 test = "Test Case '-[BitMatchTests.PhysicalLargeFileAppMemoryTests testOptInLargeFilePhysicalAppMemory]'"
+if case != "missing_test":
+    print(test + " started.")
 if case == "skip":
     print(test + " skipped (opt-in missing)")
-    print("** TEST SUCCEEDED **")
-    raise SystemExit(0)
-if case == "wrongclass":
+elif case == "wrongclass":
     print("Test Case '-[BitMatchTests.OtherPhysicalTests testOptInLargeFilePhysicalAppMemory]' passed (1.0 seconds)")
-else:
+elif case == "duplicate":
     print(test + " passed (1.0 seconds)")
-print("** TEST SUCCEEDED **")
-if case == "missing":
+    print(test + " passed (1.0 seconds)")
+elif case == "pass_and_fail":
+    print(test + " passed (1.0 seconds)")
+    print(test + " failed (0.1 seconds) (Assertion failed)")
+elif case == "misleading_suffix":
+    print("Test Case '-[BitMatchTests.PhysicalLargeFileAppMemoryTests testOptInLargeFilePhysicalAppMemoryExtra]' passed (1.0 seconds)")
+elif case == "misleading_class_suffix":
+    print("Test Case '-[BitMatchTests.PhysicalLargeFileAppMemoryTestsExtra testOptInLargeFilePhysicalAppMemory]' passed (1.0 seconds)")
+elif case != "missing_test":
+    print(test + " passed (1.0 seconds)")
+if case == "execute_failed":
+    print("** TEST EXECUTE FAILED **")
+elif case == "failed":
+    print("** TEST FAILED **")
+elif case == "mixed":
+    print("** TEST SUCCEEDED **")
+    print("** TEST EXECUTE FAILED **")
+elif case == "without_building":
+    print("** TEST EXECUTE SUCCEEDED **")
+else:
+    print("** TEST SUCCEEDED **")
+if case == "duplicate_success_banner":
+    print("** TEST SUCCEEDED **")
+elif case == "both_success_banners":
+    print("** TEST EXECUTE SUCCEEDED **")
+if case == "missing_receipt":
     raise SystemExit(0)
 
 if requested == "smoke":
@@ -136,6 +160,8 @@ if case == "cleanupfailed":
     receipt["cleanup"] = "failed-owned-children-retained"
 evidence.mkdir(parents=True)
 (evidence / "large-file-app-memory.json").write_text(json.dumps(receipt))
+if case == "nonzero":
+    raise SystemExit(65)
 '''
 
     def run_stubbed(self, case="valid", workload="smoke"):
@@ -180,6 +206,31 @@ evidence.mkdir(parents=True)
         self.assertEqual(environment["TEST_RUNNER_BITMATCH_PHYSICAL_LARGE_FILE_APP_MEMORY_SMOKE"], "0")
         self.assertIn("physical119_6GB", result.stdout)
 
+    def test_accepts_exact_test_and_test_without_building_success_banners(self):
+        for case in ("valid", "without_building"):
+            with self.subTest(case=case):
+                result = self.run_stubbed(case)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_failure_banners_and_mixed_banners_are_rejected(self):
+        for case in ("failed", "execute_failed", "mixed"):
+            with self.subTest(case=case):
+                result = self.run_stubbed(case)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("successful test banner", result.stderr.lower())
+
+    def test_duplicate_or_conflicting_success_banners_are_rejected(self):
+        for case in ("duplicate_success_banner", "both_success_banners"):
+            with self.subTest(case=case):
+                result = self.run_stubbed(case)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("exactly one successful test banner", result.stderr.lower())
+
+    def test_nonzero_xcode_status_is_rejected_even_with_success_banner(self):
+        result = self.run_stubbed("nonzero")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("status 65", result.stderr.lower())
+
     def test_complete_receipt_with_failed_cleanup_is_rejected(self):
         result = self.run_stubbed("cleanupfailed")
         self.assertNotEqual(result.returncode, 0)
@@ -194,7 +245,7 @@ evidence.mkdir(parents=True)
         self.assertIn("skipped", (runs[0] / "test.log").read_text().lower())
 
     def test_missing_receipt_is_rejected(self):
-        result = self.run_stubbed("missing")
+        result = self.run_stubbed("missing_receipt")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("receipt", result.stderr.lower())
 
@@ -212,6 +263,13 @@ evidence.mkdir(parents=True)
         result = self.run_stubbed("wrongclass")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("focused xctest", result.stderr.lower())
+
+    def test_missing_or_duplicate_focused_test_is_rejected(self):
+        for case in ("missing_test", "duplicate", "pass_and_fail", "misleading_suffix", "misleading_class_suffix"):
+            with self.subTest(case=case):
+                result = self.run_stubbed(case)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("focused xctest", result.stderr.lower())
 
     def test_low_space_preflight_refuses_before_xcode_and_keeps_no_build_bypass(self):
         environment = dict(self.environment, STUB_PREFLIGHT_FREE_BYTES="0")

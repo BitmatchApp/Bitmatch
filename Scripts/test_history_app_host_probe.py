@@ -52,6 +52,8 @@ Path(os.environ["STUB_XCODE_CAPTURE"]).write_text(json.dumps({{
     "evidence": str(evidence),
     "attempts": os.environ.get("TEST_RUNNER_BITMATCH_HISTORY_ATTEMPTS"),
 }}))
+if case != "vacuous":
+    print({TEST_LINE!r} + " started.")
 if case == "skip":
     print({TEST_LINE!r} + " skipped (probe opt-in missing)")
     print("** TEST SUCCEEDED **")
@@ -60,8 +62,28 @@ if case == "vacuous":
     print("Test Suite 'Selected tests' passed")
     print("** TEST SUCCEEDED **")
     raise SystemExit(0)
-print({TEST_LINE!r} + " passed (1.0 seconds)")
-print("** TEST SUCCEEDED **")
+focused_line = {TEST_LINE!r}
+if case == "wrong_method":
+    focused_line = focused_line.replace("testActualHistoryAppHostScaleProbe]", "testActualHistoryAppHostScaleProbeOther]")
+if case == "wrong_class":
+    focused_line = focused_line.replace("HistoryAppHostScaleTests", "OtherHistoryAppHostScaleTests")
+print(focused_line + (" failed (1.0 seconds)" if case == "failed_case" else " passed (1.0 seconds)"))
+if case == "duplicate":
+    print({TEST_LINE!r} + " passed (1.0 seconds)")
+if case == "focused_mixed":
+    print({TEST_LINE!r} + " failed (1.0 seconds)")
+if case == "execute_pass":
+    print("** TEST EXECUTE SUCCEEDED **")
+elif case == "execute_failure":
+    print("** TEST EXECUTE FAILED **")
+elif case == "build_failure":
+    print("** TEST FAILED **")
+elif case != "missing_banner":
+    print("** TEST SUCCEEDED **")
+if case in ("mixed_failure", "mixed_execute_failure"):
+    print("** TEST FAILED **" if case == "mixed_failure" else "** TEST EXECUTE FAILED **")
+if case in ("duplicate_banner", "both_success"):
+    print("** TEST SUCCEEDED **" if case == "duplicate_banner" else "** TEST EXECUTE SUCCEEDED **")
 receipt = {{
     "complete": True, "cleanupComplete": True,
     "attempts": 100, "resultRows": 10000, "coveredRows": 10000,
@@ -75,8 +97,16 @@ receipt = {{
         "historyViewLayout": 3.0, "queueViewLayout": 4.0,
     }},
 }}
-(evidence / "history-app-host-probe-stub.json").write_text(json.dumps(receipt))
-print("HISTORY_APP_HOST_PROBE {{}}")
+if case == "incomplete_receipt":
+    receipt["cleanupComplete"] = False
+if case == "missing_memory":
+    receipt["memorySamples"] = 0
+if case != "missing_receipt":
+    (evidence / "history-app-host-probe-stub.json").write_text(json.dumps(receipt))
+if case != "missing_summary":
+    print("HISTORY_APP_HOST_PROBE {{}}")
+if case == "nonzero":
+    raise SystemExit(65)
 '''
 
     def run_runner(self, **overrides):
@@ -147,6 +177,27 @@ print("HISTORY_APP_HOST_PROBE {{}}")
         result = self.run_runner(STUB_XCODE_CASE="vacuous")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("focused app-host probe", result.stderr.lower())
+
+    def test_execute_success_banner_is_accepted_with_complete_evidence(self):
+        result = self.run_runner(STUB_XCODE_CASE="execute_pass")
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_duplicate_focused_pass_is_rejected(self):
+        result = self.run_runner(STUB_XCODE_CASE="duplicate")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_success_mixed_with_failure_banner_is_rejected(self):
+        result = self.run_runner(STUB_XCODE_CASE="mixed_execute_failure")
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_failure_and_incomplete_evidence_are_rejected(self):
+        for case in ("build_failure", "execute_failure", "mixed_failure", "failed_case",
+                     "missing_banner", "nonzero", "missing_receipt", "incomplete_receipt",
+                     "missing_memory", "missing_summary", "duplicate_banner", "both_success",
+                     "focused_mixed", "wrong_method", "wrong_class"):
+            with self.subTest(case=case):
+                result = self.run_runner(STUB_XCODE_CASE=case)
+                self.assertNotEqual(result.returncode, 0, case)
 
 
 if __name__ == "__main__":
