@@ -678,6 +678,50 @@ struct QueueSessionPresentationTests {
         ).isEmpty)
     }
 
+    @Test func repeatedAttemptsOfOneCardCollapseToLatestRow() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let first = try fixture.record(name: "A7IV_CARD1", state: .failed, at: 1)
+        let second = try fixture.record(name: "A7IV_CARD1", state: .failed, at: 2)
+        var third = try fixture.record(name: "A7IV_CARD1", state: .issues, at: 3)
+        third.endedAt = Date(timeIntervalSince1970: 4)
+        let queue = QueueSessionPresentation.make(
+            records: [third, second, first], sessionIDs: [first.id, second.id, third.id],
+            sessionRecordIDsInOrder: [first.id, second.id, third.id],
+            progress: nil, mountedSourceIDs: [])
+        #expect(queue.rows.count == 1)
+        #expect(queue.rows[0].id == third.id)
+        #expect(queue.rows[0].earlierAttemptIDs == [first.id, second.id])
+        #expect(queue.rows[0].endedAt == third.endedAt)
+    }
+
+    @Test func differentCardsNeverCollapse() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let a = try fixture.record(name: "CardA", state: .failed, at: 1)
+        let b = try fixture.record(name: "CardB", state: .failed, at: 2)
+        let queue = QueueSessionPresentation.make(records: [b, a], sessionIDs: [a.id, b.id],
+            sessionRecordIDsInOrder: [a.id, b.id], progress: nil, mountedSourceIDs: [])
+        #expect(queue.rows.map(\.id) == [a.id, b.id])
+    }
+
+    @Test func queuedEarlierAttemptAndLaterEarlierNeverCollapse() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let queued = try fixture.record(name: "Card", state: .queued, at: 1)
+        let later = try fixture.record(name: "Card", state: .failed, at: 2)
+        let queue = QueueSessionPresentation.make(records: [later, queued], sessionIDs: [queued.id, later.id],
+            sessionRecordIDsInOrder: [queued.id, later.id], progress: nil, mountedSourceIDs: [])
+        #expect(queue.rows.map(\.id) == [queued.id, later.id])
+        #expect(queue.rows.allSatisfy { $0.earlierAttemptIDs.isEmpty })
+        // A finished attempt never absorbs the attempt before it when that one was clean.
+        let done = try fixture.record(name: "Done", state: .completed, outcome: .verified, at: 3)
+        let retry = try fixture.record(name: "Done", state: .failed, at: 4)
+        let q2 = QueueSessionPresentation.make(records: [retry, done], sessionIDs: [done.id, retry.id],
+            sessionRecordIDsInOrder: [done.id, retry.id], progress: nil, mountedSourceIDs: [])
+        #expect(q2.rows.map(\.id) == [done.id, retry.id])
+    }
+
     @Test func dockBadgeIncludesStandaloneAttentionSinceLaunch() {
         #expect(QueueDockBadgePolicy.totalUnresolvedCount(
             rows: [], reviewedIDs: [], standaloneAttentionIDs: [UUID(), UUID()]
