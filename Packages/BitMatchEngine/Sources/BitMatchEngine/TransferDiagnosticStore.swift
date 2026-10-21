@@ -51,6 +51,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         var readIdentityPresent: Bool?
         var currentIdentityPresent: Bool?
         var identityLookupFailed: Bool?
+        var sourceStabilityStage: SharedLogger.SourceStabilityStage?
         var wasReused: Bool?
         var onlyInSourceCount: Int?
         var onlyInDestinationCount: Int?

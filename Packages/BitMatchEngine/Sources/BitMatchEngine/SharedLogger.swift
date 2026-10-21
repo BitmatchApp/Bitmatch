@@ -49,6 +49,7 @@ extension SharedLogger {
         case compareStarted, comparePhase, compareProgress, compareFinished
         case appleDoubleExcluded
         case destinationIdentityRejected
+        case sourceStabilityRejected
     }
     public static func transferEvent(_ event: TransferEvent, run: UUID?, code: Int = 0,
                                      taskCancelled: Bool = false, explicit: Bool = false) {
@@ -65,6 +66,50 @@ extension SharedLogger {
     }
     public enum IdentityField: String, Codable, Sendable {
         case device, inode, size, modificationTime, changeTime
+    }
+
+    public enum SourceStabilityStage: String, Codable, Sendable {
+        case copyReadShort
+        case copyReadLengthMismatch
+        case copyFinalCoverage
+        case copyFinalTrailingData
+        case copyFinalDescriptorLookup
+        case copyDescriptorChanged
+        case copyPathChanged
+        case checksumIdentityBefore
+        case checksumIdentityAfter
+        case thoroughReadLengthMismatch
+        case thoroughReadShort
+        case thoroughFinalTrailingData
+        case thoroughFinalCoverage
+        case thoroughFinalDescriptorLookup
+        case thoroughDescriptorChanged
+        case comparisonReadLengthMismatch
+        case comparisonReadShort
+        case comparisonSourceTrailingData
+        case comparisonSourceChanged
+    }
+
+    /// Reports which source guard failed using stage codes and field names only.
+    /// Never pass a path, identity value, digest, timestamp, or error description.
+    static func sourceStabilityRejected(
+        run: UUID?, stage: SourceStabilityStage, ordinal: Int?,
+        changedFields: [IdentityField] = [], sourceIdentityPresent: Bool,
+        currentSourceIdentityPresent: Bool, lookupError: Error? = nil
+    ) {
+        let nsError = lookupError.map { $0 as NSError }
+        let code = nsError?.domain == NSPOSIXErrorDomain ? nsError?.code : nil
+        TransferDiagnostics.recordingStore.record(.sourceStabilityRejected, run: run) {
+            $0.sourceStabilityStage = stage
+            $0.identityChangedFields = changedFields
+            $0.readIdentityPresent = sourceIdentityPresent
+            $0.currentIdentityPresent = currentSourceIdentityPresent
+            $0.identityLookupFailed = lookupError != nil
+            $0.code = code
+            $0.ordinal = ordinal
+            $0.taskCancelled = Task.isCancelled
+        }
+        logger(for: .transfer).notice("event=sourceStabilityRejected run=\(run?.uuidString ?? "none", privacy: .public) stage=\(stage.rawValue, privacy: .public) ordinal=\(ordinal ?? -1, privacy: .public)")
     }
 
     /// Describe the failed guard, never the actual identifiers, timestamps or paths.
