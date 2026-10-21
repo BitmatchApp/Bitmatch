@@ -162,6 +162,49 @@ class LocalTestRunnerTests(unittest.TestCase):
                     self.assertFalse(set(controls).intersection(environment))
                 self.assertNotIn("private fixture name", result.stdout + result.stderr)
 
+    def test_test_jobs_drop_drive_access_probe_controls(self):
+        # Drive-access probes stay opt-in and separate: no ordinary job may
+        # inherit a control that routes tests at real volumes, physical
+        # media or other prompt-prone locations. The launcher clears every
+        # BITMATCH_* name outside the documented output-routing set, so a
+        # stale shell export cannot make an ordinary run touch a real drive.
+        controls = {
+            "BITMATCH_REAL_VOLUME_POLICY": "1",
+            "BITMATCH_PHYSICAL_APP_HOST_SMOKE": "1",
+            "BITMATCH_HARDWARE_APP_WORKFLOW": "1",
+            "BITMATCH_HARDWARE_LARGE_TARGET": "/Volumes/Real",
+            "BITMATCH_MOUNTED_DRIVE_MATRIX": "smoke",
+            "BITMATCH_PROCESS_DEATH_MATRIX": "smoke",
+            "BITMATCH_FAT32_BOUNDARY": "1",
+            "BITMATCH_UNICODE_HFS": "1",
+            "BITMATCH_RECOVERY_MOUNT": "/Volumes/Real",
+            "BITMATCH_RECOVERY_TYPE": "apfs",
+            "BITMATCH_FAULT_MATRIX_MOUNT": "/Volumes/Real",
+            "BITMATCH_ISSUE10_SOURCE": "/Volumes/Real",
+            "BITMATCH_ISSUE10_DESTINATION": "/Volumes/Real",
+            "BITMATCH_LIVE_SFTP_TEST": "1",
+            "BITMATCH_RUN_SOAK": "1",
+            "BITMATCH_SOAK_FIXTURE_ROOT": "/Volumes/Real",
+            "BITMATCH_REALBENCH_SRC": "/Volumes/Real",
+            "BITMATCH_BENCH_DIR": "/Volumes/Real",
+            "BITMATCH_CODEC_FIXTURE_ROOT": "/Volumes/Real",
+            "BITMATCH_RACE_TEST_ROOT": "/Volumes/Real",
+            "BITMATCH_EMPTY_IDENTITY_TEST_ROOT": "/Volumes/Real",
+            "TEST_RUNNER_BITMATCH_REAL_VOLUME_POLICY": "1",
+            "TEST_RUNNER_BITMATCH_PHYSICAL_APP_HOST_SMOKE": "1",
+            "TEST_RUNNER_BITMATCH_MOUNTED_DRIVE_MATRIX": "smoke",
+        }
+        for job, expected_calls in [("mac-test", 1), ("ipad-test", 1), ("engine-test", 2)]:
+            with self.subTest(job=job):
+                self.capture.unlink(missing_ok=True)
+                self.environment_capture.unlink(missing_ok=True)
+                result = self.run_job(job, IOS_SIMULATOR_DESTINATION="platform=iOS Simulator,id=fake", **controls)
+                self.assert_success(result)
+                self.assertEqual(len(self.calls()), expected_calls)
+                for environment in self.environments():
+                    self.assertFalse(set(controls).intersection(environment))
+                self.assertNotIn("/Volumes/Real", result.stdout + result.stderr)
+
     def test_test_jobs_preserve_capture_and_output_routing(self):
         controls = {
             "BITMATCH_CAPTURE_WORKFLOW_SNAPSHOTS": "1",
