@@ -67,6 +67,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     private let lock = NSLock()
     private var writeFailed = false
     private var firstFailure: RecordingFailure?
+    private var droppedEventCount = 0
     private static let failureMarker = ".recording-error"
     private static let failureDetailFile = ".recording-error-detail"
 
@@ -83,6 +84,9 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     private struct RecordingFailureDetail: Encodable {
         let stage: RecordingFailureStage
         let code: Int
+        /// Dropped events counted by the claiming instance up to its first
+        /// failure claim — a lower bound, not a cross-instance total.
+        var droppedEvents: Int?
     }
     private enum RecordingFailureDetailSource: String, Encodable {
         case persistedMarker, currentInstance
@@ -208,6 +212,10 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             let recordingFailureDetailSource: RecordingFailureDetailSource?
             let recordingFailureDetail: RecordingFailureDetail?
             let snapshotUnavailable: Bool
+            /// Events this instance tried to record and dropped. Other
+            /// instances' drops are visible only through the persisted
+            /// marker detail's lower-bound count.
+            let droppedEvents: Int
             let incompleteRecords: Int
             let rejectedInputs: [RejectedInput]
             let events: [Event]
@@ -248,6 +256,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
             recordingFailureDetailSource: failureDetailSource,
             recordingFailureDetail: failureDetail,
             snapshotUnavailable: snapshotUnavailable,
+            droppedEvents: droppedEvents,
             incompleteRecords: incompleteRecords, rejectedInputs: rejectedInputs, events: events,
             systemEvidenceEnabled: systemEvidence.enabled,
             systemEvidenceRecordingHadErrors: systemEvidence.recordingHadErrors,
@@ -380,7 +389,14 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         lock.lock()
         defer { lock.unlock() }
         guard let firstFailure else { return nil }
-        return RecordingFailureDetail(stage: firstFailure.stage, code: firstFailure.code)
+        return RecordingFailureDetail(stage: firstFailure.stage, code: firstFailure.code,
+                                      droppedEvents: droppedEventCount)
+    }
+
+    private var droppedEvents: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return droppedEventCount
     }
 
     /// Detail is a separate bounded sidecar so the historical marker remains
@@ -410,13 +426,23 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
               sameFailureDetailFile(info, afterRead), sameFailureDetailFile(info, named) else { return nil }
         guard let text = String(bytes: bytes, encoding: .utf8) else { return nil }
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count == 4, lines[0] == "v1", lines[3].isEmpty,
+        // v1: stage/code only. v2 adds the claimant's dropped count so far.
+        let isV1 = lines.count == 4 && lines[0] == "v1" && lines[3].isEmpty
+        let isV2 = lines.count == 5 && lines[0] == "v2" && lines[4].isEmpty && lines[3].hasPrefix("dropped=")
+        guard isV1 || isV2,
               lines[1].hasPrefix("stage="), lines[2].hasPrefix("code="),
               let stage = RecordingFailureStage(rawValue: String(lines[1].dropFirst(6))) else { return nil }
         let rawCode = String(lines[2].dropFirst(5))
         guard rawCode.count <= String(Int.min).count,
               let code = Int(rawCode), String(code) == rawCode else { return nil }
-        return RecordingFailureDetail(stage: stage, code: code)
+        var dropped: Int?
+        if isV2 {
+            let rawDropped = String(lines[3].dropFirst(8))
+            guard rawDropped.count <= String(Int.min).count,
+                  let parsed = Int(rawDropped), String(parsed) == rawDropped, parsed >= 0 else { return nil }
+            dropped = parsed
+        }
+        return RecordingFailureDetail(stage: stage, code: code, droppedEvents: dropped)
     }
 
     private func sameFailureDetailFile(_ original: stat, _ current: stat) -> Bool {
@@ -434,6 +460,7 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
     private func noteRecordingFailure(_ failure: RecordingFailure) {
         lock.lock()
         writeFailed = true
+        droppedEventCount += 1
         if case nil = firstFailure { firstFailure = failure }
         lock.unlock()
         try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
@@ -448,9 +475,10 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         close(fd)
         lock.lock()
         let first = firstFailure
+        let droppedSoFar = droppedEventCount
         lock.unlock()
         guard let first else { return }
-        let detail = "v1\nstage=\(first.stage.rawValue)\ncode=\(first.code)\n"
+        let detail = "v2\nstage=\(first.stage.rawValue)\ncode=\(first.code)\ndropped=\(droppedSoFar)\n"
         let detailFD = openat(directoryFD, Self.failureDetailFile,
                               O_WRONLY | O_CREAT | O_EXCL | O_NONBLOCK | O_NOFOLLOW | O_CLOEXEC, 0o600)
         guard detailFD >= 0 else { return }
