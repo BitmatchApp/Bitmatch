@@ -18,7 +18,8 @@ public enum TransferCompletion: Sendable {
             destination: destinationLabel(for: result.destinationURL, roots: destinationRoots),
             destinationPath: result.destinationURL.path,
             clipIntegrity: result.clipIntegrity,
-            wasReused: result.wasReused
+            wasReused: result.wasReused,
+            failedOutputMarking: result.failedOutputMarking
         )
     }
 

@@ -424,6 +424,8 @@ struct FanOutTests {
             let corruptedRow = corruptedResult.map {
                 TransferCompletion.row(from: $0, destinationRoots: fixture.destinations)
             }
+            #expect(corruptedResult?.failedOutputMarking == "marked")
+            #expect(corruptedRow?.failedOutputMarking == "marked")
             #expect(corruptedRow?.isVerifiedStatus == false)
             let verdict = fixture.verdict(for: operation, settings: settings)
             #expect(!verdict.success)
