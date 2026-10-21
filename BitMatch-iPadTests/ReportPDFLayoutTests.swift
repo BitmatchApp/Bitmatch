@@ -406,16 +406,20 @@ private final class PDFShortWriteFailureInjector: @unchecked Sendable {
     func write(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Int {
         lock.lock()
         writeCalls += 1
-        let call = writeCalls
         lock.unlock()
-        if call == 1 {
-            let written = Darwin.write(fd, buffer, max(1, count / 2))
-            lock.lock()
-            partialChunkWritten = written > 0 && written < count
-            lock.unlock()
-            return written
+        // Quartz may start with single-byte callbacks, which cannot be
+        // shortened. Fail only after a genuine partial write has occurred.
+        lock.lock()
+        let alreadyPartial = partialChunkWritten
+        lock.unlock()
+        if alreadyPartial {
+            errno = ENOSPC
+            return -1
         }
-        errno = ENOSPC
-        return -1
+        let written = Darwin.write(fd, buffer, count > 1 ? count / 2 : count)
+        lock.lock()
+        partialChunkWritten = written > 0 && written < count
+        lock.unlock()
+        return written
     }
 }
