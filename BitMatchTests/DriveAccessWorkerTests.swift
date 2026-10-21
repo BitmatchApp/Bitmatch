@@ -189,4 +189,79 @@ struct DriveAccessWorkerTests {
         #expect(try await replacement.value == "current")
         #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
     }
+
+    @Test func rescanStormStaysBoundedAndDrains() async throws {
+        let worker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 1)
+        let gate = DriveWorkerGate()
+        defer { gate.release() }
+
+        let blocked = Task {
+            try await worker.perform(mountKey: "/Volumes/A", jobKey: "test.storm.blocker") {
+                gate.wait()
+                return "blocked"
+            }
+        }
+        #expect(await waitUntil { gate.didEnter })
+
+        // One rescan waits; every further rescan is refused instead of queuing.
+        let waiting = Task {
+            try await worker.perform(mountKey: "/Volumes/B", jobKey: "test.storm.waiting") { "waiting" }
+        }
+        #expect(await waitUntil { worker.queuedCount == 1 })
+
+        var busyCount = 0
+        for index in 0..<5 {
+            do {
+                _ = try await worker.perform(
+                    mountKey: "/Volumes/Storm\(index)", jobKey: "test.storm.\(index)") { "storm" }
+            } catch DriveAccessWorker.WorkerError.busy {
+                busyCount += 1
+            }
+        }
+        #expect(busyCount == 5)
+        #expect(worker.runningCount == 1)
+        #expect(worker.queuedCount == 1)
+
+        gate.release()
+        #expect(try await blocked.value == "blocked")
+        #expect(try await waiting.value == "waiting")
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
+
+    @Test func displayDeadlineNeverCancelsBlockedCall() async throws {
+        let worker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 2)
+        let gate = DriveWorkerGate()
+        defer { gate.release() }
+
+        let blocked = Task {
+            try await worker.perform(mountKey: "/Volumes/A", jobKey: "test.deadline") {
+                gate.wait()
+                return "late result"
+            }
+        }
+        #expect(await waitUntil { gate.didEnter })
+
+        // The display side gives up waiting. The blocked call keeps its slot.
+        blocked.cancel()
+        #expect(worker.runningCount == 1)
+
+        // A replacement request with the same key settles the abandoned waiter
+        // without releasing the mount until the call returns.
+        let replacement = Task {
+            try await worker.perform(mountKey: "/Volumes/A", jobKey: "test.deadline") { "current" }
+        }
+        #expect(await waitUntil { worker.queuedCount == 1 })
+        #expect(worker.runningCount == 1)
+
+        gate.release()
+        // The abandoned caller stays cancelled; only the current request runs.
+        do {
+            _ = try await blocked.value
+            Issue.record("Abandoned blocked request unexpectedly returned a value")
+        } catch is CancellationError {
+            // The display side settled while the filesystem call ran its course.
+        }
+        #expect(try await replacement.value == "current")
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
 }

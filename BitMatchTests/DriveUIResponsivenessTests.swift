@@ -180,4 +180,85 @@ struct DriveUIResponsivenessTests {
         #expect(coordinator.transferJournal.records.isEmpty)
         #expect(coordinator.sourceURL == newerSource)
     }
+
+    @Test func mountRefreshDropsStaleDestinationCapacity() async throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let journal = LocalTransferJournal(fileURL: folders.journalURL)
+        let worker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 4)
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: journal,
+            defaults: folders.defaults,
+            driveAccessWorker: worker
+        )
+        coordinator.sourceURL = folders.source
+        coordinator.destinationURLs = [folders.primary]
+        #expect(await waitUntil {
+            !coordinator.isPreparingSelection
+                && coordinator.destinationCapacity(for: folders.primary) != nil
+        })
+
+        // The destination vanishes. The mount refresh must synchronously stop
+        // advertising its last-known free space, then report the failed
+        // re-probe instead of re-applying a stale capacity.
+        try FileManager.default.removeItem(at: folders.primary)
+        coordinator.refreshSourceAvailability()
+        #expect(coordinator.destinationCapacity(for: folders.primary) == nil)
+        #expect(await waitUntil { coordinator.selectionPreparationError != nil })
+        #expect(coordinator.destinationCapacity(for: folders.primary) == nil)
+        #expect(coordinator.transferJournal.records.isEmpty)
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
+
+    @Test func cancelledDisplayTaskKeepsBlockedSlotAndAppliesNothing() async throws {
+        let folders = try CoordinatorFolders()
+        defer { folders.cleanup() }
+        let worker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 8)
+        let gate = HeldDriveProbe()
+        defer { gate.release() }
+        let blocker = Task {
+            try await worker.perform(
+                mountKey: DriveAccessWorker.mountKey(for: folders.source),
+                jobKey: "test.display-deadline.blocker"
+            ) {
+                gate.wait()
+                return true
+            }
+        }
+        #expect(await waitUntil { gate.didEnter })
+
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
+            defaults: folders.defaults,
+            driveAccessWorker: worker
+        )
+        coordinator.sourceURL = folders.source
+        coordinator.destinationURLs = [folders.primary]
+        #expect(await waitUntil { worker.queuedCount > 0 })
+
+        // The display side abandons its wait and the user picks another card.
+        // The blocked preparation keeps its worker slot; its late result must
+        // not touch the new selection.
+        let enqueue = Task { try await coordinator.enqueueSelectionPrepared() }
+        #expect(await waitUntil { coordinator.isCommittingSelection })
+        enqueue.cancel()
+        let newerSource = folders.root.appendingPathComponent("newer-card", isDirectory: true)
+        try FileManager.default.createDirectory(at: newerSource, withIntermediateDirectories: true)
+        try Data("newer".utf8).write(to: newerSource.appendingPathComponent("B.ARW"))
+        coordinator.sourceURL = newerSource
+
+        gate.release()
+        _ = try await blocker.value
+        do {
+            _ = try await enqueue.value
+            Issue.record("Cancelled enqueue unexpectedly committed")
+        } catch {
+            // Cancellation settles the display waiter; the blocked call ran on.
+        }
+        #expect(coordinator.transferJournal.records.isEmpty)
+        #expect(coordinator.sourceURL == newerSource)
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
 }

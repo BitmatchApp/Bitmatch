@@ -120,4 +120,76 @@ struct SourceAvailabilityModelTests {
         #expect(await waitUntil { model.availableIDs.count == fixture.resources.count })
         #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
     }
+
+    @Test func unmountedRecordLeavesOtherMountAvailable() async throws {
+        let fixture = try temporaryResources(named: ["stay", "removed"])
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let stayed = fixture.resources.first { $0.value.url.lastPathComponent == "stay" }!
+        let removed = fixture.resources.first { $0.value.url.lastPathComponent == "removed" }!
+        let worker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 4)
+        let model = SourceAvailabilityModel(worker: worker) { _ in true }
+
+        model.update(resources: fixture.resources)
+        #expect(await waitUntil { model.availableIDs.count == 2 })
+
+        // The unmount drops the removed record; the other mount is re-proven.
+        try FileManager.default.removeItem(at: removed.value.url)
+        model.update(resources: [stayed.key: stayed.value])
+        #expect(await waitUntil { model.availableIDs == [stayed.key] })
+        #expect(!model.availableIDs.contains(removed.key))
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
+
+    @Test func replacedFolderAtSamePathReprobesUnderNewIdentity() async throws {
+        let fixture = try temporaryResources(named: ["card"])
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let id = fixture.resources.keys.first!
+        let url = fixture.resources[id]!.url
+        let worker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 4)
+        let model = SourceAvailabilityModel(worker: worker) { _ in true }
+
+        model.update(resources: fixture.resources)
+        #expect(await waitUntil { model.availableIDs == [id] })
+
+        // Same path, new folder: the changed identity is re-probed, not trusted.
+        try FileManager.default.removeItem(at: url)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        let replacement = try LocalTransferResource(url: url)
+        model.update(resources: [id: replacement])
+        #expect(await waitUntil { model.availableIDs == [id] })
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
+
+    @Test func everyEntryIsEvaluatedExactlyOnce() async throws {
+        let fixture = try temporaryResources(named: ["one", "two", "three"])
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let seen = LockedProbeSeen()
+        let worker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 4)
+        let model = SourceAvailabilityModel(worker: worker) { url in
+            seen.record(url.lastPathComponent)
+            return true
+        }
+
+        model.update(resources: fixture.resources)
+        #expect(await waitUntil { model.availableIDs.count == 3 })
+        #expect(seen.counts == ["one": 1, "two": 1, "three": 1])
+        #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
+    }
+}
+
+private final class LockedProbeSeen: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [String: Int] = [:]
+
+    var counts: [String: Int] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+
+    func record(_ name: String) {
+        lock.lock()
+        values[name, default: 0] += 1
+        lock.unlock()
+    }
 }
