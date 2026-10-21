@@ -270,9 +270,14 @@ struct ReportView: View {
             for (index, rowIndex) in manifestRowIndices.enumerated() {
                 let path = rows[rowIndex].path
                 let showPreview = previewed.insert(path).inserted
-                let nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)? = index > 0
-                    ? { report in report.pdfNativeManifestRow(report.rows[rowIndex], showPreview: showPreview) }
-                    : nil
+                let nativeRow: (@MainActor (ReportView) -> ReportPDFNativeRow?)?
+                if index > 0 {
+                    nativeRow = { report in
+                        report.pdfNativeManifestRow(report.rows[rowIndex], showPreview: showPreview)
+                    }
+                } else {
+                    nativeRow = nil
+                }
                 append(separated: index == 0, manifest: index > 0, nativeRow: nativeRow) { report in
                     VStack(alignment: .leading, spacing: 0) {
                         if index == 0 {
