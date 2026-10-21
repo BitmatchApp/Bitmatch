@@ -142,21 +142,19 @@ final class ReportPDFMemoryTests: XCTestCase {
         try fileManager.createDirectory(at: requestedRoot, withIntermediateDirectories: false,
                                         attributes: [.posixPermissions: 0o700])
 
-        let metrics = ReportPDFMemoryMetrics(maximumSeconds: 1_200)
         var outcome = "failed"
         let receiptURL = requestedRoot.appendingPathComponent("report-pdf-memory.json")
+        let metrics = ReportPDFMemoryMetrics(maximumSeconds: 1_200, receiptURL: receiptURL,
+                                             fileCount: fileCount, resultRows: fileCount * rowsPerFile)
         defer {
-            let receipt = metrics.receipt(outcome: outcome, fileCount: fileCount,
-                                          resultRows: fileCount * rowsPerFile)
-            if let data = try? JSONEncoder().encode(receipt) {
-                try? data.write(to: receiptURL, options: .atomic)
-            }
+            metrics.persist(outcome: outcome)
             print("REPORT_PDF_MEMORY outcome=\(outcome) files=\(fileCount) rows=\(fileCount * rowsPerFile) receipt=\(receiptURL.path)")
         }
 
         let sampler = Task.detached {
             while !Task.isCancelled {
                 _ = metrics.sample()
+                metrics.persistCheckpointIfDue()
                 do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
             }
         }
@@ -177,6 +175,7 @@ final class ReportPDFMemoryTests: XCTestCase {
                 }
             }
             guard results.count == fileCount * rowsPerFile else { throw ReportPDFMemoryError.invalidOutput }
+            try metrics.requireSafe()
 
             let summary = ReportSummary(
                 jobID: UUID(), started: Date(timeIntervalSince1970: 1_800_000_000),
@@ -190,16 +189,24 @@ final class ReportPDFMemoryTests: XCTestCase {
                 clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase
             )
             metrics.mark("pdfRender")
+            try metrics.requireSafe()
+            // The renderer is synchronous. The memory cap latches a failure but
+            // cannot interrupt native PDF work already in progress.
             let pdfData = ReportPDFRenderer.renderPDF(summary: summary, results: results) { phase in
                 metrics.observe(phase)
             }
             try pdfData.write(to: requestedRoot.appendingPathComponent("rendered-unvalidated.pdf"), options: .withoutOverwriting)
             if metrics.snapshot().guardTriggered { throw ReportPDFMemoryError.guardTriggered }
-            guard metrics.sample() == false, !pdfData.isEmpty,
-                  let document = PDFDocument(data: pdfData), document.pageCount > 1,
-                  let text = document.string else {
+            guard metrics.sample() == false, !pdfData.isEmpty else {
                 throw ReportPDFMemoryError.invalidOutput
             }
+
+            metrics.mark("pdfDocumentDecode")
+            guard let document = PDFDocument(data: pdfData), document.pageCount > 1 else {
+                throw ReportPDFMemoryError.invalidOutput
+            }
+            metrics.mark("pdfTextExtraction")
+            guard let text = document.string else { throw ReportPDFMemoryError.invalidOutput }
 
             metrics.mark("pdfCoverage")
             let expression = try NSRegularExpression(pattern: "PDFMEM-[0-9]{5}\\.dat")
@@ -274,13 +281,24 @@ private final class ReportPDFMemoryMetrics: Sendable {
     private let started = ProcessInfo.processInfo.systemUptime
     private let maximumSeconds: TimeInterval
     private let limitMiB = 1_024
+    private let receiptURL: URL
+    private let fileCount: Int
+    private let resultRows: Int
+    private let lastCheckpointWrite = Mutex(ProcessInfo.processInfo.systemUptime)
+    private let receiptWriteLock = Mutex(())
 
-    init(maximumSeconds: TimeInterval) { self.maximumSeconds = maximumSeconds }
+    init(maximumSeconds: TimeInterval, receiptURL: URL, fileCount: Int, resultRows: Int) {
+        self.maximumSeconds = maximumSeconds
+        self.receiptURL = receiptURL
+        self.fileCount = fileCount
+        self.resultRows = resultRows
+    }
     func snapshot() -> Snapshot { state.withLock { $0 } }
 
     func mark(_ phase: String) {
         state.withLock { $0.phase = phase }
         _ = sample()
+        persist(outcome: "running")
     }
 
     func observe(_ phase: ReportPDFRenderer.Phase) {
@@ -312,6 +330,10 @@ private final class ReportPDFMemoryMetrics: Sendable {
             }
         }
         _ = sample()
+        // Renderer callbacks are sparse checkpoints (128 measured blocks or
+        // 16 rendered pages), so an interrupted run keeps recent phase data
+        // without rewriting the receipt on every 25 ms memory sample.
+        persist(outcome: "running")
     }
 
     func finish(pdfBytes: Int, pageCount: Int) {
@@ -320,6 +342,7 @@ private final class ReportPDFMemoryMetrics: Sendable {
             $0.pageCount = pageCount
         }
         _ = sample()
+        persist(outcome: "running")
     }
 
     func sample() -> Bool {
@@ -362,6 +385,30 @@ private final class ReportPDFMemoryMetrics: Sendable {
         Receipt(outcome: outcome, workload: "synthetic-two-backup-report-only", fileCount: fileCount,
                 resultRows: resultRows, memoryLimitMiB: limitMiB, maximumSeconds: Int(maximumSeconds),
                 metrics: snapshot())
+    }
+
+    func persist(outcome: String) {
+        receiptWriteLock.withLock { _ in
+            guard let data = try? JSONEncoder().encode(receipt(outcome: outcome, fileCount: fileCount,
+                                                               resultRows: resultRows)) else { return }
+            do {
+                try data.write(to: receiptURL, options: .atomic)
+                try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: receiptURL.path)
+            } catch {
+                // The deferred final write remains best-effort too; the probe's
+                // own failure should not be replaced by an artifact-write failure.
+            }
+        }
+    }
+
+    func persistCheckpointIfDue() {
+        let now = ProcessInfo.processInfo.systemUptime
+        let shouldPersist = lastCheckpointWrite.withLock { lastWrite in
+            guard now - lastWrite >= 5 else { return false }
+            lastWrite = now
+            return true
+        }
+        if shouldPersist { persist(outcome: "running") }
     }
 }
 #endif
