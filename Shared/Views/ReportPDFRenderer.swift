@@ -215,6 +215,7 @@ enum ReportPDFRenderer {
         }
     }
 
+    static let maximumPagesPerPDFContext = 64
     static let pageWidth: CGFloat = 612
     static let pageHeight: CGFloat = 792
     static let horizontalMargin: CGFloat = 32
@@ -546,7 +547,7 @@ enum ReportPDFRenderer {
         var firstPage = 0
         while firstPage < layout.pages.count {
             try Task.checkCancellation()
-            let endPage = min(firstPage + 8, layout.pages.count)
+            let endPage = min(firstPage + maximumPagesPerPDFContext, layout.pages.count)
             let chunk = try await renderPDFChunk(firstPage..<endPage, layout: layout, report: report,
                                                  phaseObserver: phaseObserver, fileWriter: fileWriter)
             chunks.append((data: chunk, pageCount: endPage - firstPage))

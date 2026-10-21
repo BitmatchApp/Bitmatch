@@ -273,9 +273,9 @@ struct ReportPDFLayoutTests {
 
     @Test func asyncPDFRendererComposesMultipleChunksWithEveryManifestRow() async throws {
         let destinations = ["/Volumes/Backup-A", "/Volumes/Backup-B"]
-        let rows = (0..<300).map { index in
+        let rows = (0..<2_000).map { index in
             let destination = destinations[index % destinations.count]
-            let name = String(format: "chunk-%03d.MXF", index)
+            let name = String(format: "chunk-%04d.MXF", index)
             return ResultRow(path: "/card/\(name)", status: ResultOutcome.verified.statusText,
                 size: 1_000, checksum: "chunk-digest", destination: destination,
                 destinationPath: destination + "/\(name)")
@@ -284,24 +284,27 @@ struct ReportPDFLayoutTests {
             mode: .copyAndVerify, source: "/Volumes/CARD1", destinations: destinations,
             totalFiles: rows.count, matched: rows.count, issues: 0, workers: 1, appVersion: "test",
             osVersion: "test", client: "", production: "", company: "", verificationMethod: "SHA-256",
-            totalBytesProcessed: 300_000, averageSpeed: 1, clientLogoData: nil, companyLogoData: nil,
+            totalBytesProcessed: 2_000_000, averageSpeed: 1, clientLogoData: nil, companyLogoData: nil,
             photographyJob: nil, safetyState: .safeToErase)
         let layout = try await ReportPDFRenderer.layoutAsync(ReportView(s: summary, rows: rows))
         let pdf = try await ReportPDFRenderer.renderPDFAsync(summary: summary, results: rows)
         let document = try #require(PDFDocument(data: pdf))
-        #expect(layout.pages.count > 8)
+        #expect(layout.pages.count > ReportPDFRenderer.maximumPagesPerPDFContext)
         #expect(document.pageCount == layout.pages.count)
         for index in 0..<document.pageCount {
             let page = try #require(document.page(at: index))
             #expect(page.string?.contains("Page \(index + 1) of \(layout.pages.count)") == true)
         }
-        for (index, row) in rows.enumerated() {
-            let match = try #require(document.findString(row.fileName, withOptions: []).first)
-            #expect(document.findString(row.fileName, withOptions: []).count == 1)
-            let page = try #require(match.pages.first)
-            let expectedBackup = index.isMultiple(of: 2) ? "Backup 1" : "Backup 2"
-            #expect(page.string?.contains(expectedBackup) == true)
+        let text = try #require(document.string)
+        let filenamePattern = try NSRegularExpression(pattern: #"chunk-\d{4}\.MXF"#)
+        let textRange = NSRange(text.startIndex..<text.endIndex, in: text)
+        var filenameCounts: [String: Int] = [:]
+        filenamePattern.enumerateMatches(in: text, range: textRange) { match, _, _ in
+            guard let match, let range = Range(match.range, in: text) else { return }
+            filenameCounts[String(text[range]), default: 0] += 1
         }
+        #expect(Set(filenameCounts.keys) == Set(rows.map(\.fileName)))
+        #expect(filenameCounts.values.allSatisfy { $0 == 1 })
     }
 
     @Test func asyncPDFRendererStopsAfterChildTaskCancellationAtPageProgress() async {
