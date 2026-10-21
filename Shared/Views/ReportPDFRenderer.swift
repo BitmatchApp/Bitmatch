@@ -391,7 +391,7 @@ enum ReportPDFRenderer {
     }
 
     private static let sinkPutBytes: CGDataConsumerPutBytesCallback = { info, buffer, count in
-        guard let info, let buffer else { return 0 }
+        guard let info else { return 0 }
         let sink = Unmanaged<ReportPDFFileSink>.fromOpaque(info).takeUnretainedValue()
         return sink.consume(buffer, count: count)
     }
