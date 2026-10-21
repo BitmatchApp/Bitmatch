@@ -2,7 +2,7 @@
 
 ## Working agreement
 
-Mike needs this Mac on set. Work is limited to small source reads, documentation and a local PR draft until he authorizes more. No builds, tests, rendering, simulators, drive scans, image mounts, large cleanup or background test jobs. No merge, release, tag, signing, updater or GitHub Actions changes.
+Mike needs this Mac on set. Work is limited to small source reads, documentation and a local PR draft until he authorizes more. Reconnecting T9 subsequently authorized read-only recovery of its known result image; that image was closed afterward. No builds, tests, rendering, simulators, user-media scans, writable image mounts, large cleanup or background test jobs. No merge, release, tag, signing, updater or GitHub Actions changes.
 
 Production candidate: `1f73beba5d17bc1ce5b259ac67ab9243dd8b9c1c` on `fix/pdf-report-memory-20261021`. The documentation update changes no app or test source. [Exact observed results and evidence limits](report-memory-2026-10-21.md) are recorded separately.
 
@@ -47,8 +47,9 @@ When approved gates and review are complete, merge in dependency order. After ea
 - [x] Record the reproduced ordinary/app and wrapped-report failures separately from hypotheses about #23.
 - [x] Complete final-source full Mac testing and generic iPhone/iPad app build; record skips and build-only limits.
 - [x] Record independent all-wrapped content checks, preview inspection, deliberate-regression results and physical test scopes.
-- [ ] Recover and inspect available result bundles from the surviving external image. Inventory lost versus recovered evidence; do not mount it during the current low-impact period.
-- [ ] Preserve the app-wrapper rejection and correct its `TEST EXECUTE SUCCEEDED` recognition. Revalidate the saved one-test result/trial/artifacts; do not rerun media copying solely to alter wrapper bookkeeping.
+- [x] Recover the nine key saved app-test records read-only. Their counts and selected workflow markers match the recorded passes and controlled failures; see the [recovery record](report-result-recovery-2026-10-21.json). This does not recover every original artifact or repeat any test.
+- [ ] Recover other available raw PDFs, detailed memory/manifest receipts and physical-engine logs, or identify the minimal probes needed to replace missing evidence. The archive inventory inspected so far covers older PDF experiments.
+- [ ] Preserve the app-wrapper rejection and correct its `TEST EXECUTE SUCCEEDED` recognition. The one-test pass and trial/settlement markers were recovered independently; the original eleven external artifact files were not. Do not rerun media copying solely to alter wrapper bookkeeping or fabricate those artifacts from a passing summary.
 - [ ] Finish independent content/visual checks for the final mixed artifact. If its PDF did not survive, regenerate only the necessary probe after approval.
 - [ ] Add direct native-row ellipsis/wrapped-Unicode assertions, check fallback control text and compare resolved native/fallback colors. Compile and run the affected Mac and iOS tests; the current generic app build did not compile or execute the iOS test target.
 - [ ] Repeat the 20,000-file coordinator report-off/on probe on final production source. The recorded 682 MiB pass predates wrapped-row support.
@@ -56,6 +57,8 @@ When approved gates and review are complete, merge in dependency order. After ea
 - [ ] Finish the relevant signed-app/manual and mobile checks, review the final combined diff and recheck PR dependencies after any source/base change. Record what remains untested rather than treating an automated app-host pass as a manual walkthrough.
 
 Keep #10, #23, the unexplained Thorough source-stability rejection and the diagnostic-recorder error as separate open investigations. Passing later runs do not identify their causes. Existing source identity, readback, coverage and no-overwrite rules stay strict. Merge and publication remain on hold.
+
+The tracked large-app receipt validator and History probe runner also expect the build-and-test success banner. Their current wrappers invoke `test`, so this does not establish a failure in normal tracked usage. Any future support for `test-without-building` should handle its different banner with focused parser fixtures, while retaining exit-status, exact-test, zero-skip, workload, receipt and artifact requirements. A banner alone is never sufficient evidence.
 
 ## Documentation audit
 

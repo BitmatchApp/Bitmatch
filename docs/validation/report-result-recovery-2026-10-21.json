@@ -1,0 +1,121 @@
+{
+  "schemaVersion": 1,
+  "recoveryDate": "2026-10-21",
+  "recordedProductionCandidate": "1f73beba5d17bc1ce5b259ac67ab9243dd8b9c1c",
+  "scope": "Read existing results only; no app build/test/transfer rerun. Original image mounted read-only and normally detached; physical T9 left connected.",
+  "cases": [
+    {
+      "gate": "mac-test-20261021T130059Z",
+      "status": "passed",
+      "countScope": "result definitions",
+      "total": 1470,
+      "passed": 1435,
+      "skipped": 35,
+      "failed": 0,
+      "rawActionSHA256": "c7c008a1ae4f751f82e95e30eab01d083f30b16aba57267b4c279f03f0f79c4a",
+      "countNote": "Raw action counts include parameterized runs; use the recovered modern summary definition counts."
+    },
+    {
+      "gate": "physical-app-prebuilt-once-20261021T130643Z-f4028a1d",
+      "status": "passed",
+      "countScope": "result definitions",
+      "total": 1,
+      "passed": 1,
+      "skipped": 0,
+      "failed": 0,
+      "rawActionSHA256": "9623291d0aa357a063416cc5b9a7d37037f2da732da7458237e8fb6e80ef89ec"
+    },
+    {
+      "gate": "mac-pdf-complex-20261021T124947Z",
+      "status": "failed",
+      "countScope": "raw action test runs",
+      "total": 1,
+      "passed": 0,
+      "skipped": 0,
+      "failed": 1,
+      "rawActionSHA256": "fce4263b0a4571f89cf243c791aa8ccdfbfad931680800371dc558dbb800aaec",
+      "workflowMarkerRecovered": true
+    },
+    {
+      "gate": "mac-pdf-complex-20261021T125700Z",
+      "status": "passed",
+      "countScope": "raw action test runs",
+      "total": 1,
+      "passed": 1,
+      "skipped": 0,
+      "failed": 0,
+      "rawActionSHA256": "cf40da2dfed532e36ecfee6b77f737ad85bfc85df3436a8604831b6554a58881",
+      "workflowMarkerRecovered": true
+    },
+    {
+      "gate": "mac-pdf-complex-20261021T130514Z",
+      "status": "passed",
+      "countScope": "raw action test runs",
+      "total": 1,
+      "passed": 1,
+      "skipped": 0,
+      "failed": 0,
+      "rawActionSHA256": "0fc59a9c67d9341e90f6b2c0711fc4b3efe5604a5dde99ce181c1b2b8ba7d9c7",
+      "workflowMarkerRecovered": true
+    },
+    {
+      "gate": "mac-preview-20261021T130011Z",
+      "status": "passed",
+      "countScope": "raw action test runs",
+      "total": 1,
+      "passed": 1,
+      "skipped": 0,
+      "failed": 0,
+      "rawActionSHA256": "8becc7c09df197f4c90a207aa6938e3c6ee36a0d1570301771b6107b228b88f4",
+      "workflowMarkerRecovered": true
+    },
+    {
+      "gate": "mac-app-report-memory-20261021T114327Z",
+      "status": "passed",
+      "countScope": "raw action test runs",
+      "total": 1,
+      "passed": 1,
+      "skipped": 0,
+      "failed": 0,
+      "rawActionSHA256": "fe52cd9c0f7240ccc7d12529204cbdb57934723e86d411f77226acb0aef823ee"
+    },
+    {
+      "gate": "mac-manyfiles-20261021T053629Z",
+      "status": "failed",
+      "countScope": "raw action test runs",
+      "total": 1,
+      "passed": 0,
+      "skipped": 0,
+      "failed": 1,
+      "rawActionSHA256": "b235079ce430e364ac6e8cbabe0f335da81563e1afc8f5b1cbe546e043ad2469"
+    },
+    {
+      "gate": "mac-pdf-focused-20261021T125455Z",
+      "status": "passed",
+      "countScope": "result definitions",
+      "total": 27,
+      "passed": 27,
+      "skipped": 0,
+      "failed": 0,
+      "rawActionSHA256": "22f7441cfdeacff8d5e9519f810d110f9f0ea898f329ccb19458ef4441fc5776"
+    }
+  ],
+  "physicalApp": {
+    "selectedTest": "PhysicalWorkflowEvidenceTests/testPhysicalCardToTwoBackupsAndSavedEvidence()",
+    "execution": "passed-recovered",
+    "durationSeconds": 4.153441905975342,
+    "singleTrialAndSettlementMarkersRecovered": true,
+    "originalArtifactFilesRecovered": false,
+    "originalPrivateRunnerRecovered": false,
+    "mergeApproved": false
+  },
+  "limits": [
+    "Final raw PDFs and detailed memory sample JSON were not recovered. Earlier reported footprint values remain pre-reboot observations.",
+    "Original per-file manifest/hash and report/preview artifacts were checked before reboot but are not revalidated by the recovered XCTest summaries.",
+    "The closed archive metadata covers seven older PDF experiments; archive payload was not decompressed or rehashed during this low-impact pass.",
+    "The original private wrapper false rejection remains recorded; the recovery verdict is a separate execution record.",
+    "The earlier physical engine matrix used a direct XCTest log outside these app bundles; its runner/log were not recovered here."
+  ],
+  "testsRerun": false,
+  "releaseApproved": false
+}

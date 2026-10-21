@@ -4,7 +4,7 @@
 
 The local PDF candidate is `1f73beba5d17bc1ce5b259ac67ab9243dd8b9c1c`, following the layout/status tests in `296663ef`. It fixes memory growth reproduced in synthetic reports. It does **not** reproduce or resolve field issue #23. Issues #10 and #23 remain open; PRs #79–81 and the PDF work remain held for review. No merge or release is authorized.
 
-These results were observed before the Mac reboot. This update used source and the recorded conversation only. The reboot removed temporary progress records, private runners and host-side artifacts. The external build disk image containing result bundles and the separate closed-evidence archive were confirmed present afterward, but their contents have not been recovered or revalidated. Do not assume every raw PDF, visual-review receipt or failure fixture survived. Gate names below identify original runs, not recovered evidence.
+These results were observed before the Mac reboot. The first documentation update used source and the recorded conversation only. The reboot removed temporary progress records, private runners and host-side artifacts. A later authorized read-only T9 recovery recovered nine saved app-test records, as detailed below. Do not assume every raw PDF, memory sample, visual-review receipt or failure fixture survived. Gate names identify original runs; the recovery does not count as another test execution.
 
 ## Implementation
 
@@ -56,6 +56,18 @@ The app-host check `physical-app-prebuilt-once-20261021T130643Z-f4028a1d` used e
 
 The private wrapper nevertheless wrote `failed-retained`: it expected `** TEST SUCCEEDED **`, while this action emits `** TEST EXECUTE SUCCEEDED **`. The reviewed result bundle reported exactly one passing test; trial/artifact checks passed too. This bookkeeping defect was identified but **not corrected before reboot**. Preserve the rejection, recover the bundle and correct/re-run receipt validation without repeating the transfer just to change the wrapper status. This is not a signed-app manual walkthrough or the planned 119.6 GB actual-app test.
 
+## Read-only recovery after reboot
+
+After Mike reconnected T9, the known build image was mounted read-only, its volume identity checked, and nine named result bundles read at low process priority. The owned image was then detached normally; the physical T9 remained connected. No build, test, transfer, PDF render, writable image mount or user-media scan ran. About 1.3 MB of small records were saved outside temporary storage. The [compact recovery record](report-result-recovery-2026-10-21.json) retains counts and raw-record hashes without private mount paths.
+
+Recovered results confirm the full Mac suite (1,435 passed, 35 skipped), 27 focused PDF tests, passing fixed/mixed PDF probes, the passing 20-clip preview probe, and the earlier coordinator stress pass. The failed all-wrapped baseline and original coordinator memory failure remain failed. The PDF logs retain their 20,000-file/40,000-row pass/fail markers; the baseline retains its `guardTriggered` error. This does not independently recover the detailed memory samples or the original full-manifest/visual validation receipts.
+
+The small physical app result was independently read again: exactly one named test passed, zero skipped/failed, with its 4.153-second duration. Its saved log retains one distinct trial and the full completion marker for two backups, real journal, independent hashes, embedded previews and cleanup. Aggregate log sections repeat these lines, so they were deduplicated; test identity and counts establish the single execution. A separate recovery receipt records that test pass without rewriting the lost private wrapper's original false rejection.
+
+The modern summary command tried to create a SQLite cache for some bundles and refused the read-only volume. Raw result-object reads recovered their status/counts/logs without modifying the image or copying large bundles. Full-suite raw counts include parameterized runs; the modern summary's 1,470 definitions remains authoritative for that total.
+
+The final raw PDFs, preview JPEGs, detailed memory JSON and eleven physical app artifacts were **not recovered** by this pass. The saved archive inventory covers seven older PDF experiments, not those final artifacts; its compressed payload was not decompressed or rehashed. The physical engine matrix used a separate direct-test log and is not revalidated by these app bundles. Recover any other available evidence before deciding which missing artifacts require a new bounded probe.
+
 ## Earlier failures and cleanup
 
 The original app-host gate `mac-manyfiles-20261021T053629Z` failed its guard during reporting: copy/verification drained at 392 MiB, reporting started at 421 MiB, the guard latched at 1,099 MiB and diagnostics later reached 1,309 MiB. MHL/previews were off. It was not an OS crash or #23 reproduction; that run did not isolate the allocation cause.
@@ -68,4 +80,4 @@ The earlier physical matrix stopped after five successful operations with two ge
 
 Before reboot, seven closed PDF gates were archived and verified on the SSD. Removing ten archived PDF/PNG files recovered 521,621,504 allocated host bytes. Two passed large synthetic drive children were removed after evidence/identity checks: 239,200,093,336 logical bytes across the SSDs. Their allocated bytes were not recorded and are not estimated. Unresolved physical fixtures and the current matrix children were preserved at cleanup; post-reboot availability has not been checked.
 
-Today is limited to small reads and documentation. Recover the available bundles/artifacts, finish the named gaps and review combined source before merging. See the [review and PR draft](report-memory-review-2026-10-21.md). No post-reboot build, test, rendering, media scan, image mount, large cleanup, signing change or Actions run was performed for this update.
+Today remains limited to low-impact work: small source reads, documentation and the authorized read-only result recovery above. Finish the remaining artifact and platform gaps before merging; see the [review and PR draft](report-memory-review-2026-10-21.md). No post-reboot build, test, rendering, user-media scan, large cleanup, signing change or Actions run was performed for these updates.
