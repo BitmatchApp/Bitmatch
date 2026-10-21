@@ -213,6 +213,32 @@ final class HistoryAppHostScaleTests: XCTestCase {
         XCTAssertEqual(matchesModel.matches.map(\.record.id), [legacyRecordID], "A journal publication must invalidate the search snapshot")
         metrics.mark("retryAndExportFinished")
 
+        responsiveness.beginPhase("historyModelPrep")
+        metrics.mark("historyModelPrepStarted")
+        let prepRecords = reloadedJournal.records
+        var prepVisibleCount = 0
+        for record in prepRecords {
+            if TransferLibraryPresentation.isVisible(state: record.state, showHistory: true) {
+                prepVisibleCount += 1
+            }
+        }
+        XCTAssertGreaterThan(prepVisibleCount, 0)
+        metrics.mark("historyVisibleListFinished")
+        let prepExpanded = try XCTUnwrap(prepRecords.first { $0.id == expandedRecordID })
+        _ = TransferLibraryPresentation.safetyState(for: prepExpanded)
+        let prepScope = VerificationScopeEvidence(selectedMode: prepExpanded.verificationMode,
+            results: prepExpanded.results, includeModePlan: prepExpanded.plannedFileCounts != nil)
+        _ = prepScope.selectedModeLine
+        _ = prepScope.recordedResultsLine
+        _ = TransferLibraryPresentation.savedResultsCoverSelectedPlan(prepExpanded)
+        _ = TransferHistoryMetrics.make(prepExpanded)
+        metrics.mark("historyExpandedDetailFinished")
+        for row in prepExpanded.results {
+            _ = TransferHistoryResultPresentation.statusText(for: row, mode: prepExpanded.verificationMode)
+        }
+        metrics.mark("historyRowStatusFinished")
+        metrics.mark("historyModelPrepFinished")
+
         let sessionIDs = Array(afterRetry.filter { $0.state != .queued && $0.state != .running }.prefix(8).map(\.id))
         responsiveness.beginPhase("queuePresentation")
         try reloadedJournal.saveQueueSession(PersistedQueueSession(
@@ -299,6 +325,58 @@ final class HistoryAppHostScaleTests: XCTestCase {
         metrics.mark("queueLayoutFinished")
         queueWindow.close()
         historyWindow.close()
+
+        responsiveness.beginPhase("historyViewCollapsedAttach")
+        metrics.mark("historyCollapsedHostingCreationStarted")
+        let collapsedHost = NSHostingView(rootView: NavigationStack {
+            TransferLibraryView(coordinator: coordinator, journal: reloadedJournal)
+                .frame(width: 580, height: 760)
+        })
+        metrics.mark("historyCollapsedHostingCreationFinished")
+        let collapsedWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 760),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        collapsedHost.frame = CGRect(x: 0, y: 0, width: 580, height: 760)
+        metrics.mark("historyCollapsedWindowAttachmentStarted")
+        collapsedWindow.contentView = collapsedHost
+        collapsedWindow.isReleasedWhenClosed = false
+        metrics.mark("historyCollapsedWindowAttachmentFinished")
+        metrics.mark("historyCollapsedWindowOrderFrontStarted")
+        collapsedWindow.orderFront(nil)
+        metrics.mark("historyCollapsedWindowOrderFrontFinished")
+        metrics.mark("historyCollapsedLayoutStarted")
+        collapsedHost.layoutSubtreeIfNeeded()
+        metrics.mark("historyCollapsedLayoutFinished")
+        try metrics.requireSafeFootprint()
+        metrics.mark("historyCollapsedFinished")
+        collapsedWindow.close()
+
+        responsiveness.beginPhase("historyViewEmptyAttach")
+        let emptyJournalURL = fixtureRoot.appendingPathComponent("empty-history.json")
+        try JSONEncoder().encode([LocalTransferRecord]()).write(to: emptyJournalURL, options: .atomic)
+        let emptyJournal = LocalTransferJournal(fileURL: emptyJournalURL)
+        XCTAssertEqual(emptyJournal.records.count, 0)
+        metrics.mark("historyEmptyHostingCreationStarted")
+        let emptyHost = NSHostingView(rootView: NavigationStack {
+            TransferLibraryView(coordinator: coordinator, journal: emptyJournal)
+                .frame(width: 580, height: 760)
+        })
+        metrics.mark("historyEmptyHostingCreationFinished")
+        let emptyWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 760),
+            styleMask: [.titled], backing: .buffered, defer: false)
+        emptyHost.frame = CGRect(x: 0, y: 0, width: 580, height: 760)
+        metrics.mark("historyEmptyWindowAttachmentStarted")
+        emptyWindow.contentView = emptyHost
+        emptyWindow.isReleasedWhenClosed = false
+        metrics.mark("historyEmptyWindowAttachmentFinished")
+        metrics.mark("historyEmptyWindowOrderFrontStarted")
+        emptyWindow.orderFront(nil)
+        metrics.mark("historyEmptyWindowOrderFrontFinished")
+        metrics.mark("historyEmptyLayoutStarted")
+        emptyHost.layoutSubtreeIfNeeded()
+        metrics.mark("historyEmptyLayoutFinished")
+        try metrics.requireSafeFootprint()
+        metrics.mark("historyEmptyFinished")
+        emptyWindow.close()
 
         responsiveness.stop()
         memorySampler.cancel()
