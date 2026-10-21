@@ -52,43 +52,104 @@ final class ReportPreviewMemoryTests: XCTestCase {
         guard !artifactsBase.path.hasPrefix("/Volumes/") else { throw PreviewProbeError.invalidFixture }
         let artifacts = artifactsBase.appendingPathComponent("preview-memory-\(UUID())")
         for directory in [root, artifacts] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
-        let source = root.appendingPathComponent("Card")
-        let backup = root.appendingPathComponent("Backup")
-        for directory in [source, backup] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
-        let memory = PreviewProbeMemory(clipCount: clipCount, codec: codec, roundCount: roundCount)
-        _ = memory.sample()
-        let pipeline = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
-        let worker = Task { @MainActor in
-            try await run(source: source, backup: backup, artifacts: artifacts, memory: memory, pipeline: pipeline)
-        }
-        let monitor = memory.monitor { worker.cancel(); pipeline.cancelOperation() }
-        do {
-            try await withTaskCancellationHandler { try await worker.value } onCancel: {
-                worker.cancel(); pipeline.cancelOperation()
+        try await withPrivateProbeDiagnostics(root: root, artifacts: artifacts) { _ in
+            let source = root.appendingPathComponent("Card")
+            let backup = root.appendingPathComponent("Backup")
+            for directory in [source, backup] { try fm.createDirectory(at: directory, withIntermediateDirectories: true) }
+            let memory = PreviewProbeMemory(clipCount: clipCount, codec: codec, roundCount: roundCount)
+            _ = memory.sample()
+            let pipeline = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+            let worker = Task { @MainActor in
+                try await run(source: source, backup: backup, artifacts: artifacts, memory: memory, pipeline: pipeline)
             }
-            guard !memory.snapshot().guardTriggered else { throw PreviewProbeError.memoryGuard }
-            guard testRun?.totalFailureCount == 0 else { throw PreviewProbeError.assertionFailure }
-            memory.mark("settling")
-            try await Task.sleep(for: .seconds(2))
-            _ = memory.sample()
-            guard !memory.snapshot().guardTriggered else { throw PreviewProbeError.memoryGuard }
-            monitor.cancel(); await monitor.value
-            // The monitor may have latched a failure after the prior check.
-            try memory.requireSafe()
-            guard memory.snapshot().rounds.count == roundCount else { throw PreviewProbeError.invalidFixture }
-            try save(memory, outcome: "passed", to: artifacts)
-            try fm.removeItem(at: root)
-            print("PREVIEW_MEMORY_RESULT clips=\(clipCount) codec=\(codec.rawValue) rounds=\(roundCount) width=3840 height=2160 outcome=passed artifacts=\(artifacts.path)")
+            let monitor = memory.monitor { worker.cancel(); pipeline.cancelOperation() }
+            do {
+                try await withTaskCancellationHandler { try await worker.value } onCancel: {
+                    worker.cancel(); pipeline.cancelOperation()
+                }
+                guard !memory.snapshot().guardTriggered else { throw PreviewProbeError.memoryGuard }
+                guard testRun?.totalFailureCount == 0 else { throw PreviewProbeError.assertionFailure }
+                memory.mark("settling")
+                try await Task.sleep(for: .seconds(2))
+                _ = memory.sample()
+                guard !memory.snapshot().guardTriggered else { throw PreviewProbeError.memoryGuard }
+                monitor.cancel(); await monitor.value
+                // The monitor may have latched a failure after the prior check.
+                try memory.requireSafe()
+                guard memory.snapshot().rounds.count == roundCount else { throw PreviewProbeError.invalidFixture }
+                try save(memory, outcome: "passed", to: artifacts)
+                try fm.removeItem(at: root)
+                print("PREVIEW_MEMORY_RESULT clips=\(clipCount) codec=\(codec.rawValue) rounds=\(roundCount) width=3840 height=2160 outcome=passed artifacts=\(artifacts.path)")
+            } catch {
+                worker.cancel(); pipeline.cancelOperation()
+                // run() awaits its owned seed task before escaping; collection
+                // cancellation requests native AVFoundation cancellation as usual.
+                monitor.cancel(); await monitor.value
+                _ = memory.sample()
+                try? save(memory, outcome: memory.snapshot().guardTriggered ? "guarded" : (error is XCTSkip ? "unsupported" : "failed"), to: artifacts)
+                print("PREVIEW_MEMORY_FAILURE retainedFixture=\(root.path) artifacts=\(artifacts.path)")
+                throw error
+            }
+        }
+    }
+
+    private func withPrivateProbeDiagnostics<T>(root: URL, artifacts: URL,
+                                                operation: (TransferDiagnosticStore) async throws -> T) async throws -> T {
+        let fm = FileManager.default
+        let diagnosticRoot = artifacts.appendingPathComponent("probe-diagnostics", isDirectory: true)
+        try fm.createDirectory(at: diagnosticRoot, withIntermediateDirectories: false,
+                               attributes: [.posixPermissions: 0o700])
+        let defaultsSuite = "BitMatchTests.ReportPreview.Diagnostics.\(UUID())"
+        let privateDefaults = try XCTUnwrap(UserDefaults(suiteName: defaultsSuite))
+        defer { privateDefaults.removePersistentDomain(forName: defaultsSuite) }
+        let crashEvidence = LocalCrashEvidenceStore(
+            directory: diagnosticRoot.appendingPathComponent("PrivateCrashEvidence", isDirectory: true),
+            defaults: privateDefaults, consentProvider: { false }
+        )
+        crashEvidence.setEnabled(false)
+        let store = TransferDiagnosticStore(
+            directory: diagnosticRoot.appendingPathComponent("TransferRing", isDirectory: true),
+            systemEvidenceStore: crashEvidence
+        )
+        let fixtureIdentity = try directoryIdentity(root)
+        let artifactsIdentity = try directoryIdentity(artifacts)
+        let diagnosticsIdentity = try directoryIdentity(diagnosticRoot)
+
+        func save(_ outcome: String) throws {
+            let exported = try store.exportData()
+            try exported.write(to: diagnosticRoot.appendingPathComponent("transfer-diagnostics.json"), options: .atomic)
+            let decoded = try XCTUnwrap(JSONSerialization.jsonObject(with: exported) as? [String: Any])
+            let events = decoded["events"] as? [Any] ?? []
+            let receipt: [String: Any] = [
+                "formatVersion": 1, "outcome": outcome, "processID": getpid(),
+                "fixtureRootIdentity": fixtureIdentity, "artifactsRootIdentity": artifactsIdentity,
+                "diagnosticRootIdentity": diagnosticsIdentity, "eventCount": events.count,
+                "privateCrashEvidenceEnabled": crashEvidence.snapshot().enabled,
+                "scopeNote": "Selected test body is scoped; app/test-host startup before the opt-in method is not isolated."
+            ]
+            let data = try JSONSerialization.data(withJSONObject: receipt, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: diagnosticRoot.appendingPathComponent("receipt.json"), options: .atomic)
+        }
+
+        let value: T
+        do {
+            value = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+                try await operation(store)
+            }
         } catch {
-            worker.cancel(); pipeline.cancelOperation()
-            // run() awaits its owned seed task before escaping; collection
-            // cancellation requests native AVFoundation cancellation as usual.
-            monitor.cancel(); await monitor.value
-            _ = memory.sample()
-            try? save(memory, outcome: memory.snapshot().guardTriggered ? "guarded" : (error is XCTSkip ? "unsupported" : "failed"), to: artifacts)
-            print("PREVIEW_MEMORY_FAILURE retainedFixture=\(root.path) artifacts=\(artifacts.path)")
+            try? save("failed")
             throw error
         }
+        try save("passed")
+        return value
+    }
+
+    private func directoryIdentity(_ url: URL) throws -> [String: UInt64] {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
+            throw PreviewProbeError.invalidFixture
+        }
+        return ["device": UInt64(info.st_dev), "inode": UInt64(info.st_ino)]
     }
 
     private func run(source: URL, backup: URL, artifacts: URL, memory: PreviewProbeMemory,
