@@ -144,6 +144,119 @@ struct ClassicMHLCompatibilityTests {
         }
         #expect(try snapshot(fixture.root) == before)
     }
+
+    private func copyVariant(_ variant: String) throws -> (root: URL, media: URL) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-classic-single-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bundled = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/EvidenceCompatibility/classic-single-algorithm/\(variant)")
+        let media = root.appendingPathComponent(variant)
+        try FileManager.default.copyItem(at: bundled, to: media)
+        return (root, media)
+    }
+
+    private func singleAlgorithmDigests(variant: String) -> (algorithm: SavedChecksumCheck.Algorithm, values: [String: String]) {
+        if variant == "md5-only" {
+            return (.md5, ["clip one.mov": "bdb6d9e8bf3290710359905a3a4b0606",
+                           "Reel A/two.mov": "d5e836a4b7fbcfc4e08b0c8c379c94b2"])
+        }
+        return (.sha1, ["clip one.mov": "a4851f5a8f75a4c5225f726f3194ea6ce6e50e5b",
+                        "Reel A/two.mov": "0e6219cd57f714cb4075bf786f18e82072c91a0b"])
+    }
+
+    /// Plant: ignore the second supported single-digest shape, or require
+    /// both digests from a one-digest writer. Each writer-generated manifest
+    /// stands alone with its own algorithm.
+    @Test(arguments: ["md5-only", "sha1-only"])
+    func singleAlgorithmWriterInventoryChecksSupportedDigest(variant: String) async throws {
+        let fixture = try copyVariant(variant)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let before = try snapshot(fixture.root)
+        let discovery = try await checker.discover(under: fixture.media)
+        #expect(discovery.records.count == 1)
+        #expect(discovery.records.allSatisfy { $0.kind == .classicMHL && $0.generation == nil })
+        #expect(discovery.expectedFiles.count == 3)
+        let (algorithm, values) = singleAlgorithmDigests(variant: variant)
+        let unicodeKey = try #require(discovery.expectedFiles.keys.first(where: { $0.hasSuffix("test.mov") }))
+        let unicodeValue = variant == "md5-only"
+            ? "35136dce1d8f244f7c7328a199de1b89" : "65df625d123c324bb8f46804d96edee17b6f4e58"
+        for (path, value) in values {
+            let entry = try #require(discovery.expectedFiles[path])
+            #expect(entry.algorithm == algorithm)
+            #expect(entry.requiredDigests == [SavedChecksumCheck.Digest(algorithm: algorithm, value: value)])
+        }
+        let unicodeEntry = try #require(discovery.expectedFiles[unicodeKey])
+        #expect(unicodeEntry.algorithm == algorithm)
+        #expect(unicodeEntry.requiredDigests == [SavedChecksumCheck.Digest(algorithm: algorithm, value: unicodeValue)])
+        #expect(discovery.expectedFiles.values.allSatisfy { $0.expectedSize != nil })
+        let result = try await checker.check(discovery) { _ in }
+        #expect(result.isIntact)
+        #expect(Set(result.matchingPaths) == Set(discovery.expectedFiles.keys))
+        #expect(result.validatedHistoryDirectories.isEmpty)
+        #expect(result.records.allSatisfy { $0.kind == .classicMHL })
+        #expect(result.newPaths.isEmpty)
+        #expect(try snapshot(fixture.root) == before)
+    }
+
+    /// Plant: accept changed or missing writer-generated media as intact.
+    @Test(arguments: ["md5-only", "sha1-only"], ["corrupt", "missing"])
+    func singleAlgorithmWriterMediaChangesPreventAnIntactResult(variant: String, damage: String) async throws {
+        let fixture = try copyVariant(variant)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let target = fixture.media.appendingPathComponent("clip one.mov")
+        if damage == "corrupt" {
+            var bytes = try Data(contentsOf: target)
+            bytes[bytes.startIndex] ^= 1
+            try bytes.write(to: target)
+        } else {
+            try FileManager.default.removeItem(at: target)
+        }
+        let result = try await checker.check(try await checker.discover(under: fixture.media)) { _ in }
+        #expect(!result.isIntact)
+        if damage == "corrupt" {
+            #expect(result.changedPaths == ["clip one.mov"])
+            #expect(result.missingPaths.isEmpty)
+        } else {
+            #expect(result.missingPaths == ["clip one.mov"])
+            #expect(result.changedPaths.isEmpty)
+        }
+    }
+
+    /// Plant: read digests from a size-only or xxh64 writer manifest, or
+    /// check its media without recorded digests. Both shapes fail closed.
+    @Test(arguments: ["size-only", "xxh64"])
+    func independentWriterUnsupportedShapesFailClosed(variant: String) async throws {
+        let fixture = try copyVariant(variant)
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let before = try snapshot(fixture.root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: fixture.media)
+        }
+        #expect(try snapshot(fixture.root) == before)
+    }
+
+    /// Plant: keep only one manifest when two writer-generated inventories
+    /// cover the same files with complementary digests. Consistent records
+    /// merge; the check then requires every recorded digest.
+    @Test func complementaryWriterManifestsMergeWithoutOverstatingScope() async throws {
+        let fixture = try copyVariant("md5-only")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let bundled = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/EvidenceCompatibility/classic-single-algorithm/sha1-only/sha1-only.mhl")
+        try FileManager.default.copyItem(at: bundled, to: fixture.media.appendingPathComponent("sha1-only.mhl"))
+        let before = try snapshot(fixture.root)
+        let discovery = try await checker.discover(under: fixture.media)
+        #expect(discovery.records.count == 2)
+        #expect(discovery.expectedFiles.count == 3)
+        for entry in discovery.expectedFiles.values {
+            #expect(entry.requiredDigests.count == 2)
+            #expect(Set(entry.requiredDigests.map { $0.algorithm }) == [.md5, .sha1])
+        }
+        let result = try await checker.check(discovery) { _ in }
+        #expect(result.isIntact)
+        #expect(Set(result.matchingPaths) == Set(discovery.expectedFiles.keys))
+        #expect(try snapshot(fixture.root) == before)
+    }
 }
 
 private final class ClassicInventoryFixtureParser: NSObject, XMLParserDelegate {

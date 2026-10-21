@@ -1,0 +1,32 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<hashlist version="1.1">
+  <creatorinfo>
+    <username>synthetic-generator</username>
+    <hostname>synthetic-host</hostname>
+    <tool>simple-mhl 1.4.0</tool>
+    <startdate>2026-10-21T17:13:38-04:00</startdate>
+    <finishdate>2026-10-21T17:13:39-04:00</finishdate>
+    <log>synthetic log; original environment details removed</log>
+  </creatorinfo>
+  <hash>
+    <file>Reel A/two.mov</file>
+    <size>36</size>
+    <lastmodificationdate>2026-10-21T17:13:38-04:00</lastmodificationdate>
+    <md5>d5e836a4b7fbcfc4e08b0c8c379c94b2</md5>
+    <hashdate>2026-10-21T17:13:39-04:00</hashdate>
+  </hash>
+  <hash>
+    <file>café test.mov</file>
+    <size>33</size>
+    <lastmodificationdate>2026-10-21T17:13:38-04:00</lastmodificationdate>
+    <md5>35136dce1d8f244f7c7328a199de1b89</md5>
+    <hashdate>2026-10-21T17:13:39-04:00</hashdate>
+  </hash>
+  <hash>
+    <file>clip one.mov</file>
+    <size>34</size>
+    <lastmodificationdate>2026-10-21T17:13:38-04:00</lastmodificationdate>
+    <md5>bdb6d9e8bf3290710359905a3a4b0606</md5>
+    <hashdate>2026-10-21T17:13:39-04:00</hashdate>
+  </hash>
+</hashlist>
