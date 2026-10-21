@@ -18,14 +18,18 @@ struct ReportPDFBlock {
 
 private final class ReportPDFFileSink: @unchecked Sendable {
     typealias WriteOperation = (Int32, UnsafeRawPointer, Int) -> Int
+    private static let bufferCapacity = 64 * 1_024
 
     private let lock = NSLock()
+    private let buffer: UnsafeMutableRawPointer
+    private var bufferedBytes = 0
     private let directoryPath: String
     private var directoryDescriptor: Int32
     private var fileDescriptor: Int32
     private let device: dev_t
     private let inode: ino_t
     private let writer: WriteOperation
+    private var bytesAccepted: Int64 = 0
     private var bytesWritten: Int64 = 0
     private var failureCode: Int32?
     private var finished = false
@@ -71,32 +75,61 @@ private final class ReportPDFFileSink: @unchecked Sendable {
         self.fileDescriptor = fd
         self.device = attributes.st_dev
         self.inode = attributes.st_ino
+        self.buffer = .allocate(byteCount: Self.bufferCapacity, alignment: MemoryLayout<UInt8>.alignment)
         self.writer = writer ?? { fd, buffer, count in Darwin.write(fd, buffer, count) }
     }
 
-    func consume(_ buffer: UnsafeRawPointer, count: Int) -> Int {
+    deinit {
+        buffer.deallocate()
+    }
+
+    func consume(_ input: UnsafeRawPointer, count: Int) -> Int {
         lock.lock()
         defer { lock.unlock() }
         guard count > 0 else { return 0 }
         guard fileDescriptor >= 0, !finished, failureCode == nil else { return 0 }
 
+        var accepted = 0
+        while accepted < count {
+            if bufferedBytes == Self.bufferCapacity {
+                guard flushBufferLocked() else { return accepted }
+            }
+            let copied = min(count - accepted, Self.bufferCapacity - bufferedBytes)
+            buffer.advanced(by: bufferedBytes).copyMemory(from: input.advanced(by: accepted), byteCount: copied)
+            bufferedBytes += copied
+            accepted += copied
+            bytesAccepted += Int64(copied)
+            if bufferedBytes == Self.bufferCapacity, !flushBufferLocked() {
+                return accepted
+            }
+        }
+        return accepted
+    }
+
+    /// Flushes the accepted bytes while the caller holds `lock`.
+    private func flushBufferLocked() -> Bool {
+        guard bufferedBytes > 0 else { return failureCode == nil }
+        guard fileDescriptor >= 0, !finished, failureCode == nil else { return false }
+
         var completed = 0
-        while completed < count {
-            let result = writer(fileDescriptor, buffer.advanced(by: completed), count - completed)
-            if result > 0, result <= count - completed {
+        while completed < bufferedBytes {
+            let remaining = bufferedBytes - completed
+            let result = writer(fileDescriptor, UnsafeRawPointer(buffer.advanced(by: completed)), remaining)
+            if result > 0, result <= remaining {
                 completed += result
                 bytesWritten += Int64(result)
                 continue
             }
-            if result > count - completed {
+            if result > remaining {
                 failureCode = EIO
-                break
+                return false
             }
             if result < 0, errno == EINTR { continue }
             failureCode = result == 0 ? EIO : errno
-            break
+            return false
         }
-        return completed
+        bufferedBytes = 0
+        return true
     }
 
     func throwIfFailed() throws {
@@ -111,6 +144,9 @@ private final class ReportPDFFileSink: @unchecked Sendable {
         if let failureCode { throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode) }
         guard fileDescriptor >= 0, !finished else {
             throw ReportPDFRenderer.RenderingError.invalidSinkOutput
+        }
+        guard flushBufferLocked() else {
+            throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode ?? EIO)
         }
         while fsync(fileDescriptor) != 0 {
             if errno == EINTR { continue }
@@ -135,7 +171,7 @@ private final class ReportPDFFileSink: @unchecked Sendable {
         }
         guard attributes.st_dev == device, attributes.st_ino == inode,
               (attributes.st_mode & S_IFMT) == S_IFREG,
-              attributes.st_size > 0, attributes.st_size == bytesWritten,
+              attributes.st_size > 0, attributes.st_size == bytesWritten, bytesWritten == bytesAccepted,
               let size = Int(exactly: attributes.st_size) else {
             throw ReportPDFRenderer.RenderingError.invalidSinkOutput
         }
