@@ -223,6 +223,7 @@ final class HistoryAppHostScaleTests: XCTestCase {
             ended: false,
             started: true
         ))
+        metrics.mark("historyCoordinatorCreationStarted")
         let coordinator = SharedAppCoordinator(
             platformManager: HistoryProbePlatformManager(),
             transferJournal: reloadedJournal,
@@ -230,29 +231,50 @@ final class HistoryAppHostScaleTests: XCTestCase {
             defaults: defaults,
             sourceEjectability: { _ in false }
         )
+        metrics.mark("historyCoordinatorCreationFinished")
+        metrics.mark("historyQueuePresentationFirstStarted")
         let queuePresentation = coordinator.queuePresentation
+        metrics.mark("historyQueuePresentationFirstFinished")
         XCTAssertEqual(queuePresentation.rows.count, sessionIDs.count)
         XCTAssertEqual(reloadedJournal.completedQueueRowBuildCount, sessionIDs.count)
         metrics.setQueueRows(reloadedJournal.completedQueueRowBuildCount)
+        metrics.mark("historyQueuePresentationCachedStarted")
         _ = coordinator.queuePresentation
+        metrics.mark("historyQueuePresentationCachedFinished")
         XCTAssertEqual(reloadedJournal.completedQueueRowBuildCount, sessionIDs.count, "Repeated queue presentation should reuse the current summary cache")
 
         responsiveness.beginPhase("historyViewLayout")
+        metrics.mark("historyHostingViewCreationStarted")
         let historyHost = NSHostingView(rootView: NavigationStack {
             TransferLibraryView(coordinator: coordinator, journal: reloadedJournal, initialRecordID: expandedRecordID)
                 .frame(width: 580, height: 760)
         })
+        metrics.mark("historyHostingViewCreationFinished")
+        metrics.mark("historyWindowCreationStarted")
         let historyWindow = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 580, height: 760),
             styleMask: [.titled], backing: .buffered, defer: false)
+        metrics.mark("historyWindowCreationFinished")
         historyHost.frame = CGRect(x: 0, y: 0, width: 580, height: 760)
+        metrics.mark("historyWindowAttachmentStarted")
         historyWindow.contentView = historyHost
         historyWindow.isReleasedWhenClosed = false
+        metrics.mark("historyWindowAttachmentFinished")
+        metrics.mark("historyWindowOrderFrontStarted")
         historyWindow.orderFront(nil)
+        metrics.mark("historyWindowOrderFrontFinished")
         metrics.mark("historyLayoutStarted")
+        metrics.mark("historyFirstLayoutStarted")
         historyHost.layoutSubtreeIfNeeded()
+        metrics.mark("historyFirstLayoutFinished")
+        metrics.mark("historySettleStarted")
         try await settleView()
+        metrics.mark("historySettleFinished")
+        metrics.mark("historySecondLayoutStarted")
         historyHost.layoutSubtreeIfNeeded()
+        metrics.mark("historySecondLayoutFinished")
+        metrics.mark("historyPNGRenderStarted")
         let historyPNGBytes = try renderedPNGByteCount(in: historyHost)
+        metrics.mark("historyPNGRenderFinished")
         XCTAssertGreaterThan(historyPNGBytes, 0)
         metrics.setRenderedHistoryPNGBytes(historyPNGBytes)
         try metrics.requireSafeFootprint()
