@@ -20,6 +20,7 @@ All notable changes to this project will be documented in this file.
 - Diagnostic exports now count dropped events, so a support bundle shows how much diagnostic history was lost under drive contention, not just that some was.
 - History now says what happened to a failed file: renamed with the `.bitmatch-failed` suffix, or why it could not be renamed and that it is still at its original name.
 - Safety counts are stricter: only destinations proven to be on different physical drives count toward required backup copies. Folders whose drive cannot be identified can still be used, but no longer prove independence on their own.
+- When a backup runs out of space, that destination now pauses for the rest of the attempt instead of being retried for every remaining file. Other backups finish normally; the full destination's files are recorded as failed, and copying there resumes on the next attempt after space is freed.
 
 ## [0.2.11] - 2026-10-20
 
