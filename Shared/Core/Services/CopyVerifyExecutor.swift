@@ -450,6 +450,9 @@ final class CopyVerifyExecutor {
                 photographerContext: photographerLifecycle.context,
                 handoffSummary: handoffIssues.isEmpty ? nil : handoffIssues.joined(separator: "; "),
                 safetyState: preReportSafetyState,
+                verifiedSelection: VerifiedReportSelection.beforeReport(operation: operation,
+                    expectedMode: config.verificationMode, handoffIssues: handoffIssues,
+                    project: Self.expectedExclusionProjectGate(config: config, lifecycle: photographerLifecycle)),
                 phaseDurations: phaseDurations
             )
         } else {
@@ -655,6 +658,7 @@ final class CopyVerifyExecutor {
         photographerContext: PhotographerReportContext?,
         handoffSummary: String? = nil,
         safetyState: CardSafetyState,
+        verifiedSelection: VerifiedReportSelection?,
         phaseDurations: OperationPhaseDurations
     ) async throws -> String? {
         try checkCancellation()
@@ -673,6 +677,7 @@ final class CopyVerifyExecutor {
         let reportMode = config.currentMode
         var reportSettings = config.reportSettings
         reportSettings.verificationMode = config.verificationMode
+        let notesBeforeSelection = reportSettings.notes
         let excluded = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
         if !excluded.isEmpty {
             let count = Set(excluded.map(\.path)).count
@@ -702,7 +707,9 @@ final class CopyVerifyExecutor {
                 performanceTelemetry: phaseDurations.telemetry,
                 safetyState: safetyState,
                 generateFullReport: reportSettings.makeReport,
-                photographerContext: reportContext
+                photographerContext: reportContext,
+                verifiedSelection: verifiedSelection,
+                pdfNotes: verifiedSelection == nil ? nil : notesBeforeSelection
             )
         }
         reportTask = work

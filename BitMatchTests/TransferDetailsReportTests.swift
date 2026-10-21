@@ -6,6 +6,31 @@ import BitMatchEngine
 
 @MainActor
 struct TransferDetailsReportTests {
+    private func qualifiedMetadataRecord(root: URL) throws -> LocalTransferRecord {
+        let source = root.appendingPathComponent("Card")
+        let backup = root.appendingPathComponent("Backup")
+        for folder in [source, backup] { try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true) }
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["._clip.mov"]
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(timeIntervalSince1970: 1),
+            source: try LocalTransferResource(url: source), destinations: [try LocalTransferResource(url: backup)],
+            verificationMode: .standard, cameraSettings: settings, reportSettings: ReportPrefs(notes: "Operator handoff note"))
+        record.state = .issues
+        record.startedAt = Date(timeIntervalSince1970: 2)
+        record.endedAt = Date(timeIntervalSince1970: 3)
+        record.sourceFingerprint = "fixture-classification"
+        record.plannedFileCounts = [1]
+        record.expectedExclusionQueueQualification = .ordinaryTransfer
+        let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: backup, settings: settings)
+        record.results = [ResultRow(path: source.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 64, checksum: "digest", destination: backup.path,
+            destinationPath: output.appendingPathComponent("clip.mov").path),
+            ResultRow(path: source.appendingPathComponent("._clip.mov").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                destination: backup.path, destinationPath: output.appendingPathComponent("._clip.mov").path)]
+        return record
+    }
+
     @Test func historyExportsKeepSavedDetailsAndUnsafeVerdict() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("details-history-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -44,7 +69,7 @@ struct TransferDetailsReportTests {
         #expect(text.contains("Operator: Alex"))
         #expect(text.contains(record.reportSettings.notes))
         #expect(text.contains("NOT SAFE TO ERASE"))
-        #expect(text.contains("1 recorded source file · 1 issue"))
+        #expect(text.contains("1 recorded source file · 1 file issue"))
         #expect(!text.contains("Empty"))
         #expect(!text.contains("Check plan:"))
         #expect(!text.contains("no separate card reread"))
@@ -67,15 +92,150 @@ struct TransferDetailsReportTests {
                                    size: 42, checksum: nil, destination: "Backup")]
         let document = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, includeThumbnails: false)))
         let text = try #require(document.string)
-        #expect(text.contains("0 issues"))
+        #expect(text.contains("0 file issues"))
         #expect(!text.contains("Issues Detail"))
         #expect(text.contains("1 intentionally excluded result"))
+        #expect(text.filter { !$0.isWhitespace }.contains("._clip.mov"))
         #expect(text.contains("Check plan:"))
-        #expect(text.contains("AppleDouble metadata was intentionally excluded"))
+        #expect(text.contains("complete handoff evidence was not established"))
         #expect(text.contains("Saved: 1/1 selected backup results marked verified"))
         #expect(text.contains("NOT SAFE TO ERASE"))
         #expect(!text.contains("Selected files verified"))
         #expect(!text.contains("VERIFICATION SUCCESSFUL"))
+    }
+
+    @Test func qualifiedMetadataHistoryPDFShowsSelectedVerificationWithoutWholeCardSuccess() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("qualified-history-report-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try qualifiedMetadataRecord(root: root)
+        #expect(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        let pdfData = try await ReportExporter.historyPDF(record: record, includeThumbnails: false)
+        let document = try #require(PDFDocument(data: pdfData))
+        let text = try #require(document.string)
+        #expect(text.contains("Selected files verified"))
+        #expect(!text.contains("NOT SAFE TO ERASE"))
+        #expect(!text.contains("VERIFICATION SUCCESSFUL"))
+        #expect(text.contains("AppleDouble metadata file intentionally excluded"))
+        #expect(text.contains("clip.mov"))
+        #expect(!text.filter { !$0.isWhitespace }.contains("._clip.mov"))
+        #expect(String(decoding: try TransferHistoryDocument(record: record, asCSV: false).data, as: UTF8.self).contains("._clip.mov"))
+        #expect(String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self).contains("._clip.mov"))
+        #expect(text.contains("Operator handoff note"))
+        #expect(text.contains("Regenerated from saved history"))
+        #expect(record.state == .issues)
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        let json = try #require(JSONSerialization.jsonObject(with: TransferHistoryDocument(record: record, asCSV: false).data) as? [String: Any])
+        #expect(json["savedSafeToErase"] as? Bool == false)
+        if let path = ProcessInfo.processInfo.environment["BITMATCH_WORKFLOW_SNAPSHOT_OUTPUT_DIR"] {
+            let directory = URL(fileURLWithPath: path, isDirectory: true)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try pdfData.write(to: directory.appendingPathComponent("history-selected-files-verified.pdf"))
+        }
+    }
+
+    @Test func incompleteMetadataHistoryProofRetainsTheWarning() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("unqualified-history-report-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let original = try qualifiedMetadataRecord(root: root)
+        var missingHandoff = original
+        missingHandoff.expectedExclusionQueueQualification = nil
+        missingHandoff.summary = "ASC MHL or report could not be saved"
+        var missingPlan = original; missingPlan.plannedFileCounts = nil
+        var incomplete = original; incomplete.results.removeFirst()
+        var duplicate = original; duplicate.results.append(original.results[0])
+        var missingFingerprint = original; missingFingerprint.sourceFingerprint = nil
+        var cancelled = original; cancelled.state = .cancelled
+        var projectMismatch = original
+        projectMismatch.expectedExclusionQueueQualification = .projectTransfer(projectID: UUID(), cardID: UUID())
+        var noDigest = original; var emptyDigest = original; var failed = original
+        let row = original.results[0]
+        func replacement(_ status: String, _ digest: String?) -> ResultRow {
+            ResultRow(id: row.id, path: row.path, status: status, size: row.size,
+                checksum: digest, destination: row.destination, destinationPath: row.destinationPath)
+        }
+        noDigest.results[0] = replacement(row.status, nil)
+        emptyDigest.results[0] = replacement(row.status, "")
+        failed.results[0] = replacement(ResultOutcome.failed.statusText, nil)
+        for record in [missingHandoff, missingPlan, incomplete, duplicate, missingFingerprint, cancelled,
+                       projectMismatch, noDigest, emptyDigest, failed] {
+            #expect(VerifiedReportSelection.saved(record) == nil)
+            let document = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, includeThumbnails: false)))
+            let text = try #require(document.string)
+            #expect(text.contains("NOT SAFE TO ERASE"))
+            #expect(!text.contains("Selected files verified"))
+            #expect(!text.contains("VERIFICATION SUCCESSFUL"))
+        }
+    }
+
+    @Test func selectedReportProofCannotBeReusedForDifferentRowsOrScope() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bound-report-proof-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try qualifiedMetadataRecord(root: root)
+        let proof = try #require(VerifiedReportSelection.saved(record))
+        func makeSummary(jobID: UUID, source: String, destinations: [String], issues: Int = 0) -> ReportSummary {
+            ReportSummary(jobID: jobID, started: record.startedAt!, finished: record.endedAt!, mode: .copyAndVerify,
+                source: source, destinations: destinations, totalFiles: 2,
+                matched: 1, issues: issues, workers: nil, appVersion: "", osVersion: "", client: "", production: "", company: "",
+                verificationMethod: "Standard", verificationMode: .standard,
+                verificationScope: VerificationScopeEvidence(selectedMode: .standard, results: record.results),
+                totalBytesProcessed: 64, averageSpeed: 0,
+                clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .needsAttention,
+                verifiedSelection: proof)
+        }
+        let source = record.source.url.path
+        let destinations = record.destinations.map { $0.url.path }
+        var summary = makeSummary(jobID: record.id, source: source, destinations: destinations)
+        for changed in [makeSummary(jobID: UUID(), source: source, destinations: destinations),
+                        makeSummary(jobID: record.id, source: source + "-other", destinations: destinations),
+                        makeSummary(jobID: record.id, source: source, destinations: destinations + ["/other"]),
+                        makeSummary(jobID: record.id, source: source, destinations: destinations, issues: 1)] {
+            #expect(!proof.matches(summary: changed, rows: record.results))
+        }
+        #expect(proof.matches(summary: summary, rows: record.results))
+        let selected = record.results[0]
+        let mutations = [Array(record.results.dropFirst()), record.results + [selected],
+            [ResultRow(path: selected.path, status: selected.status, size: selected.size, checksum: "different",
+                destination: selected.destination, destinationPath: selected.destinationPath), record.results[1]],
+            [ResultRow(path: selected.path, status: ResultOutcome.failed.statusText, size: selected.size, checksum: nil,
+                destination: selected.destination, destinationPath: selected.destinationPath), record.results[1]]]
+        for rows in mutations {
+            #expect(!proof.matches(summary: summary, rows: rows))
+            let document = try #require(PDFDocument(data: ReportPDFRenderer.renderPDF(summary: summary, results: rows)))
+            #expect(document.string?.contains("NOT SAFE TO ERASE") == true)
+            #expect(document.string?.contains("Selected files verified") == false)
+        }
+        summary.verificationScope = VerificationScopeEvidence(selectedMode: .thorough, results: record.results)
+        #expect(!proof.matches(summary: summary, rows: record.results))
+        summary.verificationScope = VerificationScopeEvidence(selectedMode: .standard, results: [])
+        #expect(!proof.matches(summary: summary, rows: record.results))
+        summary.verificationScope = nil
+        #expect(!proof.matches(summary: summary, rows: record.results))
+        summary.verificationScope = VerificationScopeEvidence(selectedMode: .standard, results: record.results)
+        summary.verificationMode = .quick
+        #expect(!proof.matches(summary: summary, rows: record.results))
+        summary.verificationMode = .standard
+        summary.safetyState = .failed
+        #expect(!proof.matches(summary: summary, rows: record.results))
+    }
+
+    @Test func foreignReportProofCannotSuppressPDFWarningsOrNotes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("foreign-report-proof-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let record = try qualifiedMetadataRecord(root: root)
+        let proof = try #require(VerifiedReportSelection.saved(record))
+        let note = "Keep source: this separate attempt has incomplete handoff evidence."
+        try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: record.startedAt!,
+            finished: record.endedAt!, sourceURL: record.source.url, destinationURLs: record.destinations.map(\.url),
+            results: record.results, fileCount: 2, matchCount: 1,
+            prefs: ReportPrefs(verificationMode: .standard, notes: note), workers: 1, totalBytesProcessed: 64,
+            safetyState: .needsAttention, verifiedSelection: proof, pdfNotes: "")
+        let files = try FileManager.default.contentsOfDirectory(at: record.destinations[0].url.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let pdfURL = try #require(files.first { $0.pathExtension == "pdf" })
+        let document = try #require(PDFDocument(url: pdfURL))
+        let text = try #require(document.string)
+        #expect(text.contains("NOT SAFE TO ERASE"))
+        #expect(text.contains(note))
+        #expect(!text.contains("Selected files verified"))
     }
 
     @Test func legacyQuickMatchCannotBecomeVerifiedInHistoryPDF() async throws {

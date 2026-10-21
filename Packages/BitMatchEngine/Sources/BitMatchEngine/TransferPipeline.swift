@@ -1037,6 +1037,68 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         }
         try Task.checkCancellation()
 
+        // Settle each fresh empty-file proof and its result callback before
+        // the existing source/destination/root completion gates.
+        // The old recorded identity is never accepted without a real EOF read.
+        if operation.verificationMode == .standard {
+            for (destIndex, _) in operation.destinationURLs.enumerated() {
+                guard let pinned = pinnedDestinations[destIndex] else { continue }
+                for entry in sourceManifest where entry.size == 0 {
+                    try Task.checkCancellation()
+                    guard var row = await ledger.result(relativePath: entry.relativePath, destination: destIndex),
+                          row.success, row.wasReused, let previous = row.verificationResult,
+                          previous.isValid, let readIdentity = previous.destinationReadIdentity else { continue }
+                    if let transform = fanOutHooks?.recordedIdentityBeforeFinalCoverage {
+                        let injectedIdentity = transform(destIndex, entry.relativePath, readIdentity)
+                        let injected = VerificationResult(
+                            sourceChecksum: previous.sourceChecksum, destinationChecksum: previous.destinationChecksum,
+                            matches: previous.matches, checksumType: previous.checksumType,
+                            processingTime: previous.processingTime, fileSize: previous.fileSize,
+                            sourceDigests: previous.sourceDigests, destinationDigests: previous.destinationDigests,
+                            destinationReadIdentity: injectedIdentity
+                        )
+                        var rewritten = FileOperationResult(
+                            sourceURL: row.sourceURL, destinationURL: row.destinationURL, success: row.success,
+                            error: row.error, fileSize: row.fileSize, verificationResult: injected,
+                            processingTime: row.processingTime, clipIntegrity: row.clipIntegrity, wasReused: row.wasReused
+                        )
+                        rewritten.excludedAppleDouble = row.excludedAppleDouble
+                        row = rewritten
+                        // Only test-supplied evidence is changed. The strict
+                        // pass must see it even if this prototype is disabled.
+                        await ledger.record(row, relativePath: entry.relativePath, destination: destIndex)
+                    }
+                    let current = try? pinned.currentRegularFileIdentity(at: entry.relativePath)
+                    guard current != row.verificationResult?.destinationReadIdentity else { continue }
+                    do {
+                        _ = try await DestinationWriter.refreshReusedEmptyExFATFile(
+                            row, currentIdentity: current, pinnedRoot: pinned,
+                            relativePath: entry.relativePath, mode: operation.verificationMode,
+                            destinationIndex: destIndex, hooks: fanOutHooks,
+                            publish: { refreshed in
+                                await ledger.record(refreshed, relativePath: entry.relativePath, destination: destIndex)
+                                await onFileResult?(refreshed)
+                            }
+                        )
+                    } catch is CancellationError {
+                        throw CancellationError()
+                    } catch {
+                        SharedLogger.transferError(error, run: TransferDiagnostics.runID ?? operation.id)
+                        // A failed fresh proof is final, including failure after
+                        // publication. Never leave its tentative success in the ledger.
+                        let failure = FileOperationResult(
+                            sourceURL: entry.url, destinationURL: row.destinationURL, success: false,
+                            error: completionGateError("Destination changed or could not be checked during a fresh empty-file proof. Keep the source media."),
+                            fileSize: entry.size, verificationResult: nil, processingTime: 0
+                        )
+                        await ledger.record(failure, relativePath: entry.relativePath, destination: destIndex)
+                        await onFileResult?(failure)
+                    }
+                }
+            }
+        }
+        try Task.checkCancellation()
+
         // Re-read only source metadata. Any path, size, or modification-time
         // change invalidates the whole run, including a file added after the
         // initial manifest was captured.
@@ -1097,7 +1159,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 }
                 continue
             }
-            for entry in sourceManifest {
+            for (entryIndex, entry) in sourceManifest.enumerated() {
                 if await ledger.alreadyFailed(
                     relativePath: entry.relativePath,
                     destination: destIndex
@@ -1123,12 +1185,21 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     continue
                 }
                 if operation.verificationMode != .quick {
-                    let verifiedIdentity = await ledger.result(
+                    let verifiedRow = await ledger.result(
                         relativePath: entry.relativePath,
                         destination: destIndex
-                    )?.verificationResult?.destinationReadIdentity
-                    let currentIdentity = try? pinned.currentRegularFileIdentity(at: entry.relativePath)
+                    )
+                    let verifiedIdentity = verifiedRow?.verificationResult?.destinationReadIdentity
+                    var lookupError: Error?
+                    let currentIdentity: VerifiedFileIdentity?
+                    do { currentIdentity = try pinned.currentRegularFileIdentity(at: entry.relativePath) }
+                    catch { currentIdentity = nil; lookupError = error }
                     if verifiedIdentity == nil || currentIdentity != verifiedIdentity {
+                        SharedLogger.destinationIdentityRejected(
+                            run: TransferDiagnostics.runID ?? operation.id, destinationIndex: destIndex,
+                            sourceOrdinal: entryIndex + 1, bytes: entry.size, wasReused: verifiedRow?.wasReused ?? false,
+                            recorded: verifiedIdentity, current: currentIdentity, lookupError: lookupError
+                        )
                         let reason = "\(destinationURL.lastPathComponent)'s \(entry.relativePath) changed or could not be rechecked after verification. Keep the source media."
                         let failure = FileOperationResult(
                             sourceURL: entry.url,

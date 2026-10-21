@@ -4,6 +4,170 @@ import Testing
 import BitMatchEngine
 
 struct QueueSessionPresentationTests {
+    @Test func reviewedMetadataStaysQuietAfterEverySelectedFileVerified() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.metadataExclusionRecord()
+        let queue = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
+            progress: nil, mountedSourceIDs: [record.id])
+        let row = try #require(queue.rows.first)
+        let outcome = try #require(row.outcome)
+
+        #expect(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        #expect(row.safetyState == .needsAttention)
+        #expect(row.selectedFilesVerified)
+        #expect(row.statusText == "Selected files verified")
+        #expect(row.statusTint == .gray)
+        #expect(row.statusSymbol == "checkmark.circle")
+        #expect(row.action == nil && row.cause == nil)
+        #expect(row.evidence?.hasPrefix("1 file ·") == true)
+        #expect(outcome.finishTitle == "Selected files verified — Card")
+        #expect(outcome.verdict.title == "Selected files verified")
+        #expect(outcome.verdict.detail == "1 file verified on 1 destination")
+        #expect(outcome.issueLines.isEmpty && outcome.bannerGuidance == nil)
+        #expect(!outcome.canRetry && outcome.primaryAction == .newTransfer)
+        #expect(!outcome.canEject && !row.safetyState.isSafe)
+        #expect(queue.ejectableCardIDs.isEmpty)
+        #expect(queue.tally.selectedFilesVerified == 1 && queue.tally.needsAttention == 0)
+        #expect(QueueDockBadgePolicy.unresolvedCount(rows: queue.rows, reviewedIDs: []) == 0)
+        #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: []) == 0)
+        #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [UUID()]) == 1)
+        #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Selected files verified")),
+            record: record, fraction: 1) == .appIcon)
+        #expect(DockTileState.makeTransfer(state: .copying, record: record, fraction: 0.4) == .running(percent: 40))
+        #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
+            record: nil, fraction: 1) == .needsReview)
+        #expect(outcome.destinations.count == 1)
+        #expect(outcome.destinations.first?.needsAttention == false)
+        #expect(outcome.destinations.first?.detail == "Checksums matched for 1 of 1 files")
+        #expect(!row.copySummary.contains("needs attention"))
+        #expect(!row.copySummary.contains("excluded"))
+
+        let accessory = QueueAccessoryPresentation.make(queue: queue)
+        #expect(accessory.title == "Selected files verified")
+        #expect(accessory.tone == .neutral && accessory.attentionRecordID == nil)
+        #expect(QueueAccessoryPresentation.attentionTokens(in: queue.rows).isEmpty)
+        // Saved evidence still discloses the omission and never claims whole-card safety.
+        #expect(record.results.count == 2)
+        #expect(record.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })
+        #expect(record.cameraSettings.excludedAppleDoublePaths == ["._clip.mov"])
+        #expect(outcome.guidance.contains("whole card is not backed up"))
+        let historyLabel = TransferLibraryPresentation.stateLabel(for: record)
+        #expect(historyLabel.title == "Selected files verified" && historyLabel.tint == .gray)
+        #expect(TransferLibraryPresentation.fileCount(for: record) == 1)
+        #expect(MenuBarRecentTransfer.status(for: record)?.text == "Selected files verified")
+        #expect(MenuBarRecentTransfer.status(for: record)?.needsAttention == false)
+    }
+
+    @Test func missingProofOrIncompleteEvidenceCannotQuietACompletedCard() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let original = try fixture.metadataExclusionRecord()
+        var missingProof = original
+        missingProof.expectedExclusionQueueQualification = nil
+        var missingPlan = original
+        missingPlan.plannedFileCounts = nil
+        var missingFingerprint = original
+        missingFingerprint.sourceFingerprint = nil
+        var mismatchedProject = original
+        mismatchedProject.expectedExclusionQueueQualification = .projectTransfer(projectID: UUID(), cardID: UUID())
+        var missingRow = original
+        missingRow.results.removeFirst()
+        var duplicate = original
+        duplicate.results.append(original.results[0])
+        func replacingSelected(status: String, checksum: String?) -> ResultRow {
+            let row = original.results[0]
+            return ResultRow(id: row.id, path: row.path, status: status, size: row.size,
+                checksum: checksum, destination: row.destination, destinationPath: row.destinationPath)
+        }
+        var failed = original
+        failed.results[0] = replacingSelected(status: ResultOutcome.failed.statusText, checksum: nil)
+        var unverified = original
+        unverified.results[0] = replacingSelected(status: ResultOutcome.copiedUnverified.statusText, checksum: nil)
+        var noDigest = original
+        noDigest.results[0] = replacingSelected(status: ResultOutcome.verified.statusText, checksum: nil)
+        var emptyDigest = original
+        emptyDigest.results[0] = replacingSelected(status: ResultOutcome.verified.statusText, checksum: "")
+        var cancelled = original
+        cancelled.state = .cancelled
+        var interrupted = original
+        interrupted.state = .interrupted
+        var handoffFailure = original
+        handoffFailure.expectedExclusionQueueQualification = nil
+        handoffFailure.summary = "ASC MHL could not be saved"
+        let quick = try fixture.metadataExclusionRecord(mode: .quick)
+        #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Copied")),
+            record: quick, fraction: 1) == .needsReview)
+        for record in [missingProof, missingPlan, missingFingerprint, mismatchedProject, missingRow, duplicate, failed, unverified,
+                       noDigest, emptyDigest, cancelled, interrupted, handoffFailure, quick] {
+            #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+            let row = try #require(QueueSessionPresentation.completedRow(for: record))
+            #expect(!row.selectedFilesVerified)
+            #expect(row.statusTint != .gray)
+            #expect(row.action == .review)
+            #expect(row.outcome?.canEject == false)
+            #expect(TransferLibraryPresentation.stateLabel(for: record).title != "Selected files verified")
+            #expect(MenuBarRecentTransfer.status(for: record)?.needsAttention == true)
+        }
+        for record in [missingProof, failed, handoffFailure, noDigest, emptyDigest] {
+            let row = try #require(QueueSessionPresentation.completedRow(for: record))
+            #expect(row.safetyState == .needsAttention)
+            #expect(QueueDockBadgePolicy.unresolvedCount(rows: [row], reviewedIDs: []) == 1)
+            #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+                rows: [row], reviewedIDs: [], standaloneAttentionIDs: []) == 1)
+            #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
+                record: record, fraction: 1) == .needsReview)
+        }
+        for state in [LocalTransferState.queued, .running, .failed] {
+            var record = original
+            record.state = state
+            #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        }
+    }
+
+    @Test func realFailureStillTakesPriorityBesideAQuietMetadataSelection() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let selected = try fixture.metadataExclusionRecord()
+        let failed = try fixture.record(name: "B001", state: .issues, outcome: .failed, at: 2)
+        let queue = QueueSessionPresentation.make(records: [failed, selected], sessionIDs: [selected.id, failed.id],
+            progress: nil, mountedSourceIDs: [])
+        #expect(queue.tally.selectedFilesVerified == 1)
+        #expect(queue.tally.needsAttention == 1)
+        #expect(queue.summaryTitle == "1 selected transfer verified · 1 needs attention")
+        let accessory = QueueAccessoryPresentation.make(queue: queue)
+        #expect(accessory.attentionRecordID == failed.id)
+        #expect(accessory.tone == .warning)
+        #expect(QueueAccessoryPresentation.attentionTokens(in: queue.rows).count == 1)
+        #expect(QueueDockBadgePolicy.unresolvedCount(rows: queue.rows, reviewedIDs: []) == 1)
+        #expect(QueueDockBadgePolicy.unresolvedCount(rows: queue.rows, reviewedIDs: [selected.id]) == 1)
+        #expect(QueueDockBadgePolicy.totalUnresolvedCount(
+            rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [failed.id]) == 1)
+    }
+
+    @Test func liveErrorsAndUnknownModeCannotUseTheQuietPresentation() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.metadataExclusionRecord()
+        for flags in [(true, false, 0, 0), (false, true, 0, 0), (false, false, 1, 0), (false, false, 0, 1)] {
+            let outcome = TransferOutcomePresentation.make(state: .completed(.init(success: false, message: "Review")),
+                rows: record.results, destinations: record.destinations.map(\.url),
+                hasErrors: flags.0, hasCriticalErrors: flags.1, errorCount: flags.2, warningCount: flags.3,
+                duration: 1, verificationMode: .standard, canRetry: true, canExport: true,
+                selectedFileVerificationQualified: true)
+            #expect(!outcome.selectedFilesVerified)
+            #expect(outcome.tint != .gray)
+        }
+        let unknownMode = TransferOutcomePresentation.make(state: .completed(.init(success: false, message: "Review")),
+            rows: record.results, destinations: record.destinations.map(\.url),
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: 1, verificationMode: nil, canRetry: true, canExport: true,
+            selectedFileVerificationQualified: true)
+        #expect(!unknownMode.selectedFilesVerified)
+    }
+
     @Test func rowsKeepQueueOrderAndRunningHeaderUsesFinished() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -525,6 +689,31 @@ private final class QueuePresentationFixture {
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: root) }
+
+    func metadataExclusionRecord(mode: VerificationMode = .standard) throws -> LocalTransferRecord {
+        let source = root.appendingPathComponent("Card")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["._clip.mov"]
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(timeIntervalSince1970: 1),
+            source: try LocalTransferResource(url: source), destinations: [try LocalTransferResource(url: backup)],
+            verificationMode: mode, cameraSettings: settings, reportSettings: ReportPrefs())
+        record.state = .issues
+        record.startedAt = Date(timeIntervalSince1970: 2)
+        record.endedAt = Date(timeIntervalSince1970: 3)
+        record.sourceFingerprint = "synthetic-fingerprint"
+        record.plannedFileCounts = [1]
+        record.expectedExclusionQueueQualification = .ordinaryTransfer
+        record.summary = "Selected files verified; 1 AppleDouble file intentionally excluded. Keep the source"
+        let destination = SafetyValidator.resolvedDestinationRoot(source: source, destination: backup, settings: settings)
+        record.results = [ResultRow(path: source.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 64, checksum: "abc",
+            destination: backup.lastPathComponent, destinationPath: destination.appendingPathComponent("clip.mov").path),
+            ResultRow(path: source.appendingPathComponent("._clip.mov").path,
+            status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+            destination: backup.lastPathComponent, destinationPath: destination.appendingPathComponent("._clip.mov").path)]
+        return record
+    }
 
     func record(
         name: String,

@@ -191,9 +191,36 @@ enum TransferNotificationPolicy {
 }
 
 enum TransferNotificationDecision {
+    /// Only a settled journal record can establish that intentional metadata
+    /// exclusions were the sole reason the whole-card verdict stayed unsafe.
+    static func kind(
+        record: LocalTransferRecord,
+        queueIsRunning: Bool,
+        isReplayingQueuedTransfer: Bool,
+        notifyAttention: Bool,
+        notifyFinish: Bool,
+        notifyEachQueuedCard: Bool
+    ) -> TransferNotificationKind? {
+        guard let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
+        let issueCount = record.results.filter {
+            !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+        }.count
+        return kind(
+            state: state,
+            issueCount: issueCount,
+            verifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record),
+            queueIsRunning: queueIsRunning,
+            isReplayingQueuedTransfer: isReplayingQueuedTransfer,
+            notifyAttention: notifyAttention,
+            notifyFinish: notifyFinish,
+            notifyEachQueuedCard: notifyEachQueuedCard
+        )
+    }
+
     static func kind(
         state: OperationState,
         issueCount: Int,
+        verifiedSelectedFiles: Bool = false,
         queueIsRunning: Bool,
         isReplayingQueuedTransfer: Bool,
         notifyAttention: Bool,
@@ -201,7 +228,7 @@ enum TransferNotificationDecision {
         notifyEachQueuedCard: Bool
     ) -> TransferNotificationKind? {
         switch state {
-        case .completed(let info) where info.success && issueCount == 0:
+        case .completed(let info) where (info.success || verifiedSelectedFiles) && issueCount == 0:
             if queueIsRunning || isReplayingQueuedTransfer {
                 return notifyEachQueuedCard ? .queuedCardSuccess : nil
             }

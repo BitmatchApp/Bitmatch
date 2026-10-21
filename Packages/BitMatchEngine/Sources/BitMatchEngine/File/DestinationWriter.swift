@@ -201,6 +201,32 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         )
     }
 
+    /// Identify the mounted filesystem before considering a fresh empty-file proof.
+    func isActualExFAT() throws -> Bool {
+        var info = statfs()
+        guard fstatfs(directoryFD, &info) == 0 else { throw Self.posixError("Unable to identify destination filesystem") }
+        return withUnsafeBytes(of: info.f_fstypename) { bytes in
+            String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self).lowercased() == "exfat"
+        }
+    }
+
+    /// Read-only traversal: a recheck must never recreate a missing ancestor.
+    func openExistingRegularFile(at relativePath: String) throws -> PinnedDestinationFile {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard let name = components.last else { throw Self.posixError("Missing destination name") }
+        for component in components { try Self.validate(component: component) }
+        var currentFD = Darwin.dup(directoryFD)
+        guard currentFD >= 0 else { throw Self.posixError("Unable to retain destination directory") }
+        defer { _ = Darwin.close(currentFD) }
+        for component in components.dropLast() {
+            let child = component.withCString { openat(currentFD, $0, O_SEARCH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC) }
+            guard child >= 0 else { throw Self.posixError("Unable to reopen destination ancestor") }
+            _ = Darwin.close(currentFD)
+            currentFD = child
+        }
+        return try PinnedDestinationFile.open(named: name, relativeTo: currentFD)
+    }
+
     /// Opens a destination file below the pinned directory. The returned
     /// descriptor, not `logicalRootURL`, is the authority for subsequent
     /// reads. This is deliberately separate from the display URL above.
@@ -605,6 +631,11 @@ public final class DestinationWriter {
         /// Test hook for a repeatably wrong source read on later verification
         /// passes. Production never supplies this; it does not write the card.
         public var transformVerificationSourceRead: (@Sendable (String, Data) throws -> Data)?
+        /// Internal test seam: only the prior recorded identity is transformed
+        /// at final coverage. Production leaves it nil; media/current stat and
+        /// all source/destination digests are untouched. This permits a real
+        /// mounted-filesystem retry to exercise otherwise nondeterministic drift.
+        var recordedIdentityBeforeFinalCoverage: (@Sendable (Int, String, VerifiedFileIdentity) -> VerifiedFileIdentity)? = nil
 
         public init(
             beforeSourceOpen: (@Sendable (URL) throws -> Void)? = nil,
@@ -1679,6 +1710,103 @@ public final class DestinationWriter {
         private static func hex<D: Sequence>(_ digest: D) -> String where D.Element == UInt8 {
             digest.map { String(format: "%02x", $0) }.joined()
         }
+    }
+
+    /// A changed inode requires a fresh proof; old readback is never treated as
+    /// current evidence. No source or destination writes occur here.
+    static func refreshReusedEmptyExFATFile(
+        _ row: FileOperationResult,
+        currentIdentity: VerifiedFileIdentity?,
+        pinnedRoot: PinnedDestinationDirectory,
+        relativePath: String,
+        mode: VerificationMode,
+        destinationIndex: Int = -1,
+        hooks: FanOutHooks? = nil,
+        publish: (@Sendable (FileOperationResult) async -> Void)? = nil
+    ) async throws -> FileOperationResult? {
+        try Task.checkCancellation()
+        guard mode == .standard, row.success, row.wasReused, row.fileSize == 0,
+              let previous = row.verificationResult, previous.isValid, previous.fileSize == 0,
+              previous.checksumType == .sha256,
+              let before = previous.destinationReadIdentity, let currentIdentity,
+              before.inode != currentIdentity.inode,
+              sameEmptyMetadata(before, currentIdentity),
+              validHex(previous.sourceChecksum, count: 64),
+              previous.destinationChecksum.lowercased() == previous.sourceChecksum.lowercased(),
+              previous.sourceDigests?.sha256?.lowercased() == previous.sourceChecksum.lowercased(),
+              previous.destinationDigests?.sha256?.lowercased() == previous.sourceChecksum.lowercased(),
+              let oldMD5 = previous.destinationDigests?.md5, validHex(oldMD5, count: 32),
+              try pinnedRoot.isActualExFAT() else { return nil }
+
+        let started = Date()
+        let destination = try pinnedRoot.openExistingRegularFile(at: relativePath)
+        defer { withExtendedLifetime(destination) {} }
+        let initial = try destination.snapshot()
+        guard verifiedIdentity(from: initial) == currentIdentity else {
+            throw FileOperationError.unsafeOperation("Destination changed before its fresh empty-file proof")
+        }
+        try await hooks?.beforeDestinationRead?(destinationIndex, relativePath)
+        try await PauseGate.waitIfCurrentIsPaused()
+        try Task.checkCancellation()
+        let handle = try destination.readingHandle() // Requires F_NOCACHE.
+        defer { closeFileHandle(handle, context: "fresh empty destination") }
+        hooks?.destinationDidOpenForRead?(destinationIndex, relativePath)
+        var hasher = MultiDigestHasher(algorithms: [.sha256, .md5])
+        // One byte proves EOF. A file that grew fails immediately rather than
+        // letting an unbounded fallback read a substituted large file.
+        let count = try autoreleasepool { () throws -> Int in
+            let data = try handle.read(upToCount: 1) ?? Data()
+            if !data.isEmpty { hasher.update(data) }
+            return data.count
+        }
+        try Task.checkCancellation()
+        let final = try destination.snapshot()
+        let freshIdentity = verifiedIdentity(from: final)
+        let digests = hasher.finalize()
+        guard let sha256 = digests.sha256,
+              count == 0, pinnedFileRemainedStable(initial, final),
+              destination.nameStillMatchesPinnedFile(final),
+              try pinnedRoot.currentRegularFileIdentity(at: relativePath) == freshIdentity,
+              pinnedRoot.logicalRootStillMatchesPinnedDirectory(),
+              sha256 == previous.sourceChecksum.lowercased(),
+              digests.md5 == oldMD5.lowercased() else {
+            throw FileOperationError.unsafeOperation("Destination changed during its fresh empty-file proof")
+        }
+        // The descriptor remains alive through the last named/root lookup.
+        // exFAT ASC MHL still rereads this file; its safety policy is unchanged.
+        let verification = VerificationResult(sourceChecksum: previous.sourceChecksum,
+            destinationChecksum: sha256, matches: true, checksumType: .sha256,
+            processingTime: previous.processingTime + Date().timeIntervalSince(started), fileSize: 0,
+            sourceDigests: previous.sourceDigests, destinationDigests: digests,
+            destinationReadIdentity: freshIdentity)
+        let refreshed = FileOperationResult(sourceURL: row.sourceURL, destinationURL: row.destinationURL,
+            success: true, error: nil, fileSize: 0, verificationResult: verification,
+            processingTime: row.processingTime + Date().timeIntervalSince(started),
+            clipIntegrity: row.clipIntegrity, wasReused: true)
+        // Retain the original pin and fresh reader through result publication.
+        // A callback may suspend or replace a visible name, so the proof is not
+        // accepted until every identity/path check is repeated after it returns.
+        await publish?(refreshed)
+        try Task.checkCancellation()
+        let afterPublication = try destination.snapshot()
+        guard verifiedIdentity(from: afterPublication) == freshIdentity,
+              destination.nameStillMatchesPinnedFile(afterPublication),
+              try pinnedRoot.currentRegularFileIdentity(at: relativePath) == freshIdentity,
+              pinnedRoot.logicalRootStillMatchesPinnedDirectory() else {
+            throw FileOperationError.unsafeOperation("Destination changed while its fresh empty-file result was published")
+        }
+        return refreshed
+    }
+
+    private static func validHex(_ value: String, count: Int) -> Bool {
+        value.count == count && value.allSatisfy { $0.isASCII && $0.isHexDigit }
+    }
+
+    private static func sameEmptyMetadata(_ a: VerifiedFileIdentity, _ b: VerifiedFileIdentity) -> Bool {
+        a.size == 0 && b.size == 0 && a.device == b.device
+            && a.modificationSeconds == b.modificationSeconds
+            && a.modificationNanoseconds == b.modificationNanoseconds
+            && a.changeSeconds == b.changeSeconds && a.changeNanoseconds == b.changeNanoseconds
     }
 
     private static func pinnedDestinationDigests(

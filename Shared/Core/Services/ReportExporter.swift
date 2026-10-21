@@ -26,7 +26,9 @@ enum ReportExporter {
                        performanceTelemetry: TransferPerformanceTelemetry? = nil,
                        safetyState: CardSafetyState,
                        generateFullReport: Bool = true,
-                       photographerContext: PhotographerReportContext? = nil) async throws {
+                       photographerContext: PhotographerReportContext? = nil,
+                       verifiedSelection: VerifiedReportSelection? = nil,
+                       pdfNotes: String? = nil) async throws {
 
         var reportPrefs = prefs
         let automaticNotes = ResultPresentation.automaticReportNotes(results)
@@ -77,10 +79,18 @@ enum ReportExporter {
             photographyJob: photographerPayload,
             operatorName: EvidenceWriter.normalizedNotes(prefs.operatorName),
             notes: EvidenceWriter.normalizedNotes(reportPrefs.notes),
-            safetyState: safetyState
+            safetyState: safetyState,
+            verifiedSelection: verifiedSelection
         )
         if mode == .copyAndVerify, let selectedMode = prefs.verificationMode {
             summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results)
+        }
+
+        // Raw CSV/JSON retain the full evidence notes. Only a proof matching
+        // this exact PDF can omit its generated keep-source paragraph.
+        if verifiedSelection?.matches(summary: summary, rows: results) == true, let pdfNotes {
+            summary.notes = EvidenceWriter.normalizedNotes(
+                ([EvidenceWriter.normalizedNotes(pdfNotes)].compactMap { $0 } + automaticNotes).joined(separator: "\n"))
         }
 
         let shouldGenerateFullReport = generateFullReport && prefs.makeReport
@@ -176,7 +186,8 @@ enum ReportExporter {
             copyDurationSeconds: record.copyDurationSeconds, verifyDurationSeconds: record.verifyDurationSeconds,
             clientLogoData: nil, companyLogoData: nil, photographyJob: nil, operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName), notes: notes,
             safetyState: safetyState,
-            hasRecordedTiming: record.startedAt != nil && record.endedAt != nil)
+            hasRecordedTiming: record.startedAt != nil && record.endedAt != nil,
+            verifiedSelection: VerifiedReportSelection.saved(record))
         summary.verificationScope = VerificationScopeEvidence(selectedMode: record.verificationMode,
             results: record.results, includeModePlan: record.plannedFileCounts != nil)
         if record.plannedFileCounts == nil {

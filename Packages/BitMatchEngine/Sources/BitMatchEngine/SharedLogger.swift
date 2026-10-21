@@ -48,6 +48,7 @@ extension SharedLogger {
         case verifyConfiguration, clipInspectionStarted, clipInspectionFinished
         case compareStarted, comparePhase, compareProgress, compareFinished
         case appleDoubleExcluded
+        case destinationIdentityRejected
     }
     public static func transferEvent(_ event: TransferEvent, run: UUID?, code: Int = 0,
                                      taskCancelled: Bool = false, explicit: Bool = false) {
@@ -55,6 +56,46 @@ extension SharedLogger {
             $0.code = code; $0.taskCancelled = taskCancelled; $0.explicit = explicit
         }
         logger(for: .transfer).notice("event=\(event.rawValue, privacy: .public) run=\(run?.uuidString ?? "none", privacy: .public) code=\(code, privacy: .public) task_cancelled=\(taskCancelled, privacy: .public) explicit=\(explicit, privacy: .public)")
+    }
+}
+
+extension SharedLogger {
+    public enum DestinationIdentityReason: String, Codable, Sendable {
+        case missingReadIdentity, lookupError, missingCurrentFile, changedIdentity
+    }
+    public enum IdentityField: String, Codable, Sendable {
+        case device, inode, size, modificationTime, changeTime
+    }
+
+    /// Describe the failed guard, never the actual identifiers, timestamps or paths.
+    static func destinationIdentityRejected(
+        run: UUID?, destinationIndex: Int, sourceOrdinal: Int, bytes: Int64, wasReused: Bool,
+        recorded: VerifiedFileIdentity?, current: VerifiedFileIdentity?, lookupError: Error?
+    ) {
+        let reason: DestinationIdentityReason
+        if recorded == nil { reason = .missingReadIdentity }
+        else if lookupError != nil { reason = .lookupError }
+        else if current == nil { reason = .missingCurrentFile }
+        else { reason = .changedIdentity }
+        var fields: [IdentityField] = []
+        if let recorded, let current {
+            if recorded.device != current.device { fields.append(.device) }
+            if recorded.inode != current.inode { fields.append(.inode) }
+            if recorded.size != current.size { fields.append(.size) }
+            if recorded.modificationSeconds != current.modificationSeconds
+                || recorded.modificationNanoseconds != current.modificationNanoseconds { fields.append(.modificationTime) }
+            if recorded.changeSeconds != current.changeSeconds
+                || recorded.changeNanoseconds != current.changeNanoseconds { fields.append(.changeTime) }
+        }
+        let nsError = lookupError.map { $0 as NSError }
+        let code = nsError?.domain == NSPOSIXErrorDomain ? nsError?.code : nil
+        TransferDiagnostics.recordingStore.record(.destinationIdentityRejected, run: run) {
+            $0.destinationIndex = destinationIndex; $0.sourceOrdinal = sourceOrdinal; $0.totalBytes = bytes
+            $0.wasReused = wasReused; $0.identityCheckReason = reason; $0.identityChangedFields = fields
+            $0.readIdentityPresent = recorded != nil; $0.currentIdentityPresent = current != nil
+            $0.identityLookupFailed = lookupError != nil; $0.code = code; $0.taskCancelled = Task.isCancelled
+        }
+        logger(for: .transfer).notice("event=destinationIdentityRejected run=\(run?.uuidString ?? "none", privacy: .public) destination=\(destinationIndex, privacy: .public) source_ordinal=\(sourceOrdinal, privacy: .public) reason=\(reason.rawValue, privacy: .public)")
     }
 }
 

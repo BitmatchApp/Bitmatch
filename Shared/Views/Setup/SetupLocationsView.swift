@@ -58,6 +58,7 @@ struct SetupLocationsView: View {
     @FocusState private var focusedQueueID: UUID?
     @Namespace private var queueTransition
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
 
     private var transitionNamespace: Namespace.ID {
         transferTransitionContext?.namespace ?? queueTransition
@@ -153,82 +154,134 @@ struct SetupLocationsView: View {
     }
 
     private var sourceControl: some View {
-        HStack(spacing: 9) {
-            if let source = presentation.source {
-                Button(action: actions.clearSource) {
-                    Image(systemName: "xmark.circle.fill")
-                        .frame(width: 24, height: 24)
-                        .setupLocationTouchTarget()
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .disabled(!presentation.canEdit)
-                .accessibilityLabel("Remove \(source.title)")
-                .help("Remove \(source.title)")
-            }
+        sourceControlLayout
+            .padding(10)
+            .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 9))
+            .background(SetupSelectedLocationBackground(isTargeted: isSourceTargeted))
+    }
 
-            Button { isSourcePickerPresented = true } label: {
-                HStack(spacing: 9) {
+    @ViewBuilder
+    private var sourceControlLayout: some View {
+        if dynamicTypeSize.isAccessibilitySize {
+            VStack(alignment: .leading, spacing: 8) {
+                sourcePickerButton
+                if presentation.source != nil {
+                    HStack(spacing: 9) {
+                        removeSourceButton
+                        Spacer(minLength: 12)
+                        sourceSubfolderButton
+                    }
+                }
+            }
+        } else {
+            HStack(spacing: 9) {
+                removeSourceButton
+                sourcePickerButton
+                sourceSubfolderButton
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var removeSourceButton: some View {
+        if let source = presentation.source {
+            Button(action: actions.clearSource) {
+                Image(systemName: "xmark.circle.fill")
+                    .font(dynamicTypeSize.isAccessibilitySize ? .system(size: 24) : .body)
+                    .frame(width: 24, height: 24)
+                    .setupLocationTouchTarget()
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(!presentation.canEdit)
+            .accessibilityLabel("Remove \(source.title)")
+            .help("Remove \(source.title)")
+            .setupSourceControlBounds(.remove)
+        }
+    }
+
+    private var sourcePickerButton: some View {
+        Button { isSourcePickerPresented = true } label: {
+            HStack(spacing: 9) {
+                if !dynamicTypeSize.isAccessibilitySize {
                     Image(systemName: sourceIconName)
                         .font(.title3)
                         .foregroundStyle(isSourceTargeted ? Color.accentColor : Color.secondary)
+                        .accessibilityHidden(true)
+                }
+                VStack(alignment: .leading, spacing: 3) {
                     if let source = presentation.source {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(source.title).font(.headline).lineLimit(1).truncationMode(.middle)
-                            if let camera = source.cameraName {
-                                Text(camera).font(.footnote).foregroundStyle(.secondary).lineLimit(1)
-                            }
-                            if let detail = source.detail {
-                                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                            }
+                        Text(source.title)
+                            .font(.headline)
+                            .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 2)
+                            .fixedSize(horizontal: false, vertical: true)
+                        if let camera = source.cameraName {
+                            Text(camera).font(.footnote).foregroundStyle(.secondary)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                        if let detail = source.detail {
+                            Text(detail).font(.caption).foregroundStyle(.secondary)
+                                .lineLimit(dynamicTypeSize.isAccessibilitySize ? nil : 1)
+                                .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("Choose source…").font(.headline)
-                            Text(drops == nil ? "Connected card or folder" : "Connected card, folder, or drop here")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
+                        Text("Choose source…").font(.headline)
+                            .fixedSize(horizontal: false, vertical: true)
+                        Text(drops == nil ? "Connected card or folder" : "Connected card, folder, or drop here")
+                            .font(.caption).foregroundStyle(.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
                     }
-                    Spacer(minLength: 0)
-                    Image(systemName: "chevron.down").font(.caption).foregroundStyle(.secondary)
                 }
-                .contentShape(Rectangle())
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(1)
+                Image(systemName: "chevron.down")
+                    .font(dynamicTypeSize.isAccessibilitySize ? .system(size: 20) : .caption)
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
             }
-            .buttonStyle(.plain)
-            .layoutPriority(1)
-            .disabled(!presentation.canEdit)
-            .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
-            .accessibilityHint("Lists connected cards and drives or opens a folder picker")
-            .popover(isPresented: $isSourcePickerPresented, arrowEdge: .bottom) {
-                SetupLocationPickerPopover(
-                    purpose: .source,
-                    volumes: connectedSources,
-                    selectedURLs: presentation.source.map { [URL(fileURLWithPath: $0.path)] } ?? [],
-                    select: { volume in
-                        actions.chooseConnectedSource(volume.url)
-                        isSourcePickerPresented = false
-                    },
-                    chooseFolder: {
-                        isSourcePickerPresented = false
-                        actions.pickSource()
-                    },
-                    dismiss: { isSourcePickerPresented = false }
-                )
-            }
-
-            if let source = presentation.source {
-                chooseSubfolderButton(
-                    help: "Choose a folder on \(locationTitle(for: source.path, matching: connectedSources) ?? source.title)",
-                    enabled: presentation.canEdit
-                ) {
-                    actions.chooseFolderOnSource(URL(fileURLWithPath: source.path))
-                }
-            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .setupLocationTouchTarget()
+            .contentShape(Rectangle())
         }
-        .padding(10)
-        .frame(maxWidth: .infinity, minHeight: 72, alignment: .leading)
-        .contentShape(RoundedRectangle(cornerRadius: 9))
-        .background(SetupSelectedLocationBackground(isTargeted: isSourceTargeted))
+        .buttonStyle(.plain)
+        .layoutPriority(1)
+        .disabled(!presentation.canEdit)
+        .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
+        .accessibilityValue(presentation.source?.title ?? "")
+        .accessibilityHint("Lists connected cards and drives or opens a folder picker")
+        .setupSourceControlBounds(.choose)
+        .popover(isPresented: $isSourcePickerPresented, arrowEdge: .bottom) {
+            SetupLocationPickerPopover(
+                purpose: .source,
+                volumes: connectedSources,
+                selectedURLs: presentation.source.map { [URL(fileURLWithPath: $0.path)] } ?? [],
+                select: { volume in
+                    actions.chooseConnectedSource(volume.url)
+                    isSourcePickerPresented = false
+                },
+                chooseFolder: {
+                    isSourcePickerPresented = false
+                    actions.pickSource()
+                },
+                dismiss: { isSourcePickerPresented = false }
+            )
+        }
+    }
+
+    @ViewBuilder
+    private var sourceSubfolderButton: some View {
+        if let source = presentation.source {
+            chooseSubfolderButton(
+                help: "Choose a folder on \(locationTitle(for: source.path, matching: connectedSources) ?? source.title)",
+                enabled: presentation.canEdit,
+                symbolOnly: dynamicTypeSize.isAccessibilitySize
+            ) {
+                actions.chooseFolderOnSource(URL(fileURLWithPath: source.path))
+            }
+            .setupSourceControlBounds(.subfolder)
+        }
     }
 
     private var sourceIconName: String {
@@ -374,14 +427,23 @@ struct SetupLocationsView: View {
     private func chooseSubfolderButton(
         help: String,
         enabled: Bool,
+        symbolOnly: Bool = false,
         action: @escaping () -> Void
     ) -> some View {
         Button(action: action) {
-            ViewThatFits(in: .horizontal) {
-                Label("Choose subfolder", systemImage: "folder.badge.plus")
-                    .fixedSize()
-                Image(systemName: "folder.badge.plus")
-                    .frame(width: 24, height: 24)
+            Group {
+                if symbolOnly {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.system(size: 24))
+                        .frame(width: 24, height: 24)
+                } else {
+                    ViewThatFits(in: .horizontal) {
+                        Label("Choose subfolder", systemImage: "folder.badge.plus")
+                            .fixedSize()
+                        Image(systemName: "folder.badge.plus")
+                            .frame(width: 24, height: 24)
+                    }
+                }
             }
             .setupLocationTouchTarget()
         }
@@ -679,7 +741,26 @@ struct SetupLocationsView: View {
 
 }
 
+/// Local layout measurements for source-control regression captures. They
+/// carry no source names, paths, access grants or transfer state.
+enum SetupSourceControlRole: Hashable, Sendable { case choose, remove, subfolder }
+struct SetupSourceControlBoundsKey: PreferenceKey {
+    static let defaultValue: [SetupSourceControlRole: CGRect] = [:]
+    static func reduce(value: inout [SetupSourceControlRole: CGRect], nextValue: () -> [SetupSourceControlRole: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
 private extension View {
+    func setupSourceControlBounds(_ role: SetupSourceControlRole) -> some View {
+        background {
+            GeometryReader { proxy in
+                Color.clear.preference(key: SetupSourceControlBoundsKey.self,
+                    value: [role: proxy.frame(in: .global)])
+            }
+        }
+    }
+
     /// Keep the Mac's compact controls while giving each separate touch
     /// action its own target on iPhone and iPad.
     @ViewBuilder

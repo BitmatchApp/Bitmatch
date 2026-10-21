@@ -9,6 +9,15 @@ struct SetupPresentationTests {
     private let source = URL(fileURLWithPath: "/Volumes/CARD/DCIM")
     private let backup = URL(fileURLWithPath: "/Volumes/RAID_A/Shoot")
 
+    @Test func readyLineKeepsSelectedCountWithoutInventingSelectedBytes() {
+        let ready = plan(source: source, backups: [backup])
+        let presentation = StartButtonPresentation.make(plan: ready, usesProjectWorkflow: false,
+            hasPreparedCard: false, projectBlocker: nil, projectUnit: "Card",
+            isOperationInProgress: false, hasComposerCard: true,
+            sourceFileCount: 10, sourceBytes: nil, destinationCount: 1)
+        #expect(presentation.readyLine == "Ready to copy 10 files to 1 destination. Source files stay in place.")
+    }
+
     private struct SamePhysicalDisk: PhysicalDiskIdentityProviding {
         func physicalDiskIdentity(for url: URL) -> String? { "disk5" }
     }

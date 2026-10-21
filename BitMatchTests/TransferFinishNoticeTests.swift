@@ -61,7 +61,7 @@ struct TransferFinishNoticeTests {
         #expect(notice(.copying) == nil)
     }
 
-    @Test func onlySafeToEraseUsesSafeOrVerifiedNotificationWords() {
+    @Test func unqualifiedUnsafeNoticesDoNotClaimSafeOrVerifiedContents() {
         let unsafe = [
             notice(.completed(.init(success: false, message: "", copiedNotVerified: true))),
             notice(.completed(.init(success: false, message: "")), issues: 2),
@@ -146,5 +146,116 @@ struct TransferFinishNoticeTests {
         )
         #expect(kind == .attention)
         #expect(TransferFinishNotice.make(record: record, kind: .standaloneFinish)?.title == "A001 needs attention")
+    }
+
+    private func selectedFileRecord(mode: VerificationMode = .standard) throws -> (URL, LocalTransferRecord) {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-selected-notice-\(UUID().uuidString)", isDirectory: true)
+        let source = root.appendingPathComponent("A001", isDirectory: true)
+        let backup = root.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["._clip.mov"]
+        let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: backup, settings: settings)
+        var record = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: source),
+            destinations: [try LocalTransferResource(url: backup)], verificationMode: mode,
+            cameraSettings: settings, reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false
+        )
+        record.state = .issues
+        record.startedAt = Date().addingTimeInterval(-1)
+        record.endedAt = Date()
+        record.sourceFingerprint = "selected-notice-fixture"
+        record.plannedFileCounts = [1]
+        record.expectedExclusionQueueQualification = .ordinaryTransfer
+        record.results = [
+            ResultRow(path: source.appendingPathComponent("clip.mov").path,
+                status: ResultOutcome.verified.statusText, size: 4, checksum: String(repeating: "a", count: 64),
+                destination: backup.lastPathComponent, destinationPath: output.appendingPathComponent("clip.mov").path),
+            ResultRow(path: source.appendingPathComponent("._clip.mov").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                destination: backup.lastPathComponent, destinationPath: output.appendingPathComponent("._clip.mov").path)
+        ]
+        return (root, record)
+    }
+
+    private func notificationKind(
+        _ record: LocalTransferRecord, queue: Bool = false,
+        attention: Bool = true, finish: Bool = true, eachCard: Bool = false
+    ) -> TransferNotificationKind? {
+        TransferNotificationDecision.kind(record: record, queueIsRunning: queue,
+            isReplayingQueuedTransfer: queue, notifyAttention: attention,
+            notifyFinish: finish, notifyEachQueuedCard: eachCard)
+    }
+
+    /// Plant: remove the durable selected-file branch from notification routing.
+    @Test func selectedFileCompletionUsesFinishPreferencesWithoutAnAttentionNotice() throws {
+        let (root, record) = try selectedFileRecord()
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(notificationKind(record, attention: false) == .standaloneFinish)
+        #expect(notificationKind(record, finish: false) == nil)
+        #expect(notificationKind(record, queue: true, eachCard: false) == nil)
+        #expect(notificationKind(record, queue: true, eachCard: true) == .queuedCardSuccess)
+        let notice = try #require(TransferFinishNotice.make(record: record, kind: .standaloneFinish))
+        #expect(notice.kind == .standaloneFinish)
+        #expect(notice.title == "A001: selected files verified")
+        #expect(!notice.body.localizedCaseInsensitiveContains("excluded"))
+        #expect(!notice.title.localizedCaseInsensitiveContains("safe to erase"))
+        #expect(!TransferLibraryPresentation.safetyState(for: record).canEject)
+        #expect(record.state == .issues)
+        #expect(record.results.count == 2)
+    }
+
+    /// Plant: accept excluded rows without the saved qualification or exact plan.
+    @Test func failedMissingOrUnprovenSelectedResultsStillNeedAttention() throws {
+        let (root, original) = try selectedFileRecord()
+        defer { try? FileManager.default.removeItem(at: root) }
+        var variants: [LocalTransferRecord] = []
+        var noQualification = original
+        noQualification.expectedExclusionQueueQualification = nil
+        variants.append(noQualification)
+        var missing = original
+        missing.results.removeFirst()
+        variants.append(missing)
+        var failed = original
+        let row = original.results[0]
+        failed.results[0] = ResultRow(id: row.id, path: row.path,
+            status: ResultOutcome.checksumMismatch.statusText, size: row.size, checksum: row.checksum,
+            destination: row.destination, destinationPath: row.destinationPath)
+        variants.append(failed)
+        var noChecksum = original
+        noChecksum.results[0] = ResultRow(id: row.id, path: row.path, status: row.status,
+            size: row.size, checksum: nil, destination: row.destination, destinationPath: row.destinationPath)
+        variants.append(noChecksum)
+        var emptyChecksum = original
+        emptyChecksum.results[0] = ResultRow(id: row.id, path: row.path, status: row.status,
+            size: row.size, checksum: "", destination: row.destination, destinationPath: row.destinationPath)
+        variants.append(emptyChecksum)
+        var cancelled = original
+        cancelled.state = .cancelled
+        variants.append(cancelled)
+        var interrupted = original
+        interrupted.state = .interrupted
+        variants.append(interrupted)
+        for record in variants {
+            #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+            #expect(notificationKind(record) == .attention)
+            #expect(TransferFinishNotice.make(record: record, kind: .standaloneFinish)?.kind == .attention)
+        }
+        var running = original
+        running.state = .running
+        #expect(notificationKind(running) == nil)
+        #expect(TransferFinishNotice.make(record: running, kind: .standaloneFinish) == nil)
+    }
+
+    @Test func quickCannotUseAnExcludedMetadataProofForVerifiedFinishRouting() throws {
+        let (root, quick) = try selectedFileRecord(mode: .quick)
+        defer { try? FileManager.default.removeItem(at: root) }
+        #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(quick))
+        #expect(notificationKind(quick) == .attention)
+        #expect(TransferFinishNotice.make(record: quick, kind: .standaloneFinish)?.kind == .attention)
     }
 }

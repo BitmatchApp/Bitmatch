@@ -71,7 +71,8 @@ struct SetupLocationsPresentation: Equatable {
     struct Source: Equatable {
         let title: String
         let path: String
-        /// "1,234 files · 12 GB", "Analyzing…", or nil before the scan.
+        /// "1,234 files · 12 GB", a count without a measured selected size,
+        /// "Analyzing…", or nil before the scan.
         let detail: String?
         let cameraName: String?
     }
@@ -139,6 +140,7 @@ struct SetupLocationsPresentation: Equatable {
         isAnalysingSource: Bool,
         cameraName: String?,
         connectedSourceDetail: String? = nil,
+        omitsSourceSize: Bool = false,
         stagedSources: [StagedSource] = [],
         destinationURLs: [URL],
         capacity: (URL) -> Capacity?,
@@ -155,7 +157,8 @@ struct SetupLocationsPresentation: Equatable {
                 title: url.lastPathComponent,
                 path: url.path,
                 detail: connectedSourceDetail
-                    ?? sourceDetail(fileCount: sourceFileCount, bytes: sourceBytes, isAnalysing: isAnalysingSource),
+                    ?? sourceDetail(fileCount: sourceFileCount, bytes: omitsSourceSize ? nil : sourceBytes,
+                        isAnalysing: isAnalysingSource),
                 cameraName: connectedSourceDetail == nil
                     ? cameraName.flatMap { $0.isEmpty ? nil : $0 } : nil
             )
@@ -209,14 +212,27 @@ struct SetupLocationsPresentation: Equatable {
         )
     }
 
+    /// Display only. The full byte count still drives conservative capacity
+    /// and readiness checks; no metadata sizes are guessed or read here.
+    static func selectedSourceFileCount(
+        totalFileCount: Int?, ignoresAppleDouble: Bool, reviewedPaths: [String]?
+    ) -> Int? {
+        guard let totalFileCount, totalFileCount >= 0 else { return nil }
+        guard ignoresAppleDouble else { return totalFileCount }
+        guard let reviewedPaths, Set(reviewedPaths).count == reviewedPaths.count,
+              reviewedPaths.count <= totalFileCount else { return nil }
+        return totalFileCount - reviewedPaths.count
+    }
+
     private static func sourceDetail(fileCount: Int?, bytes: Int64?, isAnalysing: Bool) -> String? {
         if isAnalysing { return "Analyzing…" }
-        guard let fileCount, let bytes else { return nil }
+        guard let fileCount else { return nil }
         if fileCount == 0 { return nil }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         let count = formatter.string(from: NSNumber(value: fileCount)) ?? "\(fileCount)"
         let files = fileCount == 1 ? "1 file" : "\(count) files"
+        guard let bytes else { return files }
         return "\(files) · \(ByteCountPresentation.fileSize(bytes))"
     }
 

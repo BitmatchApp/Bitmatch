@@ -43,7 +43,8 @@ struct QueueAccessoryPresentation: Equatable, Sendable {
 
         let running = queue.rows.first(where: \QueueSessionRow.isRunning)
         let problems = queue.rows.filter { row in
-            switch row.safetyState {
+            if row.selectedFilesVerified { return false }
+            return switch row.safetyState {
             case .copiedNotVerified: running == nil && !isQueueRunning
             case .needsAttention, .failed, .interrupted: true
             default: false
@@ -102,6 +103,12 @@ struct QueueAccessoryPresentation: Equatable, Sendable {
             )
         }
 
+        if queue.rows.allSatisfy({ $0.safetyState == .safeToErase || $0.selectedFilesVerified }) {
+            return Self(title: "Selected files verified", detail: queue.rows.count > 1 ? queue.tally.text : nil,
+                backgroundMessage: nil, symbol: "checkmark.circle", tone: .neutral,
+                progressFraction: nil, attentionRecordID: nil)
+        }
+
         let waiting = queue.rows.filter(\.isEditable).count
         return Self(
             title: waiting == 1 ? "1 card in queue" : "\(waiting) cards in queue",
@@ -149,7 +156,8 @@ struct QueueAccessoryPresentation: Equatable, Sendable {
     }
 
     private static func attentionToken(for row: QueueSessionRow) -> QueueAttentionToken? {
-        switch row.safetyState {
+        if row.selectedFilesVerified { return nil }
+        return switch row.safetyState {
         case .copiedNotVerified, .needsAttention, .failed, .interrupted:
             QueueAttentionToken(recordID: row.id, state: row.statusText, reason: row.cause)
         default:

@@ -40,10 +40,18 @@ public final class TransferDiagnosticStore: @unchecked Sendable {
         var isASCMHL: Bool?
         /// Which verify job in the run (1-based copy order), never a name.
         var ordinal: Int?
+        /// Source-manifest position for final coverage, independent of verify scheduling.
+        var sourceOrdinal: Int?
         var verifyOutcome: SharedLogger.VerifyOutcome?
         var verifyConcurrency: Int?
         var comparisonPhase: SharedLogger.ComparisonPhase?
         var comparisonOutcome: SharedLogger.ComparisonOutcome?
+        var identityCheckReason: SharedLogger.DestinationIdentityReason?
+        var identityChangedFields: [SharedLogger.IdentityField]?
+        var readIdentityPresent: Bool?
+        var currentIdentityPresent: Bool?
+        var identityLookupFailed: Bool?
+        var wasReused: Bool?
         var onlyInSourceCount: Int?
         var onlyInDestinationCount: Int?
         var mismatchedCount: Int?

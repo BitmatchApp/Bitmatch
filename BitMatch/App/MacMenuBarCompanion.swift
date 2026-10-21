@@ -271,6 +271,9 @@ struct MenuBarRecentTransfer: Equatable {
 
     static func status(for record: LocalTransferRecord) -> (text: String, needsAttention: Bool)? {
         guard record.state != .queued, record.state != .running else { return nil }
+        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+            return ("Selected files verified", false)
+        }
         return switch TransferLibraryPresentation.safetyState(for: record) {
         case .safeToErase: ("Completed · review results in BitMatch", false)
         case .copiedNotVerified: ("Copied, not verified", true)

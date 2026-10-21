@@ -1751,6 +1751,82 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         ), 0)
     }
 
+    /// Plant: retain the old queue-only expected-exclusion bypass in
+    /// `handleAttemptTerminal`; a standalone verified selection then emits
+    /// attention and acquires a Dock badge despite its settled proof.
+    func testStandaloneExpectedAppleDoubleDoesNotSignalAttentionOrSafe() async throws {
+        try await runStandaloneExpectedExclusionSignalScenario(reportFails: false)
+    }
+
+    /// Plant: bypass attention for every excluded row, without requiring the
+    /// durable handoff qualification; this real report failure becomes quiet.
+    func testStandaloneExpectedAppleDoubleReportFailureStillSignalsAttention() async throws {
+        try await runStandaloneExpectedExclusionSignalScenario(reportFails: true)
+    }
+
+    private func runStandaloneExpectedExclusionSignalScenario(reportFails: Bool) async throws {
+        let f = try QueueFixture()
+        let startingFailures = testRun?.failureCount ?? 0
+        defer {
+            if (testRun?.failureCount ?? 0) == startingFailures { f.cleanup() }
+            else { print("Retained standalone expected-exclusion fixture: \(f.root.path)") }
+        }
+        let settings = try seedQueueAppleDouble(f.source)
+        let original = try Data(contentsOf: f.source.appendingPathComponent("clip.mov"))
+        let metadata = try Data(contentsOf: f.source.appendingPathComponent("._clip.mov"))
+        // Exercise the real terminal signal routing without posting OS notifications.
+        f.defaults.set(false, forKey: GeneralSettings.notifyAttentionKey)
+        f.defaults.set(false, forKey: GeneralSettings.notifyFinishKey)
+        f.defaults.set(false, forKey: GeneralSettings.notifyEachQueuedCardKey)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults
+        )
+        var signals: [TransferSignal] = []
+        let subscription = coordinator.transferSignals.sink { signals.append($0) }
+        defer { subscription.cancel() }
+        let reports = f.destination.appendingPathComponent("Reports")
+        if reportFails { try Data("preserved report conflict".utf8).write(to: reports) }
+        coordinator.sourceURL = f.source
+        coordinator.destinationURLs = [f.destination]
+        coordinator.verificationMode = .standard
+        coordinator.cameraLabelSettings = settings
+        coordinator.reportSettings = ReportPrefs(makeReport: reportFails)
+        coordinator.generateASCMHL = false
+        // Standalone settings use the live, asynchronous source review. The
+        // setter enables the policy but deliberately cannot inject reviewed paths.
+        let reviewed = await waitUntil(timeout: .seconds(5)) { @MainActor in
+            !coordinator.appleDoubleSelection.isReviewing
+                && coordinator.cameraLabelSettings.excludedAppleDoublePaths == settings.excludedAppleDoublePaths
+        }
+        guard reviewed else { XCTFail("Expected metadata review did not settle"); return }
+
+        await coordinator.startOperation()
+
+        let record = try XCTUnwrap(journal.records.first)
+        XCTAssertEqual(record.state, .issues)
+        XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("clip.mov")), original)
+        XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("._clip.mov")), metadata)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record), .needsAttention)
+        XCTAssertFalse(TransferLibraryPresentation.safetyState(for: record).canEject)
+        XCTAssertFalse(signals.contains(.safeToErase))
+        XCTAssertTrue(record.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })
+        if reportFails {
+            XCTAssertNil(record.expectedExclusionQueueQualification)
+            XCTAssertFalse(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+            XCTAssertTrue(signals.contains(.attention))
+            XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.contains(record.id))
+            XCTAssertEqual(try String(contentsOf: reports, encoding: .utf8), "preserved report conflict")
+        } else {
+            XCTAssertEqual(record.expectedExclusionQueueQualification, .ordinaryTransfer)
+            XCTAssertTrue(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+            XCTAssertTrue(signals.isEmpty)
+            XCTAssertTrue(coordinator.standaloneAttentionRecordIDsSinceLaunch.isEmpty)
+        }
+    }
+
     private func seedQueueAppleDouble(_ source: URL) throws -> CameraLabelSettings {
         var bytes = [UInt8](repeating: 0, count: 42)
         func put(_ value: UInt32, _ offset: Int) {
@@ -1867,6 +1943,70 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             if failure == "report" { XCTAssertEqual(try String(contentsOf: reports, encoding: .utf8), "preserved conflict") }
             if failure == "selected" { XCTAssertEqual(try String(contentsOf: output.appendingPathComponent("clip.mov"), encoding: .utf8), "preserved conflict") }
         }
+    }
+
+    /// Plant: restore the weaker saved exclusion policy in `isQueueProblem`;
+    /// it accepts a verified status without a digest and drops the saved pause.
+    func testExpectedExclusionRestoreWithMissingChecksumKeepsNextCardHeld() throws {
+        try runExpectedExclusionMissingChecksumRestore(checksum: nil)
+    }
+
+    func testExpectedExclusionRestoreWithEmptyChecksumKeepsNextCardHeld() throws {
+        try runExpectedExclusionMissingChecksumRestore(checksum: "")
+    }
+
+    private func runExpectedExclusionMissingChecksumRestore(checksum: String?) throws {
+        let f = try QueueFixture()
+        let startingFailures = testRun?.failureCount ?? 0
+        defer {
+            if (testRun?.failureCount ?? 0) == startingFailures { f.cleanup() }
+            else { print("Retained missing-checksum restore fixture: \(f.root.path)") }
+        }
+        let settings = try seedQueueAppleDouble(f.source)
+        let nextSource = f.root.appendingPathComponent("next-card")
+        try FileManager.default.createDirectory(at: nextSource, withIntermediateDirectories: true)
+        try Data("next".utf8).write(to: nextSource.appendingPathComponent("clip.mov"))
+        let id: UUID
+        let nextID: UUID
+        // Release the first journal owner before reopening its exclusive store.
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journalURL)
+            XCTAssertNil(journal.persistenceError)
+            id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                cameraSettings: settings, reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+            try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
+            let output = SafetyValidator.resolvedDestinationRoot(source: f.source, destination: f.destination, settings: settings)
+            try journal.finish(id: id, results: [
+                ResultRow(path: f.source.appendingPathComponent("clip.mov").path, status: ResultOutcome.verified.statusText,
+                    size: 4, checksum: checksum, destination: "backup", destinationPath: output.appendingPathComponent("clip.mov").path),
+                ResultRow(path: f.source.appendingPathComponent("._clip.mov").path, status: ResultOutcome.excludedAppleDouble.statusText,
+                    size: 42, checksum: nil, destination: "backup", destinationPath: output.appendingPathComponent("._clip.mov").path)
+            ], summary: "Selected files verified", hadIssues: true,
+                expectedExclusionQueueQualification: .ordinaryTransfer, sourceFingerprint: "fixture")
+            nextID = try journal.enqueue(sourceURL: nextSource, destinationURLs: [f.destination], verificationMode: .standard,
+                cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+            try journal.saveQueueSession(PersistedQueueSession(recordIDs: [id, nextID], skippedRecordIDs: [],
+                pausedRecordID: id, ended: false, started: true))
+        }
+
+        let reloaded = LocalTransferJournal(fileURL: f.journalURL)
+        XCTAssertNil(reloaded.persistenceError)
+        let saved = try XCTUnwrap(reloaded.records.first { $0.id == id })
+        XCTAssertEqual(saved.expectedExclusionQueueQualification, .ordinaryTransfer)
+        XCTAssertTrue(TransferJournal.permitsExpectedExclusionQueueContinuation(saved), "Exercise the weaker legacy status-only proof")
+        XCTAssertFalse(TransferOutcomePresentation.hasVerifiedSelectedFiles(saved))
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: QueueRecordingOperations()),
+            transferJournal: reloaded, defaults: f.defaults)
+        XCTAssertEqual(coordinator.queuePausedRecordID, id)
+        XCTAssertTrue(coordinator.hasUnresolvedQueueRecords)
+        XCTAssertFalse(coordinator.queueRunCommandEnabled)
+        coordinator.startQueue()
+        XCTAssertFalse(coordinator.queueIsRunning)
+        XCTAssertEqual(coordinator.queuePausedRecordID, id)
+        XCTAssertEqual(reloaded.records.first { $0.id == nextID }?.state, .queued)
+        // A deliberately broken test plant must not leave its queued task running.
+        if coordinator.queueIsRunning { coordinator.stopQueueAfterCurrentTransfer() }
     }
 
     func testLegacyExpectedExclusionRestoreStillRequiresReview() throws {

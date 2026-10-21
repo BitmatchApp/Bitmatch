@@ -23,6 +23,17 @@ private final class ComposerCaptureBounds: @unchecked Sendable {
     }
 }
 
+/// Retain the last source-control layout after the temporary window closes.
+private final class SourceControlCaptureBounds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [SetupSourceControlRole: CGRect] = [:]
+    var frames: [SetupSourceControlRole: CGRect] { lock.withLock { stored } }
+    func update(_ frames: [SetupSourceControlRole: CGRect]) {
+        guard !frames.isEmpty else { return }
+        lock.withLock { stored = frames }
+    }
+}
+
 /// Opt-in production-view captures and always-on fixture routing checks.
 ///
 /// Capture the workbench, expanded progress content and expanded History
@@ -94,6 +105,19 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    func testCaptureVerifiedSelectedFilesWithoutMetadataWarnings() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        let id = try fixture.seedSelectedFileCompletion()
+        for width in [580.0, 1100.0] {
+            try capture(TransferQueueSection(coordinator: fixture.sharedCoordinator, initiallyExpandedIDs: [id]).padding()
+                .frame(maxHeight: .infinity, alignment: .top), size: CGSize(width: width, height: 650),
+                name: "mac-selected-files-verified-\(Int(width))", expectedText: ["Selected files verified", "1 file verified on 2 destinations"],
+                textOccurrences: ["needs attention": 0, "excluded": 0, "retry": 0])
+        }
+    }
+
     func testCaptureAppleDoubleControls() async throws {
         try requireCaptureConfiguration()
         let fixture = try SnapshotFixture()
@@ -113,8 +137,13 @@ final class WorkflowSnapshotTests: XCTestCase {
         let review = coordinator.appleDoubleSelection
         review.enabled = true
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while review.paths == nil && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        while (review.paths == nil || coordinator.sourceFolderInfo?.fileCount != 3 || coordinator.isAnalysingSource)
+                && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(review.paths, ["._Camera clip.bin"])
+        XCTAssertEqual(coordinator.sourceFolderInfo?.fileCount, 3)
+        try capture(ContentView(environment: fixture.environment), size: CGSize(width: 580, height: 1_000),
+            name: "mac-selected-source-count-580", expectedText: ["2 files"],
+            textOccurrences: ["3 files": 0, "excluded": 0])
         try capture(Form { Section("File handling") { AppleDoubleSelectionView(review: review) } }.formStyle(.grouped), size: CGSize(width: 580, height: 260), name: "mac-appledouble-settings")
     }
 
@@ -223,6 +252,67 @@ final class WorkflowSnapshotTests: XCTestCase {
             .onPreferenceChange(ComposerFrameKey.self, perform: bounds.update),
                 size: CGSize(width: width, height: 800), name: "mac-readable-composer-\(Int(width))",
                 expectedComposerText: ["CameraCard", "Backup A", "Backup B"], composerBounds: bounds)
+        }
+    }
+
+    /// Full source names must remain readable inside the composer, not only
+    /// in its repeated summary or accessibility label. Unicode stays unchanged.
+    /// Plant: restore Text(source.title).lineLimit(1); OCR loses name tokens.
+    func testCaptureAccessibleSourceNames() throws {
+        try requireCaptureConfiguration()
+        let actions = SetupLocationsActions(pickSource: {}, clearSource: {}, addAnotherCard: { nil },
+            chooseConnectedSource: { _ in }, chooseFolderOnSource: { _ in },
+            chooseConnectedBackup: { _ in }, chooseFolderOnBackup: { _ in },
+            editStagedCard: { _ in false }, cancelEdit: {}, moveStagedCard: { _, _ in },
+            removeStagedCard: { _ in }, pickBackups: {}, removeBackup: { _ in })
+        let names = ["Camera Card Montréal 東京 Day 05 Finale 099",
+                     "Camera Card Remote Location Night Interior Scene 42 Finale 099"]
+        for (index, title) in names.enumerated() {
+            for width in [580.0, 1_100.0] {
+                for typeSize in [DynamicTypeSize.accessibility2] {
+                    let composer = ComposerCaptureBounds()
+                    let controls = SourceControlCaptureBounds()
+                    let presentation = SetupLocationsPresentation.make(
+                        sourceURL: URL(fileURLWithPath: "/fixture/" + title),
+                        sourceFileCount: 12, sourceBytes: 4_096, isAnalysingSource: false,
+                        cameraName: "Sony VENICE", destinationURLs: [], capacity: { _ in nil },
+                        isOperationInProgress: false, nextStep: nil,
+                        layout: AdaptiveNavigationPolicy.presentation(for: width))
+                    XCTAssertEqual(presentation.source?.title, title)
+                    let size = CGSize(width: width, height: 1_600)
+                    try capture(ScrollView {
+                        SetupLocationsView(presentation: presentation, actions: actions,
+                            verificationMode: .constant(.standard), connectedSources: [],
+                            connectedDestinations: [], editingID: nil, stacksVertically: false,
+                            advanced: AnyView(EmptyView())).padding()
+                    }
+                    .environment(\.dynamicTypeSize, typeSize)
+                    .coordinateSpace(name: QueueFlightSpace.name)
+                    .onPreferenceChange(ComposerFrameKey.self, perform: composer.update)
+                    .onPreferenceChange(SetupSourceControlBoundsKey.self, perform: controls.update),
+                        size: size,
+                        name: "mac-accessible-source-\(index)-\(Int(width))-\(typeSize)",
+                        expectedComposerText: index == 0
+                            ? ["Camera", "Card", "Day", "05", "Finale", "099"]
+                            : ["Camera", "Remote", "Location", "Night", "Interior", "Scene", "42", "Finale", "099"],
+                        composerBounds: composer)
+                    let frames = controls.frames
+                    XCTAssertEqual(Set(frames.keys), [.choose, .remove, .subfolder])
+                    for frame in frames.values {
+                        // Mac retains native compact button sizes. The iOS
+                        // counterpart requires a 44-point minimum touch target.
+                        XCTAssertGreaterThan(frame.width, 0)
+                        XCTAssertGreaterThan(frame.height, 0)
+                        XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame))
+                    }
+                    let choose = try XCTUnwrap(frames[.choose])
+                    let remove = try XCTUnwrap(frames[.remove])
+                    let subfolder = try XCTUnwrap(frames[.subfolder])
+                    XCTAssertLessThanOrEqual(choose.maxY, min(remove.minY, subfolder.minY),
+                        "Auxiliary controls must leave the name its own row at accessibility sizes")
+                    XCTAssertFalse(remove.intersects(subfolder))
+                }
+            }
         }
     }
 
@@ -500,6 +590,35 @@ private final class SnapshotFixture {
             mismatchedPaths: ["DCIM/clip.txt"]
         )
         sharedCoordinator.operationState = .notStarted
+    }
+
+    /// Presentation fixture with an explicit saved qualification, not a transfer.
+    func seedSelectedFileCompletion() throws -> UUID {
+        seedSetup()
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["DCIM/._clip.txt"]
+        let destinations = [backup, secondBackup]
+        let rows = destinations.flatMap { destination in
+            let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: settings)
+            return [ResultRow(path: source.appendingPathComponent("DCIM/clip.txt").path,
+                status: ResultOutcome.verified.statusText, size: 11, checksum: "synthetic-digest",
+                destination: destination.lastPathComponent, destinationPath: output.appendingPathComponent("DCIM/clip.txt").path),
+                ResultRow(path: source.appendingPathComponent("DCIM/._clip.txt").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                destination: destination.lastPathComponent, destinationPath: output.appendingPathComponent("DCIM/._clip.txt").path)]
+        }
+        let id = try sharedCoordinator.enqueue(source: source, destinations: destinations,
+            verificationMode: .standard, cameraSettings: settings)
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1, 1], selectedSourceBytes: 11)
+        try journal.finish(id: id, results: rows,
+            summary: "Selected files verified; 1 AppleDouble file intentionally excluded. Keep the source",
+            hadIssues: true, expectedExclusionQueueQualification: .ordinaryTransfer,
+            sourceFingerprint: "synthetic-source-fingerprint")
+        sharedCoordinator.reviewQueuedTransfer(id)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        return id
     }
 
     func seedCompletion() throws {

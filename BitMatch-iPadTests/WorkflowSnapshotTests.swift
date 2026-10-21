@@ -33,6 +33,17 @@ private final class WorkflowActionCaptureBounds: @unchecked Sendable {
     func update(_ role: WorkflowActionRole, _ frame: CGRect) { lock.withLock { stored[role] = frame } }
 }
 
+/// Retain the last source-control layout after the temporary window closes.
+private final class SourceControlCaptureBounds: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: [SetupSourceControlRole: CGRect] = [:]
+    var frames: [SetupSourceControlRole: CGRect] { lock.withLock { stored } }
+    func update(_ frames: [SetupSourceControlRole: CGRect]) {
+        guard !frames.isEmpty else { return }
+        lock.withLock { stored = frames }
+    }
+}
+
 /// Opt-in production-view captures and always-on fixture routing checks.
 ///
 /// Capture the workbench, expanded progress content and expanded History
@@ -171,6 +182,19 @@ final class WorkflowSnapshotTests: XCTestCase {
                     size: CGSize(width: 820, height: 1_100), name: "ipad-staged-setup")
     }
 
+    func testCaptureVerifiedSelectedFilesWithoutMetadataWarnings() async throws {
+        try requireCaptureConfiguration()
+        let fixture = try SnapshotFixture()
+        defer { fixture.restoreGlobalPreferences() }
+        let id = try fixture.seedSelectedFileCompletion()
+        for width in [375.0, 760.0] {
+            try await capture(TransferQueueSection(coordinator: fixture.coordinator, initiallyExpandedIDs: [id]).padding()
+                .frame(maxHeight: .infinity, alignment: .top), size: CGSize(width: width, height: 800),
+                name: "mobile-selected-files-verified-\(Int(width))", expectedText: ["Selected files verified", "1 file verified on 2 destinations"],
+                textOccurrences: ["needs attention": 0, "excluded": 0, "retry": 0])
+        }
+    }
+
     func testCaptureAppleDoubleControls() async throws {
         try requireCaptureConfiguration()
         let fixture = try SnapshotFixture()
@@ -190,8 +214,13 @@ final class WorkflowSnapshotTests: XCTestCase {
         let review = coordinator.appleDoubleSelection
         review.enabled = true
         let deadline = ContinuousClock.now.advanced(by: .seconds(5))
-        while review.paths == nil && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        while (review.paths == nil || coordinator.sourceFolderInfo?.fileCount != 3 || coordinator.isAnalysingSource)
+                && ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(review.paths, ["._Camera clip.bin"])
+        XCTAssertEqual(coordinator.sourceFolderInfo?.fileCount, 3)
+        try await capture(ContentView(coordinator: coordinator), size: CGSize(width: 375, height: 1_100),
+            name: "mobile-selected-source-count-375", expectedText: ["2 files"],
+            textOccurrences: ["3 files": 0, "excluded": 0])
         try await capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 320, height: 650), name: "iphone-appledouble-selection")
         try await capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 500, height: 650), name: "narrowpad-appledouble-selection")
         try await capture(AppleDoubleSelectionView(review: review).padding(), size: CGSize(width: 820, height: 650), name: "ipad-appledouble-selection")
@@ -467,6 +496,65 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    /// Full source names must remain readable inside the composer, not only
+    /// in its repeated summary or accessibility label. Unicode stays unchanged.
+    /// Plant: restore Text(source.title).lineLimit(1); OCR loses name tokens.
+    func testCaptureAccessibleSourceNames() async throws {
+        try requireCaptureConfiguration()
+        let actions = SetupLocationsActions(pickSource: {}, clearSource: {}, addAnotherCard: { nil },
+            chooseConnectedSource: { _ in }, chooseFolderOnSource: { _ in },
+            chooseConnectedBackup: { _ in }, chooseFolderOnBackup: { _ in },
+            editStagedCard: { _ in false }, cancelEdit: {}, moveStagedCard: { _, _ in },
+            removeStagedCard: { _ in }, pickBackups: {}, removeBackup: { _ in })
+        let names = ["Camera Card Montréal 東京 Day 05 Finale 099",
+                     "Camera Card Remote Location Night Interior Scene 42 Finale 099"]
+        for (index, title) in names.enumerated() {
+            for width in [375.0, 760.0] {
+                for typeSize in [DynamicTypeSize.accessibility2, .accessibility5] {
+                    let composer = ComposerCaptureBounds()
+                    let controls = SourceControlCaptureBounds()
+                    let presentation = SetupLocationsPresentation.make(
+                        sourceURL: URL(fileURLWithPath: "/fixture/" + title),
+                        sourceFileCount: 12, sourceBytes: 4_096, isAnalysingSource: false,
+                        cameraName: "Sony VENICE", destinationURLs: [], capacity: { _ in nil },
+                        isOperationInProgress: false, nextStep: nil,
+                        layout: AdaptiveNavigationPolicy.presentation(for: width))
+                    XCTAssertEqual(presentation.source?.title, title)
+                    let size = CGSize(width: width, height: 1_600)
+                    try await capture(ScrollView {
+                        SetupLocationsView(presentation: presentation, actions: actions,
+                            verificationMode: .constant(.standard), connectedSources: [],
+                            connectedDestinations: [], editingID: nil, stacksVertically: false,
+                            advanced: AnyView(EmptyView())).padding()
+                    }
+                    .environment(\.dynamicTypeSize, typeSize)
+                    .coordinateSpace(name: QueueFlightSpace.name)
+                    .onPreferenceChange(ComposerFrameKey.self, perform: composer.update)
+                    .onPreferenceChange(SetupSourceControlBoundsKey.self, perform: controls.update),
+                        size: size,
+                        name: "mobile-accessible-source-\(index)-\(Int(width))-\(typeSize)",
+                        expectedComposerText: index == 0
+                            ? ["Camera", "Card", "Day", "05", "Finale", "099"]
+                            : ["Camera", "Remote", "Location", "Night", "Interior", "Scene", "42", "Finale", "099"],
+                        composerBounds: composer, scrollableComposer: true)
+                    let frames = controls.frames
+                    XCTAssertEqual(Set(frames.keys), [.choose, .remove, .subfolder])
+                    for frame in frames.values {
+                        XCTAssertGreaterThanOrEqual(frame.width, 44)
+                        XCTAssertGreaterThanOrEqual(frame.height, 44)
+                        XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame))
+                    }
+                    let choose = try XCTUnwrap(frames[.choose])
+                    let remove = try XCTUnwrap(frames[.remove])
+                    let subfolder = try XCTUnwrap(frames[.subfolder])
+                    XCTAssertLessThanOrEqual(choose.maxY, min(remove.minY, subfolder.minY),
+                        "Auxiliary controls must leave the name its own row at accessibility sizes")
+                    XCTAssertFalse(remove.intersects(subfolder))
+                }
+            }
+        }
+    }
+
     func testCaptureTransferDetails() async throws {
         try requireCaptureConfiguration()
         let prefs = ReportPrefs(notes: "Card 01 · backups to Alex.\nKeep the source until both drives are checked.", operatorName: "Alex Morgan")
@@ -498,9 +586,29 @@ final class WorkflowSnapshotTests: XCTestCase {
         }
     }
 
+    func testPortraitCaptureDoesNotInheritLandscapeSafeArea() async throws {
+        try requireCaptureConfiguration()
+        guard UIDevice.current.userInterfaceIdiom == .phone else {
+            throw XCTSkip("Phone notch regression; iPad captures assert usable width without forcing device orientation")
+        }
+        let scene = try XCTUnwrap(UIApplication.shared.connectedScenes
+            .compactMap { $0 as? UIWindowScene }.first { $0.activationState == .foregroundActive })
+        scene.requestGeometryUpdate(.iOS(interfaceOrientations: .landscapeLeft))
+        defer { scene.requestGeometryUpdate(.iOS(interfaceOrientations: .portrait)) }
+        let deadline = ContinuousClock.now.advanced(by: .seconds(5))
+        while !scene.interfaceOrientation.isLandscape && ContinuousClock.now < deadline {
+            try await Task.sleep(for: .milliseconds(25))
+        }
+        XCTAssertTrue(scene.interfaceOrientation.isLandscape, "The regression must start from a landscape scene")
+        try await capture(Text("Portrait viewport").frame(maxWidth: .infinity, maxHeight: .infinity),
+            size: CGSize(width: 375, height: 852), name: "mobile-portrait-after-landscape",
+            expectedText: ["Portrait viewport"])
+    }
+
     private func capture<V: View>(_ view: V, size: CGSize, name: String,
                                  expectedText: [String] = [], textOccurrences: [String: Int] = [:],
                                  expectedComposerText: [String] = [], composerBounds: ComposerCaptureBounds? = nil,
+                                 scrollableComposer: Bool = false,
                                  actionBounds: WorkflowActionCaptureBounds? = nil,
                                  expectedActions: Set<WorkflowActionRole> = [], bottomOcclusion: CGFloat = 0,
                                  appearance: UIUserInterfaceStyle = .dark) async throws {
@@ -515,6 +623,24 @@ final class WorkflowSnapshotTests: XCTestCase {
             if scene == nil { try await Task.sleep(for: .milliseconds(25)) }
         } while scene == nil && ContinuousClock.now < deadline
         let foregroundScene = try XCTUnwrap(scene, "A foreground scene is required for \(name)")
+        let orientationBeforeCapture = foregroundScene.interfaceOrientation
+        let portraitViewport = size.height >= size.width
+        let orientationMatches = {
+            portraitViewport ? foregroundScene.interfaceOrientation.isPortrait : foregroundScene.interfaceOrientation.isLandscape
+        }
+        if UIDevice.current.userInterfaceIdiom == .phone && !orientationMatches() {
+            // iPad window dimensions do not require a device orientation. A
+            // portrait-sized phone UIWindow does not rotate its scene. Inheriting
+            // landscape would subtract both notch insets from the
+            // fixture width and test an impossible portrait/landscape hybrid.
+            foregroundScene.requestGeometryUpdate(.iOS(interfaceOrientations: portraitViewport ? .portrait : .landscapeLeft))
+            let orientationDeadline = ContinuousClock.now.advanced(by: .seconds(5))
+            while !orientationMatches() && ContinuousClock.now < orientationDeadline {
+                try await Task.sleep(for: .milliseconds(25))
+            }
+            _ = try XCTUnwrap(orientationMatches() ? true : nil,
+                "Scene did not reach the requested capture orientation: \(name)")
+        }
         let oldKeyWindow = foregroundScene.windows.first { $0.isKeyWindow }
         let host = UIHostingController(rootView: view
             .environment(\.workflowActionBoundsObserver, { role, frame in actionBounds?.update(role, frame) })
@@ -539,10 +665,44 @@ final class WorkflowSnapshotTests: XCTestCase {
             try await Task.sleep(for: .milliseconds(75))
         }
 
+        func rect(_ value: CGRect) -> [String: CGFloat] {
+            ["x": value.minX, "y": value.minY, "width": value.width, "height": value.height]
+        }
+        func insets(_ value: UIEdgeInsets) -> [String: CGFloat] {
+            ["top": value.top, "left": value.left, "bottom": value.bottom, "right": value.right]
+        }
+        let geometry: [String: Any] = [
+            "sceneOrientationBeforeCapture": orientationBeforeCapture.rawValue,
+            "sceneOrientation": foregroundScene.interfaceOrientation.rawValue,
+            "sceneBounds": rect(foregroundScene.coordinateSpace.bounds),
+            "requestedSize": ["width": size.width, "height": size.height],
+            "windowFrame": rect(window.frame),
+            "windowBounds": rect(window.bounds),
+            "windowSafeAreaInsets": insets(window.safeAreaInsets),
+            "hostBounds": rect(host.view.bounds),
+            "hostSafeAreaInsets": insets(host.view.safeAreaInsets),
+            "hostSafeAreaLayoutFrame": rect(host.view.safeAreaLayoutGuide.layoutFrame),
+            "horizontalSizeClass": host.traitCollection.horizontalSizeClass.rawValue,
+            "verticalSizeClass": host.traitCollection.verticalSizeClass.rawValue
+        ]
+        if let directory = outputDirectoryURL() {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try JSONSerialization.data(withJSONObject: geometry, options: [.prettyPrinted, .sortedKeys])
+                .write(to: directory.appendingPathComponent("\(name)-geometry.json"), options: .atomic)
+        }
+
         XCTAssertEqual(window.bounds.width, size.width, accuracy: 0.5, "Wrong scene capture width: \(name)")
         XCTAssertEqual(window.bounds.height, size.height, accuracy: 0.5, "Wrong scene capture height: \(name)")
         XCTAssertEqual(host.view.bounds.width, size.width, accuracy: 0.5, "Wrong capture width: \(name)")
         XCTAssertEqual(host.view.bounds.height, size.height, accuracy: 0.5, "Wrong capture height: \(name)")
+        if size.height > size.width {
+            XCTAssertEqual(host.view.safeAreaInsets.left, 0, accuracy: 0.5,
+                "Portrait capture inherited a horizontal safe area: \(name)")
+            XCTAssertEqual(host.view.safeAreaInsets.right, 0, accuracy: 0.5,
+                "Portrait capture inherited a horizontal safe area: \(name)")
+            XCTAssertEqual(host.view.safeAreaLayoutGuide.layoutFrame.width, size.width, accuracy: 0.5,
+                "Portrait capture lost usable width: \(name)")
+        }
         let renderer = UIGraphicsImageRenderer(size: size)
         let image = renderer.image { _ in
             window.drawHierarchy(in: CGRect(origin: .zero, size: size), afterScreenUpdates: true)
@@ -596,11 +756,22 @@ final class WorkflowSnapshotTests: XCTestCase {
             let frame = try XCTUnwrap(composerBounds?.current(), "Composer geometry was not reported")
             XCTAssertGreaterThan(frame.width, 0)
             XCTAssertGreaterThan(frame.height, 0)
-            XCTAssertTrue(CGRect(origin: .zero, size: size).contains(frame), "Composer must fit in its capture")
+            let viewport = CGRect(origin: .zero, size: size)
+            if !scrollableComposer {
+                XCTAssertTrue(viewport.contains(frame), "Composer must fit in its capture")
+            }
+            // Source-only accessibility captures may scroll past the backups.
+            // Keep the default full-composer assertion, but never send Vision
+            // an invalid region after any failed containment assertion.
+            let visible = frame.intersection(viewport)
+            guard !visible.isNull, visible.width > 0, visible.height > 0 else {
+                XCTFail("Composer has no visible area in \(name)")
+                return
+            }
             let request = VNRecognizeTextRequest()
             request.recognitionLevel = .accurate
-            request.regionOfInterest = CGRect(x: frame.minX / size.width,
-                y: 1 - frame.maxY / size.height, width: frame.width / size.width, height: frame.height / size.height)
+            request.regionOfInterest = CGRect(x: visible.minX / size.width,
+                y: 1 - visible.maxY / size.height, width: visible.width / size.width, height: visible.height / size.height)
             try VNImageRequestHandler(cgImage: XCTUnwrap(image.cgImage)).perform([request])
             let text = (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: " ").lowercased()
             for expected in expectedComposerText {
@@ -782,6 +953,35 @@ private final class SnapshotFixture {
             mismatchedPaths: ["DCIM/clip.txt"]
         )
         coordinator.operationState = .notStarted
+    }
+
+    /// Presentation fixture with an explicit saved qualification, not a transfer.
+    func seedSelectedFileCompletion() throws -> UUID {
+        seedSetup()
+        var settings = CameraLabelSettings()
+        settings.excludedAppleDoublePaths = ["DCIM/._clip.txt"]
+        let destinations = [backup, secondBackup]
+        let rows = destinations.flatMap { destination in
+            let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: settings)
+            return [ResultRow(path: source.appendingPathComponent("DCIM/clip.txt").path,
+                status: ResultOutcome.verified.statusText, size: 11, checksum: "synthetic-digest",
+                destination: destination.lastPathComponent, destinationPath: output.appendingPathComponent("DCIM/clip.txt").path),
+                ResultRow(path: source.appendingPathComponent("DCIM/._clip.txt").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                destination: destination.lastPathComponent, destinationPath: output.appendingPathComponent("DCIM/._clip.txt").path)]
+        }
+        let id = try coordinator.enqueue(source: source, destinations: destinations,
+            verificationMode: .standard, cameraSettings: settings)
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1, 1], selectedSourceBytes: 11)
+        try journal.finish(id: id, results: rows,
+            summary: "Selected files verified; 1 AppleDouble file intentionally excluded. Keep the source",
+            hadIssues: true, expectedExclusionQueueQualification: .ordinaryTransfer,
+            sourceFingerprint: "synthetic-source-fingerprint")
+        coordinator.reviewQueuedTransfer(id)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        return id
     }
 
     func seedCompletion() throws {

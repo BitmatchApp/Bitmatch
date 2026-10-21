@@ -100,6 +100,10 @@ struct ReportView: View {
         rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count
     }
 
+    private var selectedFilesVerified: Bool {
+        s.verifiedSelection?.matches(summary: s, rows: rows) == true
+    }
+
     private var reportUnsafeReason: String {
         let selected = rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
         if s.safetyState == .needsAttention, s.photographyJob == nil,
@@ -108,7 +112,7 @@ struct ReportView: View {
             if selectedQuickMode {
                 return "Quick mode did not verify file contents. AppleDouble metadata was intentionally excluded; the whole card was not backed up."
             }
-            return "Recorded selected results are marked verified. AppleDouble metadata was intentionally excluded; the whole card is not backed up."
+            return "Recorded selected results are marked verified, but complete handoff evidence was not established. Review the report details before erasing the card."
         }
         return Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob)
     }
@@ -202,6 +206,8 @@ struct ReportView: View {
     private var outcomeSection: some View {
         if Self.shouldShowSuccessBadge(safetyState: s.safetyState, photographyJob: s.photographyJob) {
             successBadge
+        } else if selectedFilesVerified {
+            pdfOutcomeSection
         } else {
             unsafeSummary
         }
@@ -238,7 +244,11 @@ struct ReportView: View {
         if thumbnails.requestedCount > 0 {
             append(Text(thumbnails.notice).font(.system(size: 9)).foregroundColor(.secondary))
         }
-        if rows.isEmpty {
+        // The qualified PDF stays focused on footage. Exact excluded paths
+        // remain in the original evidence rows, CSV/JSON and History details.
+        let manifestRows = selectedFilesVerified
+            ? rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble } : rows
+        if manifestRows.isEmpty {
             append(VStack(alignment: .leading, spacing: 10) {
                 Text("File results").font(.system(size: 14, weight: .semibold))
                 Text("No result rows were recorded in this run.")
@@ -247,7 +257,7 @@ struct ReportView: View {
         } else {
             // The first row carries its header so the header cannot be stranded.
             var previewed: Set<String> = []
-            for (index, row) in rows.enumerated() {
+            for (index, row) in manifestRows.enumerated() {
                 let showPreview = previewed.insert(row.path).inserted
                 append(VStack(alignment: .leading, spacing: 0) {
                     if index == 0 {
@@ -366,17 +376,21 @@ struct ReportView: View {
 
     private var pdfOutcomeSection: some View {
         let safe = Self.shouldShowSuccessBadge(safetyState: s.safetyState, photographyJob: s.photographyJob)
+        let selected = selectedFilesVerified
+        let color: Color = safe ? .green : selected ? .secondary : .orange
         return HStack(alignment: .top, spacing: 8) {
-            Image(systemName: safe ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+            Image(systemName: safe ? "checkmark.circle.fill" : selected ? "checkmark.circle" : "exclamationmark.triangle.fill")
             VStack(alignment: .leading, spacing: 3) {
-                Text(safe ? "VERIFICATION SUCCESSFUL" : "NOT SAFE TO ERASE").font(.system(size: 12, weight: .semibold))
-                Text(safe ? "All required copies passed verification." : reportUnsafeReason)
+                Text(safe ? "VERIFICATION SUCCESSFUL" : selected ? "Selected files verified" : "NOT SAFE TO ERASE")
+                    .font(.system(size: 12, weight: .semibold))
+                Text(safe ? "All required copies passed verification." : selected
+                    ? "Every selected file verified on each destination." : reportUnsafeReason)
                     .font(.system(size: 10))
             }
             Spacer(minLength: 0)
-        }.foregroundColor(safe ? .green : .orange).padding(10)
+        }.foregroundColor(color).padding(10)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background((safe ? Color.green : Color.orange).opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
+            .background(color.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
     }
 
     func pdfContinuationHeader(manifest: Bool) -> some View {
@@ -466,7 +480,7 @@ struct ReportView: View {
                 .font(.system(size: 12, weight: .semibold))
             if let scope = s.verificationScope {
                 let sourceNoun = scope.recordedSelectedSourceFiles == 1 ? "file" : "files"
-                let issueNoun = issueCount == 1 ? "issue" : "issues"
+                let issueNoun = issueCount == 1 ? "file issue" : "file issues"
                 // A zero sum with no successful saved rows is not evidence
                 // that the source or attempted transfer was empty.
                 let byteSuffix = rows.contains(where: \.isSuccessStatus)
@@ -483,7 +497,13 @@ struct ReportView: View {
                     .font(.system(size: 10))
             }
             if rows.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
-                Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
+                if selectedFilesVerified {
+                    let count = Set(rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.map(\.path)).count
+                    Text("\(count) AppleDouble metadata \(count == 1 ? "file" : "files") intentionally excluded.")
+                        .font(.system(size: 9)).foregroundColor(.secondary)
+                } else {
+                    Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
+                }
             }
             if let note = s.verificationScopeNote {
                 Text(note).font(.system(size: 9)).foregroundColor(.secondary)

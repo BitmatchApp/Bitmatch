@@ -774,11 +774,8 @@ class SharedAppCoordinator: ObservableObject {
 
     private func notifyIfTransferEnded(record: LocalTransferRecord) {
         guard currentMode == .copyAndVerify else { return }
-        guard let state = TransferOutcomePresentation.recordedState(for: record) else { return }
-        let issueCount = record.results.filter { !$0.isSuccessStatus }.count
         guard let kind = TransferNotificationDecision.kind(
-            state: state,
-            issueCount: issueCount,
+            record: record,
             queueIsRunning: queueIsRunning,
             isReplayingQueuedTransfer: isReplayingQueuedTransfer,
             notifyAttention: generalSettings.notifyWhenCardNeedsAttention,
@@ -1822,7 +1819,7 @@ class SharedAppCoordinator: ObservableObject {
     private static func isQueueProblem(_ record: LocalTransferRecord) -> Bool {
         let safety = TransferLibraryPresentation.safetyState(for: record)
         return (safety == .needsAttention || safety == .failed || safety == .interrupted)
-            && !TransferJournal.permitsExpectedExclusionQueueContinuation(record)
+            && !TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
     }
 
     func startOperation(
@@ -2323,10 +2320,10 @@ class SharedAppCoordinator: ObservableObject {
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
         switch safety {
         case .needsAttention, .failed, .interrupted:
-            if belongs && TransferJournal.permitsExpectedExclusionQueueContinuation(record) {
+            if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
                 // Every selected file and requested handoff verified; only
-                // reviewed metadata was excluded. Keep the amber verdict and
-                // finish notification, but let this queue run its next card.
+                // reviewed metadata was excluded. Keep whole-card safety
+                // conservative without an attention signal or queue pause.
                 break
             }
             if belongs {
