@@ -166,12 +166,14 @@ final class ReportPDFMemoryTests: XCTestCase {
             var results: [ResultRow] = []
             results.reserveCapacity(fileCount * rowsPerFile)
             for index in 0..<fileCount {
-                let name = "PDFMEM-\(String(format: "%05d", index)).dat"
-                let path = "/synthetic-card/\(name)"
-                for backup in ["/synthetic-backup-a", "/synthetic-backup-b"] {
-                    results.append(ResultRow(path: path, status: ResultOutcome.verified.statusText,
-                                             size: 1, checksum: "synthetic-digest", destination: backup,
-                                             destinationPath: "\(backup)/\(name)"))
+                autoreleasepool {
+                    let name = "PDFMEM-\(String(format: "%05d", index)).dat"
+                    let path = "/synthetic-card/\(name)"
+                    for backup in ["/synthetic-backup-a", "/synthetic-backup-b"] {
+                        results.append(ResultRow(path: path, status: ResultOutcome.verified.statusText,
+                                                 size: 1, checksum: String(repeating: "0123456789abcdef", count: 4),
+                                                 destination: backup, destinationPath: "\(backup)/\(name)"))
+                    }
                 }
             }
             guard results.count == fileCount * rowsPerFile else { throw ReportPDFMemoryError.invalidOutput }
@@ -180,9 +182,11 @@ final class ReportPDFMemoryTests: XCTestCase {
                 jobID: UUID(), started: Date(timeIntervalSince1970: 1_800_000_000),
                 finished: Date(timeIntervalSince1970: 1_800_000_060), mode: .copyAndVerify,
                 source: "/synthetic-card", destinations: ["/synthetic-backup-a", "/synthetic-backup-b"],
-                totalFiles: fileCount, matched: results.count, issues: 0, workers: 2,
+                totalFiles: results.count, matched: results.count, issues: 0, workers: 2,
                 appVersion: "test", osVersion: "test", client: "", production: "", company: "",
-                verificationMethod: "SHA-256", totalBytesProcessed: Int64(results.count), averageSpeed: 0,
+                verificationMethod: "SHA-256", verificationMode: .standard,
+                verificationScope: VerificationScopeEvidence(selectedMode: .standard, results: results),
+                totalBytesProcessed: Int64(results.count), averageSpeed: 0,
                 clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase
             )
             metrics.mark("pdfRender")
