@@ -9,6 +9,46 @@ import XCTest
 /// Explicit opt-in only. The caller provisions marked folders on authorized
 /// volumes; these tests never format, detach, or erase a physical volume.
 final class PhysicalDriveTransferTests: XCTestCase {
+    // Plant: omit a private recording override and ensure workflow events still cannot reach shared stores.
+    func testPrivatePhysicalDiagnosticsScopeCapturesWorkflowEventsAndRestoresOuterStore() async throws {
+        let outerRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-physical-diagnostics-scope-test-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: outerRoot, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: outerRoot) }
+        guard let outerDefaults = UserDefaults(suiteName: "bitmatch-physical-outer-\(UUID().uuidString)") else {
+            throw PhysicalFixtureError.unsafeRoot
+        }
+        let outerCrashStore = LocalCrashEvidenceStore(
+            directory: outerRoot.appendingPathComponent("UnusedCrashEvidence", isDirectory: true),
+            defaults: outerDefaults, consentProvider: { false })
+        let outerStore = TransferDiagnosticStore(directory: outerRoot, systemEvidenceStore: outerCrashStore)
+        var innerStore: TransferDiagnosticStore?
+        var innerRoot: URL?
+        defer { if let innerRoot { try? FileManager.default.removeItem(at: innerRoot) } }
+        let run = UUID()
+
+        try await TransferDiagnostics.$recordingStoreOverride.withValue(outerStore) {
+            XCTAssertTrue(TransferDiagnostics.recordingStore === outerStore)
+            try await withPrivatePhysicalDiagnostics(label: "scope-regression", scope: "workflow",
+                onStoreCreated: { store, root in innerStore = store; innerRoot = root }) {
+                    SharedLogger.transferEvent(.pipelineDrained, run: run, code: 11)
+                    SharedLogger.transferEvent(.mhlClaimDirectWrite, run: run, code: 22)
+                }
+            XCTAssertTrue(TransferDiagnostics.recordingStore === outerStore,
+                          "The enclosing TaskLocal override must be restored after the private scope")
+        }
+
+        let capturedStore = try XCTUnwrap(innerStore)
+        let innerEvents = try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: capturedStore.exportData()) as? [String: Any])?["events"] as? [[String: Any]])
+        XCTAssertEqual(innerEvents.compactMap { $0["event"] as? String },
+                       ["pipelineDrained", "mhlClaimDirectWrite"])
+        XCTAssertEqual(innerEvents.compactMap { $0["code"] as? Int }, [11, 22])
+        let outerEvents = try XCTUnwrap(
+            (JSONSerialization.jsonObject(with: outerStore.exportData()) as? [String: Any])?["events"] as? [[String: Any]])
+        XCTAssertTrue(outerEvents.isEmpty, "Private-scope events must not enter the enclosing store")
+    }
+
     // Plant: discard a reused file's destination-read identity before the
     // final coverage guard; the retry must never be reported as verified.
     func testSmallStandardRetryPreservesEmptyFilesAndPriorHistories() async throws {
@@ -33,15 +73,17 @@ final class PhysicalDriveTransferTests: XCTestCase {
         let excluded = Set(settings.excludedAppleDoublePaths ?? [])
         let selected = original.filter { !excluded.contains($0.key) }
         let verifiedEmpty = Mutex<[String: VerificationResult]>([:])
-        let operation = try await TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
-            pipelinedVerification: true, verificationConcurrency: 2).performFileOperation(
-                sourceURL: source, destinationURLs: targets, verificationMode: .standard, settings: settings,
-                estimatedTotalBytes: original.values.reduce(0) { $0 + $1.size }, progressCallback: { _ in },
-                onFileResult: { row in
-                    if row.sourceURL.lastPathComponent == "empty.bin", let verification = row.verificationResult {
-                        verifiedEmpty.withLock { $0[row.destinationURL.path] = verification }
-                    }
-                })
+        let operation = try await withPrivatePhysicalDiagnostics(label: "small-retry-direct", scope: "operation") {
+            try await TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                pipelinedVerification: true, verificationConcurrency: 2).performFileOperation(
+                    sourceURL: source, destinationURLs: targets, verificationMode: .standard, settings: settings,
+                    estimatedTotalBytes: original.values.reduce(0) { $0 + $1.size }, progressCallback: { _ in },
+                    onFileResult: { row in
+                        if row.sourceURL.lastPathComponent == "empty.bin", let verification = row.verificationResult {
+                            verifiedEmpty.withLock { $0[row.destinationURL.path] = verification }
+                        }
+                    })
+        }
         let rows = operation.results.filter { !$0.excludedAppleDouble }
         XCTAssertEqual(rows.count, selected.count * targets.count)
         for (index, root) in roots.enumerated() {
@@ -198,6 +240,15 @@ final class PhysicalDriveTransferTests: XCTestCase {
     private func transfer(_ source: URL, expected: [String: PhysicalFile], targets: [URL],
                           mode: VerificationMode, pipelined: Bool, label: String,
                           reused: Bool = false) async throws {
+        try await withPrivatePhysicalDiagnostics(label: label, scope: "workflow") {
+            try await transferWorkflow(source, expected: expected, targets: targets, mode: mode,
+                                       pipelined: pipelined, label: label, reused: reused)
+        }
+    }
+
+    private func transferWorkflow(_ source: URL, expected: [String: PhysicalFile], targets: [URL],
+                                  mode: VerificationMode, pipelined: Bool, label: String,
+                                  reused: Bool) async throws {
         let samples = Mutex(PhysicalSamples())
         let monitor = Task.detached {
             while !Task.isCancelled {
@@ -355,6 +406,65 @@ final class PhysicalDriveTransferTests: XCTestCase {
 
     private func requirePassingAssertions() throws {
         guard let testRun, testRun.failureCount == 0 else { throw PhysicalFixtureError.failedTransfer }
+    }
+
+    private func withPrivatePhysicalDiagnostics<T>(label: String, scope: String,
+                                                   onStoreCreated: ((TransferDiagnosticStore, URL) -> Void)? = nil,
+                                                   operation: () async throws -> T) async throws -> T {
+        let evidenceRoot = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-physical-diagnostics-\(UUID().uuidString)", isDirectory: true)
+        guard mkdir(evidenceRoot.path, 0o700) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        var rootInfo = stat()
+        guard lstat(evidenceRoot.path, &rootInfo) == 0,
+              (rootInfo.st_mode & S_IFMT) == S_IFDIR,
+              rootInfo.st_uid == getuid() else { throw PhysicalFixtureError.unsafeRoot }
+
+        let diagnostics = evidenceRoot.appendingPathComponent("Diagnostics", isDirectory: true)
+        let receipt = evidenceRoot.appendingPathComponent("receipt.txt")
+        guard let privateDefaults = UserDefaults(suiteName: "bitmatch-physical-\(UUID().uuidString)") else {
+            throw PhysicalFixtureError.unsafeRoot
+        }
+        let privateCrashStore = LocalCrashEvidenceStore(
+            directory: evidenceRoot.appendingPathComponent("UnusedCrashEvidence", isDirectory: true),
+            defaults: privateDefaults, consentProvider: { false })
+        let store = TransferDiagnosticStore(directory: diagnostics, systemEvidenceStore: privateCrashStore)
+        onStoreCreated?(store, evidenceRoot)
+        func writeReceipt(status: String, failure: NSError? = nil) throws {
+            let body = "operation=\(label)\nstatus=\(status)\nerrorDomain=\(failure?.domain ?? "none")\nerrorCode=\(failure?.code ?? 0)\nrootName=\(evidenceRoot.lastPathComponent)\nrootDevice=\(rootInfo.st_dev)\nrootInode=\(rootInfo.st_ino)\nrootUID=\(rootInfo.st_uid)\n"
+            let fd = Darwin.open(receipt.path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
+            guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+            defer { try? handle.close() }
+            try handle.write(contentsOf: Data(body.utf8))
+            try handle.synchronize()
+        }
+
+        let value: T
+        do {
+            value = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
+                try await operation()
+            }
+        } catch {
+            let failure = error as NSError
+            do {
+                try writeReceipt(status: "\(scope)-failed", failure: failure)
+                print("PHYSICAL_DIAGNOSTICS_RECEIPT operation=\(label) status=\(scope)-failed errorDomain=\(failure.domain) errorCode=\(failure.code) path=\(receipt.path) diagnostics=\(diagnostics.path) retained=true")
+            } catch {
+                print("PHYSICAL_DIAGNOSTICS_RECEIPT operation=\(label) status=receipt-write-failed path=\(receipt.path) diagnostics=\(diagnostics.path) retained=true")
+            }
+            throw error
+        }
+
+        do {
+            try writeReceipt(status: "\(scope)-returned")
+            print("PHYSICAL_DIAGNOSTICS_RECEIPT operation=\(label) status=\(scope)-returned path=\(receipt.path) diagnostics=\(diagnostics.path) retained=true")
+        } catch {
+            print("PHYSICAL_DIAGNOSTICS_RECEIPT operation=\(label) status=receipt-write-failed path=\(receipt.path) diagnostics=\(diagnostics.path) retained=true")
+            throw error
+        }
+        return value
     }
 
     private func reportFailedSource(_ result: FileOperationResult, source: URL,

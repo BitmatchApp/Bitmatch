@@ -10,6 +10,8 @@ Instrumentation reuses already-read metadata. It adds no media lookup or read, p
 
 The physical test adds relative synthetic-file diagnostics with pre/open/post metadata and a failure-only uncached content comparison. Its opt-in Thorough recheck accepts only a validated fixture child, captures a new baseline and creates four exclusive sets of two-backup outputs. It never reseeds, deletes or automatically retries the source. That new baseline cannot establish what happened during the earlier failed run.
 
+Physical workflows also use a private diagnostic store across the pipeline, MHL, Check and assertions, with retained receipts. The direct small retry has its own scope. A host-only regression checks nested event isolation and restoration. Earlier physical tests lacked this override and could write synthetic events into the default unsandboxed application-support ring. This was not measured, and does not establish that the signed app's separate container was affected. Existing logs are not read, erased or repaired by this change; saved transfer history is separate.
+
 ## Validation to run
 
 - Engine regressions for closed fields/redaction, old-record decoding, copy mutation, cancellation, verification ordinal and a missing final comparison source.
