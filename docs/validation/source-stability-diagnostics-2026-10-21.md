@@ -1,6 +1,6 @@
 # Source-stability diagnostics — October 21, 2026
 
-This candidate is isolated, unmerged and not yet compiled or tested. It follows a retained physical SD-to-two-SSD matrix that stopped during Thorough without pipelining: two rows reported “Source file changed during copy.” The previous test did not record the affected file or changed field. The cause is unresolved; a failed guard is not proof of damaged media or a BitMatch defect.
+This candidate is isolated and unmerged. It follows a retained physical SD-to-two-SSD matrix that stopped during Thorough without pipelining: two rows reported “Source file changed during copy.” The previous test did not record the affected file or changed field. The cause is unresolved; a failed guard is not proof of damaged media or a BitMatch defect.
 
 ## Change
 
@@ -14,11 +14,13 @@ The physical test adds relative synthetic-file diagnostics with pre/open/post me
 
 Physical workflows also use a private diagnostic store across the pipeline, MHL, Check and assertions, with retained receipts. The direct small retry has its own scope. A host-only regression checks nested event isolation and restoration. Earlier physical tests lacked this override and could write synthetic events into the default unsandboxed application-support ring. This was not measured, and does not establish that the signed app's separate container was affected. Existing logs are not read, erased or repaired by this change; saved transfer history is separate.
 
-## Validation to run
+## Validation
 
-- Engine regressions for closed fields/redaction, old-record decoding, copy mutation, cancellation, verification ordinal and a missing final comparison source.
-- Full engine tests, the Mac app suite and iPhone/iPad build.
-- The focused physical recheck after the active large-file test ends; retain failed fixtures and exact source/diagnostic observations.
+- Focused source-diagnostics gate `engine-source-diagnostics-20261021T050125Z` ran 14 XCTest cases: 0 skipped, 0 failed, 0.219 seconds. The selection was `DestinationIdentityDiagnosticTests` plus `PhysicalDriveTransferTests/testPrivatePhysicalDiagnosticsScopeCapturesWorkflowEventsAndRestoresOuterStore`, on source commit `c5af0e27`.
+- Physical Thorough recheck `physical-thorough-20261021T050244Z` ran 1 test with 0 skips and 0 failures in 481.390 seconds. It completed four operations in two cycles, each with pipelining off and on and two SSD backups. A fresh baseline's source hashes were compared after every operation. Peak worker memory was 30 MiB.
+- The initial focused compile found a duplicate local variable name in the new test; that test typo was corrected. The first executed run then exposed seven wrong-layer assertions across three mutation tests: they inspected the final pipeline-level `TransferPipeline` code 256 result where the test intended to inspect the earlier per-file guard error. The tests now capture that original error through `onFileResult` and separately assert the final fail-closed result. These were test expectation corrections; they did not establish or fix a production behavior defect.
+- The earlier physical Thorough failure was not reproduced by the recheck and remains unresolved. The recheck took a new baseline; it does not explain the earlier run. No fix to the physical failure is claimed.
+- The full combined engine suite, Mac app suite and iPhone/iPad build remain pending. This validation does not establish a signed-app or field-device reproduction.
 
 A tiny independent APFS experiment confirmed that renaming an open file changed its descriptor ctime on this Mac. The copy-mutation test therefore expects the earlier descriptor guard, rather than incorrectly expecting the later pathname guard. This test-design observation does not explain the physical SD failure.
 
