@@ -6,19 +6,38 @@ EVIDENCE_BASE=${BITMATCH_HISTORY_EVIDENCE_BASE:?Set BITMATCH_HISTORY_EVIDENCE_BA
 DERIVED_DATA_ROOT=${BITMATCH_HISTORY_DERIVED_DATA:?Set BITMATCH_HISTORY_DERIVED_DATA outside Desktop}
 ATTEMPTS=${BITMATCH_HISTORY_ATTEMPTS:-500}
 
-case "$EVIDENCE_BASE" in
-  /private/tmp/*) ;;
-  *) echo "History evidence base must be under /private/tmp" >&2; exit 64 ;;
-esac
-case "$DERIVED_DATA_ROOT" in
-  /private/tmp/*) ;;
-  *) echo "DerivedData must be under /private/tmp" >&2; exit 64 ;;
-esac
-[[ "$DERIVED_DATA_ROOT" != "$ROOT"/* ]] || { echo "DerivedData must be outside the checkout" >&2; exit 64; }
 [[ "$ATTEMPTS" =~ ^[0-9]+$ ]] && (( ATTEMPTS >= 100 && ATTEMPTS <= 500 )) \
   || { echo "Attempts must be between 100 and 500" >&2; exit 64; }
 
+# Resolve existing symlink prefixes and normalize missing trailing components
+# before creating anything. This is path containment validation, not an
+# adversarial-race-proof no-follow traversal.
+canonical_private_path() {
+  python3 - "$ROOT" "$1" "$2" <<'PY'
+import sys
+from pathlib import Path
+
+root, candidate = Path(sys.argv[1]).resolve(), Path(sys.argv[2]).resolve()
+label = sys.argv[3]
+private_tmp = Path("/private/tmp").resolve()
+if ("\n" in str(candidate) or "\t" in str(candidate)
+        or candidate == private_tmp or private_tmp not in candidate.parents):
+    raise SystemExit(f"{label} must resolve to a strict descendant of /private/tmp")
+if candidate == root or root in candidate.parents:
+    raise SystemExit(f"{label} must resolve outside the checkout")
+print(candidate)
+PY
+}
+
+EVIDENCE_BASE=$(canonical_private_path "$EVIDENCE_BASE" "History evidence base")
+DERIVED_DATA_ROOT=$(canonical_private_path "$DERIVED_DATA_ROOT" "DerivedData")
 mkdir -p "$EVIDENCE_BASE" "$DERIVED_DATA_ROOT"
+# Revalidate after creation and use only canonical paths beyond this point.
+[[ "$(canonical_private_path "$EVIDENCE_BASE" "History evidence base")" == "$EVIDENCE_BASE" ]] \
+  || { echo "History evidence path changed during setup" >&2; exit 64; }
+[[ "$(canonical_private_path "$DERIVED_DATA_ROOT" "DerivedData")" == "$DERIVED_DATA_ROOT" ]] \
+  || { echo "DerivedData path changed during setup" >&2; exit 64; }
+
 RUN_ID="$(date -u '+%Y%m%dT%H%M%SZ')-$$"
 RUN_ROOT="$EVIDENCE_BASE/app-host-$RUN_ID"
 mkdir "$RUN_ROOT"

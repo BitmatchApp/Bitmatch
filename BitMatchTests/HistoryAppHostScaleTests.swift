@@ -19,9 +19,10 @@ final class HistoryAppHostScaleTests: XCTestCase {
         }
         let attempts = Int(ProcessInfo.processInfo.environment["BITMATCH_HISTORY_ATTEMPTS"] ?? "500") ?? 0
         let evidencePath = ProcessInfo.processInfo.environment["BITMATCH_HISTORY_EVIDENCE_ROOT"] ?? ""
-        guard (100...500).contains(attempts), evidencePath.hasPrefix("/private/tmp/") else {
+        guard (100...500).contains(attempts) else {
             throw HistoryAppProbeError.invalidConfiguration
         }
+        let evidenceRoot = try validatedEvidenceRoot(evidencePath)
         let metrics = HistoryAppProbeMetrics(attempts: attempts, rows: attempts * 100)
         let memorySampler = Task.detached {
             while !Task.isCancelled {
@@ -37,8 +38,6 @@ final class HistoryAppHostScaleTests: XCTestCase {
             responsiveness.stop()
         }
 
-        let evidenceRoot = URL(fileURLWithPath: evidencePath, isDirectory: true)
-        try FileManager.default.createDirectory(at: evidenceRoot, withIntermediateDirectories: true)
         let runID = UUID().uuidString
         let fixtureRoot = evidenceRoot.appendingPathComponent("fixture-\(runID)", isDirectory: true)
         let journalURL = fixtureRoot.appendingPathComponent("history.json")
@@ -335,6 +334,43 @@ final class HistoryAppHostScaleTests: XCTestCase {
             print("HISTORY_APP_HOST_PROBE " + String(decoding: receipt, as: UTF8.self))
             try? FileManager.default.removeItem(at: pendingReceiptURL)
         }
+    }
+
+    func testEvidenceRootAcceptsCanonicalPrivateScratchAndTmpAlias() throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("bitmatch-history-root-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        XCTAssertEqual(try validatedEvidenceRoot(root.path), root)
+        let alias = "/tmp/" + root.lastPathComponent
+        XCTAssertEqual(try validatedEvidenceRoot(alias), root)
+        XCTAssertThrowsError(try validatedEvidenceRoot("/private/tmp"))
+        XCTAssertThrowsError(try validatedEvidenceRoot(root.appendingPathComponent("missing").path))
+    }
+
+    func testEvidenceRootRejectsSymlinkAndDotDotEscapes() throws {
+        let root = URL(fileURLWithPath: "/private/tmp", isDirectory: true)
+            .appendingPathComponent("bitmatch-history-root-\(UUID())", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let link = root.appendingPathComponent("outside", isDirectory: true)
+        try FileManager.default.createSymbolicLink(atPath: link.path, withDestinationPath: "/private/var")
+        XCTAssertThrowsError(try validatedEvidenceRoot(link.path))
+        XCTAssertThrowsError(try validatedEvidenceRoot("/private/tmp/../var"))
+    }
+
+    /// The opt-in wrapper creates this directory first. Resolve the existing
+    /// root before writing fixtures; a lexical /private/tmp prefix is not enough.
+    /// This validates configuration, not concurrent hostile path replacement.
+    private func validatedEvidenceRoot(_ path: String) throws -> URL {
+        guard path.hasPrefix("/") else { throw HistoryAppProbeError.invalidConfiguration }
+        let scratch = URL(fileURLWithPath: "/private/tmp", isDirectory: true).resolvingSymlinksInPath()
+        let root = URL(fileURLWithPath: path, isDirectory: true).resolvingSymlinksInPath()
+        guard root.path.hasPrefix(scratch.path + "/"),
+              (try root.resourceValues(forKeys: [.isDirectoryKey])).isDirectory == true else {
+            throw HistoryAppProbeError.invalidConfiguration
+        }
+        return root
     }
 
     private func waitUntil(timeout: TimeInterval, _ condition: @MainActor () -> Bool) async throws {
