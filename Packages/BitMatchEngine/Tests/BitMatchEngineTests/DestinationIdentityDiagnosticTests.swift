@@ -7,6 +7,19 @@ import Darwin
 @testable import BitMatchEngine
 
 final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable {
+    private struct CapturedFailure: Equatable, Sendable {
+        let domain: String
+        let code: Int
+        let description: String
+
+        init(_ error: Error) {
+            let nsError = error as NSError
+            domain = nsError.domain
+            code = nsError.code
+            description = nsError.localizedDescription
+        }
+    }
+
     private let diagnosticKeys: Set<String> = [
         "timestamp", "session", "appVersion", "build", "event", "run", "code",
         "taskCancelled", "destinationIndex", "sourceOrdinal", "totalBytes", "wasReused",
@@ -299,6 +312,7 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
             }
             return data
         })
+        let guardedFailure = Mutex<CapturedFailure?>(nil)
         let run = UUID()
         let operation = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
             try await TransferDiagnostics.$runID.withValue(run) {
@@ -307,7 +321,14 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
                                                fanOutHooks: hooks)
                         .performFileOperation(sourceURL: source, destinationURLs: [backup],
                             verificationMode: .standard, settings: CameraLabelSettings(),
-                            progressCallback: { _ in }, onFileResult: nil)
+                            progressCallback: { _ in }, onFileResult: { row in
+                                guard !row.success, let error = row.error,
+                                      (error as NSError).domain == "DestinationWriter",
+                                      (error as NSError).code == -4 else { return }
+                                guardedFailure.withLock { value in
+                                    if value == nil { value = CapturedFailure(error) }
+                                }
+                            })
                 }
             }
         }
@@ -315,13 +336,16 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
         XCTAssertTrue(mutated.withLock { $0 })
         XCTAssertEqual(try Data(contentsOf: preserved), original)
         XCTAssertEqual(try Data(contentsOf: clip), replacement)
+        let guardError = try XCTUnwrap(guardedFailure.withLock { $0 })
+        XCTAssertEqual(guardError.domain, "DestinationWriter")
+        XCTAssertEqual(guardError.code, -4)
+        XCTAssertEqual(guardError.description,
+                       "Source file changed during copy; keep the source and inspect the backup for a partial file")
         let row = try XCTUnwrap(operation.results.first)
         XCTAssertFalse(row.success)
-        let error = try XCTUnwrap(row.error as NSError?)
-        XCTAssertEqual(error.domain, "DestinationWriter")
-        XCTAssertEqual(error.code, -4)
-        XCTAssertEqual(error.localizedDescription,
-                       "Source file changed during copy; keep the source and inspect the backup for a partial file")
+        let returnedError = try XCTUnwrap(row.error as NSError?)
+        XCTAssertEqual(returnedError.domain, "TransferPipeline")
+        XCTAssertEqual(returnedError.code, 256, "The pipeline must retain its fail-closed card-changed result")
         let output = SafetyValidator.resolvedDestinationRoot(source: source, destination: backup,
                                                              settings: CameraLabelSettings())
             .appendingPathComponent("clip.bin")
@@ -385,6 +409,7 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
         try original.write(to: clip, options: .withoutOverwriting)
         let mutated = Mutex(false)
         let mutationError = Mutex<String?>(nil)
+        let guardedFailure = Mutex<CapturedFailure?>(nil)
         let run = UUID()
 
         let operation = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
@@ -394,6 +419,14 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
                         .performFileOperation(sourceURL: source, destinationURLs: [backup],
                             verificationMode: .standard, settings: CameraLabelSettings(),
                             progressCallback: { _ in }, onFileResult: { row in
+                                if !row.success, let error = row.error {
+                                    guard (error as NSError).domain == "DestinationWriter",
+                                          (error as NSError).code == -4 else { return }
+                                    guardedFailure.withLock { value in
+                                        if value == nil { value = CapturedFailure(error) }
+                                    }
+                                    return
+                                }
                                 guard row.success, row.verificationResult == nil else { return }
                                 let shouldMutate = mutated.withLock { value in
                                     guard !value else { return false }
@@ -418,11 +451,17 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
         XCTAssertNil(mutationError.withLock { $0 })
         XCTAssertEqual(try Data(contentsOf: preserved), original)
         XCTAssertEqual(try Data(contentsOf: clip), replacement)
+        let guardError = try XCTUnwrap(guardedFailure.withLock { $0 })
+        XCTAssertEqual(guardError.domain, "DestinationWriter")
+        XCTAssertEqual(guardError.code, -4)
+        XCTAssertEqual(guardError.description,
+                       "Source file changed during copy; keep the source and inspect the backup for a partial file")
         let row = try XCTUnwrap(operation.results.first)
         XCTAssertFalse(row.success)
         XCTAssertNil(row.verificationResult)
-        XCTAssertEqual((row.error as NSError?)?.domain, "DestinationWriter")
-        XCTAssertEqual((row.error as NSError?)?.code, -4)
+        XCTAssertEqual((row.error as NSError?)?.domain, "TransferPipeline")
+        XCTAssertEqual((row.error as NSError?)?.code, 256,
+                       "The pipeline must retain its fail-closed card-changed result")
 
         let sourceEvents = try events(store).filter { $0["event"] as? String == "sourceStabilityRejected" }
         XCTAssertEqual(sourceEvents.count, 1)
@@ -458,6 +497,7 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
             if shouldMove { try FileManager.default.moveItem(at: clip, to: preserved) }
             return read
         })
+        let guardedFailure = Mutex<CapturedFailure?>(nil)
         let run = UUID()
 
         let operation = try await TransferDiagnostics.$recordingStoreOverride.withValue(store) {
@@ -467,16 +507,25 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
                                                fanOutHooks: hooks)
                         .performFileOperation(sourceURL: source, destinationURLs: [backup],
                             verificationMode: .paranoid, settings: CameraLabelSettings(),
-                            progressCallback: { _ in }, onFileResult: nil)
+                            progressCallback: { _ in }, onFileResult: { row in
+                                guard !row.success, let error = row.error,
+                                      (error as NSError).domain != "TransferPipeline" else { return }
+                                guardedFailure.withLock { value in
+                                    if value == nil { value = CapturedFailure(error) }
+                                }
+                            })
                 }
             }
         }
 
         XCTAssertTrue(moved.withLock { $0 })
         XCTAssertEqual(try Data(contentsOf: preserved), data)
+        let guardError = try XCTUnwrap(guardedFailure.withLock { $0 })
         let row = try XCTUnwrap(operation.results.first)
         XCTAssertFalse(row.success)
-        let actualError = try XCTUnwrap(row.error as NSError?)
+        let returnedError = try XCTUnwrap(row.error as NSError?)
+        XCTAssertEqual(returnedError.domain, "TransferPipeline")
+        XCTAssertEqual(returnedError.code, 256, "The pipeline must retain its fail-closed card-changed result")
         var expectedLookupError: NSError?
         do {
             _ = try FileManager.default.attributesOfItem(atPath: clip.path)
@@ -485,8 +534,8 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
             expectedLookupError = error as NSError
         }
         let expectedError = try XCTUnwrap(expectedLookupError)
-        XCTAssertEqual(actualError.domain, expectedError.domain)
-        XCTAssertEqual(actualError.code, expectedError.code)
+        XCTAssertEqual(guardError.domain, expectedError.domain)
+        XCTAssertEqual(guardError.code, expectedError.code)
 
         let sourceEvents = try events(store).filter { $0["event"] as? String == "sourceStabilityRejected" }
         XCTAssertEqual(sourceEvents.count, 1)
