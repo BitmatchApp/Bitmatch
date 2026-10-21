@@ -43,7 +43,8 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         if mounted {
             do {
                 // No force-detach: a busy mount should be surfaced, not hidden.
-                try runHdiutil(["detach", "-quiet", mount.path])
+                // Preserve DiskImages' actual failure reason in the retained log.
+                try runHdiutil(["detach", mount.path])
                 mounted = false
             } catch {
                 XCTFail("Could not detach the disposable image; retained scratch at \(scratch.path): \(error)")

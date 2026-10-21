@@ -23,7 +23,8 @@ final class AppleDoubleFilesystemMatrixTests: XCTestCase {
             }
             defer {
                 for mount in mounted.reversed() {
-                    do { try run("/usr/bin/hdiutil", ["detach", "-quiet", mount.path]) }
+                    // Keep stderr diagnostics if a normal detach is refused.
+                    do { try run("/usr/bin/hdiutil", ["detach", mount.path]) }
                     catch { allDetached = false; XCTFail("Owned image retained at \(root.path): \(error)") }
                 }
                 if allDetached { try? fm.removeItem(at: root) }
