@@ -197,9 +197,9 @@ final class ReportPDFMemoryTests: XCTestCase {
             )
             metrics.mark("pdfRender")
             try metrics.requireSafe()
-            // The renderer is synchronous. The memory cap latches a failure but
-            // cannot interrupt native PDF work already in progress.
-            let pdfData = ReportPDFRenderer.renderPDF(summary: summary, results: results) { phase in
+            // The memory cap still latches during rendering. The async renderer
+            // separately checks task cancellation between main-actor batches.
+            let pdfData = try await ReportPDFRenderer.renderPDFAsync(summary: summary, results: results) { phase in
                 metrics.observe(phase)
             }
             try pdfData.write(to: requestedRoot.appendingPathComponent("rendered-unvalidated.pdf"), options: .withoutOverwriting)

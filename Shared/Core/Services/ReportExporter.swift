@@ -99,9 +99,13 @@ enum ReportExporter {
         // platform renders the same `ReportView` through `ReportPDFRenderer`
         // (Promise 5, "one app everywhere").
         let thumbnails = try await ReportThumbnailService.collect(results: results, enabled: shouldGenerateFullReport && prefs.includeThumbnails)
-        let pdfData: Data? = shouldGenerateFullReport ? await MainActor.run {
-            ReportPDFRenderer.renderPDF(summary: summary, results: results, thumbnails: thumbnails)
-        } : nil
+        let pdfData: Data?
+        if shouldGenerateFullReport {
+            pdfData = try await ReportPDFRenderer.renderPDFAsync(summary: summary, results: results,
+                                                                 thumbnails: thumbnails)
+        } else {
+            pdfData = nil
+        }
 
         let projectCSV = try photographerContext.map { try projectCSVEvidence(context: $0, results: results) }
         let projectJSON = try photographerContext.map {
@@ -198,7 +202,8 @@ enum ReportExporter {
             summary.verificationScopeNote = "Attempt ended before completion; the selected mode does not mean every check finished."
         }
         try Task.checkCancellation()
-        return await MainActor.run { ReportPDFRenderer.renderPDF(summary: summary, results: record.results, thumbnails: thumbnails) }
+        return try await ReportPDFRenderer.renderPDFAsync(summary: summary, results: record.results,
+                                                          thumbnails: thumbnails)
     }
 
     /// Converts the engine's authoritative verdict into the one safety state

@@ -405,4 +405,42 @@ struct ReportPDFLayoutTests {
         }
     }
 
+    @Test func asyncPDFRendererStopsAfterChildTaskCancellationAtPageProgress() async {
+        let rows = (0..<800).map { index in
+            ResultRow(path: String(format: "/card/cancel-%04d.mov", index), status: ResultOutcome.verified.statusText,
+                size: 1, checksum: "digest", destination: "/Volumes/Backup")
+        }
+        let summary = ReportSummary(jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1),
+            mode: .copyAndVerify, source: "/card", destinations: ["/Volumes/Backup"], totalFiles: rows.count,
+            matched: rows.count, issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "",
+            production: "", company: "", verificationMethod: "SHA-256", totalBytesProcessed: 0,
+            averageSpeed: 0, clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
+        let (phases, continuation) = AsyncStream<ReportPDFRenderer.Phase>.makeStream()
+        let renderTask = Task {
+            defer { continuation.finish() }
+            return try await ReportPDFRenderer.renderPDFAsync(summary: summary, results: rows) { phase in
+                continuation.yield(phase)
+            }
+        }
+        var cancelledAtPageProgress = false
+        for await phase in phases {
+            if case .pageRenderProgress(let completed, let total) = phase, completed >= 16, completed < total {
+                cancelledAtPageProgress = true
+                renderTask.cancel()
+                break
+            }
+        }
+        continuation.finish()
+        var threwCancellation = false
+        do {
+            _ = try await renderTask.value
+        } catch is CancellationError {
+            threwCancellation = true
+        } catch {
+            Issue.record("Unexpected PDF render error: \(error)")
+        }
+        #expect(cancelledAtPageProgress)
+        #expect(threwCancellation)
+    }
+
 }
