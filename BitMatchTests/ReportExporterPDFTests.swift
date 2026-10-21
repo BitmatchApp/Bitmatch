@@ -223,7 +223,14 @@ struct ReportPDFNativeRowTests {
         let nativeRowSelection = try #require(
             page.selection(for: betaBounds.union(tailBounds).insetBy(dx: -2, dy: -2)))
         let nativeRowText = try #require(nativeRowSelection.string)
-        #expect(nativeRowText.contains("…"), "the native row should retain its middle ellipsis")
+        // PDFKit omits Core Text's truncation token from selection text. The
+        // rendered artifact shows the ellipsis; here verify that extraction
+        // retains the Unicode ends without returning the full filename.
+        let fullDisplayPath = String(betaPath.dropFirst("/card/".count))
+        let normalizedSelection = nativeRowText.filter { !$0.isWhitespace }
+        let normalizedFullPath = fullDisplayPath.filter { !$0.isWhitespace }
+        #expect(!normalizedSelection.contains(normalizedFullPath),
+                "the native row text should be middle-truncated")
         #expect(nativeRowText.contains("東京"), "the native row should retain its Unicode head")
         #expect(nativeRowText.contains("Ω"), "the native row should retain its Unicode filename tail")
         let afterBounds = after.bounds(for: page)
