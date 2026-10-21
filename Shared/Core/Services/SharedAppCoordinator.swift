@@ -416,6 +416,9 @@ class SharedAppCoordinator: ObservableObject {
         let generation = selectionGeneration
         selectionTask?.cancel()
         selectionPreparationError = nil
+        // Capacities are measured claims. Drop them while re-probing so a
+        // replaced or unmounted destination never shows its last-known free space.
+        destinationCapacities = [:]
         let source = sourceURL
         let destinations = destinationURLs
         let sourceIdentity = selectedSourceIdentity
@@ -555,6 +558,13 @@ class SharedAppCoordinator: ObservableObject {
     func refreshSourceAvailability() {
         sourceAvailability.invalidate()
         scheduleSourceAvailability()
+        // A mount change can replace or remove a selected destination. Re-prepare
+        // the selection on the bounded worker so identities, names, capacities and
+        // readiness are rechecked under the current generation; the worker
+        // coalesces this with any in-flight preparation instead of piling up work.
+        if sourceURL != nil || !destinationURLs.isEmpty {
+            scheduleSelectionPreparation()
+        }
     }
 
     private func scheduleSourceAvailability() {
