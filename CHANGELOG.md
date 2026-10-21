@@ -15,6 +15,7 @@ All notable changes to this project will be documented in this file.
 - Dock badge behavior is pinned by tests: the unresolved-attention count, nothing when clean. Idle Quit and queued-card removal semantics are covered by tests without behavior change.
 - Selection re-preparation on the bounded worker rechecks identities, names, capacities and readiness after mount changes; last-known free space is dropped while re-probing.
 - History profiling now covers model preparation and collapsed/empty window attach on Mac plus an opt-in iPad simulator probe. Attach/show dominates main-actor stalls even for empty journals; no loading, persistence or retention changes.
+- History opens faster with large journals: collapsed rows no longer build their full details until expanded, and each row scans its verification evidence once. Window attachment dropped from about 2 seconds to under half a second in the 50,000-row app-host probe; search is unchanged.
 
 ## [0.2.11] - 2026-10-20
 
