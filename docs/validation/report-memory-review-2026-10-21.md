@@ -25,7 +25,22 @@ Generating a report with many files could push memory above 1 GiB after copying 
 
 The all-wrapped 40,000-row probe dropped from a measured 1,624 MiB guard failure to a 191 MiB pass with every manifest row independently checked. The final Mac suite passed 1,435 tests, skipped 35 and failed none; the generic iPhone/iPad build passed. A 20-clip synthetic 4K preview probe, nine-operation physical engine matrix and small physical app-host workflow also passed within their recorded scopes. See the validation record for earlier-source app stress results, the wrapper's false rejection and remaining platform/evidence checks. These results do not reproduce or close #23.
 
-This draft describes the PDF slice, not every earlier reliability change. Confirm its base against the held #79–81 stack before creating or updating a PR. Do not include abandoned experimental implementations or claim that GitHub currently contains this local candidate without checking.
+This draft describes the PDF slice, not every earlier reliability change. Its intended base is #81's branch, as checked below. Do not submit the whole stack as a second parallel change against `main`, include abandoned experimental implementations, or claim that GitHub contains this local candidate.
+
+## PR dependencies checked October 21
+
+Read-only GitHub metadata matches the local heads below. All three PRs are open drafts. Their reported `CLEAN` merge state describes Git's ability to merge, not a validation or release approval. GitHub Actions remains disabled.
+
+| Slice | Base | Head checked | Disposition |
+| --- | --- | --- | --- |
+| [#79 — drive discovery and saved evidence](https://github.com/BitmatchApp/Bitmatch/pull/79) | `main`, `0a50ee5c` | `overnight/integration-20261020`, `79bfdfc9` | First held PR; 42 changed files against its actual base. |
+| [#80 — source-stability diagnostics](https://github.com/BitmatchApp/Bitmatch/pull/80) | #79's branch | `fix/source-stability-diagnostics-20261021`, `23bd2599` | Eight-file slice, follows #79. |
+| [#81 — reused-file progress](https://github.com/BitmatchApp/Bitmatch/pull/81) | #80's branch | `fix/reused-file-progress-20261021`, `f6323e02` | Eight-file slice, follows #80. |
+| PDF memory candidate | Intended base: #81's branch | Production `1f73beba`, followed by documentation commits | Local work; no PR found for this branch in the GitHub check. |
+
+Local ancestry confirms #79 → #80 → #81 → PDF. The PDF slice has no changes under `Packages/BitMatchEngine` relative to #81; it changes report/app test code and docs. Its production source is what received the final Mac build/tests, generic iOS build and small app-host physical check recorded above. The stale local `main` ref is not the comparison base: the verified GitHub/cached `origin/main` is `0a50ee5c`. No ref was reset, branch checked out, PR retargeted or remote source changed during this review.
+
+When approved gates and review are complete, merge in dependency order. After each parent merge, recheck the next PR's base and net diff; a squash or rebase can require updating child branches. Any resulting source change must retain or regain the relevant validation. One eventual release can contain the reviewed stack, but none is authorized now. Keep the frozen signed 0.2.11 artifact separate from these later source changes.
 
 ## Before merge, when testing is authorized again
 
@@ -37,7 +52,8 @@ This draft describes the PDF slice, not every earlier reliability change. Confir
 - [ ] Finish independent content/visual checks for the final mixed artifact. If its PDF did not survive, regenerate only the necessary probe after approval.
 - [ ] Add direct native-row ellipsis/wrapped-Unicode assertions, check fallback control text and compare resolved native/fallback colors. Compile and run the affected Mac and iOS tests; the current generic app build did not compile or execute the iOS test target.
 - [ ] Repeat the 20,000-file coordinator report-off/on probe on final production source. The recorded 682 MiB pass predates wrapped-row support.
-- [ ] Finish the relevant signed-app/manual and mobile checks, review the final combined diff and confirm PR dependencies. Record what remains untested rather than treating an automated app-host pass as a manual walkthrough.
+- [x] Confirm the current PR bases, heads and local ancestry through read-only metadata and Git checks. This does not approve merging.
+- [ ] Finish the relevant signed-app/manual and mobile checks, review the final combined diff and recheck PR dependencies after any source/base change. Record what remains untested rather than treating an automated app-host pass as a manual walkthrough.
 
 Keep #10, #23, the unexplained Thorough source-stability rejection and the diagnostic-recorder error as separate open investigations. Passing later runs do not identify their causes. Existing source identity, readback, coverage and no-overwrite rules stay strict. Merge and publication remain on hold.
 
