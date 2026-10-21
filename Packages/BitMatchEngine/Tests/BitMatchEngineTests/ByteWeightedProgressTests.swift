@@ -163,9 +163,13 @@ struct ByteWeightedProgressTests {
                 observedWork: { latestWork.withLock { $0 ?? 0 } }
             )
             let ioProgress = Mutex<TransferIOProgress?>(nil)
-            let hooks = DestinationWriter.FanOutHooks(beforePublish: racedReuse ? { _, _ in
-                try contents.write(to: existing)
-            } : nil)
+            let beforePublish: (@Sendable (Int, URL) throws -> Void)?
+            if racedReuse {
+                beforePublish = { _, _ in try contents.write(to: existing) }
+            } else {
+                beforePublish = nil
+            }
+            let hooks = DestinationWriter.FanOutHooks(beforePublish: beforePublish)
             let pipeline = TransferPipeline(fileSystem: LocalFileAccess(), checksum: checksum,
                 fanOutHooks: hooks,
                 workProgressClock: { clock.withLock { $0 += 1; return $0 } })
