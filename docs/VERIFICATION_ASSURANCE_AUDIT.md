@@ -40,6 +40,8 @@ The source audit found two presentation/report issues addressed in this batch:
 
 ## Wording follow-ups
 
+October 21, 2026: the code-provable mismatches from the follow-up audit are fixed on `main` — safety gates count only proven-distinct storage, swapped-not-restored marking reports the real path, final evidence requires verified status, completed-with-no-rows resolves to issues, and the marking note reaches CSV/JSON reports. See [the fix record](validation/assurance-audit-fixes-2026-10-21.md). The signed-app/narrow-device items below remain open.
+
 README and Guide now explain Standard's read scope and the limits of repeated source reads. This does **not** complete the TODO acceptance criterion for all surfaces. Continue on Mac with:
 
 - Setup now takes its compact description from `VerificationMode`, and Mac/iPhone/iPad settings use the same full description. Compare uses its own check plan for mode details rather than copy-mode wording. The iPhone/iPad introduction no longer implies that Quick checks file contents. Review the compact wording on narrow devices during the next signed-app walkthrough.
