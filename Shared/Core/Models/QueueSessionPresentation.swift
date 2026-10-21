@@ -28,6 +28,35 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     var endedAt: Date? = nil
     /// Earlier attempts of the same card, oldest first. Their journal records stay.
     private(set) var earlierAttemptIDs: [UUID] = []
+    /// Which stage a failed transfer stopped in; nil unless `safetyState == .failed`.
+    var failureStage: FailureStage? = nil
+
+    enum FailureStage: Equatable, Sendable { case copy, verify }
+
+    /// Queue wording: says what to do with the card. History keeps `safetyState.title`.
+    var queueLabel: String {
+        if selectedFilesVerified { return "Selected files verified" }
+        switch safetyState {
+        case .waiting: return "Queued"
+        case .preparing, .copying, .finishing: return "Copying"
+        case .verifying: return "Verifying"
+        case .safeToErase: return "Safe to erase"
+        case .copiedNotVerified: return "Copied, not verified"
+        case .needsAttention, .interrupted: return "Keep the card"
+        case .failed: return failureStage == .verify ? "Didn't verify" : "Didn't copy"
+        }
+    }
+
+    var queueSymbol: String {
+        switch safetyState {
+        case .waiting: "clock"
+        case .preparing, .copying, .verifying, .finishing: "arrow.triangle.2.circlepath"
+        case .safeToErase: "checkmark.circle.fill"
+        case .copiedNotVerified: "circle.lefthalf.filled"
+        case .needsAttention, .interrupted: "exclamationmark.triangle.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
 
     var isEditable: Bool { safetyState == .waiting }
     var isRunning: Bool { safetyState.isActiveQueueState }
@@ -124,6 +153,18 @@ struct QueueTally: Equatable, Sendable {
     var failed = 0
     var interrupted = 0
     var notStarted = 0
+
+    /// Header words match the row labels; zero counts are omitted.
+    var queueHeaderText: String {
+        var parts: [String] = []
+        append(safeToErase, singular: "safe to erase", plural: "safe to erase", to: &parts)
+        append(selectedFilesVerified, singular: "selected files verified", plural: "selected files verified", to: &parts)
+        append(needsAttention + interrupted, singular: "keep the card", plural: "keep the card", to: &parts)
+        append(failed, singular: "didn't verify", plural: "didn't verify", to: &parts)
+        append(copiedNotVerified, singular: "copied, not verified", plural: "copied, not verified", to: &parts)
+        append(notStarted, singular: "queued", plural: "queued", to: &parts)
+        return parts.joined(separator: " · ")
+    }
 
     var text: String {
         var parts: [String] = []
@@ -399,7 +440,10 @@ struct QueueSessionPresentation: Equatable, Sendable {
             verificationModeName: record.verificationMode.rawValue,
             estimatedWorkBytes: estimatedWorkBytes(for: record),
             endedAt: record.endedAt,
-            earlierAttemptIDs: earlierAttemptIDs
+            earlierAttemptIDs: earlierAttemptIDs,
+            failureStage: state == .failed
+                ? (record.results.contains { ResultOutcome(statusText: $0.status) == .checksumMismatch } ? .verify : .copy)
+                : nil
         ).showingSource(
             isMounted: isMounted, isEjected: isEjected, isEjecting: isEjecting, isRemoved: isRemoved
         )

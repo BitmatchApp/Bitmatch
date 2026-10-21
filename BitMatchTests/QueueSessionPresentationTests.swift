@@ -4,6 +4,24 @@ import Testing
 import BitMatchEngine
 
 struct QueueSessionPresentationTests {
+    @Test func queueLabelsSayWhatToDo() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let attention = try fixture.record(name: "A", state: .issues)
+        let mismatch = try fixture.record(name: "B", state: .failed, results: [.checksumMismatch])
+        let copyFail = try fixture.record(name: "C", state: .failed, results: [.failed])
+        let interrupted = try fixture.record(name: "D", state: .interrupted)
+        let queue = QueueSessionPresentation.make(records: [interrupted, copyFail, mismatch, attention],
+            sessionIDs: [attention.id, mismatch.id, copyFail.id, interrupted.id],
+            sessionRecordIDsInOrder: [attention.id, mismatch.id, copyFail.id, interrupted.id],
+            progress: nil, mountedSourceIDs: [])
+        #expect(queue.rows.map(\.queueLabel) == ["Keep the card", "Didn't verify", "Didn't copy", "Keep the card"])
+        #expect(queue.rows[1].failureStage == .verify && queue.rows[2].failureStage == .copy)
+        #expect(queue.rows[0].failureStage == nil)
+        #expect(queue.rows.map(\.queueSymbol) == ["exclamationmark.triangle.fill", "xmark.octagon.fill", "xmark.octagon.fill", "exclamationmark.triangle.fill"])
+        #expect(queue.tally.queueHeaderText == "2 keep the card · 2 didn't verify")
+    }
+
     @Test func reviewedMetadataStaysQuietAfterEverySelectedFileVerified() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -807,11 +825,12 @@ private final class QueuePresentationFixture {
         state: LocalTransferState,
         mode: VerificationMode = .standard,
         outcome: ResultOutcome? = nil,
+        results outcomes: [ResultOutcome] = [],
         quickOnlyUnverified: Bool? = nil,
         size: Int64 = 64,
         summary: String = "Ready",
         wasReused: Bool = false,
-        at seconds: TimeInterval,
+        at seconds: TimeInterval = 0,
         projectID: UUID? = nil,
         projectCardID: UUID? = nil
     ) throws -> LocalTransferRecord {
@@ -834,6 +853,17 @@ private final class QueuePresentationFixture {
                 destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip.mov").path,
                 wasReused: wasReused
             )]
+        }
+        if !outcomes.isEmpty {
+            record.plannedFileCounts = [outcomes.count]
+            record.results = outcomes.enumerated().map { index, outcome in
+                ResultRow(
+                    path: source.appendingPathComponent("clip\(index).mov").path,
+                    status: outcome.statusText, size: size, checksum: outcome == .verified ? "abc" : nil,
+                    destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip\(index).mov").path,
+                    wasReused: wasReused
+                )
+            }
         }
         return record
     }
