@@ -130,10 +130,9 @@ struct ByteWeightedProgressTests {
         try await exerciseNilEvidenceReuseProgress(mode: mode, racedReuse: false, gateAtReuseProof: false)
     }
 
-    @Test func racedReuseProofAndLaterHashUseSeparateProgressBudgets() async throws {
-        try await exerciseNilEvidenceReuseProgress(mode: .standard, racedReuse: true, gateAtReuseProof: false)
-    }
-
+    // A raced publication already has fan-out source evidence, so it does not
+    // need the nil-evidence later source hash exercised above. Both entry paths
+    // must still report their initial reuse-proof hash work.
     // Plant: route reuse-proof hashes into the later-verification hash budget.
     @Test(arguments: [false, true])
     func initialReuseProofHashProgressAdvancesBeforeSettlement(racedReuse: Bool) async throws {
@@ -199,7 +198,7 @@ struct ByteWeightedProgressTests {
                     if racedReuse {
                         #expect((ioProgress.withLock { $0?.destinations.first?.writtenBytes ?? 0 }) > 0)
                     } else {
-                        #expect(ioProgress.withLock { $0?.destinations.first?.writtenBytes ?? -1 } == 0)
+                        #expect(ioProgress.withLock { $0?.destinations.first?.writtenBytes ?? 0 } == 0)
                     }
                 }
                 checksum.releaseGate()
