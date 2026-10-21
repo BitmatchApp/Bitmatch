@@ -17,6 +17,19 @@ enum ReportPDFRenderer {
     static let firstPageContentHeight = pageHeight - 2 * verticalMargin
     static let contentHeight = pageHeight - 2 * verticalMargin - continuationHeight
 
+    /// Opt-in observation points for bounded app-host profiling. Callbacks run
+    /// synchronously on the main actor and do not change rendering policy.
+    enum Phase: Equatable, Sendable {
+        case blockConstructionStarted(rowCount: Int)
+        case blockConstructionFinished(blockCount: Int)
+        case measurementProgress(completed: Int, total: Int)
+        case paginationStarted(blockCount: Int)
+        case paginationFinished(blockCount: Int, pageCount: Int)
+        case pageRenderingStarted(pageCount: Int, blockCount: Int)
+        case pageRenderProgress(completed: Int, total: Int)
+        case finalPDFData(bytes: Int, pageCount: Int, blockCount: Int)
+    }
+
     struct Layout {
         let blocks: [ReportPDFBlock]
         let heights: [CGFloat]
@@ -40,31 +53,46 @@ enum ReportPDFRenderer {
     }
 
     @MainActor
-    static func blockHeights(_ blocks: [ReportPDFBlock]) -> [CGFloat] {
-        blocks.map { height(of: $0.view) }
+    static func blockHeights(_ blocks: [ReportPDFBlock], phaseObserver: ((Phase) -> Void)? = nil) -> [CGFloat] {
+        var heights: [CGFloat] = []
+        heights.reserveCapacity(blocks.count)
+        if phaseObserver != nil { phaseObserver?(.measurementProgress(completed: 0, total: blocks.count)) }
+        for (index, block) in blocks.enumerated() {
+            heights.append(height(of: block.view))
+            let completed = index + 1
+            if completed.isMultiple(of: 128) || completed == blocks.count {
+                phaseObserver?(.measurementProgress(completed: completed, total: blocks.count))
+            }
+        }
+        return heights
     }
 
     @MainActor
-    static func layout(_ report: ReportView) -> Layout {
+    static func layout(_ report: ReportView, phaseObserver: ((Phase) -> Void)? = nil) -> Layout {
         // Reserve enough width for any page counter before measuring wrapping.
         // Actual counters are shorter, so their footer cannot need more height.
         let identityHeight = height(of: AnyView(report.pdfPageFooter(page: Int.max, total: Int.max)))
         let repeatsIdentity = identityHeight <= contentHeight / 3
         // Very large metadata must paginate rather than consume the page or clip.
+        phaseObserver?(.blockConstructionStarted(rowCount: report.rows.count))
         let blocks = report.pdfBlocks + (repeatsIdentity ? [] : [report.pdfPaginatedIdentity])
-        let heights = blockHeights(blocks)
+        phaseObserver?(.blockConstructionFinished(blockCount: blocks.count))
+        let heights = blockHeights(blocks, phaseObserver: phaseObserver)
         let bottomMargin = repeatsIdentity ? max(verticalMargin, identityHeight + 20) : verticalMargin
         let firstCapacity = pageHeight - verticalMargin - bottomMargin
+        phaseObserver?(.paginationStarted(blockCount: blocks.count))
         let pages = ReportPDFLayout.pages(blockHeights: heights, contentHeight: firstCapacity - continuationHeight,
             firstPageContentHeight: firstCapacity)
+        phaseObserver?(.paginationFinished(blockCount: blocks.count, pageCount: pages.count))
         return Layout(blocks: blocks, heights: heights, pages: pages, bottomMargin: bottomMargin,
             repeatsIdentity: repeatsIdentity)
     }
 
     @MainActor
-    static func renderPDF(summary: ReportSummary, results: [ResultRow], thumbnails: ReportThumbnails = ReportThumbnails()) -> Data {
+    static func renderPDF(summary: ReportSummary, results: [ResultRow], thumbnails: ReportThumbnails = ReportThumbnails(),
+                          phaseObserver: ((Phase) -> Void)? = nil) -> Data {
         let report = ReportView(s: summary, rows: results, thumbnails: thumbnails)
-        let layout = layout(report)
+        let layout = layout(report, phaseObserver: phaseObserver)
         let (blocks, heights, pages) = (layout.blocks, layout.heights, layout.pages)
         let firstCapacity = pageHeight - verticalMargin - layout.bottomMargin
         let pdfMetadata = [
@@ -81,6 +109,7 @@ enum ReportPDFRenderer {
             return Data()
         }
 
+        phaseObserver?(.pageRenderingStarted(pageCount: pages.count, blockCount: blocks.count))
         for (pageIndex, page) in pages.enumerated() {
             autoreleasepool {
                 let view = VStack(alignment: .leading, spacing: 0) {
@@ -127,8 +156,14 @@ enum ReportPDFRenderer {
                 renderer.render { _, render in render(context) }
                 context.endPDFPage()
             }
+            let completed = pageIndex + 1
+            if completed.isMultiple(of: 16) || completed == pages.count {
+                phaseObserver?(.pageRenderProgress(completed: completed, total: pages.count))
+            }
         }
         context.closePDF()
-        return mutableData as Data
+        let data = mutableData as Data
+        phaseObserver?(.finalPDFData(bytes: data.count, pageCount: pages.count, blockCount: blocks.count))
+        return data
     }
 }
