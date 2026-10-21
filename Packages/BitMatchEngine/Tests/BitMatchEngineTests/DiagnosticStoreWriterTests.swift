@@ -91,6 +91,39 @@ final class DiagnosticStoreWriterTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(".recording-error")).count, 0)
     }
 
+#if canImport(Darwin)
+    /// Deterministic contention: an external holder keeps the directory lock
+    /// past the writer's 250 ms budget. Every attempted event is dropped,
+    /// counted, and disclosed; nothing is written. This classifies the
+    /// stress-probe marker shape without calling contention proven in the field.
+    func testHeldDirectoryLockDropsAndCountsEveryEvent() throws {
+        let root = try fixture()
+        let holderFD = open(root.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        XCTAssertGreaterThanOrEqual(holderFD, 0)
+        defer { close(holderFD) }
+        XCTAssertEqual(flock(holderFD, LOCK_EX), 0)
+        let store = TransferDiagnosticStore(directory: root)
+        for index in 0..<5 {
+            store.record(.pipelineDrained, run: nil) { $0.code = index }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.appendingPathComponent("current.jsonl").path))
+        XCTAssertEqual(flock(holderFD, LOCK_UN), 0)
+        let exported = try object(store)
+        XCTAssertEqual(exported["recordingHadErrors"] as? Bool, true)
+        XCTAssertEqual(exported["droppedEvents"] as? Int, 5)
+        XCTAssertEqual((exported["events"] as? [Any])?.count, 0)
+        let detail = try XCTUnwrap(exported["recordingFailureDetail"] as? [String: Any])
+        XCTAssertEqual(detail["stage"] as? String, "directoryLock")
+        XCTAssertEqual(detail["code"] as? Int, Int(EWOULDBLOCK))
+        // The persisted claim was written at the first failure: a lower bound.
+        XCTAssertEqual(detail["droppedEvents"] as? Int, 1)
+        store.record(.journalFinished, run: nil) { $0.code = 99 }
+        let after = try object(store)
+        XCTAssertEqual((after["events"] as? [[String: Any]])?.compactMap { $0["code"] as? Int }, [99])
+        XCTAssertEqual(after["droppedEvents"] as? Int, 5, "Retained plus dropped must account for every attempt")
+    }
+#endif
+
 #if os(macOS)
     func testOtherProcessLockTimesOutWithoutWritingAndFailureSurvivesReopening() throws {
         // Plant: bypass flock. A separate process already owns the folder, but
