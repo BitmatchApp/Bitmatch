@@ -84,6 +84,11 @@ struct TransferLibraryPresentationTests {
         let unmarked = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
                                  size: 4, checksum: nil, destination: "Backup")
         #expect(TransferHistoryResultPresentation.statusText(for: unmarked, mode: .standard) == "⚠️ Checksum Mismatch")
+        let recovered = ResultRow(path: "/card/clip.mov", status: ResultOutcome.verified.statusText,
+                                  size: 4, checksum: "abc", destination: "Backup",
+                                  failedOutputMarking: "marked", recopyOutcome: "recovered")
+        #expect(TransferHistoryResultPresentation.statusText(for: recovered, mode: .thorough)
+            == "✅ Verified · recovered after one re-copy (first copy failed verification)")
         let unrestored = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
                                    size: 4, checksum: nil, destination: "Backup", failedOutputMarking: "swappedNotRestored")
         #expect(TransferHistoryResultPresentation.statusText(for: unrestored, mode: .standard)
