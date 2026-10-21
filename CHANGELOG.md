@@ -10,6 +10,10 @@ All notable changes to this project will be documented in this file.
 - Auto-detected cards are checked for readable access off the main thread. Late checks cannot replace an operator's selection or select a removed card.
 - Check rejects classic MHL records that give conflicting modification dates for the same file.
 - Saved path comparisons stay consistent when files or symlinks appear or disappear. Safety checks recognize source-folder aliases even when final child folders do not exist yet.
+- Ordinary test runs no longer touch real drives: real-volume policy checks are opt-in (`BITMATCH_REAL_VOLUME_POLICY=1`), and the test launcher strips drive-access probe controls from ordinary jobs.
+- Check reads MD5-only and SHA-1-only classic MHL inventories from an independent writer; size-only and XXH64 record shapes stay explicitly unsupported.
+- Dock badge shows the unresolved-attention count (nothing when clean); idle Quit never prompts, and removing a card retires its queued readability check.
+- Selection re-preparation on the bounded worker rechecks identities, names, capacities and readiness after mount changes; last-known free space is dropped while re-probing.
 
 ## [0.2.11] - 2026-10-20
 
