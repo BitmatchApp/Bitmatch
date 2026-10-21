@@ -379,7 +379,7 @@ struct ReportView: View {
         let path = ResultPathMatch.comparablePath(row.path)
         let display = path.hasPrefix(source + "/") ? String(path.dropFirst(source.count + 1)) : row.fileName
         return HStack(spacing: 8) {
-            Image(systemName: status.symbol).foregroundColor(status.color)
+            Text(pdfStatusGlyph(for: status.tone)).foregroundColor(status.color)
                 .font(.system(size: 10)).frame(width: 18, alignment: .leading)
             HStack(spacing: 8) {
                 if showPreview, let data = thumbnails.images[row.path],
@@ -393,6 +393,17 @@ struct ReportView: View {
                 .lineLimit(2).truncationMode(.middle).frame(width: 150, alignment: .leading)
             Text(ByteCountPresentation.fileSize(row.size)).font(.system(size: 10)).frame(width: 70, alignment: .trailing)
         }.padding(.vertical, 5)
+    }
+
+    private func pdfStatusGlyph(for tone: ResultStatusTone) -> String {
+        switch tone {
+        case .verified: "✓"
+        case .unverified: "–"
+        case .inProgress: "…"
+        case .warning: "!"
+        case .failure: "×"
+        case .neutral: "?"
+        }
     }
 
     private var pdfOutcomeSection: some View {
