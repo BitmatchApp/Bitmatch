@@ -477,14 +477,14 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
         let row = try XCTUnwrap(operation.results.first)
         XCTAssertFalse(row.success)
         let actualError = try XCTUnwrap(row.error as NSError?)
-        var expectedError: NSError?
+        var expectedLookupError: NSError?
         do {
             _ = try FileManager.default.attributesOfItem(atPath: clip.path)
             XCTFail("The source path should remain absent after the comparison hook moves it")
         } catch {
-            expectedError = error as NSError
+            expectedLookupError = error as NSError
         }
-        let expectedError = try XCTUnwrap(expectedError)
+        let expectedError = try XCTUnwrap(expectedLookupError)
         XCTAssertEqual(actualError.domain, expectedError.domain)
         XCTAssertEqual(actualError.code, expectedError.code)
 
