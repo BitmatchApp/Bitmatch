@@ -14,7 +14,7 @@ This records local reliability work branched from `main` at `0a50ee5c` on Octobe
 
 ## Current gates
 
-Production source at `b30e844f` passed the full Mac suite, iPhone/iPad simulator build, updated engine XCTest and 500-attempt History probe. The engine Swift Testing suite also passed with the independent MHL fixture. The updated physical matrix then stopped at a source-stability rejection during Thorough; its fixtures are retained. A separate 119.6 GB SSD-to-SSD engine run is underway. Earlier results remain distinct and do not turn the failed matrix green.
+Production source at `b30e844f` passed the full Mac suite, iPhone/iPad simulator build, updated engine XCTest and 500-attempt History probe. The engine Swift Testing suite also passed with the independent MHL fixture. The updated physical matrix then stopped at a source-stability rejection during Thorough; its fixtures are retained. A separate 119.6 GB SSD-to-SSD engine run passed. Earlier results remain distinct and do not turn the failed matrix green.
 
 | Gate | Result |
 | --- | --- |
@@ -38,6 +38,7 @@ Production source at `b30e844f` passed the full Mac suite, iPhone/iPad simulator
 | Physical small retry, SD → two SSDs | **Passed:** two Standard transfers, empty-file retry and byte-identical previous MHL histories on both backups; source hashes unchanged. |
 | Earlier physical mode/pipeline matrix, `physical-matrix-20261021T024314Z`, SD → two SSDs | **Passed:** one non-skipped XCTest executed nine transfers: four modes × pipeline off/on plus Standard reuse. Source hashes unchanged; previous histories preserved on reuse. Worker peak 30 MiB; 827.965 seconds. Predates the path correction. |
 | Updated physical matrix, `physical-matrix-20261021T041046Z`, source `1a74707a` | **Failed and retained:** Quick off/on, Standard off/on and Standard reuse completed. Thorough without pipelining returned two “Source file changed during copy” rows; the test stopped at 442.258 seconds. The old test log does not identify the exact file or changed identity field. No crash or successful verdict is claimed. Failure-only breadcrumbs and a focused repeat are needed before attributing this to a defect. |
+| Large physical engine workflow, `physical-large-20261021T042204Z`, source checkout `1a74707a` | **Passed:** one actual XCTest, zero failures/skips, 1,898.202 seconds. Eight synthetic MOV containers / 119,600,000,000 selected media bytes; Standard, one separate SSD backup, two overlapping large readers observed. Copy/verify 507.411 s, fresh exFAT MHL read 453.198 s, Saved Check 388.453 s; original source inventory, sizes and hashes matched. Sampled worker footprint 13 → 39 MiB. Not actual GUI memory, playable footage, controlled performance or a field reproduction. |
 | Large-app memory smoke | **Blocked before test-data generation:** macOS removable-volume permission and the host-space/runtime guard stopped the attempt. The planned 119.6 GB app was never run. |
 
 The earlier 50,000-row History app-host run observed a 286 MiB process peak. The revised run observed 344 MiB. They are distinct single-run observations that include fixture/test/UI overhead, not a leak proof or a reproduction of #23. The revised run also showed a long responsiveness pulse requiring attribution; see the [app-host record](history-app-host-2026-10-20.md).
@@ -57,6 +58,8 @@ Host free space fell below the 50 GiB external-build floor during earlier pauses
 ## Probe runner review and cleanup
 
 The physical app probe now has a tracked wrapper and receipt validator that reject skipped/vacuous Xcode success, mismatched workload and hash/count evidence, and incomplete cleanup. Workload flags are replaced explicitly so a smoke invocation cannot inherit the large opt-in. The probe also requires all eight selected basenames in PDF text. Nine stubbed physical-wrapper cases and seven History-wrapper cases passed in the 67-test script suite; these are runner checks only. The actual physical app run remains permission-blocked. The PDF assertion compiled in the passing full Mac gate, but its opt-in physical workflow did not run. History scratch containment also passed two ordinary app tests and the actual 500-attempt probe. The original shell wrapper failed both corrected symlink-escape controls; restored source passed.
+
+The physical engine tests above lacked a private diagnostic-store override and could write synthetic events into the default unsandboxed application-support ring. This was not measured, and does not establish that the signed app's separate container was affected. A separate test-only candidate scopes future pipeline, MHL and Check diagnostics to retained private scratch evidence. Existing logs and saved transfer history are not changed by that correction.
 
 Closed host build/evidence trees were archived on the authorized SSD and verified file-by-file, including recorded metadata, before removal: 16,888 entries, 13,999 regular files, 1,639,322,078 logical bytes. Logs, receipts and the live external build image remain available. Protected primary and frozen-release checkouts stayed clean at their original commits. No user drive was formatted, ejected or unmounted.
 
