@@ -201,6 +201,110 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         )
     }
 
+    /// Outcome of trying to make a failed-readback file unmistakable on disk.
+    public enum FailedReadbackMarkOutcome: Equatable, Sendable {
+        /// The exact file that failed readback now lives at this relative path.
+        case marked(toRelativePath: String)
+        /// No regular file exists at the final name; nothing was touched.
+        case missing
+        /// The named file is not the file that failed readback (identity
+        /// differs); nothing was touched.
+        case identityChanged
+        /// The marked name already exists; the failed file was left in place.
+        case markedNameOccupied
+        /// The marked name would exceed the filesystem name limit.
+        case markedNameTooLong
+        /// A different file was moved (identity changed across the rename);
+        /// `restored` reports whether it was put back under its original name.
+        case swappedDuringMark(restored: Bool)
+    }
+
+    /// Rename a file that failed readback to `<name>.bitmatch-failed`, but
+    /// only while the final name still identifies the exact file captured in
+    /// `expectedIdentity` (device, inode, size, mtime, ctime). Any other
+    /// outcome leaves every byte untouched. The rename is verified after the
+    /// fact: if a concurrent writer swapped the name across the rename, the
+    /// moved file is put back when the original name is free and the swap is
+    /// reported instead of success. The parent directory is synced after a
+    /// successful mark. Callers must only invoke this for a checksum
+    /// mismatch on a file this attempt wrote — never for a read error and
+    /// never for a reused pre-existing file.
+    public func markFailedReadbackOutput(at relativePath: String, expectedIdentity: VerifiedFileIdentity) throws -> FailedReadbackMarkOutcome {
+        let components = relativePath.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard let leaf = components.last, !leaf.isEmpty else { return .missing }
+        for component in components { try Self.validate(component: component) }
+        let markedLeaf = leaf + ".bitmatch-failed"
+        guard markedLeaf.utf8.count <= 255 else { return .markedNameTooLong }
+
+        var parentFD = Darwin.dup(directoryFD)
+        guard parentFD >= 0 else { throw Self.posixError("Unable to inspect pinned destination directory") }
+        defer { _ = Darwin.close(parentFD) }
+        for component in components.dropLast() {
+            let childFD = component.withCString {
+                openat(parentFD, $0, O_SEARCH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+            }
+            guard childFD >= 0 else {
+                if errno == ENOENT || errno == ENOTDIR || errno == ELOOP { return .missing }
+                throw Self.posixError("Unable to inspect destination folder")
+            }
+            _ = Darwin.close(parentFD)
+            parentFD = childFD
+        }
+
+        func identity(named name: String) -> VerifiedFileIdentity? {
+            var info = stat()
+            let status = name.withCString { fstatat(parentFD, $0, &info, AT_SYMLINK_NOFOLLOW) }
+            guard status == 0, (info.st_mode & S_IFMT) == S_IFREG else { return nil }
+            return VerifiedFileIdentity(
+                device: UInt64(info.st_dev), inode: UInt64(info.st_ino), size: Int64(info.st_size),
+                modificationSeconds: Int64(info.st_mtimespec.tv_sec),
+                modificationNanoseconds: Int64(info.st_mtimespec.tv_nsec),
+                changeSeconds: Int64(info.st_ctimespec.tv_sec),
+                changeNanoseconds: Int64(info.st_ctimespec.tv_nsec)
+            )
+        }
+
+        guard let current = identity(named: leaf) else { return .missing }
+        guard current == expectedIdentity else { return .identityChanged }
+        guard identity(named: markedLeaf) == nil else { return .markedNameOccupied }
+
+        let (renameStatus, renameError) = leaf.withCString { leafPointer in
+            markedLeaf.withCString { markedPointer in
+                (renameat(parentFD, leafPointer, parentFD, markedPointer), errno)
+            }
+        }
+        if renameStatus < 0 {
+            if renameError == EEXIST || renameError == ENOTEMPTY { return .markedNameOccupied }
+            if renameError == ENOENT { return .missing }
+            throw Self.posixError("Unable to mark failed readback output")
+        }
+        // A rename updates ctime, so the moved file is matched on the fields
+        // a rename cannot change: device, inode, size and mtime.
+        func sameFileAfterRename(_ identity: VerifiedFileIdentity?) -> Bool {
+            guard let identity else { return false }
+            return identity.device == expectedIdentity.device
+                && identity.inode == expectedIdentity.inode
+                && identity.size == expectedIdentity.size
+                && identity.modificationSeconds == expectedIdentity.modificationSeconds
+                && identity.modificationNanoseconds == expectedIdentity.modificationNanoseconds
+        }
+        guard sameFileAfterRename(identity(named: markedLeaf)) else {
+            var restored = false
+            if identity(named: leaf) == nil {
+                let (restoreStatus, _) = markedLeaf.withCString { markedPointer in
+                    leaf.withCString { leafPointer in
+                        (renameat(parentFD, markedPointer, parentFD, leafPointer), errno)
+                    }
+                }
+                restored = restoreStatus == 0
+            }
+            return .swappedDuringMark(restored: restored)
+        }
+        try Self.synchronizeDirectory(parentFD)
+        let markedPath = (components.dropLast() + [markedLeaf]).joined(separator: "/")
+        return .marked(toRelativePath: markedPath)
+    }
+
     /// Identify the mounted filesystem before considering a fresh empty-file proof.
     func isActualExFAT() throws -> Bool {
         var info = statfs()
