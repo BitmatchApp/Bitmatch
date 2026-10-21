@@ -147,6 +147,12 @@ struct QueueSessionPresentationTests {
             rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [failed.id]) == 1)
     }
 
+    @Test func dockBadgeShowsNothingWhenCleanAndTheCountOtherwise() {
+        #expect(QueueDockBadgePolicy.badgeLabel(forCount: 0) == nil)
+        #expect(QueueDockBadgePolicy.badgeLabel(forCount: 1) == "1")
+        #expect(QueueDockBadgePolicy.badgeLabel(forCount: 12) == "12")
+    }
+
     @Test func liveErrorsAndUnknownModeCannotUseTheQuietPresentation() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }

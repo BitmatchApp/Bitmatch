@@ -564,4 +564,9 @@ enum QueueDockBadgePolicy {
     ) -> Int {
         unresolvedIDs(rows: rows, reviewedIDs: reviewedIDs).union(standaloneAttentionIDs).count
     }
+
+    /// The Dock badge shows the unresolved count, or nothing when clean.
+    static func badgeLabel(forCount count: Int) -> String? {
+        count == 0 ? nil : String(count)
+    }
 }
