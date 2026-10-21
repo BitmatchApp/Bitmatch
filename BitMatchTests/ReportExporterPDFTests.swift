@@ -238,6 +238,7 @@ private final class ReportPDFMemoryMetrics: Sendable {
         let completed: Int?
         let total: Int?
         let value: Int?
+        var footprintMiB: Int? = nil
     }
     struct Snapshot: Codable {
         var phase = "startup"
@@ -315,16 +316,18 @@ private final class ReportPDFMemoryMetrics: Sendable {
         }
         state.withLock {
             $0.phase = event.phase
-            $0.events.append(event)
             if case .finalPDFData(let bytes, let pages, _) = phase {
                 $0.pdfBytes = bytes
                 $0.pageCount = pages
             }
         }
         _ = sample()
+        var checkpoint = event
+        checkpoint.footprintMiB = snapshot().lastMiB
+        state.withLock { $0.events.append(checkpoint) }
         // Renderer callbacks are sparse checkpoints (128 measured blocks or
-        // 16 rendered pages), so an interrupted run keeps recent phase data
-        // without rewriting the receipt on every 25 ms memory sample.
+        // 16 rendered pages), so an interrupted run keeps the phase and its
+        // latest footprint without rewriting the receipt every 25 ms.
         persist(outcome: "running")
     }
 

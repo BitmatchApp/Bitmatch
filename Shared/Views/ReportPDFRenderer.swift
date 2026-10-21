@@ -98,6 +98,12 @@ private final class ReportPDFFileSink: @unchecked Sendable {
         return completed
     }
 
+    func throwIfFailed() throws {
+        lock.lock()
+        defer { lock.unlock() }
+        if let failureCode { throw ReportPDFRenderer.RenderingError.sinkWriteFailed(failureCode) }
+    }
+
     func finish() throws {
         lock.lock()
         defer { lock.unlock() }
@@ -447,6 +453,7 @@ enum ReportPDFRenderer {
         for pageIndex in layout.pages.indices {
             guard let context else { throw RenderingError.contextCreationFailed }
             renderPage(pageIndex, layout: layout, report: report, context: context)
+            try sink.throwIfFailed()
             let completed = pageIndex + 1
             if completed.isMultiple(of: 16) || completed == layout.pages.count {
                 phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))
@@ -495,6 +502,7 @@ enum ReportPDFRenderer {
             if pageIndex.isMultiple(of: 8) { try Task.checkCancellation() }
             guard let context else { throw RenderingError.contextCreationFailed }
             renderPage(pageIndex, layout: layout, report: report, context: context)
+            try sink.throwIfFailed()
             let completed = pageIndex + 1
             if completed.isMultiple(of: 16) || completed == layout.pages.count {
                 phaseObserver?(.pageRenderProgress(completed: completed, total: layout.pages.count))

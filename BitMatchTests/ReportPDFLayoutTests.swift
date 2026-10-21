@@ -444,6 +444,26 @@ struct ReportPDFLayoutTests {
         #expect(threwCancellation)
     }
 
+    @Test func pdfSinkRetriesInterruptsAndReturnsMutablePDFData() async throws {
+        let rows = [ResultRow(path: "/card/sink-success.mov", status: ResultOutcome.verified.statusText,
+            size: 1, checksum: "digest", destination: "/Volumes/Backup")]
+        let summary = ReportSummary(jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1),
+            mode: .copyAndVerify, source: "/card", destinations: ["/Volumes/Backup"], totalFiles: 1,
+            matched: 1, issues: 0, workers: 1, appVersion: "test", osVersion: "test", client: "",
+            production: "", company: "", verificationMethod: "SHA-256", totalBytesProcessed: 0,
+            averageSpeed: 0, clientLogoData: nil, companyLogoData: nil, photographyJob: nil, safetyState: .safeToErase)
+        let writer = PDFShortWriteAndInterruptInjector()
+        var pdf = try await ReportPDFRenderer.renderPDFAsyncForTesting(summary: summary, results: rows) {
+            writer.write(fd: $0, buffer: $1, count: $2)
+        }
+        #expect(writer.didInterrupt)
+        #expect(writer.didWriteShortChunk)
+        #expect(pdf.starts(with: Data("%PDF".utf8)))
+        let originalFirstByte = pdf[0]
+        pdf[0] = originalFirstByte ^ 0x20
+        #expect(pdf[0] != originalFirstByte)
+    }
+
     @Test func pdfSinkShortWriteFailurePropagatesWithoutReturningPartialPDF() async {
         let rows = [ResultRow(path: "/card/sink-error.mov", status: ResultOutcome.verified.statusText,
             size: 1, checksum: "digest", destination: "/Volumes/Backup")]
@@ -470,6 +490,42 @@ struct ReportPDFLayoutTests {
     }
 
 
+}
+
+private final class PDFShortWriteAndInterruptInjector: @unchecked Sendable {
+    private let lock = NSLock()
+    private var interrupted = false
+    private var wroteShortChunk = false
+
+    var didInterrupt: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return interrupted
+    }
+
+    var didWriteShortChunk: Bool {
+        lock.lock(); defer { lock.unlock() }
+        return wroteShortChunk
+    }
+
+    func write(fd: Int32, buffer: UnsafeRawPointer, count: Int) -> Int {
+        lock.lock()
+        if !interrupted {
+            interrupted = true
+            lock.unlock()
+            errno = EINTR
+            return -1
+        }
+        lock.unlock()
+
+        let requested = max(1, count / 2)
+        let written = Darwin.write(fd, buffer, requested)
+        if written > 0 && written < count {
+            lock.lock()
+            wroteShortChunk = true
+            lock.unlock()
+        }
+        return written
+    }
 }
 
 private final class PDFShortWriteFailureInjector: @unchecked Sendable {
