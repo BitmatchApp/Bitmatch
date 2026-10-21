@@ -59,6 +59,7 @@ if len(receipts) != 1:
 receipt = json.loads(receipts[0].read_text())
 required = {
     "complete": True,
+    "cleanupComplete": True,
     "attempts": attempts_text,
     "resultRows": attempts_text * 100,
     "coveredRows": attempts_text * 100,

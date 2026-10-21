@@ -14,7 +14,7 @@ This records local reliability work branched from `main` at `0a50ee5c` on Octobe
 
 ## Current gates
 
-The full engine, Mac, iPhone/iPad build and physical matrix results below precede the later path-comparison/prefix-resolution commit. That commit passed its 13 focused tests; the updated broad gates have not run yet. A subsequent History launch was refused before testing because host free space was below the 50 GiB external-build floor. Earlier passes do not validate the newer source.
+The full engine, Mac, iPhone/iPad build and physical matrix results below precede the later path-comparison/prefix-resolution and History presentation changes. The path correction passed its 13 focused tests and a separate 500-attempt History probe; the subsequent presentation reuse and PDF assertion still await fresh app gates. Updated broad gates have not run yet. A subsequent History launch was refused before testing because host free space was below the 50 GiB external-build floor. Earlier passes do not validate the newer source.
 
 | Gate | Result |
 | --- | --- |
@@ -26,7 +26,7 @@ The full engine, Mac, iPhone/iPad build and physical matrix results below preced
 | Volume mutation checks | **Expected red, then restored:** removing the off-main snapshot boundary failed the held-snapshot responsiveness assertion; removing same-mount serialization failed the healthy-group bypass case. The restored source also passed its 22 tests in the final combined Mac suite. |
 | Focused camera layout suite, `mac-camera-green-20261021T022602Z` | **Passed:** 31 tests, including the incremental-entry cap, in-directory cancellation, depth, and symlink controls. |
 | Camera cancellation mutation, `mac-camera-red-cancel-20261021T022744Z` | **Expected red:** removing the inner-loop cancellation check failed `cardListingCancellationStopsInsideWideDirectory` (2 assertions). The restored source also passed its 31 tests in the final combined Mac suite. |
-| Local validation scripts, `all-script-tests-green.log` | **Passed:** 51 tests. |
+| Local validation scripts, `all-script-tests-final-60.log` | **Passed:** 60 tests, including nine stubbed physical-wrapper cases; no Xcode or media access in these checks. |
 | iPhone/iPad simulator build, `ios-build-20261021T023020Z` | **Passed:** generic iOS Simulator destination, arm64 and x86_64. This is a build result only; no simulator runtime test is claimed. |
 | Revised History 500-attempt app-host probe | **Passed:** 50,000 rows, 344 MiB observed process peak, 1,460 footprint samples; actual non-skipped XCTest and complete cleanup receipt verified. The separate fine-checkpoint run also passed; both external sampling attempts produced empty call graphs, so neither identifies a hot path. |
 | Physical small retry, SD → two SSDs | **Passed:** two Standard transfers, empty-file retry and byte-identical previous MHL histories on both backups; source hashes unchanged. |
@@ -46,3 +46,9 @@ GitHub Actions CI remains disabled and was not run. No release publication, tag,
 ## Resource pause
 
 After the passing physical matrix and focused path tests, host free space fell below the 50 GiB floor while BitMatch builds were stopped and other project jobs were active. The next History/app gate was refused before launch. Build products, caches and result bundles are on the owned external APFS build image; the host evidence directories are small by comparison. No other project's caches or running jobs were changed. Updated broad gates, the 119.6 GB engine run and the additional independent-manifest fixture remain pending, rather than counted as passes.
+
+## Probe runner review and cleanup
+
+The physical app probe now has a tracked wrapper and receipt validator that reject skipped/vacuous Xcode success, mismatched workload and hash/count evidence, and incomplete cleanup. Workload flags are replaced explicitly so a smoke invocation cannot inherit the large opt-in. The probe also requires all eight selected basenames in PDF text. Nine stubbed wrapper cases passed as part of the 60-test script suite; this is runner validation only. The actual physical app run remains permission-blocked, and the updated PDF assertion still needs the fresh app gate.
+
+Closed host build/evidence trees were archived on the authorized SSD and verified file-by-file, including recorded metadata, before removal: 16,888 entries, 13,999 regular files, 1,639,322,078 logical bytes. Logs, receipts and the live external build image remain available. Protected primary and frozen-release checkouts stayed clean at their original commits. No user drive was formatted, ejected or unmounted.

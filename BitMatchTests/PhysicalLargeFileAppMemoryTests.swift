@@ -303,6 +303,11 @@ final class PhysicalLargeFileAppMemoryTests: XCTestCase {
                   let jsonRows = object["results"] as? [[String: Any]], jsonRows.count == record.results.count else {
                 throw LargeFileAppError.reportCoverageFailed
             }
+            let pdfText = document.string ?? ""
+            let expectedSelectedNames = Set(generated.map(\.name))
+            guard expectedSelectedNames.allSatisfy({ pdfText.contains($0) }) else {
+                throw LargeFileAppError.reportCoverageFailed
+            }
             let expectedNames = Set(record.results.map { URL(fileURLWithPath: $0.path).lastPathComponent })
             let jsonNames = Set(jsonRows.compactMap { row in
                 (row["path"] as? String).map { URL(fileURLWithPath: $0).lastPathComponent }

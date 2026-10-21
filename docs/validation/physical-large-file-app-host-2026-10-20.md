@@ -6,7 +6,9 @@
 
 | Gate | Status |
 | --- | --- |
-| Mac app-host compile and ordinary atom-framing test | Passed; physical workload remains blocked |
+| Earlier Mac app-host compile and ordinary atom-framing test | Passed; physical workload remains blocked |
+| Updated PDF text-coverage assertion | Awaiting fresh Mac compile/test |
+| Physical wrapper regressions | Passed: nine stubbed cases, no Xcode or media access |
 | 64 MiB smoke workload | Pending |
 | 119.6 GB workload | Pending |
 
@@ -20,24 +22,21 @@ The smoke workload creates eight small synthetic MOV atom containers totaling ex
 
 The large workload generates eight synthetic MOV atom containers with payload sizes `[2, 3, 4, 5, 7, 8.8, 44.5, 45.3]` decimal GB, totaling exactly 119.6 GB. The containers are synthetic, non-footage data. The transfer uses Standard verification with two pipelined verification workers, ASC MHL, automatic PDF/CSV/JSON reports, and previews disabled. Its receipt is labeled `physical119_6GB` and records generated payload bytes separately from the full source inventory, which may include filesystem-created AppleDouble companions.
 
-Use one serialized Mac app-host test invocation, two build jobs, and the focused test selector. Supply the opt-in and fixture settings using the test runner's `TEST_RUNNER_BITMATCH_` forwarding convention; raw `BITMATCH_` variables passed only to `xcodebuild` may not reach the app-host process. Select exactly one workload per run:
+Use the tracked wrapper for one serialized Mac app-host test invocation with two build jobs and the focused test selector. It forwards fixture settings through the test runner's `TEST_RUNNER_BITMATCH_` convention; raw `BITMATCH_` variables passed only to `xcodebuild` may not reach the app-host process. Select exactly one workload per run:
 
-- Smoke: `TEST_RUNNER_BITMATCH_PHYSICAL_LARGE_FILE_APP_MEMORY_SMOKE=1`.
-- Large: `TEST_RUNNER_BITMATCH_PHYSICAL_LARGE_FILE_APP_MEMORY=1`.
+- Smoke: `smoke`.
+- Large: `large`.
 
-For example, after setting `MARKED_HARDWARE_CONFIG` and a fresh `FRESH_PRIVATE_EVIDENCE_ROOT`, run one of these forms (replace the smoke opt-in with the large opt-in for the large workload):
+Set all three explicit private locations, then invoke exactly one workload:
 
 ```sh
-TEST_RUNNER_BITMATCH_HARDWARE_APP_WORKFLOW=1 \
-TEST_RUNNER_BITMATCH_HARDWARE_CONFIG="$MARKED_HARDWARE_CONFIG" \
-TEST_RUNNER_BITMATCH_PHYSICAL_LARGE_FILE_EVIDENCE_ROOT="$FRESH_PRIVATE_EVIDENCE_ROOT" \
-TEST_RUNNER_BITMATCH_PHYSICAL_LARGE_FILE_APP_MEMORY_SMOKE=1 \
-xcodebuild test -scheme BitMatch -destination 'platform=macOS' -jobs 2 \
-  -parallel-testing-enabled NO \
-  -only-testing:BitMatchTests/PhysicalLargeFileAppMemoryTests/testOptInLargeFilePhysicalAppMemory
+BITMATCH_PHYSICAL_LARGE_FILE_CONFIG="/private/tmp/<private-config-root>/config.json" \
+BITMATCH_PHYSICAL_LARGE_FILE_EVIDENCE_BASE="/private/tmp/<fresh-evidence-parent>" \
+BITMATCH_PHYSICAL_LARGE_FILE_DERIVED_DATA="/private/tmp/<private-derived-data>" \
+Scripts/test-physical-large-file-app-memory.sh smoke
 ```
 
-Both runs also require `TEST_RUNNER_BITMATCH_HARDWARE_APP_WORKFLOW=1`, a marked hardware configuration, and a fresh private host-temporary evidence root that does not already exist. The test runner must fail if the XCTest is skipped or if the complete success receipt is missing. Do not reuse a previous evidence root or accept a smoke receipt as a large-run result.
+Use `large` in place of `smoke` for the 119.6 GB workload. The evidence base must already exist; the wrapper creates a unique run directory with a fresh app evidence child, raw test log, and result bundle. It rejects a skipped/missing focused XCTest, unsuccessful Xcode status, missing or duplicate receipts, and receipts whose workload, byte/file/row counts, cleanup state, hash coverage, verification worker settings, or memory fields disagree. Validation reads logs up to 64 MiB and receipts up to 8 MiB. The wrapper records the run output and leaves failed logs, result bundles, receipts, and fixtures in place. DerivedData must be private temporary storage outside the checkout. The wrapper checks the host's 50 GiB free-space floor before invoking Xcode; it does not monitor that floor during the run, so the operator must continue to watch host capacity. Do not reuse a previous evidence directory or accept a smoke receipt as a large-run result.
 
 ## Isolation, capacity, and retention
 
@@ -51,7 +50,7 @@ A failure receipt and owned fixture children are retained for review. Successful
 
 ## Assertions and evidence scope
 
-The run checks all eight generated MOV payloads against inline SHA-256 digests; records any valid AppleDouble exclusions instead of rejecting the run solely because exFAT created metadata companions; and verifies durable selected/excluded row counts and the corresponding completed/issues outcome. It rehashes the entire source inventory after transfer, reports, and Saved Check, including excluded companions. It independently hashes selected destination content, checks MHL and Saved Check coverage, confirms the automatic reports cover the durable result rows, and verifies the queue/coordinator settled before cleanup. Raw test receipts contain synthetic fixture names and local paths, so retain them privately and review them before sharing. The summary line emits workload labels and counts only.
+The run checks all eight generated MOV payloads against inline SHA-256 digests; records any valid AppleDouble exclusions instead of rejecting the run solely because exFAT created metadata companions; and verifies durable selected/excluded row counts and the corresponding completed/issues outcome. It rehashes the entire source inventory after transfer, reports, and Saved Check, including excluded companions. It independently hashes selected destination content, checks MHL and Saved Check coverage, confirms JSON/CSV result coverage and that every generated selected basename appears in extracted PDF text, and verifies the queue/coordinator settled before cleanup. Raw test receipts contain synthetic fixture names and local paths, so retain them privately and review them before sharing. The summary line emits workload labels and counts only.
 
 Any passing numbers describe only this synthetic workload on a macOS app-test host and the selected physical filesystems. They are not a reproduction of a reporter's media or incident, a general memory guarantee, or evidence about simulator, physical iPhone/iPad, field usage, cable loss, power loss, sleep, thermal throttling, cold-cache performance, or out-of-space recovery. A passing smoke run validates the workflow at 64 MiB only; the 119.6 GB result remains pending until its own non-skipped passing test and complete receipt are recorded above.
 
