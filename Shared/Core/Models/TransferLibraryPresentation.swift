@@ -318,7 +318,11 @@ enum TransferLibraryPresentation {
         // Without the original selected-file plan, matching saved rows cannot
         // establish that every source file was represented. Keep older
         // completed records visible, but do not infer whole-card safety.
-        guard savedResultsCoverSelectedPlan(record) == true else { return false }
+        guard let planned = record.plannedFileCounts,
+              savedResultsCoverSelectedPlan(
+                planned: planned, summaries: summaries,
+                destinationCount: record.destinations.count
+              ) else { return false }
         return summaries.allSatisfy { Set($0.rows.map(\.path)) == expectedPaths }
     }
 
@@ -328,7 +332,15 @@ enum TransferLibraryPresentation {
     static func savedResultsCoverSelectedPlan(_ record: LocalTransferRecord) -> Bool? {
         guard let planned = record.plannedFileCounts else { return nil }
         let summaries = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
-        guard !summaries.isEmpty, summaries.count == record.destinations.count,
+        return savedResultsCoverSelectedPlan(
+            planned: planned, summaries: summaries, destinationCount: record.destinations.count
+        )
+    }
+
+    private static func savedResultsCoverSelectedPlan(
+        planned: [Int], summaries: [DestinationResultSummary], destinationCount: Int
+    ) -> Bool {
+        guard !summaries.isEmpty, summaries.count == destinationCount,
               planned.count == summaries.count else { return false }
         let selected = summaries.map { summary in
             summary.rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }

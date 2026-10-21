@@ -64,9 +64,15 @@ final class MacVolumeAccessModel: ObservableObject {
     private var dismissedDestinationPaths = Set<String>()
     private var autoQueuedVolumeIDs = Set<String>()
     private var selectedSourceMountIdentity: String?
+    private var sourceIdentityGeneration: UInt64 = 0
+    private var sourceIdentityTask: Task<Void, Never>?
+    private var latestConnectedVolumes: [ConnectedDrivesPresentation.Volume] = []
+    private var hasReceivedConnectedVolumesUpdate = false
+    private var connectedVolumesGeneration: UInt64 = 0
+    private var connectedVolumesTask: Task<Void, Never>?
     /// Tests replace this with deterministic mount identities; the app reads
     /// the mounted filesystem, not just the path under /Volumes.
-    var sourceMountIdentity: (URL) -> String? = VolumeMonitorService.selectionIdentity
+    var sourceMountIdentity: @Sendable (URL) -> String? = VolumeMonitorService.selectionIdentity
     /// Volume facts for `BackupTargetPolicy`. Tests supply their own, since
     /// their drives are not mounted.
     var volumeFacts: (URL) -> BackupTargetPolicy.VolumeFacts? = BackupTargetPolicy.VolumeFacts.read
@@ -114,7 +120,7 @@ final class MacVolumeAccessModel: ObservableObject {
         shared.$sourceURL
             .sink { [weak self] url in
                 guard let self else { return }
-                self.selectedSourceMountIdentity = url.flatMap { self.sourceMountIdentity($0) }
+                self.captureSelectedSourceIdentity(url)
             }
             .store(in: &cancellables)
         shared.$destinationURLs.dropFirst()
@@ -184,40 +190,105 @@ final class MacVolumeAccessModel: ObservableObject {
     /// A card at the same mount path is not necessarily the selected card.
     /// Clear the selection if its mounted filesystem changed while discovery
     /// was catching up; a transfer must never silently switch sources.
-    private func invalidateReplacedSource() {
-        guard let sourceURL, let selectedSourceMountIdentity else { return }
-        guard sourceMountIdentity(sourceURL) == selectedSourceMountIdentity else {
+    private func invalidateReplacedSource() async -> Bool {
+        guard let sourceURL else { return true }
+        // A newly selected source has no baseline until its bounded probe
+        // completes. Keep the user's selection visible while blocking
+        // automatic actions; never compare a prior source's identity.
+        guard sourceIdentityTask == nil else { return false }
+        guard let selectedSourceMountIdentity else {
+            captureSelectedSourceIdentity(sourceURL)
+            return false
+        }
+        let generation = sourceIdentityGeneration
+        let liveIdentity = await volumeMonitor.selectionIdentity(at: sourceURL, using: sourceMountIdentity)
+        guard sourceIdentityGeneration == generation, self.sourceURL == sourceURL else { return false }
+        guard let liveIdentity else {
+            // A completed read can no longer identify the source we selected.
+            // Keep pending initial captures visible, but retire a known source
+            // after removal or access loss rather than leave a stale selection.
+            shared?.sourceURL = nil
+            return false
+        }
+        guard liveIdentity == selectedSourceMountIdentity else {
             SharedLogger.warning("Selected source volume changed while mounted; clearing selection", category: .transfer)
             shared?.sourceURL = nil
+            return false
+        }
+        return true
+    }
+
+    private func captureSelectedSourceIdentity(_ url: URL?) {
+        sourceIdentityGeneration &+= 1
+        let generation = sourceIdentityGeneration
+        // Never carry a prior source's identity across a reselection while
+        // the new bounded probe is queued or running.
+        selectedSourceMountIdentity = nil
+        guard let url else {
+            sourceIdentityTask = nil
             return
+        }
+        sourceIdentityTask = Task { [weak self] in
+            guard let self else { return }
+            guard self.sourceIdentityGeneration == generation, self.sourceURL == url else { return }
+            let identity = await self.volumeMonitor.selectionIdentity(at: url, using: self.sourceMountIdentity)
+            guard self.sourceIdentityGeneration == generation, self.sourceURL == url else { return }
+            if let identity {
+                self.selectedSourceMountIdentity = identity
+                self.sourceIdentityTask = nil
+                if self.hasReceivedConnectedVolumesUpdate {
+                    self.handleConnectedVolumesUpdate(self.latestConnectedVolumes)
+                }
+            } else {
+                // Keep the selection visible, but leave its identity absent.
+                // Discovery/automatic actions remain blocked until a later
+                // event can establish a trustworthy baseline.
+                SharedLogger.warning("Selected source volume identity is unavailable; automatic actions remain blocked", category: .transfer)
+            }
+            self.sourceIdentityTask = nil
         }
     }
 
     /// Internal so a missed event gap can be driven without a real mount.
     func handleConnectedVolumesUpdate(_ volumes: [ConnectedDrivesPresentation.Volume]) {
-        invalidateReplacedSource()
-        autoQueueNewCards(from: volumes)
+        latestConnectedVolumes = volumes
+        hasReceivedConnectedVolumesUpdate = true
+        connectedVolumesGeneration &+= 1
+        autoQueuedVolumeIDs.formIntersection(Set(volumes.compactMap(\.volumeID)))
+        guard connectedVolumesTask == nil else { return }
+        connectedVolumesTask = Task { [weak self] in
+            await self?.reconcileConnectedVolumes()
+        }
     }
     
     private func handleCameraCardsUpdate(_ cards: [VolumeMonitorService.DetectedVolume]) {
-        invalidateReplacedSource()
-        // Check if current source is still available
-        if let sourceURL = sourceURL {
-            let sourceStillExists = cards.contains { $0.url.path == sourceURL.path }
-            if !sourceStillExists && FileManager.default.fileExists(atPath: sourceURL.path) == false {
-                SharedLogger.info("Selected source volume was removed: \(sourceURL.lastPathComponent)", category: .transfer)
-                shared?.sourceURL = nil
-            }
-        }
-        
         // Volume discovery only updates the available-card list. Choosing a
         // source belongs to the explicit auto-source policy in
         // MacCameraAutoSourceController, which first proves the card is readable.
+        // Source identity invalidation runs through the bounded live probe
+        // from the connected-volume update; no filesystem lookup runs here.
+        _ = cards
     }
 
-    private func autoQueueNewCards(from volumes: [ConnectedDrivesPresentation.Volume]) {
-        let mountedIDs = Set(volumes.compactMap(\.volumeID))
-        autoQueuedVolumeIDs.formIntersection(mountedIDs)
+    private func reconcileConnectedVolumes() async {
+        while true {
+            let generation = connectedVolumesGeneration
+            let volumes = latestConnectedVolumes
+            let sourceIsValidated = await invalidateReplacedSource()
+            guard generation == connectedVolumesGeneration else { continue }
+            if sourceIsValidated {
+                await autoQueueNewCards(from: volumes, generation: generation)
+            }
+            guard generation != connectedVolumesGeneration else {
+                connectedVolumesTask = nil
+                return
+            }
+        }
+    }
+
+    private func autoQueueNewCards(
+        from volumes: [ConnectedDrivesPresentation.Volume], generation: UInt64
+    ) async {
         guard !needsDriveAccess, let shared, shared.generalSettings.queueNewCardsAutomatically,
               shared.runningOneTimeTransfer != nil || shared.queueIsRunning else { return }
         let candidates = AutoQueuePolicy.candidates(
@@ -226,14 +297,45 @@ final class MacVolumeAccessModel: ObservableObject {
             activeDestinationVolumeIDs: []
         )
         for row in candidates {
+            guard generation == connectedVolumesGeneration else { return }
             guard let volumeID = row.volumeID else { continue }
-            guard volumeMonitor.isCurrentDiscoveredVolume(row) else { continue }
+            guard await volumeMonitor.isCurrentDiscoveredVolume(row) else { continue }
+            guard generation == connectedVolumesGeneration else { return }
+            guard !needsDriveAccess, shared.generalSettings.queueNewCardsAutomatically,
+                  shared.runningOneTimeTransfer != nil || shared.queueIsRunning else { return }
+            let stillCandidate = AutoQueuePolicy.candidates(
+                eligibleRows: shared.autoQueueCandidates(volumes: latestConnectedVolumes),
+                seenVolumeIDs: autoQueuedVolumeIDs,
+                activeDestinationVolumeIDs: []
+            ).contains { $0.url == row.url }
+            guard stillCandidate else { continue }
             do {
                 try shared.enqueueAutomaticallyDetectedCard(source: row.url)
                 autoQueuedVolumeIDs.insert(volumeID)
             } catch {
                 SharedLogger.warning("Could not queue \(row.displayName): \(error.localizedDescription)", category: .transfer)
             }
+        }
+    }
+
+    /// A deterministic wait hook for the view-model identity regression.
+    func waitForVolumeIdentityReconciliation() async {
+        while true {
+            if let task = sourceIdentityTask {
+                await task.value
+            }
+            if let task = connectedVolumesTask {
+                await task.value
+            }
+            if sourceIdentityTask == nil && connectedVolumesTask == nil {
+                return
+            }
+        }
+    }
+
+    func waitForConnectedVolumesReconciliation() async {
+        while let task = connectedVolumesTask {
+            await task.value
         }
     }
     

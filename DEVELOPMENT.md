@@ -54,13 +54,15 @@ IOS_SIMULATOR_DESTINATION='platform=iOS Simulator,name=iPad (A16)' bash test.sh 
 bash test.sh release-builds  # macOS and iOS simulator Release builds
 ```
 
-`ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to reuse a build folder (default `.derived-data/`).
+`ipad-test` refuses to guess a simulator; set `IOS_SIMULATOR_DESTINATION` to one installed on your machine. Set `DERIVED_DATA_ROOT` to choose a build folder; the default temporary location is described below.
 
 The Mac and iOS test jobs request serial execution with `-parallel-testing-enabled NO`; the engine uses `--no-parallel`. This reduces contention between independent tests that share the main actor or use real temporary files. Tests still exercise their own concurrent copy, verification and cancellation work. Keep assertion deadlines unchanged, and record failed runs separately from passing reruns.
 
-If the Mac test host stalls in `dyld` while opening Sparkle from a checkout under Desktop, try a build folder outside Desktop: `DERIVED_DATA_ROOT=/private/tmp/bitmatch-local-tests bash test.sh mac-test`. On Xcode 27.0 this allowed tests to execute without changing signing, sandbox or privacy settings. A loader stall is not a test pass; keep its log separate from the successful rerun.
+App build/test jobs use a stable per-checkout build folder under `/private/tmp/bitmatch-local-tests-<uid>/` by default. This keeps the Mac test host and Sparkle outside Desktop, where an Xcode 27.0 loader stall was observed. `DERIVED_DATA_ROOT=/your/chosen/folder bash test.sh mac-test` still overrides the location; SwiftPM engine jobs keep their existing package build folder. Retain logs and test results before removing a closed build cache. This changes no signing, sandbox or privacy settings, and actual external-drive access can still require authorization. A loader stall is not a test pass; retain it separately from a successful rerun.
 
 GitHub Actions CI was disabled on October 20, 2026. The workflow file is retained, but automatic jobs are not part of the project’s validation or release process. Run the required checks locally before submitting changes; record any host or toolchain failures separately from passing tests. Do not repair or re-enable GitHub CI unless Mike asks.
+
+The offline Python regression suite runs with `python3 -m unittest discover -s Scripts -p 'test_*.py'`. Choose an interpreter with descriptor-relative filesystem APIs for the cleanup tests; the local Python 3.12 run passes, while a Python 3.9 build here lacks `dir_fd` support. Keep that guard rather than weakening ownership-checked cleanup to accommodate an unsupported interpreter.
 
 ### Change workflow
 
@@ -94,6 +96,7 @@ xcrun xccov view --report --json coverage.xcresult
 - `Scripts/run_soak_tests.sh` runs repeatable transfer stress. Set `BITMATCH_SOAK_SEED` and `BITMATCH_SOAK_ITERATIONS` to reproduce a failure; the defaults are `20260711` and `25`. It prints validated JSON before removing its marked temporary folder.
 - `Scripts/ascmhl/validate_reference.sh` checks generated ASC MHL against the official reference tooling.
 - `python Scripts/ascmhl/validate_corpus.py /path/to/pinned/ascmitc/mhl` checks the permanent external-tool corpus on Linux or macOS without Swift. Use Python 3.11+ with the pinned reference checkout installed; see the [fixture README](Packages/BitMatchEngine/Tests/BitMatchEngineTests/Fixtures/EvidenceCompatibility/README.md). This does not run the Swift reader or validate newly generated BitMatch output.
+- The [large-file app-host memory probe](docs/validation/physical-large-file-app-host-2026-10-20.md) has an explicit marked-fixture wrapper. Run its 64 MiB smoke workflow before the separate 119.6 GB workload; a smoke pass does not validate the larger run.
 - For cable removal, sleep, low-power hubs, exFAT and other physical-media cases, follow [docs/HARDWARE_TESTING.md](docs/HARDWARE_TESTING.md) and record results in [docs/HARDWARE_COMPATIBILITY.md](docs/HARDWARE_COMPATIBILITY.md). The automated APFS and exFAT disk-image tests do not prove that real hardware faults are safe.
 
 ## Debug tools (Mac)

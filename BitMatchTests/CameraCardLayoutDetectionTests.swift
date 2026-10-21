@@ -363,4 +363,109 @@ struct CameraCardLayoutDetectionTests {
         }
         #expect(result == "ARRI Alexa Mini LF")
     }
+
+    // MARK: - Bounded card listing
+
+    // Plant: remove the seen >= maxEntries return from the streaming loop.
+    @Test func cardListingDoesNotRequestEntriesPastCap() {
+        let root = URL(fileURLWithPath: "/virtual/card")
+        let entries = (0..<8).map { root.appendingPathComponent("clip-\($0).MOV") }
+        var requested = 0
+        let listing = CardListing.scan(
+            root,
+            maxEntries: 3,
+            directoryStream: { _ in
+                var index = 0
+                return AnyIterator {
+                    requested += 1
+                    guard index < entries.count else { return nil }
+                    defer { index += 1 }
+                    return entries[index]
+                }
+            }
+        )
+
+        #expect(requested == 3)
+        #expect(listing.files.count == 3)
+    }
+
+    // Plant: remove only the inner loop's isCancelled check.
+    @Test func cardListingCancellationStopsInsideWideDirectory() {
+        let root = URL(fileURLWithPath: "/virtual/card")
+        let entries = (0..<8).map { root.appendingPathComponent("clip-\($0).MOV") }
+        var requested = 0
+        let listing = CardListing.scan(
+            root,
+            isCancelled: { requested >= 2 },
+            directoryStream: { _ in
+                var index = 0
+                return AnyIterator {
+                    guard index < entries.count else { return nil }
+                    requested += 1
+                    defer { index += 1 }
+                    return entries[index]
+                }
+            }
+        )
+
+        #expect(requested == 2)
+        #expect(listing.files.count == 2)
+    }
+
+    // Plant: enqueue child directories without the current.depth < maxDepth guard.
+    @Test func cardListingKeepsDepthLimit() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-card-depth-\(UUID())", isDirectory: true)
+        let deepest = root.appendingPathComponent("A/B/C/D", isDirectory: true)
+        try FileManager.default.createDirectory(at: deepest, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let listing = CardListing.scan(root, maxDepth: 3)
+
+        #expect(listing.hasDirectory("A"))
+        #expect(listing.hasDirectory("A/B"))
+        #expect(listing.hasDirectory("A/B/C"))
+        #expect(!listing.hasDirectory("A/B/C/D"))
+    }
+
+    @Test func cardListingDoesNotFollowDirectorySymlinks() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("bitmatch-card-symlink-\(UUID())", isDirectory: true)
+        let target = fm.temporaryDirectory.appendingPathComponent("bitmatch-card-target-\(UUID())", isDirectory: true)
+        let normal = root.appendingPathComponent("NORMAL", isDirectory: true)
+        let link = root.appendingPathComponent("LINK", isDirectory: true)
+        try fm.createDirectory(at: normal, withIntermediateDirectories: true)
+        try fm.createDirectory(at: target, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: link, withDestinationURL: target)
+        defer {
+            try? fm.removeItem(at: root)
+            try? fm.removeItem(at: target)
+        }
+
+        let sentinel = target.appendingPathComponent("sentinel.mov")
+        var streamedDirectories: [String] = []
+        let listing = CardListing.scan(root, directoryStream: { directory in
+            streamedDirectories.append(directory.standardizedFileURL.path)
+            let entries: [URL]
+            switch directory.standardizedFileURL.path {
+            case root.standardizedFileURL.path:
+                entries = [link, normal]
+            case link.standardizedFileURL.path:
+                entries = [sentinel]
+            default:
+                entries = []
+            }
+            var index = 0
+            return AnyIterator {
+                guard index < entries.count else { return nil }
+                defer { index += 1 }
+                return entries[index]
+            }
+        })
+
+        #expect(listing.hasDirectory("NORMAL"))
+        #expect(!listing.hasDirectory("LINK"))
+        #expect(!listing.files.contains { $0.path == "LINK/SENTINEL.MOV" })
+        #expect(!streamedDirectories.contains(link.standardizedFileURL.path))
+    }
 }

@@ -3,7 +3,10 @@ set -euo pipefail
 
 ROOT=$(cd "$(dirname "$0")" && pwd)
 JOB=${1:-mac-test}
-DERIVED_DATA_ROOT=${DERIVED_DATA_ROOT:-"$ROOT/.derived-data"}
+# Keep app-hosted tests and Sparkle's loader outside protected Desktop folders.
+# A stable per-checkout key avoids mixing parallel worktrees' build products.
+CHECKOUT_CACHE_KEY=$(printf '%s' "$ROOT" | shasum -a 256 | cut -c 1-16)
+DERIVED_DATA_ROOT=${DERIVED_DATA_ROOT:-"/private/tmp/bitmatch-local-tests-$(id -u)/$CHECKOUT_CACHE_KEY"}
 
 run_xcodebuild() {
   local name=$1

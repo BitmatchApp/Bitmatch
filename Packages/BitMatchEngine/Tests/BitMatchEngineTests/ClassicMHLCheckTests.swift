@@ -445,7 +445,7 @@ struct ClassicMHLCheckTests {
     /// missing digest as a usable subset of the inventory.
     @Test(arguments: ["truncated", "empty", "missing-file", "missing-size", "negative-size", "fractional-size",
         "overflow-size", "invalid-md5", "invalid-sha1", "no-digest", "duplicate-file", "duplicate-size",
-        "conflicting-digest", "conflicting-size", "absolute", "traversal", "dot", "double-slash", "backslash"])
+        "conflicting-digest", "conflicting-size", "conflicting-modification-date", "absolute", "traversal", "dot", "double-slash", "backslash"])
     func malformedClassicEvidenceFailsClosed(kind: String) async throws {
         let fixture = try ClassicFixture(files: [("clip.mov", Data("original".utf8))])
         defer { fixture.remove() }
@@ -469,6 +469,8 @@ struct ClassicMHLCheckTests {
             let conflict = one.replacingOccurrences(of: digest(fixture.files[0].1, algorithm: "md5"), with: String(repeating: "0", count: 32))
             changed = classicXML(entries: [one, conflict])
         case "conflicting-size": changed = classicXML(entries: [one, one.replacingOccurrences(of: "<size>8</size>", with: "<size>9</size>")])
+        case "conflicting-modification-date":
+            changed = classicXML(entries: [one, one.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-21T00:00:00Z")])
         default:
             let paths = ["absolute": "/clip.mov", "traversal": "../clip.mov", "dot": "./clip.mov",
                 "double-slash": "Camera//clip.mov", "backslash": "Camera\\clip.mov"]
@@ -481,6 +483,76 @@ struct ClassicMHLCheckTests {
             _ = try await checker.discover(under: fixture.media)
         }
         #expect(try fixture.snapshot() == before)
+    }
+
+    @Test(arguments: ["equivalent-timezone", "equivalent-fraction", "empty-timestamp"])
+    func duplicateRecordsWithoutConflictingTimestampClaimsRemainUsable(kind: String) async throws {
+        let fixture = try ClassicFixture(files: [("clip.mov", Data("original".utf8))])
+        defer { fixture.remove() }
+        let one = entry(path: "clip.mov", data: fixture.files[0].1)
+        let second: String
+        switch kind {
+        case "equivalent-timezone":
+            second = one.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-20T02:00:00+02:00")
+        case "equivalent-fraction":
+            second = one.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-20T00:00:00.000Z")
+        default:
+            second = one.replacingOccurrences(of: "<lastmodificationdate>2026-10-20T00:00:00Z</lastmodificationdate>",
+                                              with: "<lastmodificationdate></lastmodificationdate>")
+        }
+        try Data(classicXML(entries: [one, second]).utf8).write(to: fixture.manifest)
+        let result = try await run(fixture.media)
+        #expect(result.isIntact)
+        #expect(result.matchingPaths == ["clip.mov"])
+    }
+
+    @Test(arguments: ["empty-middle", "invalid-middle", "empty-middle-reversed", "invalid-middle-reversed"])
+    func missingTimestampCannotEraseAnEarlierConflictingClaim(kind: String) async throws {
+        let fixture = try ClassicFixture(files: [("clip.mov", Data("original".utf8))])
+        defer { fixture.remove() }
+        let base = entry(path: "clip.mov", data: fixture.files[0].1)
+        let changedDate = base.replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-21T00:00:00Z")
+        let emptyDate = base.replacingOccurrences(of: "<lastmodificationdate>2026-10-20T00:00:00Z</lastmodificationdate>",
+                                                  with: "<lastmodificationdate></lastmodificationdate>")
+        let invalidDate = base.replacingOccurrences(of: "<lastmodificationdate>2026-10-20T00:00:00Z</lastmodificationdate>",
+                                                    with: "<lastmodificationdate>not-a-date</lastmodificationdate>")
+        let middle = kind.hasPrefix("empty") ? emptyDate : invalidDate
+        let entries = kind.hasSuffix("reversed") ? [changedDate, middle, base] : [base, middle, changedDate]
+        try Data(classicXML(entries: entries).utf8).write(to: fixture.manifest)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.discover(under: fixture.media)
+        }
+    }
+
+    @Test func manyClassicRowsRetainCoverageAndRejectConflictingTail() throws {
+        // Exercise only XML parsing and the date-consistency merge with a
+        // bounded synthetic inventory; no media tree traversal or timing
+        // threshold is involved.
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-classic-parser-many-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let manifest = root.appendingPathComponent("inventory.mhl")
+        let rows = (0..<2_000).map { index in
+            entry(path: String(format: "Camera/clip-%04d.mov", index),
+                  data: Data("synthetic row \(index)".utf8), algorithms: "md5")
+        }
+        let validXML = classicXML(entries: rows)
+        try Data(validXML.utf8).write(to: manifest)
+
+        let parsed = try ClassicMHLReader.read(at: manifest)
+        #expect(parsed.files.count == 2_000)
+        #expect(parsed.files.first?.path == "Camera/clip-0000.mov")
+        #expect(parsed.files.last?.path == "Camera/clip-1999.mov")
+        #expect(Set(parsed.files.map(\.path)).count == 2_000)
+
+        let conflictingTail = entry(path: "Camera/clip-0000.mov",
+                                    data: Data("synthetic row 0".utf8), algorithms: "md5")
+            .replacingOccurrences(of: "2026-10-20T00:00:00Z", with: "2026-10-21T00:00:00Z")
+        try Data(classicXML(entries: rows + [conflictingTail]).utf8).write(to: manifest)
+        #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try ClassicMHLReader.read(at: manifest)
+        }
     }
 
     /// Plant: ignore unsupported record kinds or declarations and use only
@@ -545,6 +617,81 @@ struct ClassicMHLCheckTests {
         }
         #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) { _ = try ClassicMHLReader.read(at: special) }
         #expect(FileManager.default.fileExists(atPath: special.path))
+    }
+
+    /// Plant: trim filename whitespace or ignore either digest from an independent classic writer.
+    @Test func independentClassicWriterPreservesPaddedPathAndBothDigests() async throws {
+        let intactRoot = try paddedIndependentFixture()
+        defer { try? FileManager.default.removeItem(at: intactRoot) }
+        let intactBefore = try Data(contentsOf: intactRoot.appendingPathComponent(" padded name.txt "))
+        let discovery = try await checker.discover(under: intactRoot)
+        let record = try #require(discovery.expectedFiles[" padded name.txt "])
+        #expect(record.relativePath == " padded name.txt ")
+        #expect(record.expectedSize == 30)
+        #expect(record.requiredDigests.count == 2)
+        #expect(record.requiredDigests.contains {
+            $0.algorithm == .md5 && $0.value == "300d5c3d929f8697d3f916a449a51ead"
+        })
+        #expect(record.requiredDigests.contains {
+            $0.algorithm == .sha1 && $0.value == "79da2a02fa18fccf3ae906fb0775119b14ebbd32"
+        })
+        let intact = try await checker.check(discovery) { _ in }
+        #expect(intact.isIntact)
+        #expect(intact.matchingPaths == [" padded name.txt "])
+        #expect(intact.newPaths.isEmpty)
+        #expect(try Data(contentsOf: intactRoot.appendingPathComponent(" padded name.txt ")) == intactBefore)
+
+        let changedRoot = try paddedIndependentFixture()
+        defer { try? FileManager.default.removeItem(at: changedRoot) }
+        var corrupted = intactBefore
+        corrupted[corrupted.startIndex] ^= 1
+        #expect(corrupted.count == intactBefore.count)
+        try corrupted.write(to: changedRoot.appendingPathComponent(" padded name.txt "))
+        let changed = try await run(changedRoot)
+        #expect(!changed.isIntact)
+        #expect(changed.changedPaths == [" padded name.txt "])
+        #expect(changed.missingPaths.isEmpty)
+
+        // Alter only one recorded digest at a time. A media mutation changes
+        // both hashes and would not detect a checker silently ignoring one.
+        for (original, replacement) in [
+            ("300d5c3d929f8697d3f916a449a51ead", String(repeating: "0", count: 32)),
+            ("79da2a02fa18fccf3ae906fb0775119b14ebbd32", String(repeating: "0", count: 40))
+        ] {
+            let digestRoot = try paddedIndependentFixture()
+            defer { try? FileManager.default.removeItem(at: digestRoot) }
+            let manifest = digestRoot.appendingPathComponent("padded-independent.mhl")
+            let xml = try String(contentsOf: manifest, encoding: .utf8)
+            #expect(xml.components(separatedBy: original).count == 2)
+            try xml.replacingOccurrences(of: original, with: replacement)
+                .write(to: manifest, atomically: false, encoding: .utf8)
+            let rejected = try await run(digestRoot)
+            #expect(!rejected.isIntact)
+            #expect(rejected.changedPaths == [" padded name.txt "])
+            #expect(rejected.missingPaths.isEmpty)
+            #expect(try Data(contentsOf: digestRoot.appendingPathComponent(" padded name.txt ")) == intactBefore)
+        }
+
+        let missingRoot = try paddedIndependentFixture()
+        defer { try? FileManager.default.removeItem(at: missingRoot) }
+        try FileManager.default.removeItem(at: missingRoot.appendingPathComponent(" padded name.txt "))
+        let missing = try await run(missingRoot)
+        #expect(!missing.isIntact)
+        #expect(missing.missingPaths == [" padded name.txt "])
+        #expect(missing.changedPaths.isEmpty)
+    }
+
+    private func paddedIndependentFixture() throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("bitmatch-classic-independent-padded-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let bundled = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/EvidenceCompatibility/classic-padded-independent")
+        try FileManager.default.copyItem(at: bundled.appendingPathComponent("padded-independent.mhl"),
+                                         to: root.appendingPathComponent("padded-independent.mhl"))
+        try FileManager.default.copyItem(at: bundled.appendingPathComponent(" padded name.txt "),
+                                         to: root.appendingPathComponent(" padded name.txt "))
+        return root
     }
 
     private func run(_ root: URL) async throws -> SavedChecksumCheck.Result {

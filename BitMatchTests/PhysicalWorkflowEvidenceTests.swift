@@ -684,7 +684,7 @@ private final class PhysicalAppPlatform: PlatformManager {
 
 /// Pins only pre-authorized roots. Every child is created exclusively, tracked
 /// by device/inode and removed descriptor-relatively without following links.
-private final class PhysicalAppFixture {
+final class PhysicalAppFixture {
     struct Volume: Codable, Equatable {
         let nonce: String; let root: String; let mount: String; let volumeUUID: String
         let filesystem: String; let initialFreeBytes: Int64

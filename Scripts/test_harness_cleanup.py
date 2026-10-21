@@ -45,7 +45,10 @@ class HarnessCleanupTests(unittest.TestCase):
         root, work, result, run = self.run_cleanup('run_soak_tests.sh', 'cp() { return 1; }')
         self.assertEqual(run.returncode, 1)
         self.assertTrue(result.exists())
-        self.assertIn(str(result), run.stderr)
+        self.assertEqual(result.read_text(), '{"completedIterations":1}')
+        self.assertTrue((work / '.bitmatch-marker').exists())
+        self.assertFalse((root / 'evidence/soak-result.json').exists())
+        self.assertIn(str(work), run.stderr)
         self.assertIn('exit_status=1', (root / 'evidence/environment.txt').read_text())
 
     def test_configuration_removal_failure_still_detaches(self):
