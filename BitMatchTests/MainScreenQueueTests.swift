@@ -195,12 +195,11 @@ struct MainScreenQueueTests {
         // The flag is claimed before the first await (the journal prepare), so it
         // is set as soon as the first call has run to its first suspension; a
         // second call can never slip in during prepare.
-        await Task.yield()
-        #expect(coordinator.ejectingQueueSourceIDs.contains(record.id))
         for _ in 0..<200 where await gate.calls < 1 {
             try await Task.sleep(nanoseconds: 10_000_000)
         }
         #expect(await gate.calls == 1)
+        #expect(coordinator.ejectingQueueSourceIDs.contains(record.id))
         let second = await coordinator.ejectQueueSource(record.id, using: { _ in await gate.noteCall(); return nil })
         #expect(second == nil)
         #expect(await gate.calls == 1)

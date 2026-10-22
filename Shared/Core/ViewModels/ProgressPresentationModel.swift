@@ -268,11 +268,7 @@ extension ProgressPresentationModel {
         guard observedCopySeconds >= Self.minimumObservedCopySeconds else {
             return TransferProgressPresentation.estimating
         }
-        let formatter = ByteCountFormatter()
-        formatter.allowedUnits = [.useMB, .useGB]
-        formatter.countStyle = .decimal
-        let perSec = formatter.string(fromByteCount: Int64(rate)) + "/s"
-        return perSec
+        return TransferProgressPresentation.measuredSpeedText(bytesPerSecond: rate)
     }
 
     /// How much copying must be measured before time left is shown. Shorter

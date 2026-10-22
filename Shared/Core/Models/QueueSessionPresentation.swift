@@ -9,6 +9,13 @@ enum QueueRowAction: Equatable, Sendable {
     case removed
 }
 
+/// The running row's second and third lines (queue polish plan, task 8).
+struct RunningRowDetail: Equatable, Sendable {
+    let metaLine: String
+    let currentFile: String?
+    let timeAndRate: String?
+}
+
 struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let id: UUID
     let cardName: String
@@ -28,6 +35,112 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     var endedAt: Date? = nil
     /// Earlier attempts of the same card, oldest first. Their journal records stay.
     private(set) var earlierAttemptIDs: [UUID] = []
+    /// Which stage a failed transfer stopped in; nil unless `safetyState == .failed`.
+    var failureStage: FailureStage? = nil
+
+    enum FailureStage: Equatable, Sendable { case copy, verify }
+
+    /// Queue wording: says what to do with the card. History keeps `safetyState.title`.
+    var queueLabel: String {
+        if selectedFilesVerified { return "Selected files verified" }
+        switch safetyState {
+        case .waiting: return "Queued"
+        case .preparing, .copying, .finishing: return "Copying"
+        case .verifying: return "Verifying"
+        case .safeToErase: return "Safe to erase"
+        case .copiedNotVerified: return "Copied, not verified"
+        case .needsAttention, .interrupted: return "Keep the card"
+        case .failed: return failureStage == .verify ? "Didn't verify" : "Didn't copy"
+        }
+    }
+
+    var queueSymbol: String {
+        if selectedFilesVerified { return "checkmark.circle" }
+        return switch safetyState {
+        case .waiting: "clock"
+        case .preparing, .copying, .verifying, .finishing: "arrow.triangle.2.circlepath"
+        case .safeToErase: "checkmark.circle.fill"
+        case .copiedNotVerified: "circle.lefthalf.filled"
+        case .needsAttention, .interrupted: "exclamationmark.triangle.fill"
+        case .failed: "xmark.octagon.fill"
+        }
+    }
+
+    /// `<state word> <time> · <reason or backups> · <size>`; empty segments are dropped.
+    /// Running states keep the one-line status until the running row is reworked.
+    func metaLine(now: Date = Date(), calendar: Calendar = .current) -> String {
+        if isRunning { return oneLineStatus(timeRemaining: nil) }
+        let word: String
+        var needsReason = false
+        switch selectedFilesVerified ? CardSafetyState.safeToErase : safetyState {
+        case .safeToErase: word = "Verified"
+        case .copiedNotVerified: word = "Copied"
+        case .needsAttention, .interrupted: word = "Paused"; needsReason = true
+        case .failed: word = "Stopped"; needsReason = true
+        default: word = "Queued"
+        }
+        var lead = word
+        if safetyState != .waiting, let endedAt {
+            lead += " " + Self.timeText(endedAt, calendar: calendar)
+        }
+        let middle = needsReason
+            ? cause.map(QueueSessionPresentation.plainCause) ?? ""
+            : destinationNames.joined(separator: ", ")
+        let size = evidence.flatMap { text -> String? in
+            guard let range = text.range(of: " · ") else { return nil }
+            return String(text[range.upperBound...])
+        } ?? ""
+        return [lead, middle, size].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    private static let timeFormatters = TimeFormatterCache()
+
+    private static func timeText(_ date: Date, calendar: Calendar) -> String {
+        timeFormatters.string(from: date, calendar: calendar)
+    }
+
+    /// Phase, backup index, file and pace for the one running row; nil otherwise.
+    /// `rate` is the averaged copy rate the expanded screen shows
+    /// (`TransferProgressPresentation.speed`); the raw sample is never used.
+    func runningDetail(
+        progress: OperationProgress?, timeRemaining: String?, rate: String? = nil
+    ) -> RunningRowDetail? {
+        guard isRunning else { return nil }
+        let size = progress?.totalBytes.map(ByteCountPresentation.fileSize)
+            ?? evidence.flatMap { text in text.range(of: " · ").map { String(text[$0.upperBound...]) } }
+        func joined(_ parts: [String?]) -> String { parts.compactMap { $0 }.joined(separator: " · ") }
+        let meta: String
+        switch safetyState {
+        case .copying:
+            meta = joined(["Copying to " + destinationNames.joined(separator: ", "), size])
+        case .verifying:
+            let fractions = progress?.perDestinationProgress ?? []
+            let index = fractions.firstIndex(where: { $0 < 1 }) ?? max(0, destinationNames.count - 1)
+            let name = destinationNames.indices.contains(index) ? destinationNames[index] : nil
+            let count = destinationNames.count
+            meta = joined([
+                name.map { "Verifying \($0)" } ?? "Verifying",
+                count > 1 ? "\(index + 1) of \(count) backups" : nil,
+                size
+            ])
+        case .finishing:
+            meta = joined(["Finishing", size])
+        default:
+            meta = "Preparing"
+        }
+        let file = progress?.currentFile
+            .map { ($0 as NSString).lastPathComponent }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let rate = rate == TransferProgressPresentation.estimating ? nil : rate
+        let timeAndRate: String?
+        if timeRemaining == TransferProgressPresentation.estimatingTimeLeft {
+            timeAndRate = "Estimating…"
+        } else {
+            let parts = [timeRemaining.map { "About \($0)" }, rate].compactMap { $0 }
+            timeAndRate = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        return RunningRowDetail(metaLine: meta, currentFile: file, timeAndRate: timeAndRate)
+    }
 
     var isEditable: Bool { safetyState == .waiting }
     var isRunning: Bool { safetyState.isActiveQueueState }
@@ -125,6 +238,18 @@ struct QueueTally: Equatable, Sendable {
     var interrupted = 0
     var notStarted = 0
 
+    /// Header words match the row labels; zero counts are omitted.
+    var queueHeaderText: String {
+        var parts: [String] = []
+        append(safeToErase, singular: "safe to erase", plural: "safe to erase", to: &parts)
+        append(selectedFilesVerified, singular: "selected files verified", plural: "selected files verified", to: &parts)
+        append(needsAttention + interrupted, singular: "keep the card", plural: "keep the card", to: &parts)
+        append(failed, singular: "didn't verify", plural: "didn't verify", to: &parts)
+        append(copiedNotVerified, singular: "copied, not verified", plural: "copied, not verified", to: &parts)
+        append(notStarted, singular: "queued", plural: "queued", to: &parts)
+        return parts.joined(separator: " · ")
+    }
+
     var text: String {
         var parts: [String] = []
         append(safeToErase, singular: "safe to erase", plural: "safe to erase", to: &parts)
@@ -155,6 +280,22 @@ struct QueueSessionPresentation: Equatable, Sendable {
     let pausedCardID: UUID?
     let pausedTitle: String?
     let pausedCause: String?
+    /// One line for the amber strip; the actions live on the paused row.
+    var pausedStripText: String? = nil
+
+    struct RemoveConfirmation: Equatable {
+        let title: String
+        let message: String
+    }
+
+    /// nil when the card is safe to erase, so removing it needs no question.
+    static func removeConfirmation(for row: QueueSessionRow) -> RemoveConfirmation? {
+        guard !row.safetyState.isSafe else { return nil }
+        return RemoveConfirmation(
+            title: "Remove \(row.cardName) from the queue?",
+            message: "It isn't safe to erase yet. Files already copied stay on the backups."
+        )
+    }
 
     var isMultiCard: Bool { rows.count >= 2 }
     var hasStarted: Bool { rows.contains { $0.safetyState != .waiting } }
@@ -225,6 +366,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 isEjected: ejectedSourceIDs.contains(record.id),
                 isEjecting: ejectingSourceIDs.contains(record.id),
                 isRemoved: removedSourceIDs.contains(record.id),
+                isPausedOnProblem: pausedRecordID == record.id,
                 earlierAttemptIDs: attempt.earlier
             )
         }
@@ -293,7 +435,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 }
                 return "Queue paused — \(row.cardName) \(state)"
             },
-            pausedCause: paused?.cause.map(deduplicatedCause)
+            pausedCause: paused?.cause.map(deduplicatedCause),
+            pausedStripText: paused.map { "Paused at \($0.cardName). Keep that card until you review it." }
         )
     }
 
@@ -330,10 +473,15 @@ struct QueueSessionPresentation: Equatable, Sendable {
         isEjected: Bool,
         isEjecting: Bool = false,
         isRemoved: Bool = false,
+        isPausedOnProblem: Bool = false,
         earlierAttemptIDs: [UUID] = []
     ) -> QueueSessionRow {
         let state: CardSafetyState
-        if record.state == .running {
+        if record.state == .running && isPausedOnProblem {
+            // The queue paused on this card but the journal has not settled it yet.
+            // It needs the user, so it is not a running card.
+            state = .needsAttention
+        } else if record.state == .running {
             // A completed file-work stage is not a finished transfer. MHL,
             // report writing and journal settlement can still fail or stop.
             let activeFraction = progress.map {
@@ -379,7 +527,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             evidence: evidence,
             destinations: destinationSummary(destinationNames),
             safetyState: state,
-            progressFraction: record.state == .running ? progress.map {
+            progressFraction: record.state == .running && !isPausedOnProblem ? progress.map {
                 min(max($0.overallProgress, 0), 0.99)
             } : nil,
             action: nil,
@@ -399,7 +547,10 @@ struct QueueSessionPresentation: Equatable, Sendable {
             verificationModeName: record.verificationMode.rawValue,
             estimatedWorkBytes: estimatedWorkBytes(for: record),
             endedAt: record.endedAt,
-            earlierAttemptIDs: earlierAttemptIDs
+            earlierAttemptIDs: earlierAttemptIDs,
+            failureStage: state == .failed
+                ? (record.results.contains { ResultOutcome(statusText: $0.status) == .checksumMismatch } ? .verify : .copy)
+                : nil
         ).showingSource(
             isMounted: isMounted, isEjected: isEjected, isEjecting: isEjecting, isRemoved: isRemoved
         )
@@ -494,6 +645,29 @@ struct QueueSessionPresentation: Equatable, Sendable {
             return names.count == 1 ? "1 destination on \(first)" : "\(names.count) destinations on \(first)"
         }
         return "\(names.count) destinations: \(names.joined(separator: ", "))"
+    }
+
+    /// Engine wording to plain language for the queue meta line; first clause only.
+    static func plainCause(_ cause: String) -> String {
+        var text = deduplicatedCause(cause)
+        let replacements = [
+            ("Original selected-file plan was not saved", "can't confirm every file was copied"),
+            ("selected-file plan was not saved", "can't confirm every file was copied"),
+            ("whole-card coverage cannot be confirmed", "can't confirm every file was copied"),
+            ("Keep the source.", ""),
+        ]
+        for (from, to) in replacements {
+            text = text.replacingOccurrences(of: from, with: to, options: .caseInsensitive)
+        }
+        // Whole words only: drive and file names may contain "source" or "destination".
+        text = text.replacingOccurrences(
+            of: #"\bdestination(s?)\b"#, with: "backup$1", options: [.regularExpression, .caseInsensitive])
+        text = text.replacingOccurrences(
+            of: #"\bsource\b"#, with: "card", options: [.regularExpression, .caseInsensitive])
+        let first = text.split(separator: ";", omittingEmptySubsequences: true).first.map(String.init) ?? text
+        var result = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.hasSuffix(".") { result.removeLast() }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func deduplicatedCause(_ cause: String) -> String {
@@ -632,5 +806,31 @@ enum QueueDockBadgePolicy {
     /// The Dock badge shows the unresolved count, or nothing when clean.
     static func badgeLabel(forCount count: Int) -> String? {
         count == 0 ? nil : String(count)
+    }
+}
+
+
+/// One formatter per calendar and locale: rows rebuild their meta line often.
+/// The "jmm" template gives each user's 12 or 24 hour clock.
+private final class TimeFormatterCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var formatters: [String: DateFormatter] = [:]
+
+    func string(from date: Date, calendar: Calendar) -> String {
+        let locale = calendar.locale ?? .current
+        let key = "\(calendar.identifier)|\(calendar.timeZone.identifier)|\(locale.identifier)"
+        lock.lock(); defer { lock.unlock() }
+        let formatter: DateFormatter
+        if let cached = formatters[key] {
+            formatter = cached
+        } else {
+            formatter = DateFormatter()
+            formatter.locale = locale
+            formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate("jmm")
+            formatters[key] = formatter
+        }
+        // Newer ICU puts a narrow no-break space before AM/PM; a plain space wraps and reads the same.
+        return formatter.string(from: date).replacingOccurrences(of: "\u{202F}", with: " ")
     }
 }
