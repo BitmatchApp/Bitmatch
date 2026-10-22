@@ -229,4 +229,11 @@ struct MacWindowHeightPolicyTests {
         input.userResizedSinceLastTabSwitch = false; input.isLiveResizing = true
         #expect(MacWindowFitPolicy.decide(input) == .hold)
     }
+
+    @Test func onlyAHeightChangeBeyondOnePointIsTheUsers() {
+        #expect(!MacWindowFitPolicy.isUserHeightChange(from: 700, to: 700.5))
+        #expect(!MacWindowFitPolicy.isUserHeightChange(from: 700, to: 699.2))
+        #expect(MacWindowFitPolicy.isUserHeightChange(from: 700, to: 702))
+        #expect(MacWindowFitPolicy.isUserHeightChange(from: 700, to: 400))
+    }
 }

@@ -12,6 +12,11 @@ private struct WindowFitTracker {
     var lastSetHeight: CGFloat = 0
     var userResized = false
     var isLiveResizing = false
+    /// Height when the current live resize began.
+    var liveResizeStartHeight: CGFloat = 0
+    /// True while the shell itself sets a frame, so its own resize
+    /// notifications are not mistaken for the user's.
+    var isApplyingFrame = false
     var hasFitted = false
     /// Extra height kept at launch; dropped on the first tab or History change.
     var headroom: CGFloat = WindowPresentationPolicy.launchHeadroom
@@ -82,6 +87,7 @@ struct MacMainView: View {
     @ObservedObject var remoteBackups: MacRemoteBackupController
     @ObservedObject private var errorHandler = GlobalErrorHandler.shared
     @State private var showingTransfers = false
+    @State private var isEditingText = false
     @State private var transferToReviewID: UUID?
     @State private var dismissedAttentionIDs: Set<UUID> = []
     
@@ -109,7 +115,6 @@ struct MacMainView: View {
     @State private var dropRejectionMessage = ""
     @State private var transitioningQueueID: UUID?
     @State private var queueTransitionClearTask: Task<Void, Never>?
-    @State private var queueAdmissionTask: Task<Void, Never>?
     @Namespace private var queueTransition
     /// Cancel asks once (thesis decision), from the button or ⌘.
     @State private var confirmingTransferCancel = false
@@ -289,7 +294,7 @@ struct MacMainView: View {
         // coordinate space and frame preferences are unchanged.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if !showingTransfers, let bar = actionBar {
-                MacWorkflowActionBar(presentation: bar.presentation, action: bar.action)
+                MacWorkflowActionBar(presentation: bar.presentation, action: bar.action, isEditingText: isEditingText)
             }
         }
         .onPreferenceChange(MasterReportBarKey.self) { masterReportBar = $0 }
@@ -436,17 +441,17 @@ struct MacMainView: View {
             }
         }
         ToolbarItem(placement: .principal) {
-            Picker("Mode", selection: Binding(
-                get: { coordinator.currentMode },
+            // No segment is highlighted in History, so choosing the current
+            // tab there still fires and leaves History.
+            Picker("Mode", selection: Binding<AppMode?>(
+                get: { showingTransfers ? nil : coordinator.currentMode },
                 set: { mode in
-                    if HeaderPresentationPolicy.modeSelectionClosesHistory(showingHistory: showingTransfers) {
-                        closeHistory()
-                    }
-                    coordinator.switchMode(to: mode)
+                    guard let mode else { return }
+                    selectTab(mode)
                 }
             )) {
                 ForEach(AppMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(mode.rawValue).tag(Optional(mode))
                 }
             }
             .pickerStyle(.segmented)
@@ -699,6 +704,14 @@ struct MacMainView: View {
         }
     }
 
+    /// The one way to pick a tab (strip, ⌘1/2/3): History closes first.
+    private func selectTab(_ mode: AppMode) {
+        if HeaderPresentationPolicy.modeSelectionClosesHistory(showingHistory: showingTransfers) {
+            closeHistory()
+        }
+        coordinator.switchMode(to: mode)
+    }
+
     private func closeHistory() {
         showingTransfers = false
         transferToReviewID = nil
@@ -734,7 +747,8 @@ struct MacMainView: View {
 
     private func evaluateWindowFit() {
         windowResizeTask?.cancel()
-        guard let window = hostingWindow, measuredScrollableContentHeight > 0 else { return }
+        guard let window = hostingWindow, measuredScrollableContentHeight > 0,
+              !window.styleMask.contains(.fullScreen) else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
         let now = ProcessInfo.processInfo.systemUptime
         let contentHeight = windowFit.lastHeight + windowFit.headroom
@@ -803,10 +817,31 @@ struct MacMainView: View {
         evaluateWindowFit()
     }
 
+    /// A height change outside the shell's own frames and live resizes is the
+    /// user's: zoom, macOS tiling, Stage Manager. Leave the window alone until
+    /// the next tab switch or History toggle.
+    private func windowDidResize(_ window: NSWindow) {
+        guard !windowFit.isLiveResizing, !windowFit.isApplyingFrame,
+              !window.styleMask.contains(.fullScreen) else { return }
+        if MacWindowFitPolicy.isUserHeightChange(from: windowFit.lastSetHeight, to: window.frame.height) {
+            windowFit.userResized = true
+            windowResizeTask?.cancel()
+            windowFrameAnimation?.cancel()
+        }
+        windowFit.lastSetHeight = window.frame.height
+    }
+
+    /// Sets a frame the shell chose, marked so `windowDidResize` skips it.
+    private func applyShellFrame(_ frame: NSRect, window: NSWindow, display: Bool = true) {
+        windowFit.isApplyingFrame = true
+        window.setFrame(frame, display: display)
+        windowFit.isApplyingFrame = false
+    }
+
     private func windowDidEndLiveResize() {
         windowFit.isLiveResizing = false
         if let window = hostingWindow {
-            if abs(window.frame.height - windowFit.lastSetHeight) > 1 {
+            if MacWindowFitPolicy.isUserHeightChange(from: windowFit.liveResizeStartHeight, to: window.frame.height) {
                 windowFit.userResized = true
             }
             // Later width-only drags must compare against this height.
@@ -822,7 +857,7 @@ struct MacMainView: View {
         // and toolbar, which read as the whole window jumping up.
         windowFrameAnimation?.cancel()
         guard !reduceMotion else {
-            window.setFrame(frame, display: true)
+            applyShellFrame(frame, window: window)
             return
         }
         let start = window.frame
@@ -832,7 +867,7 @@ struct MacMainView: View {
                 guard !Task.isCancelled else { return }
                 let t = Double(step) / Double(steps)
                 let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-                window.setFrame(MacWindowFramePolicy.interpolated(from: start, to: frame, progress: eased), display: true)
+                applyShellFrame(MacWindowFramePolicy.interpolated(from: start, to: frame, progress: eased), window: window)
                 try? await Task.sleep(for: .milliseconds(16))
             }
         }
@@ -856,7 +891,7 @@ struct MacMainView: View {
         let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else { return }
         let constrained = MacWindowFramePolicy.constrainedFrame(frame, to: visibleFrame)
-        window.setFrame(constrained, display: false)
+        applyShellFrame(constrained, window: window, display: false)
         windowFit.lastSetHeight = constrained.height
     }
 
@@ -899,9 +934,21 @@ struct MacMainView: View {
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.willStartLiveResizeNotification)) { note in
                 guard let window = note.object as? NSWindow, window === hostingWindow else { return }
                 windowFit.isLiveResizing = true
-                windowFit.lastSetHeight = windowFit.lastSetHeight == 0 ? window.frame.height : windowFit.lastSetHeight
+                windowFit.liveResizeStartHeight = window.frame.height
                 windowResizeTask?.cancel()
                 windowFrameAnimation?.cancel()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
+                guard let window = note.object as? NSWindow, window === hostingWindow else { return }
+                windowDidResize(window)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSText.didBeginEditingNotification)) { note in
+                guard (note.object as? NSText)?.window === hostingWindow else { return }
+                isEditingText = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSText.didEndEditingNotification)) { note in
+                guard (note.object as? NSText)?.window === hostingWindow else { return }
+                isEditingText = false
             }
             .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification)) { note in
                 guard let window = note.object as? NSWindow, window === hostingWindow else { return }
@@ -919,41 +966,21 @@ struct MacMainView: View {
         notificationObserversView
             .onReceive(NotificationCenter.default.publisher(for: .switchToCopyMode)) { _ in
                 guard !isModeSwitchLocked else { return }
-                coordinator.switchMode(to: .copyAndVerify)
+                selectTab(.copyAndVerify)
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToCompareMode)) { _ in
                 guard !isModeSwitchLocked else { return }
-                coordinator.switchMode(to: .compareFolders)
+                selectTab(.compareFolders)
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToMasterReportMode)) { _ in
                 guard !isModeSwitchLocked else { return }
-                coordinator.switchMode(to: .masterReport)
+                selectTab(.masterReport)
             }
             .onReceive(NotificationCenter.default.publisher(for: .startVerification)) { _ in
-                switch coordinator.currentMode {
-                case .copyAndVerify:
-                    guard coordinator.queuePausedRecordID == nil else { return }
-                    let presentation = SetupPresentation.make(coordinator: coordinator)
-                    guard presentation.start.canStart else { return }
-                    if presentation.start.action == .addToQueue {
-                        enqueueSelectionPrepared()
-                        return
-                    }
-                    if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
-                        stagedCardCount: coordinator.stagedSetupTransfers.count,
-                        hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
-                        isOperationInProgress: coordinator.isOperationInProgress
-                    ) {
-                        startSetupTransfersPrepared()
-                    } else {
-                        Task { await coordinator.startCurrentMode() }
-                    }
-                case .compareFolders:
-                    // ⌘R obeys the same readiness rule as the Compare button.
-                    ComparePresentation.startIfReady(coordinator)
-                case .masterReport:
-                    break
-                }
+                // ⌘R is the bar's button: the same readiness rule and the same
+                // admission path. Master Report has no ⌘R action.
+                guard coordinator.currentMode != .masterReport else { return }
+                actionBar?.action()
             }
             .onReceive(NotificationCenter.default.publisher(for: .cancelOperation)) { _ in
                 // ⌘. does nothing when nothing runs. A transfer asks first,
@@ -985,43 +1012,6 @@ struct MacMainView: View {
             .onReceive(NotificationCenter.default.publisher(for: .clearTestData)) { _ in
                 coordinator.resetForNewOperation()
             }
-    }
-
-    private func enqueueSelectionPrepared() {
-        guard queueAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        queueAdmissionTask = Task { @MainActor in
-            defer { queueAdmissionTask = nil }
-            do {
-                let id = try await coordinator.enqueueSelectionPrepared()
-                performCompletedQueueTransition(
-                    reduceMotion: reduceMotion,
-                    previousEditingID: previousEditingID,
-                    committedID: id
-                )
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
-    }
-
-    private func startSetupTransfersPrepared() {
-        guard queueAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        queueAdmissionTask = Task { @MainActor in
-            defer { queueAdmissionTask = nil }
-            do {
-                if let id = try await coordinator.startSetupTransfersPrepared() {
-                    performCompletedQueueTransition(
-                        reduceMotion: reduceMotion,
-                        previousEditingID: previousEditingID,
-                        committedID: id
-                    )
-                }
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
     }
 }
 

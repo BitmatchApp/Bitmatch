@@ -39,4 +39,10 @@ enum MacWindowFitPolicy {
         }
         return .hold
     }
+
+    /// A height change the shell did not make itself (zoom, tiling, Stage
+    /// Manager, a drag) is the user's. Width-only changes are not.
+    static func isUserHeightChange(from previous: CGFloat, to current: CGFloat) -> Bool {
+        abs(current - previous) > 1
+    }
 }
