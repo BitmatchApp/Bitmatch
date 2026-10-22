@@ -56,6 +56,8 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     @State private var width: CGFloat = 0
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
 
     init(
         presentation: SetupPresentation,
@@ -216,7 +218,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: display.symbol)
                     .font(.body.weight(.semibold))
-                    .foregroundStyle(display.tone.color)
+                    .foregroundStyle(display.tone.color(scheme: colorScheme, increasedContrast: accessibilityContrast == .increased))
                     .accessibilityHidden(true)
                 VStack(alignment: .leading, spacing: 3) {
                     Text(display.title)
@@ -229,7 +231,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
                 Spacer(minLength: 0)
             }
             .padding(12)
-            .background(display.tone.color.opacity(0.10), in: RoundedRectangle(cornerRadius: 10))
+            .background(display.tone.color(scheme: colorScheme, increasedContrast: accessibilityContrast == .increased).opacity(0.10), in: RoundedRectangle(cornerRadius: Radius.container))
             .accessibilityElement(children: .combine)
             .accessibilityLabel("Preflight: \(display.title). \(display.detail)")
         }
@@ -323,6 +325,7 @@ struct SetupStartControl: View {
         VStack(alignment: .center, spacing: 8) {
             Button(action: action) {
                 Label(start.title, systemImage: start.symbol)
+                    .font(.body)
                     .frame(maxWidth: .infinity, minHeight: usesBottomBar ? 52 : 32)
             }
             .buttonStyle(.borderedProminent)

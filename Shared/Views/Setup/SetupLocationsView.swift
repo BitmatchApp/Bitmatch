@@ -143,28 +143,28 @@ struct SetupLocationsView: View {
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title)
-                .font(.subheadline.weight(.semibold))
+                .font(.headline)
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             VStack(alignment: .leading, spacing: 8) { content() }
-                .padding(12)
+                .padding(Spacing.container)
                 .frame(maxWidth: .infinity, minHeight: 124, alignment: .topLeading)
                 .background(
-                    RoundedRectangle(cornerRadius: 10)
+                    RoundedRectangle(cornerRadius: Radius.container)
                         .fill(Color.primary.opacity(0.02))
                 )
                 .overlay {
                     if isNext {
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: Radius.container)
                             .strokeBorder(Color.accentColor, lineWidth: 1.5)
                     } else if isEmpty {
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: Radius.container)
                             .stroke(
                                 Color.secondary.opacity(0.45),
                                 style: StrokeStyle(lineWidth: 1, dash: [5, 4])
                             )
                     } else {
-                        RoundedRectangle(cornerRadius: 10)
+                        RoundedRectangle(cornerRadius: Radius.container)
                             .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
                     }
                 }
@@ -224,7 +224,7 @@ struct SetupLocationsView: View {
         if let source = presentation.source {
             Button(action: actions.clearSource) {
                 Image(systemName: "xmark.circle.fill")
-                    .font(dynamicTypeSize.isAccessibilitySize ? .system(size: 24) : .body)
+                    .font(dynamicTypeSize.isAccessibilitySize ? .title2 : .body)
                     .frame(width: 24, height: 24)
                     .setupLocationTouchTarget()
                     .foregroundStyle(.secondary)
@@ -273,7 +273,7 @@ struct SetupLocationsView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(1)
                 Image(systemName: "chevron.down")
-                    .font(dynamicTypeSize.isAccessibilitySize ? .system(size: 20) : .caption)
+                    .font(dynamicTypeSize.isAccessibilitySize ? .title3 : .caption)
                     .foregroundStyle(.secondary)
                     .accessibilityHidden(true)
             }
@@ -479,7 +479,7 @@ struct SetupLocationsView: View {
             Group {
                 if symbolOnly {
                     Image(systemName: "folder.badge.plus")
-                        .font(.system(size: 24))
+                        .font(.title2)
                         .frame(width: 24, height: 24)
                 } else {
                     ViewThatFits(in: .horizontal) {
@@ -879,8 +879,8 @@ struct SetupSelectedLocationBackground: View {
 
 struct SetupLocationsPanelBackground: View {
     var body: some View {
-        RoundedRectangle(cornerRadius: 10)
+        RoundedRectangle(cornerRadius: Radius.container)
             .fill(Color.primary.opacity(0.03))
-            .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color.primary.opacity(0.08)))
+            .overlay(RoundedRectangle(cornerRadius: Radius.container).stroke(Color.primary.opacity(0.08)))
     }
 }

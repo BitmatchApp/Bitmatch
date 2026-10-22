@@ -126,7 +126,7 @@ struct CompareScreen: View {
                 )
             }
         }
-        .padding(14)
+        .padding(Spacing.container)
         .background(SetupLocationsPanelBackground())
     }
 
@@ -327,7 +327,7 @@ private struct CompareFolderSlotView: View {
         VStack(alignment: .leading, spacing: 8) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(side)
-                    .font(.subheadline.weight(.semibold))
+                    .font(.headline)
                     .foregroundStyle(.secondary)
                     .accessibilityAddTraits(.isHeader)
                 Text(role)
