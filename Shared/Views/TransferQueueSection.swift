@@ -331,17 +331,22 @@ struct TransferQueueSection: View {
             RoundedRectangle(cornerRadius: Radius.container)
                 .fill(CardSafetyTint.green.color.opacity(commitFlashIDs.contains(row.id) ? 0.16 : 0))
                 .animation(.easeOut(duration: Motion.commitSettleDuration), value: commitFlashIDs.contains(row.id))
+                // Decoration only: a filled shape in an overlay would otherwise
+                // swallow every click meant for the row's buttons and menu.
+                .allowsHitTesting(false)
         }
         .overlay {
             // Hover only brightens the surface; the row never lifts.
             RoundedRectangle(cornerRadius: Radius.container)
                 .fill(Color.primary.opacity(hoveredRowID == row.id ? 0.03 : 0))
                 .animation(Motion.quick, value: hoveredRowID == row.id)
+                .allowsHitTesting(false)
         }
         .overlay {
             RoundedRectangle(cornerRadius: Radius.container).strokeBorder(borderColor(for: row))
+                .allowsHitTesting(false)
         }
-        .overlay(alignment: .leading) { attentionEdge(for: row) }
+        .overlay(alignment: .leading) { attentionEdge(for: row).allowsHitTesting(false) }
         .clipShape(RoundedRectangle(cornerRadius: Radius.container))
         #if os(macOS)
         .onHover { hovering in
