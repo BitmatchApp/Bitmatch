@@ -17,6 +17,9 @@ struct QueueRowContent<Headline: View, Controls: View>: View {
     @State private var shownFileAt = Date.distantPast
     @State private var shownTimeAndRate: String?
     @State private var shownTimeAndRateAt = Date.distantPast
+    @State private var latestDetail: RunningRowDetail?
+    @State private var deferredUpdate: Task<Void, Never>?
+    @Environment(\.horizontalSizeClass) private var horizontalSizeClass
 
     init(
         row: QueueSessionRow,
@@ -44,6 +47,7 @@ struct QueueRowContent<Headline: View, Controls: View>: View {
             }
         }
         .onChange(of: detail, initial: true) { _, new in throttle(new) }
+        .onDisappear { deferredUpdate?.cancel(); deferredUpdate = nil }
     }
 
     private var textBlock: some View {
@@ -57,9 +61,9 @@ struct QueueRowContent<Headline: View, Controls: View>: View {
                 .font(.callout).monospacedDigit()
                 .foregroundStyle(.secondary)
                 .lineLimit(2)
-            if row.isRunning, shownFile != nil || shownTimeAndRate != nil {
+            if row.isRunning, showsFile && shownFile != nil || shownTimeAndRate != nil {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Text(shownFile ?? "")
+                    Text(showsFile ? shownFile ?? "" : "")
                         .lineLimit(1).truncationMode(.middle)
                     Spacer(minLength: 4)
                     Text(shownTimeAndRate ?? "").lineLimit(1).fixedSize()
@@ -71,22 +75,45 @@ struct QueueRowContent<Headline: View, Controls: View>: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
+    /// The file name is for the Mac and iPad; the phone keeps the line short.
+    private var showsFile: Bool { horizontalSizeClass != .compact }
+
     private func throttle(_ new: RunningRowDetail?) {
+        deferredUpdate?.cancel()
+        deferredUpdate = nil
+        latestDetail = new
         let now = Date()
         guard let new else {
             shownFile = nil; shownTimeAndRate = nil
             shownFileAt = .distantPast; shownTimeAndRateAt = .distantPast
             return
         }
-        if new.currentFile != shownFile, shownFile == nil || new.currentFile == nil
-            || now.timeIntervalSince(shownFileAt) >= 2 {
-            shownFile = new.currentFile
-            shownFileAt = now
+        var wait: TimeInterval = 0
+        if new.currentFile != shownFile {
+            let elapsed = now.timeIntervalSince(shownFileAt)
+            if shownFile == nil || new.currentFile == nil || elapsed >= 2 {
+                shownFile = new.currentFile
+                shownFileAt = now
+            } else {
+                wait = max(wait, 2 - elapsed)
+            }
         }
-        if new.timeAndRate != shownTimeAndRate, shownTimeAndRate == nil || new.timeAndRate == nil
-            || now.timeIntervalSince(shownTimeAndRateAt) >= 1 {
-            shownTimeAndRate = new.timeAndRate
-            shownTimeAndRateAt = now
+        if new.timeAndRate != shownTimeAndRate {
+            let elapsed = now.timeIntervalSince(shownTimeAndRateAt)
+            if shownTimeAndRate == nil || new.timeAndRate == nil || elapsed >= 1 {
+                shownTimeAndRate = new.timeAndRate
+                shownTimeAndRateAt = now
+            } else {
+                wait = max(wait, 1 - elapsed)
+            }
+        }
+        // A held-back value must still appear if no further update arrives.
+        if wait > 0 {
+            deferredUpdate = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(wait))
+                guard !Task.isCancelled else { return }
+                throttle(latestDetail)
+            }
         }
     }
 }

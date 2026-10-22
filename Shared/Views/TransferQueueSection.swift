@@ -152,6 +152,9 @@ struct TransferQueueSection: View {
             #endif
         } else {
             HStack(spacing: 8) {
+                if !presentation.tally.queueHeaderText.isEmpty {
+                    tallyText(presentation.tally.queueHeaderText).font(.callout).lineLimit(2)
+                }
                 Spacer(minLength: 0)
                 headerActions(presentation)
             }
@@ -324,7 +327,11 @@ struct TransferQueueSection: View {
 
     private func collapsedRow(_ row: QueueSessionRow) -> some View {
         let detail = row.isRunning
-            ? row.runningDetail(progress: progress.progress, timeRemaining: liveProgressPresentation.timeRemaining)
+            ? row.runningDetail(
+                progress: progress.progress,
+                timeRemaining: liveProgressPresentation.timeRemaining,
+                rate: liveProgressPresentation.speed
+            )
             : nil
         let meta = detail?.metaLine ?? row.metaLine()
         return VStack(alignment: .leading, spacing: 5) {
@@ -335,14 +342,12 @@ struct TransferQueueSection: View {
                     rowControls(row)
                 }
             }
-            #if os(iOS)
             if row.isRunning, let fraction = row.progressFraction {
                 ProgressView(value: min(max(fraction, 0), 1))
                     .progressViewStyle(.linear)
                     .tint(.accentColor)
                     .accessibilityHidden(true)
             }
-            #endif
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -350,9 +355,20 @@ struct TransferQueueSection: View {
         .contentShape(Rectangle())
         .onTapGesture { selectOrExpand(row) }
         .contextMenu { rowMenuItems(row) }
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(row.queueLabel). \(row.cardName). \(meta)")
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            "\(row.queueLabel), \(row.cardName), "
+                + meta.replacingOccurrences(of: " · ", with: ", ")
+        )
+        .accessibilityValue(runningAccessibilityValue(row, detail: detail))
         .accessibilityActions { rowAccessibilityActions(row) }
+    }
+
+    private func runningAccessibilityValue(_ row: QueueSessionRow, detail: RunningRowDetail?) -> String {
+        guard row.isRunning, let fraction = row.progressFraction else { return "" }
+        let percent = Int((min(max(fraction, 0), 1) * 100).rounded(.down))
+        return ["\(percent)%", detail?.timeAndRate?.replacingOccurrences(of: " · ", with: ", ")]
+            .compactMap { $0 }.joined(separator: ", ")
     }
 
     private var menuHitSize: CGFloat {
@@ -365,8 +381,14 @@ struct TransferQueueSection: View {
 
     private enum RowPrimary { case pause, resume, eject, review }
 
+    /// A paused card is settled for the user even while its journal record is
+    /// still `.running`: it can be reviewed, skipped or removed.
+    private func isLive(_ row: QueueSessionRow) -> Bool {
+        row.isRunning && coordinator.queuePresentation.pausedCardID != row.id
+    }
+
     private func primary(for row: QueueSessionRow) -> RowPrimary? {
-        if row.isRunning {
+        if isLive(row) {
             switch liveProgressPresentation.controls.primary {
             case .some(.pause): return .pause
             case .some(.resume): return .resume
@@ -422,7 +444,7 @@ struct TransferQueueSection: View {
             } else if ejectSource != nil {
                 EjectProgressLabel(action: row.action)
             }
-            if !row.isRunning {
+            if !isLive(row) {
                 Menu {
                     rowMenuItems(row)
                 } label: {
@@ -452,7 +474,7 @@ struct TransferQueueSection: View {
                 .disabled(editTask != nil)
             Button("Move to top") { moveToTop(row.id) }
         }
-        if !row.isRunning {
+        if !isLive(row) {
             Button("Remove from queue", role: .destructive) { requestRemove(row) }
         }
         if row.isFinished, let outcome = row.outcome, outcome.canExport {
@@ -473,7 +495,7 @@ struct TransferQueueSection: View {
         if coordinator.queuePresentation.pausedCardID == row.id {
             Button("Skip and continue") { coordinator.skipPausedCardAndContinue(row.id) }
         }
-        if !row.isRunning && !row.isEditable {
+        if !isLive(row) && !row.isEditable {
             Button("Remove from queue") { requestRemove(row) }
         }
         if row.isFinished, let outcome = row.outcome, outcome.canExport {
@@ -784,7 +806,7 @@ struct TransferQueueSection: View {
 
     @ViewBuilder
     private func attentionEdge(for row: QueueSessionRow) -> some View {
-        switch row.safetyState {
+        switch row.selectedFilesVerified ? CardSafetyState.safeToErase : row.safetyState {
         case .needsAttention, .interrupted:
             Rectangle().fill(CardSafetyTint.amber.color).frame(width: 4).accessibilityHidden(true)
         case .failed:
@@ -894,7 +916,7 @@ struct TransferQueueSection: View {
     private func confirmRemove(_ id: UUID) {
         pendingRemoval = nil
         guard let live = coordinator.queuePresentation.rows.first(where: { $0.id == id }),
-              !live.isRunning else { return }
+              !isLive(live) else { return }
         removeFromList(live)
     }
 

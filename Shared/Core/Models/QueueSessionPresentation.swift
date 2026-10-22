@@ -72,7 +72,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         if isRunning { return oneLineStatus(timeRemaining: nil) }
         let word: String
         var needsReason = false
-        switch safetyState {
+        switch selectedFilesVerified ? CardSafetyState.safeToErase : safetyState {
         case .safeToErase: word = "Verified"
         case .copiedNotVerified: word = "Copied"
         case .needsAttention, .interrupted: word = "Paused"; needsReason = true
@@ -81,11 +81,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         }
         var lead = word
         if safetyState != .waiting, let endedAt {
-            let formatter = DateFormatter()
-            formatter.locale = calendar.locale ?? .current
-            formatter.timeZone = calendar.timeZone
-            formatter.dateFormat = "h:mm a"
-            lead += " " + formatter.string(from: endedAt)
+            lead += " " + Self.timeText(endedAt, calendar: calendar)
         }
         let middle = needsReason
             ? cause.map(QueueSessionPresentation.plainCause) ?? ""
@@ -97,8 +93,18 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         return [lead, middle, size].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
+    private static let timeFormatters = TimeFormatterCache()
+
+    private static func timeText(_ date: Date, calendar: Calendar) -> String {
+        timeFormatters.string(from: date, calendar: calendar)
+    }
+
     /// Phase, backup index, file and pace for the one running row; nil otherwise.
-    func runningDetail(progress: OperationProgress?, timeRemaining: String?) -> RunningRowDetail? {
+    /// `rate` is the averaged copy rate the expanded screen shows
+    /// (`TransferProgressPresentation.speed`); the raw sample is never used.
+    func runningDetail(
+        progress: OperationProgress?, timeRemaining: String?, rate: String? = nil
+    ) -> RunningRowDetail? {
         guard isRunning else { return nil }
         let size = progress?.totalBytes.map(ByteCountPresentation.fileSize)
             ?? evidence.flatMap { text in text.range(of: " · ").map { String(text[$0.upperBound...]) } }
@@ -125,7 +131,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         let file = progress?.currentFile
             .map { ($0 as NSString).lastPathComponent }
             .flatMap { $0.isEmpty ? nil : $0 }
-        let rate = progress?.speed.flatMap(TransferProgressPresentation.measuredSpeedText)
+        let rate = rate == TransferProgressPresentation.estimating ? nil : rate
         let timeAndRate: String?
         if timeRemaining == TransferProgressPresentation.estimatingTimeLeft {
             timeAndRate = "Estimating…"
@@ -360,6 +366,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 isEjected: ejectedSourceIDs.contains(record.id),
                 isEjecting: ejectingSourceIDs.contains(record.id),
                 isRemoved: removedSourceIDs.contains(record.id),
+                isPausedOnProblem: pausedRecordID == record.id,
                 earlierAttemptIDs: attempt.earlier
             )
         }
@@ -466,10 +473,15 @@ struct QueueSessionPresentation: Equatable, Sendable {
         isEjected: Bool,
         isEjecting: Bool = false,
         isRemoved: Bool = false,
+        isPausedOnProblem: Bool = false,
         earlierAttemptIDs: [UUID] = []
     ) -> QueueSessionRow {
         let state: CardSafetyState
-        if record.state == .running {
+        if record.state == .running && isPausedOnProblem {
+            // The queue paused on this card but the journal has not settled it yet.
+            // It needs the user, so it is not a running card.
+            state = .needsAttention
+        } else if record.state == .running {
             // A completed file-work stage is not a finished transfer. MHL,
             // report writing and journal settlement can still fail or stop.
             let activeFraction = progress.map {
@@ -515,7 +527,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             evidence: evidence,
             destinations: destinationSummary(destinationNames),
             safetyState: state,
-            progressFraction: record.state == .running ? progress.map {
+            progressFraction: record.state == .running && !isPausedOnProblem ? progress.map {
                 min(max($0.overallProgress, 0), 0.99)
             } : nil,
             action: nil,
@@ -643,12 +655,15 @@ struct QueueSessionPresentation: Equatable, Sendable {
             ("selected-file plan was not saved", "can't confirm every file was copied"),
             ("whole-card coverage cannot be confirmed", "can't confirm every file was copied"),
             ("Keep the source.", ""),
-            ("destination", "backup"),
-            ("source", "card"),
         ]
         for (from, to) in replacements {
             text = text.replacingOccurrences(of: from, with: to, options: .caseInsensitive)
         }
+        // Whole words only: drive and file names may contain "source" or "destination".
+        text = text.replacingOccurrences(
+            of: #"\bdestination(s?)\b"#, with: "backup$1", options: [.regularExpression, .caseInsensitive])
+        text = text.replacingOccurrences(
+            of: #"\bsource\b"#, with: "card", options: [.regularExpression, .caseInsensitive])
         let first = text.split(separator: ";", omittingEmptySubsequences: true).first.map(String.init) ?? text
         var result = first.trimmingCharacters(in: .whitespacesAndNewlines)
         while result.hasSuffix(".") { result.removeLast() }
@@ -791,5 +806,31 @@ enum QueueDockBadgePolicy {
     /// The Dock badge shows the unresolved count, or nothing when clean.
     static func badgeLabel(forCount count: Int) -> String? {
         count == 0 ? nil : String(count)
+    }
+}
+
+
+/// One formatter per calendar and locale: rows rebuild their meta line often.
+/// The "jmm" template gives each user's 12 or 24 hour clock.
+private final class TimeFormatterCache: @unchecked Sendable {
+    private let lock = NSLock()
+    private var formatters: [String: DateFormatter] = [:]
+
+    func string(from date: Date, calendar: Calendar) -> String {
+        let locale = calendar.locale ?? .current
+        let key = "\(calendar.identifier)|\(calendar.timeZone.identifier)|\(locale.identifier)"
+        lock.lock(); defer { lock.unlock() }
+        let formatter: DateFormatter
+        if let cached = formatters[key] {
+            formatter = cached
+        } else {
+            formatter = DateFormatter()
+            formatter.locale = locale
+            formatter.timeZone = calendar.timeZone
+            formatter.setLocalizedDateFormatFromTemplate("jmm")
+            formatters[key] = formatter
+        }
+        // Newer ICU puts a narrow no-break space before AM/PM; a plain space wraps and reads the same.
+        return formatter.string(from: date).replacingOccurrences(of: "\u{202F}", with: " ")
     }
 }

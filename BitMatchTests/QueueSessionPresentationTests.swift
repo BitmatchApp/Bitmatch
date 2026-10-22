@@ -30,7 +30,7 @@ struct QueueSessionPresentationTests {
         let record = try fixture.record(name: "B_CAM", state: .running, destinationNames: ["Shuttle A", "Shuttle B", "Shuttle C"])
         let progress = runningProgress(stage: .verifying, speed: 557_000_000, perDestination: [1, 0.4, 0])
         let row = try runningRow(record, progress)
-        let detail = try #require(row.runningDetail(progress: progress, timeRemaining: "12 min"))
+        let detail = try #require(row.runningDetail(progress: progress, timeRemaining: "12 min", rate: "557 MB/s"))
         #expect(detail.metaLine == "Verifying Shuttle B · 2 of 3 backups · 218 GB")
         #expect(detail.currentFile == "B007C012.mov")
         #expect(detail.timeAndRate == "About 12 min · 557 MB/s")
@@ -40,17 +40,21 @@ struct QueueSessionPresentationTests {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
         let record = try fixture.record(name: "B_CAM", state: .running, destinationNames: ["Shuttle A", "Shuttle B"])
-        func detail(_ p: OperationProgress, _ time: String?) throws -> RunningRowDetail {
-            try #require(try runningRow(record, p).runningDetail(progress: p, timeRemaining: time))
+        func detail(_ p: OperationProgress, _ time: String?, rate: String? = nil) throws -> RunningRowDetail {
+            try #require(try runningRow(record, p).runningDetail(progress: p, timeRemaining: time, rate: rate))
         }
         #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), nil).metaLine == "Copying to Shuttle A, Shuttle B · 218 GB")
         #expect(try detail(runningProgress(stage: .verifying, speed: nil, perDestination: [1, 1]), nil).metaLine == "Verifying Shuttle B · 2 of 2 backups · 218 GB")
         #expect(try detail(runningProgress(stage: .generating, speed: nil, perDestination: nil), nil).metaLine == "Finishing · 218 GB")
         #expect(try detail(runningProgress(stage: .preparing, speed: nil, perDestination: nil), nil).metaLine == "Preparing")
         #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil, file: ""), nil).currentFile == nil)
-        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), TransferProgressPresentation.estimatingTimeLeft).timeAndRate == "Estimating…")
+        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), TransferProgressPresentation.estimatingTimeLeft, rate: "557 MB/s").timeAndRate == "Estimating…")
         #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), "3 min").timeAndRate == "About 3 min")
-        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), nil).timeAndRate == "557 MB/s")
+        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), nil, rate: "557 MB/s").timeAndRate == "557 MB/s")
+        // The raw sample is never shown, and the averaged rate stays blank while it is still estimating.
+        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), nil).timeAndRate == nil)
+        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), "3 min",
+            rate: TransferProgressPresentation.estimating).timeAndRate == "About 3 min")
         #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), nil).timeAndRate == nil)
         let waiting = try fixture.record(name: "A_CAM", state: .queued)
         let waitingRow = QueueSessionPresentation.make(records: [waiting], sessionIDs: [waiting.id], progress: nil, mountedSourceIDs: [waiting.id]).rows[0]
@@ -119,6 +123,56 @@ struct QueueSessionPresentationTests {
         #expect(QueueSessionPresentation.plainCause("Source disconnected.") == "card disconnected")
     }
 
+    @Test func plainCauseKeepsNamesThatContainEngineWords() {
+        #expect(QueueSessionPresentation.plainCause("Destination 2 is full") == "backup 2 is full")
+        #expect(QueueSessionPresentation.plainCause("1 file failed on Destination 2") == "1 file failed on backup 2")
+        #expect(QueueSessionPresentation.plainCause("Couldn't read resource.xml") == "Couldn't read resource.xml")
+        #expect(QueueSessionPresentation.plainCause("Couldn't write to Resources and Sourcebook") == "Couldn't write to Resources and Sourcebook")
+        #expect(QueueSessionPresentation.plainCause("All destinations are full") == "All backups are full")
+    }
+
+    @Test func metaLineUsesTheUsersClock() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let row = try metaRow(fixture)
+        var german = newYork
+        german.locale = Locale(identifier: "de_DE")
+        #expect(row.metaLine(calendar: newYork).hasPrefix("Verified 4:41 PM"))
+        #expect(row.metaLine(calendar: german).hasPrefix("Verified 16:41"))
+    }
+
+    @Test func everySafetyStateHasAPinnedLabelAndSymbol() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        func row(_ state: CardSafetyState, stage: QueueSessionRow.FailureStage? = nil) throws -> QueueSessionRow {
+            let record = try fixture.record(name: "T", state: .completed)
+            var base = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id], progress: nil, mountedSourceIDs: []).rows[0]
+            base = QueueSessionRow(id: base.id, cardName: base.cardName, evidence: nil, destinations: "", safetyState: state,
+                progressFraction: nil, action: nil, cause: nil, copySummary: "", outcome: nil, destinationNames: [],
+                verificationModeName: "", failureStage: stage)
+            return base
+        }
+        let table: [(CardSafetyState, QueueSessionRow.FailureStage?, String, String)] = [
+            (.waiting, nil, "Queued", "clock"),
+            (.preparing, nil, "Copying", "arrow.triangle.2.circlepath"),
+            (.copying(progress: 10), nil, "Copying", "arrow.triangle.2.circlepath"),
+            (.verifying(progress: 10), nil, "Verifying", "arrow.triangle.2.circlepath"),
+            (.finishing(progress: 99), nil, "Copying", "arrow.triangle.2.circlepath"),
+            (.safeToErase, nil, "Safe to erase", "checkmark.circle.fill"),
+            (.copiedNotVerified, nil, "Copied, not verified", "circle.lefthalf.filled"),
+            (.needsAttention, nil, "Keep the card", "exclamationmark.triangle.fill"),
+            (.interrupted, nil, "Keep the card", "exclamationmark.triangle.fill"),
+            (.failed, .copy, "Didn't copy", "xmark.octagon.fill"),
+            (.failed, .verify, "Didn't verify", "xmark.octagon.fill"),
+        ]
+        for (state, stage, label, symbol) in table {
+            let r = try row(state, stage: stage)
+            #expect(r.queueLabel == label)
+            #expect(r.queueSymbol == symbol)
+            #expect((r.queueSymbol == "checkmark.circle.fill") == (state == .safeToErase))
+        }
+    }
+
     @Test func queueLabelsSayWhatToDo() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -155,6 +209,10 @@ struct QueueSessionPresentationTests {
         #expect(row.queueSymbol == "checkmark.circle")
         #expect(row.action == nil && row.cause == nil)
         #expect(row.evidence?.hasPrefix("1 file ·") == true)
+        let meta = row.metaLine()
+        #expect(meta.hasPrefix("Verified"))
+        #expect(!meta.contains("Paused") && !meta.contains("Stopped"))
+        #expect(meta.contains("Shuttle A"))
         #expect(outcome.finishTitle == "Selected files verified — Card")
         #expect(outcome.verdict.title == "Selected files verified")
         #expect(outcome.verdict.detail == "1 file verified on 1 destination")
@@ -897,6 +955,21 @@ struct QueueSessionPresentationTests {
         #expect(notEjected.rows[0].action != .removed)
         // Eject All must not pick a card that is already unmounting.
         #expect(ejecting.ejectableCardIDs.isEmpty)
+    }
+
+    @Test func pausedRecordStillRunningInTheJournalIsReviewable() throws {
+        let fixture = try QueuePresentationFixture(); defer { fixture.cleanup() }
+        let record = try fixture.record(name: "A7IV_CARD1", state: .running)
+        let queue = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id], progress: nil,
+            mountedSourceIDs: [], pausedRecordID: record.id)
+        let row = try #require(queue.rows.first)
+        #expect(row.action == .review)
+        #expect(!row.isRunning)
+        #expect(row.queueLabel == "Keep the card")
+        #expect(queue.pausedCardID == record.id)
+        // Unpaused, the same record is still a running card.
+        let live = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id], progress: nil, mountedSourceIDs: [])
+        #expect(live.rows[0].isRunning)
     }
 
     @Test func pausedStripAndRemoveConfirmationWording() throws {
