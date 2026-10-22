@@ -1,5 +1,7 @@
 # PDF review and merge checklist — October 21, 2026
 
+**Current status:** the reviewed stack merged in PRs #79–82. The [combined record](drive-ui-validation-2026-10-21.md) includes the corrected Mac tests, iOS app/test-target builds, completed receipt-parser handling and a regenerated mixed 40,000-row PDF with independent full-manifest and representative visual checks. The checklist below preserves the earlier review state. Remaining work includes the final-source coordinator stress replay, iOS runtime and signed/device checks, and unresolved field evidence; release publication remains on hold.
+
 ## Working agreement
 
 Mike needs this Mac on set. Work is limited to small source reads, documentation and a local PR draft until he authorizes more. Reconnecting T9 subsequently authorized read-only recovery of its known result image; that image was closed afterward. No app builds/tests, rendering, simulators, user-media scans, writable image mounts, large cleanup or background app-test jobs. The later parallel follow-up permits small synthetic Python parser checks only. No merge, release, tag, signing, updater or GitHub Actions changes.

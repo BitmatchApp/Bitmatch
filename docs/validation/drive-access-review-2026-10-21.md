@@ -1,5 +1,7 @@
 # Main-actor drive-access review — October 21, 2026
 
+**Current status:** this audit predates the implementation merged in [PR #82](https://github.com/BitmatchApp/Bitmatch/pull/82). The [combined validation record](drive-ui-validation-2026-10-21.md) covers the worker/cache, selection, admission, Mac restore and reconnect changes; the [later mount-change check](blocked-drive-2026-10-21.md) adds capacity invalidation. The candidate/pending wording below records the original audit state. Physical blocked-drive responsiveness remains unmeasured.
+
 This is a source audit of the remaining drive-access boundary called out in the [volume probe record](volume-mount-probes-2026-10-20.md) and [TODO](../TODO.md#next-five-bounded-slices). It is not a runtime reproduction: no app, build, test, simulator, drive, or filesystem-stall probe was run for this review. A blocked synchronous filesystem call cannot be cancelled by cancelling its Swift task or by letting a display deadline expire.
 
 ## Findings, by responsiveness impact

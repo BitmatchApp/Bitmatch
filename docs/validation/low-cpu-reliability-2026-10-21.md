@@ -1,5 +1,7 @@
 # Low-CPU reliability follow-up — October 21, 2026
 
+**Current status:** this is the initial limited-CPU record. Diagnostic persistence and the drive-access boundary subsequently merged in [PR #82](https://github.com/BitmatchApp/Bitmatch/pull/82), with [combined engine/Mac/iOS-build checks](drive-ui-validation-2026-10-21.md). The [later recorder slice](diagnostic-recorder-contention-2026-10-21.md) adds dropped-event accounting. The restrictions and pending gates below describe this earlier pass; the original marker cause and field reports remain unresolved. No release is authorized.
+
 Mike authorized three parallel tasks while using this Mac on set. Work used three subagents for implementation and source review. The initial pass used small Python checks against repository fixtures and disposable temporary folders. Mike later authorized only focused diagnostics package tests with one worker at low priority; those results are below. No Mac/iOS app build, simulator, drive access, external-tool download, merge, push or release occurred.
 
 ## Completed offline checks
