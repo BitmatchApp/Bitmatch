@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Queue rows show the card name, a state label that says what to do ("Keep the card", "Didn't verify", "Didn't copy", "Safe to erase"), when it finished, which backups, and the size. A running row shows the phase, the current file and the measured rate, and fills as it copies. Repeated attempts at one card collapse to one row; the paused banner is one sentence and Remove from queue always works.
+- The finish names each backup by volume and folder, says exactly what was verified for the chosen mode, and Eject carries through to "Ejected · safe to remove" and "Removed" when the card leaves the reader. Notifications say "safe to erase" or "keep the card".
+- Mac: the tab strip stays visible in History, a bottom bar carries the one missing step and the Start, Check or Scan button, and the window follows its content without fighting a manual resize, zoom or tiling.
+- Every screen says card and backup instead of source and destination; the mode chooser is a row under the prompt; the two wells are equal.
+- One motion system: a settle spring and a 200 ms ease everywhere, the commit choreography when a card becomes safe to erase, and nothing that moves on its own. Spacing, radius and text-style tokens, with iOS light and Increase Contrast tints that clear 4.5:1.
 - Reduced memory use when generating PDF reports with many files, including long filenames. Reports keep their file results, previews and verification verdicts.
 - Mac drive discovery runs listing and drive checks off the main thread, with bounded workers and serialized checks for one mount path.
 - Camera hints scan large folders incrementally and check cancellation between entries.
