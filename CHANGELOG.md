@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-10-22 (in preparation, not released)
+
 - Queue rows show the card name, a state label that says what to do ("Keep the card", "Didn't verify", "Didn't copy", "Safe to erase"), when it finished, which backups, and the size. A running row shows the phase, the current file and the measured rate, and fills as it copies. Repeated attempts at one card collapse to one row; the paused banner is one sentence and Remove from queue always works.
 - The finish names each backup by volume and folder, says exactly what was verified for the chosen mode, and Eject carries through to "Ejected · safe to remove" and "Removed" when the card leaves the reader. Notifications say "safe to erase" or "keep the card".
 - Mac: the tab strip stays visible in History, a bottom bar carries the one missing step and the Start, Check or Scan button, and the window follows its content without fighting a manual resize, zoom or tiling.
@@ -27,9 +29,6 @@ All notable changes to this project will be documented in this file.
 - Safety counts are stricter: only destinations proven to be on different physical drives count toward required backup copies. Folders whose drive cannot be identified can still be used, but no longer prove independence on their own.
 - When a backup runs out of space, that destination now pauses for the rest of the attempt instead of being retried for every remaining file. Other backups finish normally; the full destination's files are recorded as failed, and copying there resumes on the next attempt after space is freed.
 - If a copied file fails verification, BitMatch now re-copies that one file once and verifies it again. The transfer only counts as good when the second copy verifies; History records that the first copy failed and the file recovered, or that the re-copy also failed. Files BitMatch did not write in that attempt, and files that could not be read back at all, are never re-copied or moved.
-
-## [0.2.11] - 2026-10-20
-
 - When every selected file and requested handoff verifies, ignored AppleDouble metadata stays out of normal warnings and counts. PDFs show selected files with a small disclosure; details and CSV/JSON keep the full exclusion list. Real problems still need attention.
 - iPhone and iPad keep Start, Pause, Resume and Cancel at the bottom of the screen. The source name has more room when using larger accessibility text.
 - History opens with less repeated work and searches clip names only when you ask. Saved transfers and their evidence stay intact.
