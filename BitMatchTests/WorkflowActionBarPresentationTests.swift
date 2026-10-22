@@ -28,12 +28,13 @@ struct WorkflowActionBarPresentationTests {
         title: String, canStart: Bool, blocker: String?, readyLine: String?,
         nextStep: StartButtonPresentation.NextStep? = nil,
         action: StartButtonPresentation.Action = .start,
-        hint: String = ""
+        hint: String = "",
+        backupCount: Int = 0
     ) -> StartButtonPresentation {
         StartButtonPresentation(
             title: title, symbol: "play.fill", canStart: canStart, action: action,
             startsProject: false, nextStep: nextStep, blocker: blocker, readyLine: readyLine,
-            accessibilityHint: hint
+            accessibilityHint: hint, backupCount: backupCount
         )
     }
 
@@ -49,11 +50,11 @@ struct WorkflowActionBarPresentationTests {
 
     @Test func blockedQueueActionKeepsTheAddToQueueTitle() {
         let blocked = Self.start(
-            title: "Choose a source to start", canStart: false, blocker: nil, readyLine: nil,
+            title: "Choose a card to start", canStart: false, blocker: nil, readyLine: nil,
             nextStep: .chooseSource, action: .addToQueue
         )
         let bar = WorkflowActionBarPresentation.make(start: blocked)
-        #expect(bar.sentence == "Choose a source to start.")
+        #expect(bar.sentence == "Choose a card to start.")
         #expect(bar.buttonTitle == "Add to queue")
         #expect(!bar.isEnabled)
     }
@@ -69,19 +70,48 @@ struct WorkflowActionBarPresentationTests {
         #expect(readyBar.sentence == "Ready to copy.")
         #expect(readyBar.buttonTitle == "Start 3 transfers" && readyBar.isEnabled)
 
-        let silent = Self.start(title: "Choose a source to start", canStart: false, blocker: nil, readyLine: nil)
+        let silent = Self.start(title: "Choose a card to start", canStart: false, blocker: nil, readyLine: nil)
         let silentBar = WorkflowActionBarPresentation.make(start: silent)
-        #expect(silentBar.sentence == "Choose a source to start.")
+        #expect(silentBar.sentence == "Choose a card to start.")
         #expect(silentBar.buttonTitle == "Start" && !silentBar.isEnabled)
     }
 
     @Test func startNextStepBecomesTheSentence() {
         let source = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil, nextStep: .chooseSource)
-        #expect(WorkflowActionBarPresentation.make(start: source).sentence == "Choose a source to start.")
+        #expect(WorkflowActionBarPresentation.make(start: source).sentence == "Choose a card to start.")
         let backup = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil, nextStep: .addBackup)
-        #expect(WorkflowActionBarPresentation.make(start: backup).sentence == "Add a destination to start.")
+        #expect(WorkflowActionBarPresentation.make(start: backup).sentence == "Add a backup to start.")
         let bare = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil)
         #expect(WorkflowActionBarPresentation.make(start: bare).sentence == nil)
+    }
+
+    @Test func readyVerifiedStartStatesThePlanOnTheButton() {
+        let two = Self.start(
+            title: "Start verified copy", canStart: true, blocker: nil,
+            readyLine: "Ready to copy.", backupCount: 2
+        )
+        #expect(WorkflowActionBarPresentation.make(start: two).buttonTitle == "Start · 2 backups")
+        let one = Self.start(
+            title: "Start project transfer", canStart: true, blocker: nil,
+            readyLine: "Ready to copy.", backupCount: 1
+        )
+        #expect(WorkflowActionBarPresentation.make(start: one).buttonTitle == "Start · 1 backup")
+        // A quick (unverified) start keeps its warning title.
+        let quick = Self.start(
+            title: "Start copy without checksum verification", canStart: true,
+            blocker: nil, readyLine: "Ready to copy.", backupCount: 2
+        )
+        #expect(WorkflowActionBarPresentation.make(start: quick).buttonTitle
+            == "Start copy without checksum verification")
+    }
+
+    @Test func modeRowDescriptionNamesTheSelectedMode() {
+        #expect(TransferWorkflowPresentation.quick.modeDescription(projectName: nil, projectDay: nil)
+            == "Each card stands alone.")
+        #expect(TransferWorkflowPresentation.project.modeDescription(projectName: "Campaign", projectDay: "Oct 21, 2026")
+            == "Cards go to Campaign / Oct 21, 2026.")
+        #expect(TransferWorkflowPresentation.project.modeDescription(projectName: nil, projectDay: nil)
+            == "Cards go to <project> / <day>.")
     }
 
     @Test func prepareCardSaysTheButtonTitleAsASentence() {

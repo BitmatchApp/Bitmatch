@@ -340,13 +340,13 @@ final class AppleDoubleWorkflowTests: XCTestCase {
             review.paths != nil && coordinator.sourceFolderInfo != nil
                 && !coordinator.isAnalysingSource && coordinator.transferReadiness.isReady
                 && SetupPresentation.make(coordinator: coordinator).start.readyLine?
-                    .contains("2 files to 1 destination") == true
+                    .contains("2 files to 1 backup") == true
         }
         XCTAssertTrue(ready)
         XCTAssertEqual(review.paths, ["._A.ARW"])
         XCTAssertEqual(coordinator.sourceFolderInfo?.fileCount, 3)
         let ignoredSetup = SetupPresentation.make(coordinator: coordinator)
-        XCTAssertTrue(try XCTUnwrap(ignoredSetup.start.readyLine).contains("2 files to 1 destination"))
+        XCTAssertTrue(try XCTUnwrap(ignoredSetup.start.readyLine).contains("2 files to 1 backup"))
         XCTAssertTrue(try XCTUnwrap(review.summaryLine).contains("1 AppleDouble"))
         XCTAssertFalse(SetupPresentation.make(coordinator: coordinator).informationalLines.contains {
             $0.contains("AppleDouble") || $0.contains("excluded")

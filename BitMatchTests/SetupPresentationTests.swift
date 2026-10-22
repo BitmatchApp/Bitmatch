@@ -15,7 +15,7 @@ struct SetupPresentationTests {
             hasPreparedCard: false, projectBlocker: nil, projectUnit: "Card",
             isOperationInProgress: false, hasComposerCard: true,
             sourceFileCount: 10, sourceBytes: nil, destinationCount: 1)
-        #expect(presentation.readyLine == "Ready to copy 10 files to 1 destination. Source files stay in place.")
+        #expect(presentation.readyLine == "Ready to copy 10 files to 1 backup. Card files stay in place.")
     }
 
     private struct SamePhysicalDisk: PhysicalDiskIdentityProviding {
@@ -89,7 +89,7 @@ struct SetupPresentationTests {
 
         #expect(!presentation.canStart)
         #expect(presentation.nextStep == .chooseSource)
-        #expect(presentation.title == "Choose a source to start")
+        #expect(presentation.title == "Choose a card to start")
         #expect(presentation.blocker == nil)
     }
 
@@ -155,7 +155,7 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.blocker == nil)
-        #expect(presentation.readyLine?.contains("to 2 destinations") == true)
+        #expect(presentation.readyLine?.contains("to 2 backups") == true)
         #expect(presentation.readyLine?.hasSuffix(note) == true)
 
         let preparedProject = StartButtonPresentation.make(
@@ -283,7 +283,7 @@ struct SetupPresentationTests {
 
         let presentation = SetupPresentation.make(coordinator: fixture.coordinator)
         #expect(presentation.start.canStart)
-        #expect(presentation.start.readyLine?.contains("to 2 destinations") == true)
+        #expect(presentation.start.readyLine?.contains("to 2 backups") == true)
         #expect(presentation.start.readyLine?.contains(BackupIndependenceAssessment.unconfirmedStorageNote) == false)
     }
 
@@ -419,8 +419,8 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.title == "Start 3 transfers")
-        #expect(presentation.readyLine == "Ready to copy 3 cards to RAID_A. Source files stay in place.")
-        #expect(presentation.accessibilityHint.contains("source unchanged"))
+        #expect(presentation.readyLine == "Ready to copy 3 cards to RAID_A. Card files stay in place.")
+        #expect(presentation.accessibilityHint.contains("card unchanged"))
     }
 
     @Test func stagedCardsCanStartAfterTheNextPickerIsCancelled() {
@@ -441,7 +441,7 @@ struct SetupPresentationTests {
 
         #expect(presentation.canStart)
         #expect(presentation.title == "Start 2 transfers")
-        #expect(presentation.readyLine == "Ready to copy 2 cards to SHUTTLE A and SHUTTLE B. Source files stay in place.\n\(BackupIndependenceAssessment.unconfirmedStorageNote)")
+        #expect(presentation.readyLine == "Ready to copy 2 cards to SHUTTLE A and SHUTTLE B. Card files stay in place.\n\(BackupIndependenceAssessment.unconfirmedStorageNote)")
     }
 
     @Test func composerUncertaintyRemainsVisibleBesideABatchStart() {
@@ -485,7 +485,7 @@ struct SetupPresentationTests {
             physicalSeparationNote: BackupIndependenceAssessment.unconfirmedStorageNote
         )
 
-        #expect(presentation.readyLine == "Ready to copy 1 card to A. Source files stay in place.")
+        #expect(presentation.readyLine == "Ready to copy 1 card to A. Card files stay in place.")
     }
 
     @Test func batchCaptionCountsCardsWithDifferentDestinations() {
@@ -511,7 +511,7 @@ struct SetupPresentationTests {
         )
 
         #expect(presentation.title == "Start 3 transfers")
-        #expect(presentation.readyLine == "Ready to copy 3 cards; 1 goes to different destinations.")
+        #expect(presentation.readyLine == "Ready to copy 3 cards; 1 goes to different backups.")
     }
 
     @Test func oneQueuedCardKeepsTheModeSpecificStartWording() {
@@ -531,7 +531,7 @@ struct SetupPresentationTests {
         )
 
         #expect(presentation.title == "Start verified copy")
-        #expect(presentation.readyLine == "Ready to copy 1 card to SHUTTLE A. Source files stay in place.")
+        #expect(presentation.readyLine == "Ready to copy 1 card to SHUTTLE A. Card files stay in place.")
     }
 
     @Test func oneQuickQueuedCardKeepsTheQuickStartWording() {
@@ -570,8 +570,8 @@ struct SetupPresentationTests {
         )
 
         #expect(!presentation.canStart)
-        #expect(presentation.title == "Source is empty")
-        #expect(presentation.blocker == "Choose a source that contains files.")
+        #expect(presentation.title == "Card is empty")
+        #expect(presentation.blocker == "Choose a card that contains files.")
     }
 
     /// A prepared card shows Project and locks One-time, whatever the

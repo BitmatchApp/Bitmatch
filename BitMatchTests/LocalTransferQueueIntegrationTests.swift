@@ -1363,7 +1363,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
 
         XCTAssertTrue(coordinator.queueSessionEnded)
         XCTAssertFalse(coordinator.queueIsRunning)
-        XCTAssertEqual(coordinator.queuePresentation.summaryTitle, "2 failed")
+        XCTAssertEqual(coordinator.queuePresentation.summaryTitle, "2 didn't verify")
         XCTAssertTrue(coordinator.queuePresentation.showsQueueSummary)
         let persisted = try XCTUnwrap(journal.loadQueueSession())
         XCTAssertTrue(persisted.ended)

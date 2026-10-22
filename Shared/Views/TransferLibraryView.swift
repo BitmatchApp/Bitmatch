@@ -65,6 +65,7 @@ struct TransferLibraryView: View {
         return listContent(matches: matches, historyCount: counts.history)
             #if os(macOS)
             .navigationTitle("History")
+            .toolbar { toolbarContent }
             #else
             .navigationTitle("History")
             .navigationBarTitleDisplayMode(.inline)
@@ -141,20 +142,21 @@ struct TransferLibraryView: View {
                 }
             }
             VStack(alignment: .leading, spacing: 4) {
-                Button {
-                    do {
-                        diagnosticsDocument = TransferDiagnosticsDocument(data: try TransferDiagnosticStore.shared.exportData())
-                        showDiagnostics = true
-                    } catch { errorMessage = "Diagnostics could not be exported. \(error.localizedDescription)" }
-                } label: {
+                Button { exportDiagnostics() } label: {
                     Label("Export diagnostics…", systemImage: "doc.badge.gearshape")
                         .frame(minHeight: 44)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.primary)
-                Text("Recent transfer phases and errors, plus Apple crash/hang summaries if enabled in Settings and available. No footage names or paths. Nothing is sent automatically.")
+                #if os(macOS)
+                Text("Diagnostics stay on this Mac until you export them.")
                     .font(.caption).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                #else
+                Text("Diagnostics stay on this device until you export them.")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                #endif
             }
             .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
@@ -177,17 +179,31 @@ struct TransferLibraryView: View {
         )
     }
 
-    #if os(iOS)
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
+        // On Mac the shell already provides Back; History adds only Export.
+        #if os(iOS)
         if let onBack {
             ToolbarItem(placement: .navigation) {
                 Button(action: onBack) { Label("Back", systemImage: "chevron.left") }
                     .accessibilityHint("Returns to the transfer screen")
             }
         }
+        #endif
+        ToolbarItem(placement: .primaryAction) {
+            Button { exportDiagnostics() } label: {
+                Label("Export diagnostics…", systemImage: "doc.badge.gearshape")
+            }
+            .accessibilityHint("Exports diagnostics as a file; nothing is sent automatically")
+        }
     }
-    #endif
+
+    private func exportDiagnostics() {
+        do {
+            diagnosticsDocument = TransferDiagnosticsDocument(data: try TransferDiagnosticStore.shared.exportData())
+            showDiagnostics = true
+        } catch { errorMessage = "Diagnostics could not be exported. \(error.localizedDescription)" }
+    }
 
     private func rowView(_ record: LocalTransferRecord, clipLine: String?) -> some View {
         let actions = TransferLibraryPresentation.actions(for: record)
@@ -257,7 +273,7 @@ struct TransferLibraryView: View {
         }
         if actions.removeFromQueue {
             Divider()
-            Button("Move to Top") {
+            Button("Move to top") {
                 do { try coordinator.moveQueuedTransferToTop(record.id) }
                 catch { errorMessage = error.localizedDescription }
             }
@@ -387,7 +403,7 @@ private struct OptionalSearchable: ViewModifier {
 
     func body(content: Content) -> some View {
         if isActive {
-            content.searchable(text: $text, prompt: "Search cards, clips, or destinations")
+            content.searchable(text: $text, prompt: "Search cards, clips, or backups")
         } else {
             content
         }

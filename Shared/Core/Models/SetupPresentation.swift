@@ -52,6 +52,9 @@ struct StartButtonPresentation: Equatable, Sendable {
     /// Shown when Start is enabled: what will happen.
     let readyLine: String?
     let accessibilityHint: String
+    /// How many backups a ready Start will copy to, for the action bar's
+    /// "Start · 2 backups" label. Zero when no plan is ready.
+    var backupCount: Int = 0
 
     static func make(
         plan: TransferPlanPresentation,
@@ -96,13 +99,13 @@ struct StartButtonPresentation: Equatable, Sendable {
                 action: .addToQueue,
                 startsProject: isProject,
                 nextStep: nil,
-                blocker: canAdd ? nil : "Choose a ready source and at least one destination for the next transfer.",
+                blocker: canAdd ? nil : "Choose a ready card and at least one backup for the next transfer.",
                 readyLine: canAdd
                     ? withSeparationNote("Runs after the current card finishes.", physicalSeparationNote)
                     : nil,
                 accessibilityHint: canAdd
                     ? "Adds this card after the transfer already running"
-                    : "Choose a ready card and destinations first"
+                    : "Choose a ready card and backups first"
             )
         }
 
@@ -122,15 +125,15 @@ struct StartButtonPresentation: Equatable, Sendable {
 
         if sourceFileCount == 0 {
             return Self(
-                title: "Source is empty",
+                title: "Card is empty",
                 symbol: "tray",
                 canStart: false,
                 action: .start,
                 startsProject: isProject,
                 nextStep: nil,
-                blocker: "Choose a source that contains files.",
+                blocker: "Choose a card that contains files.",
                 readyLine: nil,
-                accessibilityHint: "The selected source folder is empty"
+                accessibilityHint: "The selected card or folder is empty"
             )
         }
 
@@ -154,7 +157,8 @@ struct StartButtonPresentation: Equatable, Sendable {
                         destinationRoutes: destinationRoutes,
                         destinationRouteIdentities: destinationRouteIdentities
                     ), separationNote),
-                    accessibilityHint: "Starts each staged card in queue order and leaves every source unchanged"
+                    accessibilityHint: "Starts each staged card in queue order and leaves every card unchanged",
+                    backupCount: destinationRoutes.first?.count ?? destinationCount
                 )
             }
             return Self(
@@ -168,7 +172,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 readyLine: nil,
                 accessibilityHint: step == .chooseSource
                     ? "Choose the card or folder to copy first"
-                    : "Add a folder on a destination drive first"
+                    : "Add a folder on a backup drive first"
             )
         }
 
@@ -230,9 +234,10 @@ struct StartButtonPresentation: Equatable, Sendable {
                 : nil,
             accessibilityHint: canStart
                 ? (cardCount > 1
-                    ? "Starts each card in queue order and leaves every source unchanged"
-                    : "Copies files to each destination and leaves the source unchanged")
-                : (blocker ?? "Not ready to start")
+                    ? "Starts each card in queue order and leaves every card unchanged"
+                    : "Copies files to each backup and leaves the card unchanged")
+                : (blocker ?? "Not ready to start"),
+            backupCount: destinationCount
         )
     }
 
@@ -257,7 +262,7 @@ struct StartButtonPresentation: Equatable, Sendable {
     ) -> String {
         let cards = cardCount == 1 ? "1 card" : "\(cardCount) cards"
         guard let firstRoute = destinationRoutes.first else {
-            return "Ready to copy \(cards). Source files stay in place."
+            return "Ready to copy \(cards). Card files stay in place."
         }
         let usesIdentities = destinationRouteIdentities.count == destinationRoutes.count
             && destinationRouteIdentities.allSatisfy { !$0.isEmpty }
@@ -271,13 +276,13 @@ struct StartButtonPresentation: Equatable, Sendable {
         }.count
         if differentCount > 0 {
             let verb = differentCount == 1 ? "goes" : "go"
-            return "Ready to copy \(cards); \(differentCount) \(verb) to different destinations."
+            return "Ready to copy \(cards); \(differentCount) \(verb) to different backups."
         }
         let destinations = joinedDestinationNames(firstRoute)
         guard !destinations.isEmpty else {
-            return "Ready to copy \(cards). Source files stay in place."
+            return "Ready to copy \(cards). Card files stay in place."
         }
-        return "Ready to copy \(cards) to \(destinations). Source files stay in place."
+        return "Ready to copy \(cards) to \(destinations). Card files stay in place."
     }
 
     private static func normalizedDestinationRoute(_ names: [String]) -> [String] {
@@ -296,19 +301,19 @@ struct StartButtonPresentation: Equatable, Sendable {
     }
 
     private static func readyLine(fileCount: Int?, bytes: Int64?, destinationCount: Int) -> String {
-        let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
+        let backups = destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"
         guard let fileCount else {
-            return "Copies to \(backups). Source files stay in place."
+            return "Copies to \(backups). Card files stay in place."
         }
         let formatter = NumberFormatter()
         formatter.numberStyle = .decimal
         let count = formatter.string(from: NSNumber(value: fileCount)) ?? "\(fileCount)"
         let files = fileCount == 1 ? "1 file" : "\(count) files"
         guard let bytes else {
-            return "Ready to copy \(files) to \(backups). Source files stay in place."
+            return "Ready to copy \(files) to \(backups). Card files stay in place."
         }
         let size = ByteCountPresentation.fileSize(bytes)
-        return "Ready to copy \(files) (\(size)) to \(backups). Source files stay in place."
+        return "Ready to copy \(files) (\(size)) to \(backups). Card files stay in place."
     }
 }
 
@@ -318,6 +323,8 @@ struct SetupPresentation: Equatable {
     let plan: TransferPlanPresentation
     let start: StartButtonPresentation
     let workflow: TransferWorkflowPresentation
+    /// The selected mode's one line, shown under the mode row.
+    var modeDescription: String = ""
     /// A prepared card keeps the workflow on Project until it runs.
     let isWorkflowLocked: Bool
     let workflowLockHint: String?
@@ -350,7 +357,9 @@ struct SetupPresentation: Equatable {
         destinationCount: Int,
         hasProjectEvidence: Bool,
         physicalSeparationNote: String? = nil,
-        informationalLines: [String] = []
+        informationalLines: [String] = [],
+        projectName: String? = nil,
+        projectDay: String? = nil
     ) -> Self {
         let isProject = usesProjectWorkflow || hasPreparedCard || isProjectRunInProgress
         return Self(
@@ -376,6 +385,8 @@ struct SetupPresentation: Equatable {
                 physicalSeparationNote: physicalSeparationNote
             ),
             workflow: isProject ? .project : .quick,
+            modeDescription: (isProject ? TransferWorkflowPresentation.project : .quick)
+                .modeDescription(projectName: projectName, projectDay: projectDay),
             isWorkflowLocked: hasPreparedCard || isProjectRunInProgress,
             workflowLockHint: isProjectRunInProgress ? "Available when this card finishes" : nil,
             showsProjectSetup: isProject,

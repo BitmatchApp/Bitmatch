@@ -78,9 +78,6 @@ struct CompareScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(ComparePresentation.title)
-                .font(.title2.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
             Text(ComparePresentation.nonDestructiveMessage)
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
@@ -99,6 +96,7 @@ struct CompareScreen: View {
                 side: ComparePresentation.folderToCheckLabel,
                 role: "The copy you want to confirm",
                 detail: "The folder or drive to check",
+                chooseTitle: "Choose folder or drive to check…",
                 slot: presentation.left,
                 isEditable: presentation.allowsEditing,
                 isNextStep: presentation.nextStep == .chooseLeft,
@@ -116,8 +114,9 @@ struct CompareScreen: View {
             if showsAnotherFolder {
                 CompareFolderSlotView(
                     side: ComparePresentation.anotherFolderLabel,
-                    role: "Compared with the folder to check",
-                    detail: "The folder to compare against",
+                    role: "The original, or another copy.",
+                    detail: "A folder to compare against",
+                    chooseTitle: "Choose another folder…",
                     slot: presentation.right,
                     isEditable: presentation.allowsEditing,
                     isNextStep: presentation.nextStep == .chooseRight,
@@ -313,6 +312,7 @@ private struct CompareFolderSlotView: View {
     let side: String
     let role: String
     let detail: String
+    let chooseTitle: String
     let slot: CompareFolderSlot
     let isEditable: Bool
     let isNextStep: Bool
@@ -352,14 +352,14 @@ private struct CompareFolderSlotView: View {
     private var emptyBox: some View {
         SetupLocationPicker(
             symbol: "folder.badge.plus",
-            title: "Choose \(side.lowercased())…",
+            title: chooseTitle,
             detail: drop == nil ? "\(detail), from Files" : "\(detail), or drag it here",
             isTargeted: isTargeted,
             isHighlighted: isNextStep,
             isEnabled: isEditable,
             action: pick
         )
-        .accessibilityLabel("Choose \(side.lowercased())…")
+        .accessibilityLabel(chooseTitle)
     }
 
     private func chosenBox(name: String) -> some View {

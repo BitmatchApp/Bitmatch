@@ -255,10 +255,10 @@ struct QueueTally: Equatable, Sendable {
         append(safeToErase, singular: "safe to erase", plural: "safe to erase", to: &parts)
         append(selectedFilesVerified, singular: "selected transfer verified", plural: "selected transfers verified", to: &parts)
         append(copiedNotVerified, singular: "copied, not verified", plural: "copied, not verified", to: &parts)
-        append(needsAttention, singular: "needs attention", plural: "need attention", to: &parts)
-        append(failed, singular: "failed", plural: "failed", to: &parts)
+        append(needsAttention, singular: "keep the card", plural: "keep the card", to: &parts)
+        append(failed, singular: "didn't verify", plural: "didn't verify", to: &parts)
         append(interrupted, singular: "interrupted", plural: "interrupted", to: &parts)
-        append(notStarted, singular: "not started", plural: "not started", to: &parts)
+        append(notStarted, singular: "queued", plural: "queued", to: &parts)
         return parts.joined(separator: " · ")
     }
 

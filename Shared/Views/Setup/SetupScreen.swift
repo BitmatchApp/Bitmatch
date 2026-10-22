@@ -131,7 +131,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Choose a source, then a folder on each destination drive.")
+            Text("Choose a card, then a folder on each backup drive.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -148,16 +148,35 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
 
     // MARK: Workflow
 
+    /// The mode chooser is a labelled row under the prompt: a segmented
+    /// One-time / Project control and the selected mode's one line. The
+    /// last-used mode is remembered by the workflow state behind
+    /// `presentation.workflow`.
     private var workflowPicker: some View {
-        let stack = layout == .compact
-            ? AnyLayout(VStackLayout(spacing: 8))
-            : AnyLayout(HStackLayout(alignment: .top, spacing: 8))
-        return VStack(alignment: .leading, spacing: 6) {
-            stack {
-                workflowButton(.quick)
-                workflowButton(.project)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 12) {
+                Text("Mode")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .accessibilityAddTraits(.isHeader)
+                Picker("Mode", selection: Binding(
+                    get: { presentation.workflow },
+                    set: { actions.chooseWorkflow($0) }
+                )) {
+                    ForEach(TransferWorkflowPresentation.allCases, id: \.self) { workflow in
+                        Text(workflow.shortTitle).tag(workflow)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .disabled(presentation.isWorkflowLocked)
+                .accessibilityLabel("Mode")
+                .accessibilityValue(presentation.workflow.title)
             }
-            .disabled(presentation.isWorkflowLocked)
+            Text(presentation.modeDescription)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
             if let hint = presentation.workflowLockHint {
                 Text(hint)
                     .font(.caption)
@@ -165,52 +184,7 @@ struct SetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelCon
             }
         }
         .accessibilityElement(children: .contain)
-        .accessibilityLabel("Transfer workflow")
-    }
-
-    private func workflowButton(_ workflow: TransferWorkflowPresentation) -> some View {
-        let selected = presentation.workflow == workflow
-        return Button {
-            actions.chooseWorkflow(workflow)
-        } label: {
-            HStack(alignment: .top, spacing: 8) {
-                Image(systemName: workflow.symbol)
-                    .font(.body.weight(.semibold))
-                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                    .accessibilityHidden(true)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(workflow.title)
-                        .font(.subheadline.weight(.semibold))
-                    Text(workflow.detail)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 0)
-                // A radio mark, not a green check: selected is not "done"
-                // (accessibility audit, green-means-verified).
-                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
-                    .foregroundStyle(selected ? Color.accentColor : Color.secondary)
-                    .accessibilityHidden(true)
-            }
-            .foregroundStyle(.primary)
-            .padding(12)
-            .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 10)
-                    .fill(selected ? Color.accentColor.opacity(0.10) : Color.primary.opacity(0.04))
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 10)
-                    .strokeBorder(selected ? Color.accentColor.opacity(0.45) : Color.primary.opacity(0.10))
-            )
-            .contentShape(RoundedRectangle(cornerRadius: 8))
-        }
-        .buttonStyle(.plain)
-        .accessibilityLabel(workflow.title)
-        .accessibilityValue(selected ? "Selected" : "Not selected")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .accessibilityHint(workflow.detail)
+        .accessibilityLabel("Mode")
     }
 
     // MARK: Project

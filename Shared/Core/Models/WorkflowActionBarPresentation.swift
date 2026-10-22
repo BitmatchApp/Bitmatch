@@ -14,7 +14,7 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
 
     static func make(start: StartButtonPresentation) -> Self {
         // A step that is not done yet carries its instruction in the title
-        // ("Choose a source to start"); the bar says it as a sentence and
+        // ("Choose a card to start"); the bar says it as a sentence and
         // keeps a steady "Start" ("Add to queue" while a transfer runs) button.
         if !start.canStart {
             return Self(
@@ -28,7 +28,7 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
         }
         return Self(
             sentence: start.readyLine,
-            buttonTitle: start.title,
+            buttonTitle: readyButtonTitle(start),
             symbol: start.symbol,
             isEnabled: true,
             hint: start.accessibilityHint.isEmpty ? nil : start.accessibilityHint
@@ -69,10 +69,20 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
         )
     }
 
+    /// Once ready the button states the plan: "Start · 2 backups". A quick
+    /// (unverified) start and a multi-card start keep their own titles, which
+    /// carry safety or count information the short label would hide.
+    private static func readyButtonTitle(_ start: StartButtonPresentation) -> String {
+        guard start.backupCount > 0,
+              start.title == "Start verified copy" || start.title == "Start project transfer"
+        else { return start.title }
+        return start.backupCount == 1 ? "Start · 1 backup" : "Start · \(start.backupCount) backups"
+    }
+
     private static func stepSentence(_ step: StartButtonPresentation.NextStep?) -> String? {
         switch step {
-        case .chooseSource: return "Choose a source to start."
-        case .addBackup: return "Add a destination to start."
+        case .chooseSource: return "Choose a card to start."
+        case .addBackup: return "Add a backup to start."
         // The button title already says it ("Set up the media to start").
         case .prepareCard, nil: return nil
         }

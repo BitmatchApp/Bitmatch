@@ -218,11 +218,11 @@ struct TransferQueueSection: View {
             waitingCount: presentation.rows.filter(\.isEditable).count
            ), coordinator.queuePausedRecordID == nil {
             #if os(macOS)
-            Button("Resume Queue") { coordinator.startQueue() }
+            Button("Resume queue") { coordinator.startQueue() }
                 .controlSize(.small)
                 .disabled(!coordinator.queueRunCommandEnabled)
             #else
-            Button("Resume Queue") { coordinator.startQueue() }
+            Button("Resume queue") { coordinator.startQueue() }
                 .controlSize(.large)
                 .disabled(!coordinator.queueRunCommandEnabled)
             #endif
@@ -734,7 +734,7 @@ struct TransferQueueSection: View {
     private func addCardButton(_ presentation: QueueSessionPresentation) -> some View {
         if offersAddCard && !presentation.showsQueueSummary {
             Button { choosingSource = true } label: {
-                Label("Add Card", systemImage: "plus")
+                Label("Add card", systemImage: "plus")
                     .frame(maxWidth: .infinity, minHeight: 44)
             }
             .buttonStyle(.bordered)

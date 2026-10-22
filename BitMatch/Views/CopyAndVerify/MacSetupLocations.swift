@@ -31,8 +31,8 @@ struct MacSetupLocations: View {
     private var platform: SetupLocationsPlatform {
         let volumeAccess = self.volumeAccess
         return SetupLocationsPlatform(
-            pickSource: { Self.chooseFolders(multiple: false, prompt: "Choose Source").first },
-            pickBackups: { Self.chooseFolders(multiple: true, prompt: "Add Destination") },
+            pickSource: { Self.chooseFolders(multiple: false, prompt: "Choose a card").first },
+            pickBackups: { Self.chooseFolders(multiple: true, prompt: "Add a backup") },
             addBackup: { volumeAccess.addDestination($0) },
             didApproveBackup: { urls, replaced in
                 urls.forEach(volumeAccess.recordPreparedDestinationAdd)
