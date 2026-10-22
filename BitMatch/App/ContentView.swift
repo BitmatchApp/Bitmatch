@@ -2,6 +2,21 @@
 import SwiftUI
 import AppKit
 
+/// What the window-fit shell remembers between height changes.
+private struct WindowFitTracker {
+    var lastHeight: CGFloat = 0
+    var lastChangeAt = Date()
+    var shorterSince: Date?
+    /// Height of the last frame the shell set itself, so only a different
+    /// height after a live resize counts as the user's.
+    var lastSetHeight: CGFloat = 0
+    var userResized = false
+    var isLiveResizing = false
+    var hasFitted = false
+    /// Extra height kept at launch; dropped on the first tab or History change.
+    var headroom: CGFloat = WindowPresentationPolicy.launchHeadroom
+}
+
 private struct MacScrollableContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -78,7 +93,7 @@ struct MacMainView: View {
     @State private var hostingWindow: NSWindow?
     @State private var windowResizeTask: Task<Void, Never>?
     @State private var windowFrameAnimation: Task<Void, Never>?
-    @State private var didFitWindowAtLaunch = false
+    @State private var windowFit = WindowFitTracker()
     @State private var queueFlight: QueueFlight?
     @State private var flightTarget: CGRect?
     @State private var flightEndTask: Task<Void, Never>?
@@ -689,41 +704,111 @@ struct MacMainView: View {
         transferToReviewID = nil
     }
 
-    /// Content often grows in steps (a summary line, then an info line a
-    /// moment later). Resizing once per step made the window restart its
-    /// animation mid-flight, so wait for the layout to settle and resize once.
+    /// Follows the content's height with the rules in `MacWindowFitPolicy`:
+    /// wait for the measurement to settle, grow at once, shrink slowly, and
+    /// leave a window the user resized alone until the next tab switch or
+    /// History toggle. A cancellable sleep re-evaluates after the last change.
     private func resizeWindowToMeasuredContent() {
-        windowResizeTask?.cancel()
-        windowResizeTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            applyMeasuredContentHeight()
+        let combined = MacMeasuredContentHeight.combined(
+            scrollable: measuredScrollableContentHeight,
+            notice: measuredNoticeHeight,
+            actionBar: measuredActionBarHeight
+        )
+        if abs(combined - windowFit.lastHeight) > 0.5 {
+            windowFit.lastHeight = combined
+            windowFit.lastChangeAt = Date()
+        }
+        if windowFit.hasFitted {
+            evaluateWindowFit()
+        } else {
+            // Launch: the first measurements arrive in steps; fit once they
+            // have stopped, without waiting for the settle or shrink delays.
+            windowResizeTask?.cancel()
+            windowResizeTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled else { return }
+                evaluateWindowFit()
+            }
         }
     }
 
-    private func applyMeasuredContentHeight() {
-        // Fit the window once, when it first appears. Resizing a window while
-        // its SwiftUI content is changing makes macOS briefly draw the whole
-        // window, title bar included, shifted up; so after launch the window
-        // keeps the size the user chose and new content scrolls inside it.
-        guard !didFitWindowAtLaunch else { return }
-        defer { didFitWindowAtLaunch = true }
+    private func evaluateWindowFit() {
+        windowResizeTask?.cancel()
         guard let window = hostingWindow, measuredScrollableContentHeight > 0 else { return }
+        let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
+        let now = Date()
+        let contentHeight = windowFit.lastHeight + windowFit.headroom
+        let windowContentHeight = window.frame.height - chromeHeight
+        let isShorter = windowContentHeight - contentHeight >= MacWindowFitPolicy.shrinkSlack
+        if !isShorter {
+            windowFit.shorterSince = nil
+        } else if windowFit.shorterSince == nil {
+            windowFit.shorterSince = now
+        }
+        let stableFor = windowFit.hasFitted ? now.timeIntervalSince(windowFit.lastChangeAt) : MacWindowFitPolicy.settleDelay
+        let shorterFor = windowFit.hasFitted
+            ? (windowFit.shorterSince.map { now.timeIntervalSince($0) } ?? 0)
+            : MacWindowFitPolicy.shrinkDelay
+        let input = MacWindowFitPolicy.Input(
+            contentHeight: contentHeight,
+            windowContentHeight: windowContentHeight,
+            stableFor: stableFor,
+            shorterFor: shorterFor,
+            userResizedSinceLastTabSwitch: windowFit.userResized,
+            isLiveResizing: windowFit.isLiveResizing
+        )
+        switch MacWindowFitPolicy.decide(input) {
+        case .fit(let height):
+            applyFit(toContentHeight: height, window: window)
+        case .hold:
+            guard !windowFit.userResized, !windowFit.isLiveResizing else { return }
+            var wait: TimeInterval = 0
+            if stableFor < MacWindowFitPolicy.settleDelay {
+                wait = MacWindowFitPolicy.settleDelay - stableFor
+            } else if isShorter, shorterFor < MacWindowFitPolicy.shrinkDelay {
+                wait = MacWindowFitPolicy.shrinkDelay - shorterFor
+            } else {
+                return
+            }
+            windowResizeTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(wait + 0.02))
+                guard !Task.isCancelled else { return }
+                evaluateWindowFit()
+            }
+        }
+    }
+
+    private func applyFit(toContentHeight height: CGFloat, window: NSWindow) {
+        windowFit.hasFitted = true
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
         let newFrame = MacWindowFramePolicy.fittedFrame(
             currentFrame: window.frame,
-            measuredContentHeight: MacMeasuredContentHeight.combined(
-                scrollable: measuredScrollableContentHeight,
-                notice: measuredNoticeHeight,
-                actionBar: measuredActionBarHeight
-            ) + WindowPresentationPolicy.launchHeadroom,
+            measuredContentHeight: height,
             windowChromeHeight: chromeHeight,
             visibleFrame: visibleFrame
         )
         guard !NSEqualRects(window.frame, newFrame) else { return }
+        windowFit.lastSetHeight = newFrame.height
         setWindowFrame(newFrame, window: window)
         saveWindowFrame(newFrame)
+    }
+
+    /// A tab switch or History toggle is a new screen: let the window follow
+    /// it again, and drop the launch headroom once the user has moved on.
+    private func resetWindowFitForNewScreen() {
+        windowFit.userResized = false
+        windowFit.headroom = 0
+        windowFit.lastChangeAt = Date()
+        evaluateWindowFit()
+    }
+
+    private func windowDidEndLiveResize() {
+        windowFit.isLiveResizing = false
+        if let window = hostingWindow, abs(window.frame.height - windowFit.lastSetHeight) > 1 {
+            windowFit.userResized = true
+        }
+        windowResizeTask?.cancel()
     }
 
     private func setWindowFrame(_ frame: NSRect, window: NSWindow) {
@@ -800,9 +885,22 @@ struct MacMainView: View {
             }
             .onChange(of: showingTransfers) { _, _ in
                 updateWindowTitle()
+                resetWindowFitForNewScreen()
             }
             .onChange(of: coordinator.currentMode) { _, _ in
                 updateWindowTitle()
+                resetWindowFitForNewScreen()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willStartLiveResizeNotification)) { note in
+                guard let window = note.object as? NSWindow, window === hostingWindow else { return }
+                windowFit.isLiveResizing = true
+                windowFit.lastSetHeight = windowFit.lastSetHeight == 0 ? window.frame.height : windowFit.lastSetHeight
+                windowResizeTask?.cancel()
+                windowFrameAnimation?.cancel()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification)) { note in
+                guard let window = note.object as? NSWindow, window === hostingWindow else { return }
+                windowDidEndLiveResize()
             }
     }
     
