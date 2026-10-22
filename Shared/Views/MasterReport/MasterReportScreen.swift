@@ -20,6 +20,22 @@ struct MasterReportPlatform {
     var reveal: ((URL) -> Void)?
 }
 
+/// What a Master Report screen hands up to a bottom bar that owns its
+/// button: the presentation, and the action that generates the report.
+struct MasterReportBarRequest: Equatable {
+    let presentation: WorkflowActionBarPresentation
+    let action: () -> Void
+
+    static func == (lhs: Self, rhs: Self) -> Bool { lhs.presentation == rhs.presentation }
+}
+
+struct MasterReportBarKey: PreferenceKey {
+    nonisolated(unsafe) static var defaultValue: MasterReportBarRequest? = nil
+    static func reduce(value: inout MasterReportBarRequest?, nextValue: () -> MasterReportBarRequest?) {
+        value = nextValue() ?? value
+    }
+}
+
 /// One Master Report screen for Mac, iPad and iPhone (UI plan step 4.10):
 /// choose a backup drive or folder and a day (today unless changed), pick
 /// which of that day's transfers to include, then save or share one PDF
@@ -29,6 +45,9 @@ struct MasterReportScreen: View {
     /// the report, and edits here are the same settings as Preferences.
     @Binding var reportSettings: ReportPrefs
     let platform: MasterReportPlatform
+    /// False where a bottom bar owns the generate button (the Mac); the bar
+    /// gets its presentation and action through `MasterReportBarKey`.
+    var showsInlineAction = true
 
     @StateObject private var model = MasterReportModel()
     @State private var productionNotes = ""
@@ -76,6 +95,13 @@ struct MasterReportScreen: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .topLeading)
+        .preference(
+            key: MasterReportBarKey.self,
+            value: showsInlineAction ? nil : MasterReportBarRequest(
+                presentation: .make(master: presentation),
+                action: generate
+            )
+        )
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { newWidth in
@@ -397,18 +423,18 @@ struct MasterReportScreen: View {
     private var actionArea: some View {
         VStack(alignment: .leading, spacing: 8) {
             generationStatus
-            Button(action: generate) {
-                Label(
-                    presentation.actionTitle,
-                    systemImage: presentation.nextStep == .chooseLocation ? "arrow.up" : "doc.richtext"
-                )
-                .frame(minWidth: 220, minHeight: 32)
+            if showsInlineAction {
+                Button(action: generate) {
+                    Label(
+                        presentation.actionTitle,
+                        systemImage: presentation.nextStep == .chooseLocation ? "arrow.up" : "doc.richtext"
+                    )
+                    .frame(minWidth: 220, minHeight: 32)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(!presentation.canGenerate)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.regular)
-            // Grey while waiting on a step, like Copy's Start button.
-            .tint(presentation.canGenerate ? Color.accentColor : Color.gray)
-            .disabled(!presentation.canGenerate)
         }
         .frame(maxWidth: .infinity, alignment: .center)
     }

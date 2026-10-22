@@ -93,6 +93,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     @Binding var optionsExpanded: Bool
     @State private var queueAdmissionTask: Task<Void, Never>?
     private let usesBottomActions: Bool
+    private let showsInlineStart: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private let transferTransitionContext: QueueTransferTransitionContext?
     private let locations: (SetupLocationsContext, AnyView) -> Locations
@@ -105,6 +106,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
         coordinator: SharedAppCoordinator,
         optionsExpanded: Binding<Bool>,
         usesBottomActions: Bool = false,
+        showsInlineStart: Bool = true,
         transferTransitionContext: QueueTransferTransitionContext? = nil,
         @ViewBuilder locations: @escaping (SetupLocationsContext, AnyView) -> Locations,
         @ViewBuilder problems: () -> Problems,
@@ -115,6 +117,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
         _coordinator = ObservedObject(wrappedValue: coordinator)
         _optionsExpanded = optionsExpanded
         self.usesBottomActions = usesBottomActions
+        self.showsInlineStart = showsInlineStart
         self.transferTransitionContext = transferTransitionContext
         self.locations = locations
         self.problems = problems()
@@ -127,7 +130,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
         let presentation = SetupPresentation.make(coordinator: coordinator)
         SetupScreen(
             presentation: presentation,
-            showsInlineStart: !usesBottomActions || presentation.start.action == .addToQueue,
+            showsInlineStart: showsInlineStart && !usesBottomActions || presentation.start.action == .addToQueue,
             options: SetupOptionsBindings(
                 isExpanded: $optionsExpanded,
                 verificationMode: $coordinator.verificationMode,

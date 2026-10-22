@@ -20,6 +20,7 @@ struct MacSetupView: View {
         CoordinatorSetupScreen(
             coordinator: coordinator,
             optionsExpanded: $optionsExpanded,
+            showsInlineStart: false,
             transferTransitionContext: transferTransitionContext
         ) { context, advanced in
             // The shared boxes, with the Mac's open panel and drag and drop.

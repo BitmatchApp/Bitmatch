@@ -5,6 +5,12 @@ import Testing
 struct MacWindowHeightPolicyTests {
     private typealias Policy = MacWindowHeightPolicy
 
+    @Test func launchFitIncludesTheActionBar() {
+        #expect(MacMeasuredContentHeight.combined(scrollable: 612, notice: 0, actionBar: 56) == 668)
+        #expect(MacMeasuredContentHeight.combined(scrollable: 612, notice: 40, actionBar: 0) == 652)
+        #expect(MacMeasuredContentHeight.combined(scrollable: -5, notice: 0, actionBar: 56) == 56)
+    }
+
     @Test func measuredContentAndRealWindowChromeSetTheHeight() {
         let height = Policy.fittedHeight(
             measuredContentHeight: 612,

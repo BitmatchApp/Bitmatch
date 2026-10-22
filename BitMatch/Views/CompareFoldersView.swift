@@ -33,7 +33,8 @@ struct CompareFoldersView: View {
                 dropRight: { url in acceptDrop(url) { coordinator.rightURL = $0 } },
                 compare: { ComparePresentation.startIfReady(coordinator) },
                 cancel: { coordinator.cancelOperation() }
-            )
+            ),
+            showsInlineAction: false
         )
     }
 

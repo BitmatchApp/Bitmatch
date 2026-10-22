@@ -73,6 +73,9 @@ struct MacMainView: View {
     // Dynamic window height management
     @State private var measuredScrollableContentHeight: CGFloat = 0
     @State private var measuredNoticeHeight: CGFloat = 0
+    @State private var measuredActionBarHeight: CGFloat = 0
+    @State private var masterReportBar: MasterReportBarRequest?
+    @State private var setupAdmissionTask: Task<Void, Never>?
     @State private var hostingWindow: NSWindow?
     @State private var windowResizeTask: Task<Void, Never>?
     @State private var windowFrameAnimation: Task<Void, Never>?
@@ -266,6 +269,61 @@ struct MacMainView: View {
             }
             .onChange(of: coordinator.sourceURL) { old, new in
                 composerSourceChanged(from: old, to: new)
+            }
+        }
+        // The bar sits outside the scroll content, so the flight's
+        // coordinate space and frame preferences are unchanged.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !showingTransfers, let bar = actionBar {
+                MacWorkflowActionBar(presentation: bar.presentation, action: bar.action)
+            }
+        }
+        .onPreferenceChange(MasterReportBarKey.self) { masterReportBar = $0 }
+    }
+
+    /// The current tab's presentation and the action the inline button used
+    /// to call. Nil only for a Master Report that has not reported yet.
+    private var actionBar: (presentation: WorkflowActionBarPresentation, action: () -> Void)? {
+        switch coordinator.currentMode {
+        case .copyAndVerify:
+            let start = SetupPresentation.make(coordinator: coordinator).start
+            let actions = CoordinatorSetupActions.make(
+                coordinator: coordinator,
+                enqueueSelection: { runSetupAdmission(startBatch: false) },
+                startSetupTransfers: { runSetupAdmission(startBatch: true) },
+                performQueueTransition: { operation in
+                    performQueueTransition(reduceMotion: reduceMotion, operation: operation)
+                }
+            )
+            return (.make(start: start), actions.start)
+        case .compareFolders:
+            return (.make(compare: ComparePresentation.make(coordinator: coordinator)),
+                    { ComparePresentation.startIfReady(coordinator) })
+        case .masterReport:
+            return masterReportBar.map { ($0.presentation, $0.action) }
+        }
+    }
+
+    /// The same prepared admission and flight the inline Start button used.
+    private func runSetupAdmission(startBatch: Bool) {
+        guard setupAdmissionTask == nil else { return }
+        let previousEditingID = coordinator.editingSetupTransferID
+        setupAdmissionTask = Task { @MainActor in
+            defer { setupAdmissionTask = nil }
+            do {
+                let id = startBatch
+                    ? try await coordinator.startSetupTransfersPrepared()
+                    : try await coordinator.enqueueSelectionPrepared()
+                if let id {
+                    performCompletedQueueTransition(
+                        reduceMotion: reduceMotion,
+                        previousEditingID: previousEditingID,
+                        committedID: id
+                    )
+                }
+            } catch is CancellationError {
+            } catch {
+                await coordinator.showError(error)
             }
         }
     }
@@ -671,8 +729,11 @@ struct MacMainView: View {
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
         let newFrame = MacWindowFramePolicy.fittedFrame(
             currentFrame: window.frame,
-            measuredContentHeight: measuredScrollableContentHeight + measuredNoticeHeight
-                + WindowPresentationPolicy.launchHeadroom,
+            measuredContentHeight: MacMeasuredContentHeight.combined(
+                scrollable: measuredScrollableContentHeight,
+                notice: measuredNoticeHeight,
+                actionBar: measuredActionBarHeight
+            ) + WindowPresentationPolicy.launchHeadroom,
             windowChromeHeight: chromeHeight,
             visibleFrame: visibleFrame
         )
@@ -741,6 +802,10 @@ struct MacMainView: View {
             }
             .onPreferenceChange(MacNoticeHeightKey.self) { height in
                 measuredNoticeHeight = height
+                resizeWindowToMeasuredContent()
+            }
+            .onPreferenceChange(MacActionBarHeightKey.self) { height in
+                measuredActionBarHeight = height
                 resizeWindowToMeasuredContent()
             }
             .onChange(of: hostingWindow != nil) { _, hasWindow in

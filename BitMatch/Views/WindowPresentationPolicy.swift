@@ -26,6 +26,15 @@ enum WindowPresentationPolicy {
 /// The view reports its real laid-out height, including wrapped text and
 /// expanded sections. The only arithmetic left here is the window chrome and
 /// the bounds imposed by the app and the active screen's visible frame.
+enum MacMeasuredContentHeight {
+    /// The launch fit's content height: the scrolling content, the notice
+    /// row and the bottom action bar. A part that has not measured yet
+    /// (or measured negative) counts as zero.
+    static func combined(scrollable: CGFloat, notice: CGFloat, actionBar: CGFloat) -> CGFloat {
+        max(0, scrollable) + max(0, notice) + max(0, actionBar)
+    }
+}
+
 enum MacWindowHeightPolicy {
     static func fittedHeight(
         measuredContentHeight: CGFloat,

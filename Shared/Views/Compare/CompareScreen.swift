@@ -25,6 +25,8 @@ struct CompareScreen: View {
     @Binding var verificationMode: VerificationMode
     @Binding var advancedExpanded: Bool
     let actions: CompareActions
+    /// False where a bottom bar owns the Check button (the Mac).
+    var showsInlineAction = true
 
     @State private var width: CGFloat = 0
 
@@ -144,18 +146,20 @@ struct CompareScreen: View {
                     )
                 }
 
-                VStack(alignment: .center, spacing: 8) {
-                    compareButton
-                    if let message = presentation.blockMessage {
-                        Label(message, systemImage: "exclamationmark.triangle.fill")
-                            .font(.footnote)
-                            .foregroundStyle(ResultStatusTone.warning.color)
-                            .multilineTextAlignment(.center)
-                            .fixedSize(horizontal: false, vertical: true)
+                if showsInlineAction {
+                    VStack(alignment: .center, spacing: 8) {
+                        compareButton
+                        if let message = presentation.blockMessage {
+                            Label(message, systemImage: "exclamationmark.triangle.fill")
+                                .font(.footnote)
+                                .foregroundStyle(ResultStatusTone.warning.color)
+                                .multilineTextAlignment(.center)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
+                    .frame(maxWidth: 380)
+                    .frame(maxWidth: .infinity, alignment: .center)
                 }
-                .frame(maxWidth: 380)
-                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
     }
@@ -224,9 +228,6 @@ struct CompareScreen: View {
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.regular)
-        // Grey while waiting on a step, like Copy's Start button: a button
-        // that cannot be pressed should not look pressable.
-        .tint(presentation.readiness.canStart ? Color.accentColor : Color.gray)
         .disabled(!presentation.readiness.canStart)
     }
 
