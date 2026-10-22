@@ -118,22 +118,46 @@ struct QueueRowContent<Headline: View, Controls: View>: View {
     }
 }
 
-/// Safe to erase is the one solid state; every other state is plain tinted text.
+/// Safe to erase is the one solid state; every other state is plain tinted
+/// text. State labels are `.subheadline` semibold; the tint carries the
+/// iOS light and Increase Contrast values from the token palette.
 struct QueueStateLabel: View {
     let row: QueueSessionRow
+    @Environment(\.colorScheme) private var colorScheme
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
+
+    private var increasedContrast: Bool { accessibilityContrast == .increased }
 
     var body: some View {
         if row.safetyState == .safeToErase && !row.selectedFilesVerified {
             Label(row.queueLabel, systemImage: row.queueSymbol)
-                .font(.callout.weight(.semibold))
-                .foregroundStyle(Color.black.opacity(0.85))
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(
+                    colorScheme == .light || increasedContrast
+                        ? Color.white
+                        : Color.black.opacity(0.85)
+                )
                 .padding(.horizontal, 8).padding(.vertical, 2)
-                .background(CardSafetyTint.green.color, in: Capsule())
+                .background(
+                    CardSafetyTint.green.color(
+                        scheme: colorScheme, increasedContrast: increasedContrast
+                    ),
+                    in: Capsule()
+                )
+                .overlay {
+                    if increasedContrast {
+                        Capsule().strokeBorder(Color.primary.opacity(0.5), lineWidth: 1)
+                    }
+                }
                 .fixedSize()
         } else {
             Label(row.queueLabel, systemImage: row.queueSymbol)
-                .font(.callout.weight(.medium))
-                .foregroundStyle(row.statusTint.color)
+                .font(.subheadline.weight(.semibold))
+                .foregroundStyle(
+                    row.statusTint.color(
+                        scheme: colorScheme, increasedContrast: increasedContrast
+                    )
+                )
                 .fixedSize()
         }
     }

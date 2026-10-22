@@ -153,7 +153,7 @@ struct MasterReportScreen: View {
     private var locationAndDay: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Backup drive or folder")
-                .font(.subheadline.weight(.semibold))
+                .font(.headline)
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
             Group {
@@ -184,7 +184,7 @@ struct MasterReportScreen: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
-        .padding(14)
+        .padding(Spacing.container)
         .background(SetupLocationsPanelBackground())
     }
 

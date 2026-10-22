@@ -19,7 +19,7 @@ struct MacWorkflowActionBar: View {
     var isEditingText = false
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: Spacing.container) {
             if let sentence = presentation.sentence {
                 Text(sentence)
                     .font(.callout)
@@ -31,6 +31,7 @@ struct MacWorkflowActionBar: View {
             }
             Button(action: action) {
                 Label(presentation.buttonTitle, systemImage: presentation.symbol)
+                    .font(.body)
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -38,9 +39,9 @@ struct MacWorkflowActionBar: View {
             .disabled(!presentation.isEnabled)
             .accessibilityHint(presentation.hint ?? "")
         }
-        .padding(.horizontal, 24)
+        .padding(.horizontal, Spacing.gutter)
         .padding(.vertical, 8)
-        .frame(minHeight: 56)
+        .frame(minHeight: Spacing.bar)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
         .background {

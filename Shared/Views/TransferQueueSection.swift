@@ -29,6 +29,7 @@ struct TransferQueueSection: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.hiddenQueueRowID) private var hiddenQueueRowID
     @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.colorSchemeContrast) private var accessibilityContrast
     /// Rows playing the commit flash right now; see `playCommit(for:)`.
     @State private var commitFlashIDs: Set<UUID> = []
     @State private var commitTasks: [UUID: Task<Void, Never>] = [:]
@@ -323,25 +324,25 @@ struct TransferQueueSection: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row)))
+        .background(RoundedRectangle(cornerRadius: Radius.container).fill(baseColor(for: row)))
         .overlay {
             // Commit flash: green over the row, settling back to the plain
             // surface so the pill stays the only persistent green.
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Radius.container)
                 .fill(CardSafetyTint.green.color.opacity(commitFlashIDs.contains(row.id) ? 0.16 : 0))
                 .animation(.easeOut(duration: Motion.commitSettleDuration), value: commitFlashIDs.contains(row.id))
         }
         .overlay {
             // Hover only brightens the surface; the row never lifts.
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Radius.container)
                 .fill(Color.primary.opacity(hoveredRowID == row.id ? 0.03 : 0))
                 .animation(Motion.quick, value: hoveredRowID == row.id)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row))
+            RoundedRectangle(cornerRadius: Radius.container).strokeBorder(borderColor(for: row))
         }
         .overlay(alignment: .leading) { attentionEdge(for: row) }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Radius.container))
         #if os(macOS)
         .onHover { hovering in
             hoveredRowID = hovering ? row.id : (hoveredRowID == row.id ? nil : hoveredRowID)
@@ -566,13 +567,7 @@ struct TransferQueueSection: View {
         }
     }
 
-    private var headlineFont: Font {
-        #if os(macOS)
-        .system(size: 15, weight: .semibold)
-        #else
-        .headline
-        #endif
-    }
+    private var headlineFont: Font { .headline }
 
     /// Carries the composer flight's matched geometry.
     @ViewBuilder
@@ -844,7 +839,11 @@ struct TransferQueueSection: View {
     private func attentionEdge(for row: QueueSessionRow) -> some View {
         switch row.selectedFilesVerified ? CardSafetyState.safeToErase : row.safetyState {
         case .needsAttention, .interrupted:
-            AttentionEdge(color: CardSafetyTint.amber.color, width: 4)
+            // Increase Contrast widens the edge from 4 pt to 6 pt.
+            AttentionEdge(
+                color: CardSafetyTint.amber.color,
+                width: accessibilityContrast == .increased ? 6 : 4
+            )
         case .failed:
             AttentionEdge(color: CardSafetyTint.red.color, width: 6)
         default:

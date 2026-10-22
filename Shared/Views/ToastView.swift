@@ -10,7 +10,7 @@ struct ToastView: View {
             Image(systemName: icon)
                 .foregroundColor(tint)
             Text(message)
-                .font(.system(size: 13, weight: .semibold))
+                .font(.subheadline.weight(.semibold))
                 .foregroundColor(.white)
         }
         .padding(.horizontal, 14)
