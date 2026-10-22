@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.2.11] - 2026-10-22 (in preparation, not released)
+## [0.2.11] - 2026-10-22
 
 - Queue rows show the card name, a state label that says what to do ("Keep the card", "Didn't verify", "Didn't copy", "Safe to erase"), when it finished, which backups, and the size. A running row shows the phase, the current file and the measured rate, and fills as it copies. Repeated attempts at one card collapse to one row; the paused banner is one sentence and Remove from queue always works.
 - The finish names each backup by volume and folder, says exactly what was verified for the chosen mode, and Eject carries through to "Ejected · safe to remove" and "Removed" when the card leaves the reader. Notifications say "safe to erase" or "keep the card".

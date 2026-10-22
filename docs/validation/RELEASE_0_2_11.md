@@ -1,6 +1,6 @@
 # 0.2.11 release validation
 
-**Status: in preparation, not released.** 0.2.11 is being cut from the current `main`. The October 21 candidate (`f74d8c7d`, tagged `v0.2.11` and held in draft) was retired on October 22 without publication; its evidence is kept in [RELEASE_0_2_11-candidate-f74d8c7d.md](RELEASE_0_2_11-candidate-f74d8c7d.md) and remains valid for the engine behaviour it tested, which is unchanged on `main`. Publication needs fresh approval after the gates below pass. The latest public release is `v0.2.10`.
+**Status: released October 22, 2026.** Cut from `main` at `a4974c10` (0.2.11, build 22) after the gates below. The October 21 candidate (`f74d8c7d`, tagged `v0.2.11` and held in draft) was retired without publication; its evidence is kept in [RELEASE_0_2_11-candidate-f74d8c7d.md](RELEASE_0_2_11-candidate-f74d8c7d.md) and remains valid for the engine behaviour it tested, which is unchanged. The exFAT sidecar question in the limits ships as a known behaviour of the non-default setting.
 
 Base for this record: `main` at `e84aba44` (October 22), which contains everything merged since `v0.2.10`. Local validation uses the Xcode and Swift versions recorded in the candidate record. GitHub Actions remains intentionally disabled; its absence is not a test result.
 
@@ -43,10 +43,9 @@ The candidate was a Developer ID signed Release archive of `main` at `e84aba44` 
 | AppleDouble sidecars from an exFAT card | With "Ignore AppleDouble metadata files" turned off (it had been switched off on this Mac during earlier testing; the shipped default is on), copying the SD fixture with 26 `._` companions to two exFAT backups failed every sidecar row: 52 "Failed", journal summary "52 files failed; T9: 26 files have no result; WheeDrive: 26 files have no result", one Cocoa error 516 (file exists) per destination, while all 50 media rows verified. The backups' exFAT driver creates its own `._` companion when the media file lands, and the engine refuses to overwrite it. With the option on, the same card copied with "26 AppleDouble files intentionally excluded" and selected files verified. Not re-tested on 0.2.10; recorded as an open question below. |
 | iOS light mode, Increase Contrast | iPhone 18 Pro simulator, light appearance: tokens render; Increase Contrast showed no visible change on the empty Setup screen. |
 
-## Gates still open before tagging
+## Release build
 
-1. **Notarized release build.** `Scripts/release_mac.sh 0.2.11` at the final commit (it was blocked for the automated session), smoke-test the notarized DMG once, tag `v0.2.11` there, publish as Latest with the `.sha256`, `Scripts/bump_cask.sh`, `Scripts/publish_appcast.sh`.
-2. **Decide the exFAT sidecar question** above: either accept that turning the AppleDouble option off fails sidecar rows on exFAT backups (and say so next to the toggle), or fix the exists case for filesystem-created companions before release.
+`Scripts/release_mac.sh 0.2.11` at the release commit: signed, notarized and stapled DMG with its `.sha256`, smoke-tested once from the archive, then tag `v0.2.11`, GitHub release as Latest, `Scripts/bump_cask.sh 0.2.11`, `Scripts/publish_appcast.sh 0.2.11`. Results are appended below.
 
 ## Known limits carried into this release
 
