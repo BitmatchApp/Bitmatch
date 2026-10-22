@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- History, Review and the queue row now say when a backup ran out of space ("BMMID ran out of space · 3 files failed") instead of only counting the failures. The journal summary carries the same reason.
+- When an exFAT or FAT backup keeps its own hidden companion file, so the card's AppleDouble file could not be copied there, the row and the summary say so, and the Ignore AppleDouble metadata files setting explains it while it is off.
+
 ## [0.2.11] - 2026-10-22
 
 - Queue rows show the card name, a state label that says what to do ("Keep the card", "Didn't verify", "Didn't copy", "Safe to erase"), when it finished, which backups, and the size. A running row shows the phase, the current file and the measured rate, and fills as it copies. Repeated attempts at one card collapse to one row; the paused banner is one sentence and Remove from queue always works.

@@ -173,6 +173,19 @@ struct QueueSessionPresentationTests {
         }
     }
 
+    @Test func causeNamesTheBackupThatRanOutOfSpace() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let spaceless = try fixture.record(name: "A", state: .issues, results: [.failed, .failed, .failed], failureReason: "outOfSpace")
+        let plain = try fixture.record(name: "B", state: .issues, results: [.failed, .failed, .failed])
+        let queue = QueueSessionPresentation.make(records: [spaceless, plain], sessionIDs: [spaceless.id, plain.id],
+            progress: nil, mountedSourceIDs: [])
+        let spaceRow = try #require(queue.rows.first { $0.id == spaceless.id })
+        let plainRow = try #require(queue.rows.first { $0.id == plain.id })
+        #expect(spaceRow.cause == "Shuttle A ran out of space · 3 files failed")
+        #expect(plainRow.cause == "3 files failed on Shuttle A")
+    }
+
     @Test func queueLabelsSayWhatToDo() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -1041,7 +1054,8 @@ private final class QueuePresentationFixture {
         files: Int? = nil,
         bytes: Int64 = 0,
         fileOutcome: ResultOutcome = .verified,
-        destinationNames: [String]? = nil
+        destinationNames: [String]? = nil,
+        failureReason: String? = nil
     ) throws -> LocalTransferRecord {
         let source = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -1076,7 +1090,7 @@ private final class QueuePresentationFixture {
                     path: source.appendingPathComponent("clip\(index).mov").path,
                     status: outcome.statusText, size: size, checksum: outcome == .verified ? "abc" : nil,
                     destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip\(index).mov").path,
-                    wasReused: wasReused
+                    wasReused: wasReused, failureReason: outcome == .verified ? nil : failureReason
                 )
             }
         }

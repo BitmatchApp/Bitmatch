@@ -144,6 +144,11 @@ public struct FileOperationResult: Sendable {
     
     public var excludedAppleDouble: Bool = false
 
+    /// Canonical `ResultFailureReason` token the writer set on `error`.
+    public var failureReason: String? {
+        (error as NSError?)?.userInfo[ResultFailureReason.userInfoKey] as? String
+    }
+
     public var outcome: ResultOutcome {
         if excludedAppleDouble { return .excludedAppleDouble }
         if let verification = verificationResult {

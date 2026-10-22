@@ -33,6 +33,15 @@ public enum ResultOutcome: CaseIterable, Equatable, Sendable {
     }
 }
 
+// MARK: - Failure Reason
+/// Why a copy or verification failed, bounded to tokens the app can word.
+public enum ResultFailureReason: String, Sendable, CaseIterable {
+    case outOfSpace
+    case companionConflict
+    /// NSError userInfo key the writer sets on the errors it classifies.
+    public static let userInfoKey = "BitMatchFailureReason"
+}
+
 // MARK: - Result Row
 public struct ResultRow: Identifiable, Sendable {
     public let id: UUID
@@ -51,6 +60,9 @@ public struct ResultRow: Identifiable, Sendable {
     /// One-time re-copy outcome after a failed readback (`recovered` or
     /// `stillFailed`); nil when no re-copy ran.
     public let recopyOutcome: String?
+    /// Canonical `ResultFailureReason` token for a failed file, when the
+    /// engine could classify the failure; nil otherwise. Never error text.
+    public let failureReason: String?
     
     public init(id: UUID = UUID(),
          path: String,
@@ -62,7 +74,8 @@ public struct ResultRow: Identifiable, Sendable {
          clipIntegrity: ClipIntegrityFinding? = nil,
          wasReused: Bool = false,
          failedOutputMarking: String? = nil,
-         recopyOutcome: String? = nil) {
+         recopyOutcome: String? = nil,
+         failureReason: String? = nil) {
         self.id = id
         self.path = path
         self.status = status
@@ -74,6 +87,7 @@ public struct ResultRow: Identifiable, Sendable {
         self.wasReused = wasReused
         self.failedOutputMarking = failedOutputMarking
         self.recopyOutcome = recopyOutcome
+        self.failureReason = failureReason
     }
     
     /// Canonical History/report suffix for the marking outcome, shared by
@@ -205,7 +219,7 @@ public struct ReportPrefs: Codable, Sendable {
 
 extension ResultRow: Codable {
     public enum CodingKeys: String, CodingKey, Sendable {
-        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome
+        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome, failureReason
     }
 
     public init(from decoder: Decoder) throws {
@@ -230,8 +244,9 @@ extension ResultRow: Codable {
         let wasReused = try container.decodeIfPresent(Bool.self, forKey: .wasReused) ?? false
         let failedOutputMarking = try container.decodeIfPresent(String.self, forKey: .failedOutputMarking)
         let recopyOutcome = try container.decodeIfPresent(String.self, forKey: .recopyOutcome)
+        let failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
 
-        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome)
+        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome, failureReason: failureReason)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -247,5 +262,6 @@ extension ResultRow: Codable {
         if wasReused { try container.encode(true, forKey: .wasReused) }
         try container.encodeIfPresent(failedOutputMarking, forKey: .failedOutputMarking)
         try container.encodeIfPresent(recopyOutcome, forKey: .recopyOutcome)
+        try container.encodeIfPresent(failureReason, forKey: .failureReason)
     }
 }

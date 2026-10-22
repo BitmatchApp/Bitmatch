@@ -400,6 +400,7 @@ struct FanOutTests {
             let failed = operation.results.filter { !$0.success }
             #expect(failed.count == 24)
             #expect(failed.allSatisfy { ($0.error as? NSError)?.code == Int(ENOSPC) })
+            #expect(failed.allSatisfy { $0.failureReason == ResultFailureReason.outOfSpace.rawValue })
             #expect(failed.contains { ($0.error as? NSError)?.localizedDescription.contains("paused for the rest of this attempt") == true })
             // Attempts on the full destination are bounded by the worker
             // count (each worker can be mid-file when the pause lands),

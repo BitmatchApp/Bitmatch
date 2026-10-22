@@ -72,6 +72,19 @@ struct TransferLibraryPresentationTests {
         #expect(label.title == "Copied, not verified")
     }
 
+    @Test func failureReasonIsSurfacedInHistoryWords() {
+        let space = ResultRow(path: "/card/clip.mov", status: ResultOutcome.failed.statusText,
+                              size: 4, checksum: nil, destination: "Backup", failureReason: "outOfSpace")
+        #expect(TransferHistoryResultPresentation.statusText(for: space, mode: .standard).hasSuffix(" · backup out of space"))
+        let companion = ResultRow(path: "/card/._clip.mov", status: ResultOutcome.failed.statusText,
+                                  size: 4, checksum: nil, destination: "Backup", failureReason: "companionConflict")
+        #expect(TransferHistoryResultPresentation.statusText(for: companion, mode: .standard)
+            .hasSuffix(" · the backup keeps its own hidden companion file"))
+        let plain = ResultRow(path: "/card/clip.mov", status: ResultOutcome.failed.statusText,
+                              size: 4, checksum: nil, destination: "Backup")
+        #expect(TransferHistoryResultPresentation.statusText(for: plain, mode: .standard) == ResultOutcome.failed.statusText)
+    }
+
     @Test func failedReadbackMarkingIsSurfacedInHistoryWords() {
         let marked = ResultRow(path: "/card/clip.mov", status: ResultOutcome.checksumMismatch.statusText,
                                size: 4, checksum: nil, destination: "Backup", failedOutputMarking: "marked")

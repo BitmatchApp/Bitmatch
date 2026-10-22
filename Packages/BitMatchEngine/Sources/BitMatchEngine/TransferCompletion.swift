@@ -20,7 +20,8 @@ public enum TransferCompletion: Sendable {
             clipIntegrity: result.clipIntegrity,
             wasReused: result.wasReused,
             failedOutputMarking: result.failedOutputMarking,
-            recopyOutcome: result.recopyOutcome
+            recopyOutcome: result.recopyOutcome,
+            failureReason: result.failureReason
         )
     }
 
@@ -447,7 +448,17 @@ public enum TransferCompletion: Sendable {
                     ? "Selected files copied without verification; \(excludedDescription). Keep the source"
                     : "\(excludedDescription); selected file results need review. Keep the source")
         } else {
-            fileResultsMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
+            var failedMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
+            let reasons = Set(rows.filter { !$0.isSuccessStatus }.map(\.failureReason))
+            if reasons.count == 1, let token = reasons.first ?? nil, let reason = ResultFailureReason(rawValue: token) {
+                switch reason {
+                case .outOfSpace:
+                    failedMessage += "; a backup ran out of space"
+                case .companionConflict:
+                    failedMessage += "; the backup keeps its own hidden companion files, so the card's AppleDouble files could not be copied there. Turn on Ignore AppleDouble metadata files"
+                }
+            }
+            fileResultsMessage = failedMessage
         }
 
         let everythingElseHeld = fileResultsSucceeded && coverage.isExact && project.permitsSuccess && handoffIssues.isEmpty && reportIssue == nil
