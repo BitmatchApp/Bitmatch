@@ -24,6 +24,49 @@ struct QueueSessionPresentationTests {
         return cal
     }
 
+    @Test func runningDetailNamesPhaseBackupFileAndRate() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(name: "B_CAM", state: .running, destinationNames: ["Shuttle A", "Shuttle B", "Shuttle C"])
+        let progress = runningProgress(stage: .verifying, speed: 557_000_000, perDestination: [1, 0.4, 0])
+        let row = try runningRow(record, progress)
+        let detail = try #require(row.runningDetail(progress: progress, timeRemaining: "12 min"))
+        #expect(detail.metaLine == "Verifying Shuttle B · 2 of 3 backups · 218 GB")
+        #expect(detail.currentFile == "B007C012.mov")
+        #expect(detail.timeAndRate == "About 12 min · 557 MB/s")
+    }
+
+    @Test func runningDetailCoversPhasesAndFallbacks() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(name: "B_CAM", state: .running, destinationNames: ["Shuttle A", "Shuttle B"])
+        func detail(_ p: OperationProgress, _ time: String?) throws -> RunningRowDetail {
+            try #require(try runningRow(record, p).runningDetail(progress: p, timeRemaining: time))
+        }
+        #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), nil).metaLine == "Copying to Shuttle A, Shuttle B · 218 GB")
+        #expect(try detail(runningProgress(stage: .verifying, speed: nil, perDestination: [1, 1]), nil).metaLine == "Verifying Shuttle B · 2 of 2 backups · 218 GB")
+        #expect(try detail(runningProgress(stage: .generating, speed: nil, perDestination: nil), nil).metaLine == "Finishing · 218 GB")
+        #expect(try detail(runningProgress(stage: .preparing, speed: nil, perDestination: nil), nil).metaLine == "Preparing")
+        #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil, file: ""), nil).currentFile == nil)
+        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), TransferProgressPresentation.estimatingTimeLeft).timeAndRate == "Estimating…")
+        #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), "3 min").timeAndRate == "About 3 min")
+        #expect(try detail(runningProgress(stage: .copying, speed: 557_000_000, perDestination: nil), nil).timeAndRate == "557 MB/s")
+        #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), nil).timeAndRate == nil)
+        let waiting = try fixture.record(name: "A_CAM", state: .queued)
+        let waitingRow = QueueSessionPresentation.make(records: [waiting], sessionIDs: [waiting.id], progress: nil, mountedSourceIDs: [waiting.id]).rows[0]
+        #expect(waitingRow.runningDetail(progress: nil, timeRemaining: nil) == nil)
+    }
+
+    private func runningProgress(stage: ProgressStage, speed: Double?, perDestination: [Double]?, file: String = "/Volumes/B_CAM/CLIP/B007C012.mov") -> OperationProgress {
+        OperationProgress(overallProgress: 0.61, currentFile: file, filesProcessed: 10, totalFiles: 20, currentStage: stage,
+            speed: speed, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil, bytesProcessed: nil, totalBytes: 218_000_000_000,
+            perDestinationProgress: perDestination)
+    }
+
+    private func runningRow(_ record: LocalTransferRecord, _ progress: OperationProgress) throws -> QueueSessionRow {
+        QueueSessionPresentation.make(records: [record], sessionIDs: [record.id], progress: progress, mountedSourceIDs: [record.id]).rows[0]
+    }
+
     @Test func metaLineFollowsTheGrammar() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }

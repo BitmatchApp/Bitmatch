@@ -311,6 +311,15 @@ struct TransferProgressPresentation: Equatable, Sendable {
         }
     }
 
+    /// Decimal MB or GB per second, as the progress screen shows it.
+    static func measuredSpeedText(bytesPerSecond: Double) -> String? {
+        guard bytesPerSecond > 0 else { return nil }
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useMB, .useGB]
+        formatter.countStyle = .decimal
+        return formatter.string(fromByteCount: Int64(bytesPerSecond)) + "/s"
+    }
+
     static func speedText(phase: ProgressPhase, measured: String?) -> String? {
         phase == .copying ? measured ?? estimating : nil
     }

@@ -9,6 +9,13 @@ enum QueueRowAction: Equatable, Sendable {
     case removed
 }
 
+/// The running row's second and third lines (queue polish plan, task 8).
+struct RunningRowDetail: Equatable, Sendable {
+    let metaLine: String
+    let currentFile: String?
+    let timeAndRate: String?
+}
+
 struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let id: UUID
     let cardName: String
@@ -88,6 +95,45 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
             return String(text[range.upperBound...])
         } ?? ""
         return [lead, middle, size].filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// Phase, backup index, file and pace for the one running row; nil otherwise.
+    func runningDetail(progress: OperationProgress?, timeRemaining: String?) -> RunningRowDetail? {
+        guard isRunning else { return nil }
+        let size = progress?.totalBytes.map(ByteCountPresentation.fileSize)
+            ?? evidence.flatMap { text in text.range(of: " · ").map { String(text[$0.upperBound...]) } }
+        func joined(_ parts: [String?]) -> String { parts.compactMap { $0 }.joined(separator: " · ") }
+        let meta: String
+        switch safetyState {
+        case .copying:
+            meta = joined(["Copying to " + destinationNames.joined(separator: ", "), size])
+        case .verifying:
+            let fractions = progress?.perDestinationProgress ?? []
+            let index = fractions.firstIndex(where: { $0 < 1 }) ?? max(0, destinationNames.count - 1)
+            let name = destinationNames.indices.contains(index) ? destinationNames[index] : nil
+            let count = destinationNames.count
+            meta = joined([
+                name.map { "Verifying \($0)" } ?? "Verifying",
+                count > 1 ? "\(index + 1) of \(count) backups" : nil,
+                size
+            ])
+        case .finishing:
+            meta = joined(["Finishing", size])
+        default:
+            meta = "Preparing"
+        }
+        let file = progress?.currentFile
+            .map { ($0 as NSString).lastPathComponent }
+            .flatMap { $0.isEmpty ? nil : $0 }
+        let rate = progress?.speed.flatMap(TransferProgressPresentation.measuredSpeedText)
+        let timeAndRate: String?
+        if timeRemaining == TransferProgressPresentation.estimatingTimeLeft {
+            timeAndRate = "Estimating…"
+        } else {
+            let parts = [timeRemaining.map { "About \($0)" }, rate].compactMap { $0 }
+            timeAndRate = parts.isEmpty ? nil : parts.joined(separator: " · ")
+        }
+        return RunningRowDetail(metaLine: meta, currentFile: file, timeAndRate: timeAndRate)
     }
 
     var isEditable: Bool { safetyState == .waiting }
