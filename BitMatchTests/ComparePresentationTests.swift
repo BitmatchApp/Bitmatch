@@ -244,7 +244,7 @@ struct ComparePresentationTests {
     @Test func folderLabelsExplainRolesAndSafety() {
         #expect(ComparePresentation.title == "Check")
         #expect(ComparePresentation.folderToCheckLabel == "Folder or drive to check")
-        #expect(ComparePresentation.anotherFolderLabel == "Another folder")
+        #expect(ComparePresentation.anotherFolderLabel == "Compare with")
         #expect(ComparePresentation.nonDestructiveMessage == "Check does not change your files.")
         #expect(ComparePresentation.noSavedChecksumsMessage == "No saved checksums found here. Compare it with another folder instead.")
     }

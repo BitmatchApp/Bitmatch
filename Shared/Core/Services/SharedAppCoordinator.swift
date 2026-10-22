@@ -686,7 +686,7 @@ class SharedAppCoordinator: ObservableObject {
         }
         let id = sourceURL == nil ? nil : try await enqueueSelectionPrepared()
         guard !stagedSetupTransfers.isEmpty else {
-            throw FileOperationError.unsafeOperation("Choose a source and destinations first.")
+            throw FileOperationError.unsafeOperation("Choose a card and backups first.")
         }
         try Task.checkCancellation()
         startQueue()
@@ -1609,7 +1609,7 @@ class SharedAppCoordinator: ObservableObject {
             committedID = try enqueueSelection()
         }
         guard !stagedSetupTransfers.isEmpty else {
-            throw FileOperationError.unsafeOperation("Choose a source and destinations first.")
+            throw FileOperationError.unsafeOperation("Choose a card and backups first.")
         }
         startQueue()
         return committedID

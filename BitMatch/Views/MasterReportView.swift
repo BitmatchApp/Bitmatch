@@ -20,7 +20,7 @@ struct MasterReportView: View {
     static var platform: MasterReportPlatform {
         MasterReportPlatform(
             chooseLocationTitle: MasterReportPresentation.locationTitle,
-            locationHint: "Choose the destination drive, or a folder on it, that holds the day's BitMatch reports.",
+            locationHint: "Choose the backup drive, or a folder on it, that holds the day's BitMatch reports.",
             scanningHint: nil,
             deliverVerb: "Save",
             chooseLocation: { MasterReportView.chooseFolder() },
@@ -38,7 +38,7 @@ struct MasterReportView: View {
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = false
         panel.prompt = "Scan"
-        panel.message = "Choose the destination drive or folder that holds the day's BitMatch reports"
+        panel.message = "Choose the backup drive or folder that holds the day's BitMatch reports"
         panel.directoryURL = URL(fileURLWithPath: "/Volumes", isDirectory: true)
         return panel.runModal() == .OK ? panel.url : nil
     }

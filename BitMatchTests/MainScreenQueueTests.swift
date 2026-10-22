@@ -363,7 +363,7 @@ struct MainScreenQueueTests {
                 Issue.record("Expected unsafeOperation, got \(error)")
                 return
             }
-            #expect(message == "Choose a source and destinations first.")
+            #expect(message == "Choose a card and backups first.")
         }
     }
 

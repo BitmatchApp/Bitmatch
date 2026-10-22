@@ -81,7 +81,10 @@ extension SetupPresentation {
             destinationCount: independence.selectedDestinationCount,
             hasProjectEvidence: !(jobs.dashboardJob?.cardIngests.isEmpty ?? true),
             physicalSeparationNote: independence.physicalSeparationNote,
-            informationalLines: [coordinator.alreadyBackedUpLine].compactMap { $0 }
+            informationalLines: [coordinator.alreadyBackedUpLine].compactMap { $0 },
+            projectName: (jobs.dashboardJob ?? jobs.activeJob)?.jobName,
+            projectDay: (jobs.dashboardJob ?? jobs.activeJob)?.eventDate
+                .formatted(date: .abbreviated, time: .omitted)
         )
     }
 }

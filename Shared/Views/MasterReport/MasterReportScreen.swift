@@ -141,10 +141,7 @@ struct MasterReportScreen: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Master report")
-                .font(.title2.weight(.semibold))
-                .accessibilityAddTraits(.isHeader)
-            Text("Collect one day's BitMatch reports from a destination drive into one PDF for the production.")
+            Text("Choose a backup drive with the day's reports.")
                 .font(.subheadline)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -155,7 +152,7 @@ struct MasterReportScreen: View {
 
     private var locationAndDay: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Drive or folder")
+            Text("Backup drive or folder")
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)

@@ -328,7 +328,7 @@ struct QueueSessionPresentationTests {
             progress: nil, mountedSourceIDs: [])
         #expect(queue.tally.selectedFilesVerified == 1)
         #expect(queue.tally.needsAttention == 1)
-        #expect(queue.summaryTitle == "1 selected transfer verified · 1 needs attention")
+        #expect(queue.summaryTitle == "1 selected transfer verified · 1 keep the card")
         let accessory = QueueAccessoryPresentation.make(queue: queue)
         #expect(accessory.attentionRecordID == failed.id)
         #expect(accessory.tone == .warning)
@@ -482,7 +482,7 @@ struct QueueSessionPresentationTests {
 
         #expect(presentation.summaryTitle == nil)
         #expect(!presentation.showsQueueSummary)
-        #expect(presentation.tally.text == "2 not started")
+        #expect(presentation.tally.text == "2 queued")
     }
 
     @Test func tallyAndActionsPreserveEverySafetyClass() throws {
@@ -504,7 +504,7 @@ struct QueueSessionPresentationTests {
             mountedSourceIDs: Set([safe.id, quick.id, attention.id, failed.id, interrupted.id, waiting.id])
         )
 
-        #expect(presentation.tally.text == "1 safe to erase · 1 copied, not verified · 1 needs attention · 1 failed · 1 interrupted · 1 not started")
+        #expect(presentation.tally.text == "1 safe to erase · 1 copied, not verified · 1 keep the card · 1 didn't verify · 1 interrupted · 1 queued")
         #expect(presentation.summaryTitle == presentation.tally.text)
         #expect(presentation.ejectableCardIDs == [safe.id])
         #expect(presentation.rows.map(\.action) == [.eject, .review, .review, .review, .review, nil])
@@ -527,7 +527,7 @@ struct QueueSessionPresentationTests {
             mountedSourceIDs: Set([first.id, issue.id]), now: finishedAt
         )
 
-        #expect(presentation.summaryTitle == "2 safe to erase · 1 needs attention")
+        #expect(presentation.summaryTitle == "2 safe to erase · 1 keep the card")
         #expect(!presentation.showsEjectAllButton)
         #expect(presentation.ejectableCardIDs == [first.id])
         let lines = presentation.copySummary.split(separator: "\n")

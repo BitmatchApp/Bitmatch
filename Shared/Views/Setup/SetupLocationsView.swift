@@ -115,8 +115,10 @@ struct SetupLocationsView: View {
                 verificationConnector(vertical: false)
                     .frame(minWidth: 150, maxWidth: 190)
                     .padding(.top, 44)
-                destinationsBox.frame(minWidth: 250, maxWidth: .infinity)
+                destinationsBox.frame(minWidth: 180, maxWidth: .infinity)
             }
+            .padding(12)
+            .background(SetupLocationsPanelBackground())
         } else {
             VStack(alignment: .leading, spacing: 10) {
                 sourceBox
@@ -124,12 +126,19 @@ struct SetupLocationsView: View {
                     .frame(maxWidth: .infinity)
                 destinationsBox
             }
+            .padding(12)
+            .background(SetupLocationsPanelBackground())
         }
     }
 
+    /// One well on the shared composer surface. The label sits outside the
+    /// well; the border says what the well wants: dashed means drop here,
+    /// a solid accent border means this is the next step.
     private func box<Content: View>(
         title: String,
         accessibilityLabel: String,
+        isNext: Bool,
+        isEmpty: Bool,
         @ViewBuilder content: () -> Content
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -137,22 +146,44 @@ struct SetupLocationsView: View {
                 .font(.subheadline.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .accessibilityAddTraits(.isHeader)
-            content()
+            VStack(alignment: .leading, spacing: 8) { content() }
+                .padding(12)
+                .frame(maxWidth: .infinity, minHeight: 124, alignment: .topLeading)
+                .background(
+                    RoundedRectangle(cornerRadius: 10)
+                        .fill(Color.primary.opacity(0.02))
+                )
+                .overlay {
+                    if isNext {
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                    } else if isEmpty {
+                        RoundedRectangle(cornerRadius: 10)
+                            .stroke(
+                                Color.secondary.opacity(0.45),
+                                style: StrokeStyle(lineWidth: 1, dash: [5, 4])
+                            )
+                    } else {
+                        RoundedRectangle(cornerRadius: 10)
+                            .strokeBorder(Color.primary.opacity(0.12), lineWidth: 1)
+                    }
+                }
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, minHeight: 124, alignment: .topLeading)
-        .background(SetupLocationsPanelBackground())
+        .frame(maxWidth: .infinity, alignment: .topLeading)
         .accessibilityElement(children: .contain)
         .accessibilityLabel(accessibilityLabel)
     }
 
     private var sourceAccessibilityLabel: String {
-        guard let source = presentation.source else { return "Source: not selected" }
-        return ["Source: \(source.title)", source.cameraName, source.detail].compactMap { $0 }.joined(separator: ", ")
+        guard let source = presentation.source else { return "Card: not selected" }
+        return ["Card: \(source.title)", source.cameraName, source.detail].compactMap { $0 }.joined(separator: ", ")
     }
 
     private var sourceBox: some View {
-        box(title: "Source", accessibilityLabel: sourceAccessibilityLabel) {
+        box(
+            title: "Card", accessibilityLabel: sourceAccessibilityLabel,
+            isNext: presentation.highlightsSource, isEmpty: presentation.source == nil
+        ) {
             sourceControl
         }
         .fileDrop(isTargeted: $isSourceTargeted, enabled: presentation.canEdit, perform: drops?.source)
@@ -232,9 +263,9 @@ struct SetupLocationsView: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     } else {
-                        Text("Choose source…").font(.headline)
+                        Text("Choose a card…").font(.headline)
                             .fixedSize(horizontal: false, vertical: true)
-                        Text(drops == nil ? "Connected card or folder" : "Connected card, folder, or drop here")
+                        Text(drops == nil ? "A card or folder, from Files" : "A card or folder, or drop it here")
                             .font(.caption).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
@@ -253,7 +284,7 @@ struct SetupLocationsView: View {
         .buttonStyle(.plain)
         .layoutPriority(1)
         .disabled(!presentation.canEdit)
-        .accessibilityLabel(presentation.source == nil ? "Choose source" : "Change source")
+        .accessibilityLabel(presentation.source == nil ? "Choose card" : "Change card")
         .accessibilityValue(presentation.source?.title ?? "")
         .accessibilityHint("Lists connected cards and drives or opens a folder picker")
         .setupSourceControlBounds(.choose)
@@ -317,12 +348,6 @@ struct SetupLocationsView: View {
                         .accessibilityHidden(true)
                 }
             }
-            Text(shortVerificationDetail)
-                .font(.caption)
-                .foregroundStyle(verificationMode == .quick ? AnyShapeStyle(ResultStatusTone.warning.color) : AnyShapeStyle(.secondary))
-                .multilineTextAlignment(.center)
-                .fixedSize(horizontal: false, vertical: true)
-                .padding(.horizontal, 10)
         }
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Verification: \(verificationMode.rawValue). \(shortVerificationDetail)")
@@ -338,6 +363,10 @@ struct SetupLocationsView: View {
 
     private var verificationMenu: some View {
         Menu {
+            // The mode's explanation lives in the menu now, not as a caption
+            // under the connector.
+            Text(shortVerificationDetail)
+            Divider()
             ForEach(VerificationMode.allCases) { mode in
                 Button { verificationMode = mode } label: {
                     if verificationMode == mode { Label(mode.rawValue, systemImage: "checkmark") }
@@ -367,13 +396,24 @@ struct SetupLocationsView: View {
 
     private var destinationsAccessibilityLabel: String {
         let values = presentation.backups.map { [$0.title, $0.capacity].compactMap { $0 }.joined(separator: ", ") }
-        return values.isEmpty ? "Destinations: none selected" : "Destinations: " + values.joined(separator: "; ")
+        return values.isEmpty ? "Backups: none selected" : "Backups: " + values.joined(separator: "; ")
     }
 
     private var destinationsBox: some View {
-        box(title: "Destinations", accessibilityLabel: destinationsAccessibilityLabel) {
+        box(
+            title: "Backups", accessibilityLabel: destinationsAccessibilityLabel,
+            isNext: presentation.highlightsBackups, isEmpty: presentation.backups.isEmpty
+        ) {
             ForEach(Array(presentation.backups.enumerated()), id: \.element.id) { index, backup in
                 destinationRow(backup, index: index)
+            }
+            if presentation.backups.isEmpty {
+                Text(drops == nil
+                    ? "A folder on each backup drive, from Files"
+                    : "A folder on each backup drive, or drop them here")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             addDestinationButton
         }
@@ -461,7 +501,7 @@ struct SetupLocationsView: View {
 
     private var addDestinationButton: some View {
         Button { isDestinationPickerPresented = true } label: {
-            Label("Add destination", systemImage: "plus")
+            Label("Add a backup…", systemImage: "plus")
                 .font(.subheadline.weight(.medium))
                 .frame(maxWidth: .infinity, minHeight: 32, alignment: .leading)
                 .setupLocationTouchTarget()
@@ -470,8 +510,8 @@ struct SetupLocationsView: View {
         .buttonStyle(.plain)
         .disabled(!presentation.canEditBackups)
         .foregroundStyle(Color.accentColor)
-        .accessibilityLabel("Add destination")
-        .accessibilityHint("Lists connected destination drives or opens a folder picker")
+        .accessibilityLabel("Add a backup")
+        .accessibilityHint("Lists connected backup drives or opens a folder picker")
         .popover(isPresented: $isDestinationPickerPresented, arrowEdge: .bottom) {
             SetupLocationPickerPopover(
                 purpose: .destinations,
@@ -576,7 +616,7 @@ struct SetupLocationsView: View {
             .accessibilityAction(named: "Remove from queue") { actions.removeStagedCard(item.id) }
             .contextMenu {
                 Button("Edit") { edit(item.id) }
-                Button("Move to Top") { actions.moveStagedCard(item.id, 0) }
+                Button("Move to top") { actions.moveStagedCard(item.id, 0) }
                     .disabled(index == 0)
                 Button("Remove", role: .destructive) { actions.removeStagedCard(item.id) }
             }

@@ -503,7 +503,7 @@ enum TransferLibraryPresentation {
     }
 
     static func detailLine(destinationCount: Int, fileCount: Int) -> String {
-        let backups = destinationCount == 1 ? "1 destination" : "\(destinationCount) destinations"
+        let backups = destinationCount == 1 ? "1 backup" : "\(destinationCount) backups"
         let files = fileCount == 1 ? "1 file" : "\(fileCount) files"
         return "\(backups) · \(files)"
     }

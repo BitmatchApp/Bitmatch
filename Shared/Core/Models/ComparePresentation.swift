@@ -376,7 +376,7 @@ struct ComparePresentation: Equatable, Sendable {
     static let nonDestructiveMessage = "Check does not change your files."
     static let noSavedChecksumsMessage = "No saved checksums found here. Compare it with another folder instead."
     static let folderToCheckLabel = "Folder or drive to check"
-    static let anotherFolderLabel = "Another folder"
+    static let anotherFolderLabel = "Compare with"
 
     let left: CompareFolderSlot
     let right: CompareFolderSlot
