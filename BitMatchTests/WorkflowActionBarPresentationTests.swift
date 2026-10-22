@@ -26,10 +26,11 @@ struct WorkflowActionBarPresentationTests {
 
     private static func start(
         title: String, canStart: Bool, blocker: String?, readyLine: String?,
-        nextStep: StartButtonPresentation.NextStep? = nil
+        nextStep: StartButtonPresentation.NextStep? = nil,
+        action: StartButtonPresentation.Action = .start
     ) -> StartButtonPresentation {
         StartButtonPresentation(
-            title: title, symbol: "play.fill", canStart: canStart, action: .start,
+            title: title, symbol: "play.fill", canStart: canStart, action: action,
             startsProject: false, nextStep: nextStep, blocker: blocker, readyLine: readyLine,
             accessibilityHint: ""
         )
@@ -43,6 +44,17 @@ struct WorkflowActionBarPresentationTests {
             hasLocation: hasLocation, isScanning: scanning, foundCount: found,
             selectedCount: selected, isGenerating: generating, deliverVerb: "Save"
         )
+    }
+
+    @Test func blockedQueueActionKeepsTheAddToQueueTitle() {
+        let blocked = Self.start(
+            title: "Choose a source to start", canStart: false, blocker: nil, readyLine: nil,
+            nextStep: .chooseSource, action: .addToQueue
+        )
+        let bar = WorkflowActionBarPresentation.make(start: blocked)
+        #expect(bar.sentence == "Choose a source to start.")
+        #expect(bar.buttonTitle == "Add to queue")
+        #expect(!bar.isEnabled)
     }
 
     @Test func startMapsBlockerThenReadyLine() {

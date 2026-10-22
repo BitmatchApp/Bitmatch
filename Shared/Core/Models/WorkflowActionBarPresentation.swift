@@ -13,12 +13,12 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
     static func make(start: StartButtonPresentation) -> Self {
         // A step that is not done yet carries its instruction in the title
         // ("Choose a source to start"); the bar says it as a sentence and
-        // keeps a steady "Start" button.
+        // keeps a steady "Start" ("Add to queue" while a transfer runs) button.
         if !start.canStart {
             return Self(
                 sentence: start.blocker ?? stepSentence(start.nextStep)
                     ?? (start.title == "Start" ? nil : sentence(from: start.title)),
-                buttonTitle: "Start",
+                buttonTitle: start.action == .addToQueue ? "Add to queue" : "Start",
                 symbol: start.symbol,
                 isEnabled: false
             )

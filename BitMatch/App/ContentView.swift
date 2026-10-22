@@ -5,8 +5,8 @@ import AppKit
 /// What the window-fit shell remembers between height changes.
 private struct WindowFitTracker {
     var lastHeight: CGFloat = 0
-    var lastChangeAt = Date()
-    var shorterSince: Date?
+    var lastChangeAt = ProcessInfo.processInfo.systemUptime
+    var shorterSince: TimeInterval?
     /// Height of the last frame the shell set itself, so only a different
     /// height after a live resize counts as the user's.
     var lastSetHeight: CGFloat = 0
@@ -716,7 +716,7 @@ struct MacMainView: View {
         )
         if abs(combined - windowFit.lastHeight) > 0.5 {
             windowFit.lastHeight = combined
-            windowFit.lastChangeAt = Date()
+            windowFit.lastChangeAt = ProcessInfo.processInfo.systemUptime
         }
         if windowFit.hasFitted {
             evaluateWindowFit()
@@ -736,7 +736,7 @@ struct MacMainView: View {
         windowResizeTask?.cancel()
         guard let window = hostingWindow, measuredScrollableContentHeight > 0 else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
-        let now = Date()
+        let now = ProcessInfo.processInfo.systemUptime
         let contentHeight = windowFit.lastHeight + windowFit.headroom
         let windowContentHeight = window.frame.height - chromeHeight
         let isShorter = windowContentHeight - contentHeight >= MacWindowFitPolicy.shrinkSlack
@@ -745,9 +745,9 @@ struct MacMainView: View {
         } else if windowFit.shorterSince == nil {
             windowFit.shorterSince = now
         }
-        let stableFor = windowFit.hasFitted ? now.timeIntervalSince(windowFit.lastChangeAt) : MacWindowFitPolicy.settleDelay
+        let stableFor = windowFit.hasFitted ? now - windowFit.lastChangeAt : MacWindowFitPolicy.settleDelay
         let shorterFor = windowFit.hasFitted
-            ? (windowFit.shorterSince.map { now.timeIntervalSince($0) } ?? 0)
+            ? (windowFit.shorterSince.map { now - $0 } ?? 0)
             : MacWindowFitPolicy.shrinkDelay
         let input = MacWindowFitPolicy.Input(
             contentHeight: contentHeight,
@@ -757,6 +757,7 @@ struct MacMainView: View {
             userResizedSinceLastTabSwitch: windowFit.userResized,
             isLiveResizing: windowFit.isLiveResizing
         )
+        windowFit.hasFitted = true
         switch MacWindowFitPolicy.decide(input) {
         case .fit(let height):
             applyFit(toContentHeight: height, window: window)
@@ -779,7 +780,6 @@ struct MacMainView: View {
     }
 
     private func applyFit(toContentHeight height: CGFloat, window: NSWindow) {
-        windowFit.hasFitted = true
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
         let newFrame = MacWindowFramePolicy.fittedFrame(
@@ -799,14 +799,18 @@ struct MacMainView: View {
     private func resetWindowFitForNewScreen() {
         windowFit.userResized = false
         windowFit.headroom = 0
-        windowFit.lastChangeAt = Date()
+        windowFit.lastChangeAt = ProcessInfo.processInfo.systemUptime
         evaluateWindowFit()
     }
 
     private func windowDidEndLiveResize() {
         windowFit.isLiveResizing = false
-        if let window = hostingWindow, abs(window.frame.height - windowFit.lastSetHeight) > 1 {
-            windowFit.userResized = true
+        if let window = hostingWindow {
+            if abs(window.frame.height - windowFit.lastSetHeight) > 1 {
+                windowFit.userResized = true
+            }
+            // Later width-only drags must compare against this height.
+            windowFit.lastSetHeight = window.frame.height
         }
         windowResizeTask?.cancel()
     }
@@ -853,6 +857,7 @@ struct MacMainView: View {
         guard let visibleFrame = screen?.visibleFrame else { return }
         let constrained = MacWindowFramePolicy.constrainedFrame(frame, to: visibleFrame)
         window.setFrame(constrained, display: false)
+        windowFit.lastSetHeight = constrained.height
     }
 
     private func updateWindowTitle() {
