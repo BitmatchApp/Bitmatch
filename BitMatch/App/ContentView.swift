@@ -208,7 +208,7 @@ struct MacMainView: View {
                 .id(contentTransitionID)
                 .transition(.opacity)
                 .animation(
-                    reduceMotion ? nil : .easeInOut(duration: 0.2),
+                    reduceMotion ? nil : Motion.quick,
                     value: contentTransitionID
                 )
             // Lightweight toast overlays
@@ -279,7 +279,7 @@ struct MacMainView: View {
                     composerFrame = frame
                     if queueFlight?.returnsToComposer == true, frame != flightTarget {
                         flightTarget = frame
-                        withAnimation(.spring(duration: 0.45, bounce: 0.1)) { queueFlight?.frame = frame }
+                        withAnimation(Motion.settle) { queueFlight?.frame = frame }
                     }
                 }
             }
@@ -390,7 +390,7 @@ struct MacMainView: View {
         // aiming at where it actually is.
         if let flight = queueFlight, !flight.returnsToComposer, let target = frames[flight.rowID], target != flightTarget {
             flightTarget = target
-            withAnimation(.spring(duration: 0.45, bounce: 0.1)) { queueFlight?.frame = target }
+            withAnimation(Motion.settle) { queueFlight?.frame = target }
         }
         let appeared = Set(frames.keys).subtracting(knownQueueRowIDs)
         knownQueueRowIDs = Set(frames.keys)
@@ -411,14 +411,14 @@ struct MacMainView: View {
         clearedComposer = nil
         flightTarget = to
         queueFlight = QueueFlight(rowID: rowID, text: cleared.text, frame: from)
-        withAnimation(.spring(duration: 0.55, bounce: 0.12)) {
+        withAnimation(Motion.settle) {
             queueFlight?.frame = to
         }
         flightEndTask?.cancel()
         flightEndTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(700))
             guard !Task.isCancelled else { return }
-            withAnimation(.easeOut(duration: 0.12)) { queueFlight = nil }
+            withAnimation(Motion.quick) { queueFlight = nil }
         }
     }
     
@@ -624,9 +624,7 @@ struct MacMainView: View {
         queueTransitionClearTask?.cancel()
         var committedID: UUID?
         let previousEditingID = coordinator.editingSetupTransferID
-        let animation: Animation = reduceMotion
-            ? .easeInOut(duration: 0.18)
-            : .spring(duration: 0.4, bounce: 0.18)
+        let animation: Animation = reduceMotion ? Motion.quick : Motion.settle
         // The composer-to-row flight card animates the move on the Mac, so the
         // shared matched-text transition stays off here.
         withAnimation(animation) {
@@ -647,9 +645,7 @@ struct MacMainView: View {
         committedID: UUID
     ) {
         queueTransitionClearTask?.cancel()
-        let animation: Animation = reduceMotion
-            ? .easeInOut(duration: 0.18)
-            : .spring(duration: 0.4, bounce: 0.18)
+        let animation: Animation = reduceMotion ? Motion.quick : Motion.settle
         // The async preparation is complete before the matched transition begins.
         withAnimation(animation) { transitioningQueueID = committedID }
         finishQueueTransition(
@@ -673,11 +669,11 @@ struct MacMainView: View {
             flightEndTask?.cancel()
             flightTarget = to
             queueFlight = QueueFlight(rowID: id, text: composerSummary(for: source), frame: from, returnsToComposer: true)
-            withAnimation(.spring(duration: 0.55, bounce: 0.12)) { queueFlight?.frame = to }
+            withAnimation(Motion.settle) { queueFlight?.frame = to }
             flightEndTask = Task { @MainActor in
                 try? await Task.sleep(for: .milliseconds(700))
                 guard !Task.isCancelled else { return }
-                withAnimation(.easeOut(duration: 0.12)) { queueFlight = nil }
+                withAnimation(Motion.quick) { queueFlight = nil }
             }
         }
         queueTransitionClearTask = Task {

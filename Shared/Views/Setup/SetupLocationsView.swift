@@ -778,9 +778,7 @@ struct SetupLocationsView: View {
             return
         }
         transitionClearTask?.cancel()
-        let animation: Animation = reduceMotion
-            ? .easeInOut(duration: 0.18)
-            : .spring(duration: 0.4, bounce: 0.18)
+        let animation: Animation = reduceMotion ? Motion.quick : Motion.settle
         withAnimation(animation) { transitioningQueueID = id }
         transitionClearTask = Task {
             try? await Task.sleep(for: .milliseconds(500))

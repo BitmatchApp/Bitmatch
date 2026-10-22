@@ -53,7 +53,7 @@ struct TransferOptionsSection<LabelContent: View>: View {
         let options = presentation
         VStack(alignment: .leading, spacing: 0) {
             Button {
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.2)) { isExpanded.toggle() }
+                withAnimation(reduceMotion ? nil : Motion.quick) { isExpanded.toggle() }
             } label: {
                 HStack(spacing: 8) {
                     Label("Advanced", systemImage: "slider.horizontal.3")

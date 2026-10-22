@@ -28,6 +28,11 @@ struct TransferQueueSection: View {
     @FocusState private var focusedWaitingID: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.hiddenQueueRowID) private var hiddenQueueRowID
+    @Environment(\.scenePhase) private var scenePhase
+    /// Rows playing the commit flash right now; see `playCommit(for:)`.
+    @State private var commitFlashIDs: Set<UUID> = []
+    @State private var commitTasks: [UUID: Task<Void, Never>] = [:]
+    @State private var hoveredRowID: UUID?
 
     private let offersAddCard: Bool
     private let showsHeaderTitle: Bool
@@ -98,7 +103,7 @@ struct TransferQueueSection: View {
             }
         }
         .animation(
-            reduceMotion ? .easeInOut(duration: 0.18) : .spring(duration: 0.4, bounce: 0.18),
+            reduceMotion ? Motion.quick : Motion.settle,
             value: presentation.rows.map(\.id)
         )
         .onChange(of: presentation.rows.map(QueueRowTransitionState.init)) { oldRows, _ in
@@ -108,6 +113,8 @@ struct TransferQueueSection: View {
             heroDismissTask?.cancel()
             addCardTask?.cancel()
             retryTask?.cancel()
+            commitTasks.values.forEach { $0.cancel() }
+            commitTasks = [:]
         }
         .fileImporter(
             isPresented: $choosingSource,
@@ -318,10 +325,28 @@ struct TransferQueueSection: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(RoundedRectangle(cornerRadius: 8).fill(baseColor(for: row)))
         .overlay {
+            // Commit flash: green over the row, settling back to the plain
+            // surface so the pill stays the only persistent green.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(CardSafetyTint.green.color.opacity(commitFlashIDs.contains(row.id) ? 0.16 : 0))
+                .animation(.easeOut(duration: Motion.commitSettleDuration), value: commitFlashIDs.contains(row.id))
+        }
+        .overlay {
+            // Hover only brightens the surface; the row never lifts.
+            RoundedRectangle(cornerRadius: 8)
+                .fill(Color.primary.opacity(hoveredRowID == row.id ? 0.03 : 0))
+                .animation(Motion.quick, value: hoveredRowID == row.id)
+        }
+        .overlay {
             RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row))
         }
         .overlay(alignment: .leading) { attentionEdge(for: row) }
         .clipShape(RoundedRectangle(cornerRadius: 8))
+        #if os(macOS)
+        .onHover { hovering in
+            hoveredRowID = hovering ? row.id : (hoveredRowID == row.id ? nil : hoveredRowID)
+        }
+        #endif
         .accessibilityElement(children: .contain)
     }
 
@@ -342,16 +367,22 @@ struct TransferQueueSection: View {
                     rowControls(row)
                 }
             }
-            if row.isRunning, let fraction = row.progressFraction {
-                ProgressView(value: min(max(fraction, 0), 1))
-                    .progressViewStyle(.linear)
-                    .tint(.accentColor)
-                    .accessibilityHidden(true)
-            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
         .frame(minHeight: 46)
+        .background {
+            // The header strip is the progress bar; when the row expands,
+            // the fill stays here and becomes the hero's background.
+            if row.isRunning || commitFlashIDs.contains(row.id) {
+                RowProgressFill(
+                    fraction: row.progressFraction ?? 0,
+                    isVerifying: isVerifying(row),
+                    flashGreen: commitFlashIDs.contains(row.id)
+                )
+                .equatable()
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture { selectOrExpand(row) }
         .contextMenu { rowMenuItems(row) }
@@ -362,6 +393,11 @@ struct TransferQueueSection: View {
         )
         .accessibilityValue(runningAccessibilityValue(row, detail: detail))
         .accessibilityActions { rowAccessibilityActions(row) }
+    }
+
+    private func isVerifying(_ row: QueueSessionRow) -> Bool {
+        if case .verifying = row.safetyState { return true }
+        return false
     }
 
     private func runningAccessibilityValue(_ row: QueueSessionRow, detail: RunningRowDetail?) -> String {
@@ -808,9 +844,9 @@ struct TransferQueueSection: View {
     private func attentionEdge(for row: QueueSessionRow) -> some View {
         switch row.selectedFilesVerified ? CardSafetyState.safeToErase : row.safetyState {
         case .needsAttention, .interrupted:
-            Rectangle().fill(CardSafetyTint.amber.color).frame(width: 4).accessibilityHidden(true)
+            AttentionEdge(color: CardSafetyTint.amber.color, width: 4)
         case .failed:
-            Rectangle().fill(CardSafetyTint.red.color).frame(width: 6).accessibilityHidden(true)
+            AttentionEdge(color: CardSafetyTint.red.color, width: 6)
         default:
             EmptyView()
         }
@@ -822,15 +858,42 @@ struct TransferQueueSection: View {
             else { expandedIDs.insert(id) }
         }
         if reduceMotion { update() }
-        else { withAnimation(.easeInOut(duration: 0.22), update) }
+        else { withAnimation(Motion.settle, update) }
     }
 
     private func expand(_ id: UUID) {
         if reduceMotion { expandedIDs.insert(id) }
-        else { withAnimation(.easeInOut(duration: 0.22)) { expandedIDs.insert(id) } }
+        else { withAnimation(Motion.settle) { expandedIDs.insert(id) } }
+    }
+
+    /// The commit choreography plays only for a row that lands while it is
+    /// on screen and the app is frontmost; otherwise the row simply takes
+    /// its final state. Finishes stagger by 120 ms, capped at three. No
+    /// Eject lockout: the button is live from the same state change.
+    private func playCommit(for ids: [UUID]) {
+        guard scenePhase == .active, !reduceMotion else { return }
+        for (index, id) in ids.prefix(Motion.commitStaggerCap).enumerated() {
+            commitTasks[id]?.cancel()
+            commitTasks[id] = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(Double(index) * Motion.commitStagger))
+                guard !Task.isCancelled else { return }
+                commitFlashIDs.insert(id)
+                try? await Task.sleep(for: .seconds(Motion.commitSettleDuration))
+                guard !Task.isCancelled else { return }
+                commitFlashIDs.remove(id)
+                commitTasks[id] = nil
+            }
+        }
     }
 
     private func handleRowChanges(from oldRows: [QueueRowTransitionState], to newRows: [QueueSessionRow]) {
+        let newlySafeIDs = newRows.compactMap { row -> UUID? in
+            guard row.showsSafeHero,
+                  oldRows.first(where: { $0.id == row.id })?.showsSafeHero != true
+            else { return nil }
+            return row.id
+        }
+        playCommit(for: newlySafeIDs)
         if let heroID, newRows.contains(where: { $0.id != heroID && $0.isRunning }) {
             settleHero(heroID)
         }
@@ -870,7 +933,7 @@ struct TransferQueueSection: View {
         heroDismissTask = nil
         heroID = nil
         if reduceMotion { expandedIDs.remove(id) }
-        else { withAnimation(.easeInOut(duration: 0.25)) { expandedIDs.remove(id) } }
+        else { withAnimation(Motion.settle) { expandedIDs.remove(id) } }
     }
 
     private func remove(_ id: UUID) { perform { try coordinator.removeQueuedTransfer(id) } }
@@ -1054,6 +1117,24 @@ private struct EjectProgressLabel: View {
     }
 }
 
+/// The attention edge grows in over 150 ms when a row starts needing a
+/// decision. No sweep, no wiggle: the fill has already stopped.
+private struct AttentionEdge: View {
+    let color: Color
+    let width: CGFloat
+    @State private var grown = false
+
+    var body: some View {
+        Rectangle()
+            .fill(color)
+            .frame(width: grown ? width : 0)
+            .onAppear {
+                withAnimation(Motion.attention) { grown = true }
+            }
+            .accessibilityHidden(true)
+    }
+}
+
 private struct SafeTransferHero: View {
     let row: QueueSessionRow
     let outcome: TransferOutcomePresentation
@@ -1062,6 +1143,8 @@ private struct SafeTransferHero: View {
     /// Mac only: nil when the platform cannot eject.
     var ejectState: QueueRowAction?
     @State private var closesRing = false
+    /// Check and Eject land at +280 ms in the commit choreography.
+    @State private var landed = false
 
     var body: some View {
         Group {
@@ -1079,6 +1162,7 @@ private struct SafeTransferHero: View {
                         Button("Eject", action: eject)
                             .buttonStyle(.borderedProminent).tint(CardSafetyTint.green.color)
                             .controlSize(.large)
+                            .opacity(landed || reduceMotion ? 1 : 0)
                     } else if let ejectState {
                         EjectProgressLabel(action: ejectState)
                     }
@@ -1088,8 +1172,12 @@ private struct SafeTransferHero: View {
         }
         .padding(.vertical, 6)
         .onAppear {
-            guard !reduceMotion else { closesRing = true; return }
-            withAnimation(.easeOut(duration: 0.8)) { closesRing = true }
+            guard !reduceMotion else { closesRing = true; landed = true; return }
+            withAnimation(Motion.commitRing(reduceMotion: reduceMotion)) { closesRing = true }
+            Task { @MainActor in
+                try? await Task.sleep(for: .seconds(Motion.commitLabelDelay))
+                withAnimation(Motion.quick) { landed = true }
+            }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(outcome.finishTitle). \(outcome.heroSubtitle)")
@@ -1103,6 +1191,7 @@ private struct SafeTransferHero: View {
             if let eject {
                 Button("Eject", action: eject)
                     .buttonStyle(.borderedProminent).tint(CardSafetyTint.green.color)
+                    .opacity(landed || reduceMotion ? 1 : 0)
             } else if let ejectState {
                 EjectProgressLabel(action: ejectState)
             }
