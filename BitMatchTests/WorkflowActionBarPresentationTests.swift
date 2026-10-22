@@ -25,11 +25,12 @@ struct WorkflowActionBarPresentationTests {
     }
 
     private static func start(
-        title: String, canStart: Bool, blocker: String?, readyLine: String?
+        title: String, canStart: Bool, blocker: String?, readyLine: String?,
+        nextStep: StartButtonPresentation.NextStep? = nil
     ) -> StartButtonPresentation {
         StartButtonPresentation(
             title: title, symbol: "play.fill", canStart: canStart, action: .start,
-            startsProject: false, nextStep: nil, blocker: blocker, readyLine: readyLine,
+            startsProject: false, nextStep: nextStep, blocker: blocker, readyLine: readyLine,
             accessibilityHint: ""
         )
     }
@@ -59,6 +60,15 @@ struct WorkflowActionBarPresentationTests {
         let silentBar = WorkflowActionBarPresentation.make(start: silent)
         #expect(silentBar.sentence == "Choose a source to start.")
         #expect(silentBar.buttonTitle == "Start" && !silentBar.isEnabled)
+    }
+
+    @Test func startNextStepBecomesTheSentence() {
+        let source = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil, nextStep: .chooseSource)
+        #expect(WorkflowActionBarPresentation.make(start: source).sentence == "Choose a source to start.")
+        let backup = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil, nextStep: .addBackup)
+        #expect(WorkflowActionBarPresentation.make(start: backup).sentence == "Add a destination to start.")
+        let bare = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil)
+        #expect(WorkflowActionBarPresentation.make(start: bare).sentence == nil)
     }
 
     @Test func compareBlockedUsesActionTitleAsSentenceAndCheckAsButton() {

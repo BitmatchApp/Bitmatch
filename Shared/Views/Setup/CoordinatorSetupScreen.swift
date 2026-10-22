@@ -216,6 +216,8 @@ enum CoordinatorSetupActions {
                     ? try await coordinator.startSetupTransfersPrepared()
                     : try await coordinator.enqueueSelectionPrepared()
                 if let id { completed?(reduceMotion, previousEditingID, id) }
+            } catch is CancellationError {
+                // The presentation went away before admission committed.
             } catch {
                 await coordinator.showError(error)
             }

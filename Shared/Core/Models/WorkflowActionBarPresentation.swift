@@ -16,7 +16,8 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
         // keeps a steady "Start" button.
         if !start.canStart {
             return Self(
-                sentence: start.blocker ?? sentence(from: start.title),
+                sentence: start.blocker ?? stepSentence(start.nextStep)
+                    ?? (start.title == "Start" ? nil : sentence(from: start.title)),
                 buttonTitle: "Start",
                 symbol: start.symbol,
                 isEnabled: false
@@ -62,6 +63,15 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
             symbol: master.nextStep == .chooseLocation ? "arrow.up" : "doc.richtext",
             isEnabled: false
         )
+    }
+
+    private static func stepSentence(_ step: StartButtonPresentation.NextStep?) -> String? {
+        switch step {
+        case .chooseSource: return "Choose a source to start."
+        case .addBackup: return "Add a destination to start."
+        case .prepareCard: return "Prepare the card to start."
+        case nil: return nil
+        }
     }
 
     /// A button title read as a sentence: no period after "…" or another stop.
