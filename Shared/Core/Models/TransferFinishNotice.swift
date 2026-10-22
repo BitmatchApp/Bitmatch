@@ -53,17 +53,21 @@ struct TransferFinishNotice: Equatable, Sendable {
         let safetyState = CardSafetyState.make(state: state, verdict: verdict)
         switch safetyState {
         case .safeToErase:
-            let names = destinations.map(TransferOutcomePresentation.destinationDriveName)
-            return .init(title: "\(card) is safe to erase", body: "Verified on \(naturalList(names)).", kind: kind)
+            let count = destinations.count
+            return .init(
+                title: "\(card) is safe to erase",
+                body: "\(card) is safe to erase. \(count) \(count == 1 ? "backup" : "backups") verified.",
+                kind: kind
+            )
         case .copiedNotVerified:
             guard kind != .queuedCardSuccess else { return nil }
             return .init(title: "\(card) was copied without checksum verification", body: "Do not erase the card.", kind: kind)
         case .needsAttention:
-            return .init(title: "\(card) needs attention", body: "Do not erase the card.", kind: .attention)
+            return .init(title: "\(card): keep the card", body: "Do not erase the card.", kind: .attention)
         case .failed:
-            return .init(title: "\(card) failed", body: "Do not erase the card.", kind: .attention)
+            return .init(title: "\(card): keep the card", body: "Do not erase the card.", kind: .attention)
         case .interrupted:
-            return .init(title: "\(card) was interrupted", body: "Do not erase the card.", kind: .attention)
+            return .init(title: "\(card): keep the card", body: "Do not erase the card.", kind: .attention)
         case .waiting, .preparing, .copying, .verifying, .finishing:
             return nil
         }

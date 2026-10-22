@@ -90,6 +90,8 @@ final class LocalTransferJournal: ObservableObject {
         progress: OperationProgress?,
         mountedSourceIDs: Set<UUID>,
         ejectedSourceIDs: Set<UUID> = [],
+        ejectingSourceIDs: Set<UUID> = [],
+        removedSourceIDs: Set<UUID> = [],
         pausedRecordID: UUID? = nil,
         now: Date = Date()
     ) -> QueueSessionPresentation {
@@ -116,6 +118,8 @@ final class LocalTransferJournal: ObservableObject {
             progress: progress,
             mountedSourceIDs: mountedSourceIDs,
             ejectedSourceIDs: ejectedSourceIDs,
+            ejectingSourceIDs: ejectingSourceIDs,
+            removedSourceIDs: removedSourceIDs,
             pausedRecordID: pausedRecordID,
             now: now,
             completedRows: isRefreshingRecords ? [:] : completedQueueRows,

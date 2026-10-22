@@ -29,7 +29,7 @@ struct TransferFinishNoticeTests {
     @Test func onlySuccessSaysSafeToErase() {
         #expect(notice(.completed(.init(success: true, message: ""))) == .init(
             title: "A001 is safe to erase",
-            body: "Verified on Shuttle A and Shuttle B.",
+            body: "A001 is safe to erase. 2 backups verified.",
             kind: .standaloneFinish
         ))
         let quick = notice(.completed(.init(success: false, message: "", copiedNotVerified: true)))
@@ -39,22 +39,34 @@ struct TransferFinishNoticeTests {
         let attention = notice(.completed(.init(success: false, message: "")), issues: 3)
         #expect(attention?.body == "Do not erase the card.")
         #expect(attention?.kind == .attention)
-        #expect(notice(.failed)?.title == "A001 failed")
+        #expect(notice(.failed)?.title == "A001: keep the card")
         #expect(notice(.failed)?.kind == .attention)
-        #expect(notice(.completed(.init(success: true, message: "")), issues: 1)?.title == "A001 needs attention")
+        #expect(notice(.completed(.init(success: true, message: "")), issues: 1)?.title == "A001: keep the card")
     }
 
     /// A Quick run whose report or project failed is not "copied, not
     /// verified": the engine leaves `copiedNotVerified` off, so it needs
     /// attention. Plant: match `.completed` on Quick mode instead of
     /// `info.copiedNotVerified`.
+    @Test func safeBodyCountsBackupsAndAttentionKeepsTheCard() {
+        let one = TransferFinishNotice.make(
+            state: .completed(.init(success: true, message: "")), sourceName: "SD_CARD_042",
+            destinations: [URL(fileURLWithPath: "/Volumes/A")], issueCount: 0, kind: .standaloneFinish)
+        #expect(one?.body == "SD_CARD_042 is safe to erase. 1 backup verified.")
+        let attention = TransferFinishNotice.make(
+            state: .completed(.init(success: true, message: "")), sourceName: "SD_CARD_042",
+            destinations: [URL(fileURLWithPath: "/Volumes/A")], issueCount: 1, kind: .standaloneFinish)
+        #expect(attention?.title == "SD_CARD_042: keep the card")
+        #expect(attention?.body == "Do not erase the card.")
+    }
+
     @Test func quickWithAnotherFailureNeedsAttention() {
-        #expect(notice(.completed(.init(success: false, message: "report failed")))?.title == "A001 needs attention")
+        #expect(notice(.completed(.init(success: false, message: "report failed")))?.title == "A001: keep the card")
     }
 
     @Test func interruptedIsAttentionAndIdleSendsNothing() {
         #expect(notice(.cancelled) == .init(
-            title: "A001 was interrupted",
+            title: "A001: keep the card",
             body: "Do not erase the card.",
             kind: .attention
         ))
@@ -76,7 +88,7 @@ struct TransferFinishNoticeTests {
 
         let safe = notice(.completed(.init(success: true, message: "")))
         #expect(safe?.title.contains("safe to erase") == true)
-        #expect(safe?.body.contains("Verified") == true)
+        #expect(safe?.body.contains("verified") == true)
     }
 
     @Test func onlySafeToEraseUsesTheExplicitQueuedSuccessKind() {
@@ -127,7 +139,7 @@ struct TransferFinishNoticeTests {
         let notice = TransferFinishNotice.make(record: record, kind: .standaloneFinish)
 
         #expect(notice?.title == "A001 is safe to erase")
-        #expect(notice?.body == "Verified on \(TransferOutcomePresentation.destinationDriveName(backup)).")
+        #expect(notice?.body == "A001 is safe to erase. 1 backup verified.")
 
         // No journal settlement means no notification, even if the executor
         // has already reached its in-memory success state.
@@ -145,7 +157,7 @@ struct TransferFinishNoticeTests {
             notifyFinish: true, notifyEachQueuedCard: false
         )
         #expect(kind == .attention)
-        #expect(TransferFinishNotice.make(record: record, kind: .standaloneFinish)?.title == "A001 needs attention")
+        #expect(TransferFinishNotice.make(record: record, kind: .standaloneFinish)?.title == "A001: keep the card")
     }
 
     private func selectedFileRecord(mode: VerificationMode = .standard) throws -> (URL, LocalTransferRecord) {
