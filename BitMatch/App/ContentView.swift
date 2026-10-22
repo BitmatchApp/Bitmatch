@@ -377,11 +377,16 @@ struct MacMainView: View {
                 .keyboardShortcut("[", modifiers: .command)
                 .accessibilityHint("Returns to the transfer screen")
             }
-        } else {
+        }
         ToolbarItem(placement: .principal) {
             Picker("Mode", selection: Binding(
                 get: { coordinator.currentMode },
-                set: { coordinator.switchMode(to: $0) }
+                set: { mode in
+                    if HeaderPresentationPolicy.modeSelectionClosesHistory(showingHistory: showingTransfers) {
+                        closeHistory()
+                    }
+                    coordinator.switchMode(to: mode)
+                }
             )) {
                 ForEach(AppMode.allCases) { mode in
                     Text(mode.rawValue).tag(mode)
@@ -394,6 +399,7 @@ struct MacMainView: View {
             .disabled(isModeSwitchLocked)
             .accessibilityLabel("Mode")
         }
+        if !showingTransfers {
         // Standard toolbar spacing: no custom frames, padding, or button
         // styles on these items, so the icons sit evenly at system size.
         ToolbarItemGroup(placement: .primaryAction) {
@@ -721,7 +727,7 @@ struct MacMainView: View {
 
     private func updateWindowTitle() {
         guard let hostingWindow else { return }
-        hostingWindow.title = showingTransfers ? "History" : "BitMatch"
+        hostingWindow.title = HeaderPresentationPolicy.windowTitle(mode: coordinator.currentMode, showingHistory: showingTransfers)
         hostingWindow.titleVisibility = showingTransfers ? .visible : .hidden
     }
     
@@ -744,6 +750,9 @@ struct MacMainView: View {
                 updateWindowTitle()
             }
             .onChange(of: showingTransfers) { _, _ in
+                updateWindowTitle()
+            }
+            .onChange(of: coordinator.currentMode) { _, _ in
                 updateWindowTitle()
             }
     }

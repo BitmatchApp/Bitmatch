@@ -19,4 +19,15 @@ struct HeaderPresentationPolicyTests {
         #expect(WindowPresentationPolicy.shouldCenterWindow(hasSavedPlacement: false, isInterfaceLab: false))
         #expect(WindowPresentationPolicy.shouldCenterWindow(hasSavedPlacement: true, isInterfaceLab: true))
     }
+
+    @Test func windowTitleNamesTheTabOrHistory() {
+        #expect(HeaderPresentationPolicy.windowTitle(mode: .copyAndVerify, showingHistory: false) == "Copy & Verify")
+        #expect(HeaderPresentationPolicy.windowTitle(mode: .compareFolders, showingHistory: false) == "Check")
+        #expect(HeaderPresentationPolicy.windowTitle(mode: .masterReport, showingHistory: true) == "History")
+    }
+
+    @Test func pickingATabWhileInHistoryLeavesHistory() {
+        #expect(HeaderPresentationPolicy.modeSelectionClosesHistory(showingHistory: true))
+        #expect(!HeaderPresentationPolicy.modeSelectionClosesHistory(showingHistory: false))
+    }
 }
