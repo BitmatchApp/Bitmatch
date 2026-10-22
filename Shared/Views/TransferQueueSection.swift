@@ -75,7 +75,7 @@ struct TransferQueueSection: View {
                     isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
                     presenting: pendingRemoval
                 ) { row in
-                    Button("Remove", role: .destructive) { removeFromList(row) }
+                    Button("Remove", role: .destructive) { confirmRemove(row.id) }
                     Button("Cancel", role: .cancel) {}
                 } message: { row in
                     if let confirmation = QueueSessionPresentation.removeConfirmation(for: row) {
@@ -355,6 +355,14 @@ struct TransferQueueSection: View {
         .accessibilityActions { rowAccessibilityActions(row) }
     }
 
+    private var menuHitSize: CGFloat {
+        #if os(iOS)
+        44
+        #else
+        24
+        #endif
+    }
+
     private enum RowPrimary { case pause, resume, eject, review }
 
     private func primary(for row: QueueSessionRow) -> RowPrimary? {
@@ -419,7 +427,8 @@ struct TransferQueueSection: View {
                     rowMenuItems(row)
                 } label: {
                     Text("\u{22EF}").font(.title3.weight(.semibold))
-                        .frame(minWidth: 24, minHeight: 24)
+                        .frame(minWidth: menuHitSize, minHeight: menuHitSize)
+                        .contentShape(Rectangle())
                         .accessibilityLabel("More actions for \(row.cardName)")
                 }
                 .menuStyle(.borderlessButton)
@@ -880,6 +889,15 @@ struct TransferQueueSection: View {
         }
     }
 
+    /// The alert holds a snapshot; act on the live row, and do nothing if it
+    /// is gone or has started running since the question was asked.
+    private func confirmRemove(_ id: UUID) {
+        pendingRemoval = nil
+        guard let live = coordinator.queuePresentation.rows.first(where: { $0.id == id }),
+              !live.isRunning else { return }
+        removeFromList(live)
+    }
+
     private func removeFromList(_ row: QueueSessionRow) {
         if coordinator.queuePresentation.pausedCardID == row.id { removePausedCard(row.id) }
         else if row.isFinished { removeFinished(row.id) }
@@ -1122,7 +1140,7 @@ struct QueuePauseBanner: View {
         if let text = presentation.pausedStripText {
             Text(text)
                 .font(.callout.weight(.medium))
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.middle)
                 .help(text)
                 .padding(.horizontal, 12)

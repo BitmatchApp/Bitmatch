@@ -908,11 +908,11 @@ struct QueueSessionPresentationTests {
         let confirm = try #require(QueueSessionPresentation.removeConfirmation(for: queue.rows[0]))
         #expect(confirm.title == "Remove A7IV_CARD1 from the queue?")
         #expect(confirm.message == "It isn't safe to erase yet. Files already copied stay on the backups.")
-        let safe = try fixture.record(name: "S1", state: .completed)
+        let safe = try fixture.record(name: "S1", state: .completed, outcome: .verified)
         let safeQueue = QueueSessionPresentation.make(records: [safe], sessionIDs: [safe.id], progress: nil, mountedSourceIDs: [])
-        if safeQueue.rows[0].safetyState.isSafe {
-            #expect(QueueSessionPresentation.removeConfirmation(for: safeQueue.rows[0]) == nil)
-        }
+        let safeRow = try #require(safeQueue.rows.first)
+        try #require(safeRow.safetyState.isSafe)
+        #expect(QueueSessionPresentation.removeConfirmation(for: safeRow) == nil)
     }
 }
 
