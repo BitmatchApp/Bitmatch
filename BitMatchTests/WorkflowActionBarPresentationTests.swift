@@ -56,7 +56,9 @@ struct WorkflowActionBarPresentationTests {
         #expect(readyBar.buttonTitle == "Start 3 transfers" && readyBar.isEnabled)
 
         let silent = Self.start(title: "Choose a source to start", canStart: false, blocker: nil, readyLine: nil)
-        #expect(WorkflowActionBarPresentation.make(start: silent).sentence == nil)
+        let silentBar = WorkflowActionBarPresentation.make(start: silent)
+        #expect(silentBar.sentence == "Choose a source to start.")
+        #expect(silentBar.buttonTitle == "Start" && !silentBar.isEnabled)
     }
 
     @Test func compareBlockedUsesActionTitleAsSentenceAndCheckAsButton() {

@@ -11,11 +11,22 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
     let isEnabled: Bool
 
     static func make(start: StartButtonPresentation) -> Self {
-        Self(
-            sentence: start.blocker ?? start.readyLine,
+        // A step that is not done yet carries its instruction in the title
+        // ("Choose a source to start"); the bar says it as a sentence and
+        // keeps a steady "Start" button.
+        if !start.canStart {
+            return Self(
+                sentence: start.blocker ?? sentence(from: start.title),
+                buttonTitle: "Start",
+                symbol: start.symbol,
+                isEnabled: false
+            )
+        }
+        return Self(
+            sentence: start.readyLine,
             buttonTitle: start.title,
             symbol: start.symbol,
-            isEnabled: start.canStart
+            isEnabled: true
         )
     }
 

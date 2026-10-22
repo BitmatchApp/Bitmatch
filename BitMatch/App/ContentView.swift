@@ -75,7 +75,6 @@ struct MacMainView: View {
     @State private var measuredNoticeHeight: CGFloat = 0
     @State private var measuredActionBarHeight: CGFloat = 0
     @State private var masterReportBar: MasterReportBarRequest?
-    @State private var setupAdmissionTask: Task<Void, Never>?
     @State private var hostingWindow: NSWindow?
     @State private var windowResizeTask: Task<Void, Never>?
     @State private var windowFrameAnimation: Task<Void, Never>?
@@ -304,28 +303,13 @@ struct MacMainView: View {
         }
     }
 
-    /// The same prepared admission and flight the inline Start button used.
     private func runSetupAdmission(startBatch: Bool) {
-        guard setupAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        setupAdmissionTask = Task { @MainActor in
-            defer { setupAdmissionTask = nil }
-            do {
-                let id = startBatch
-                    ? try await coordinator.startSetupTransfersPrepared()
-                    : try await coordinator.enqueueSelectionPrepared()
-                if let id {
-                    performCompletedQueueTransition(
-                        reduceMotion: reduceMotion,
-                        previousEditingID: previousEditingID,
-                        committedID: id
-                    )
-                }
-            } catch is CancellationError {
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
+        CoordinatorSetupActions.runPreparedAdmission(
+            coordinator: coordinator,
+            startBatch: startBatch,
+            reduceMotion: reduceMotion,
+            completed: performCompletedQueueTransition
+        )
     }
 
     // MARK: - Composer to queue flight

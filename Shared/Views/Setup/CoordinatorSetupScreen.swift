@@ -91,7 +91,6 @@ extension SetupPresentation {
 struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: View, LabelContent: View, ProjectEvidence: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @Binding var optionsExpanded: Bool
-    @State private var queueAdmissionTask: Task<Void, Never>?
     private let usesBottomActions: Bool
     private let showsInlineStart: Bool
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -130,7 +129,7 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
         let presentation = SetupPresentation.make(coordinator: coordinator)
         SetupScreen(
             presentation: presentation,
-            showsInlineStart: showsInlineStart && !usesBottomActions || presentation.start.action == .addToQueue,
+            showsInlineStart: showsInlineStart && (!usesBottomActions || presentation.start.action == .addToQueue),
             options: SetupOptionsBindings(
                 isExpanded: $optionsExpanded,
                 verificationMode: $coordinator.verificationMode,
@@ -175,35 +174,20 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
     }
 
     private func enqueueSelectionPrepared() {
-        guard queueAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        queueAdmissionTask = Task { @MainActor in
-            defer { queueAdmissionTask = nil }
-            do {
-                let id = try await coordinator.enqueueSelectionPrepared()
-                if let performCompleted = transferTransitionContext?.performCompleted {
-                    performCompleted(reduceMotion, previousEditingID, id)
-                }
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
+        runAdmission(startBatch: false)
     }
 
     private func startSetupTransfersPrepared() {
-        guard queueAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        queueAdmissionTask = Task { @MainActor in
-            defer { queueAdmissionTask = nil }
-            do {
-                if let id = try await coordinator.startSetupTransfersPrepared(),
-                   let performCompleted = transferTransitionContext?.performCompleted {
-                    performCompleted(reduceMotion, previousEditingID, id)
-                }
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
+        runAdmission(startBatch: true)
+    }
+
+    private func runAdmission(startBatch: Bool) {
+        CoordinatorSetupActions.runPreparedAdmission(
+            coordinator: coordinator,
+            startBatch: startBatch,
+            reduceMotion: reduceMotion,
+            completed: transferTransitionContext?.performCompleted
+        )
     }
 }
 
@@ -211,6 +195,33 @@ struct CoordinatorSetupScreen<Locations: View, Problems: View, ProjectSetup: Vie
 /// the current readiness when tapped, including project and queued-card gates.
 @MainActor
 enum CoordinatorSetupActions {
+    /// The one in-flight guard for prepared admission, shared by every caller.
+    private static var admissionInFlight = false
+
+    /// Prepares and commits the selection (queue it, or start the batch),
+    /// then hands the committed row to `completed` for the transition.
+    static func runPreparedAdmission(
+        coordinator: SharedAppCoordinator,
+        startBatch: Bool,
+        reduceMotion: Bool,
+        completed: ((_ reduceMotion: Bool, _ previousEditingID: UUID?, _ committedID: UUID) -> Void)?
+    ) {
+        guard !admissionInFlight else { return }
+        admissionInFlight = true
+        let previousEditingID = coordinator.editingSetupTransferID
+        Task { @MainActor in
+            defer { admissionInFlight = false }
+            do {
+                let id = startBatch
+                    ? try await coordinator.startSetupTransfersPrepared()
+                    : try await coordinator.enqueueSelectionPrepared()
+                if let id { completed?(reduceMotion, previousEditingID, id) }
+            } catch {
+                await coordinator.showError(error)
+            }
+        }
+    }
+
     static func make(
         coordinator: SharedAppCoordinator,
         enqueueSelection: (() -> Void)? = nil,
