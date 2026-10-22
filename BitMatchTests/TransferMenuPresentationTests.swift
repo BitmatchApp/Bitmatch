@@ -5,9 +5,18 @@ import BitMatchEngine
 
 struct TransferMenuPresentationTests {
     private func outcome(_ state: OperationState) -> TransferOutcomePresentation {
+        // A completed claim with no successful rows has nothing verified
+        // and must not read as safe (assurance audit P2), so the fixture
+        // carries the one verified row a real safe transfer would have.
         TransferOutcomePresentation.make(
             state: state,
-            rows: [],
+            rows: [ResultRow(
+                path: "/card/clip.mov",
+                status: ResultOutcome.verified.statusText,
+                size: 1,
+                checksum: nil,
+                destination: "Shuttle A"
+            )],
             destinations: [URL(fileURLWithPath: "/Volumes/Shuttle A")],
             hasErrors: false,
             hasCriticalErrors: false,

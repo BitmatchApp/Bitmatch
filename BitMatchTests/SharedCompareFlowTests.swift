@@ -51,21 +51,20 @@ struct SharedCompareFlowTests {
         await coordinator.compareFolders()
 
         let outcome = await MainActor.run {
-            let hasErrors = coordinator.hasErrors
-            return (
-                coordinator.results,
-                hasErrors,
-                CompletionVerdict.resolve(
-                    state: coordinator.operationState,
-                    rows: coordinator.results,
-                    hasErrors: hasErrors,
-                    hasCriticalErrors: coordinator.hasCriticalErrors
-                )
-            )
+            // Production compare reports through CompareOutcome, not the
+            // transfer verdict: a clean compare legitimately has zero
+            // difference rows, while a completed transfer claim with no
+            // successful rows must stay `.issues` (assurance audit P2).
+            // Assert the coordinator's own completed state instead.
+            let stateSucceeded: Bool = {
+                guard case .completed(let info) = coordinator.operationState else { return false }
+                return info.success
+            }()
+            return (coordinator.results, coordinator.hasErrors, stateSucceeded)
         }
         #expect(outcome.0.isEmpty)
         #expect(!outcome.1)
-        #expect(outcome.2 == .success)
+        #expect(outcome.2)
         #else
         #expect(true)
         #endif
