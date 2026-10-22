@@ -108,6 +108,7 @@ final class AppleDoubleFilesystemMatrixTests: XCTestCase {
                                 XCTAssertEqual(relative, "._clip.bin")
                                 XCTAssertTrue(result.destinationURL.path.hasPrefix(backups[2].path))
                                 XCTAssertTrue(result.error?.localizedDescription.contains("hidden companion") == true)
+                                XCTAssertEqual(result.failureReason, ResultFailureReason.companionConflict.rawValue)
                                 XCTAssertNotEqual(SHA256.hash(data: try Data(contentsOf: result.destinationURL)), sourceHashes[relative])
                             }
                         }

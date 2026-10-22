@@ -1066,11 +1066,24 @@ public final class DestinationWriter {
         return failure.domain == NSPOSIXErrorDomain && failure.code == Int(ENOSPC)
     }
 
+    /// The first ENOSPC on a destination arrives as the raw system error;
+    /// tag it with the same reason the paused follow-ups carry.
+    private static func classifyingOutOfSpace(_ error: Error) -> Error {
+        guard isOutOfSpace(error) else { return error }
+        let failure = error as NSError
+        var userInfo = failure.userInfo
+        userInfo[ResultFailureReason.userInfoKey] = ResultFailureReason.outOfSpace.rawValue
+        return NSError(domain: failure.domain, code: failure.code, userInfo: userInfo)
+    }
+
     private static func outOfSpaceError() -> NSError {
         NSError(
             domain: NSPOSIXErrorDomain,
             code: Int(ENOSPC),
-            userInfo: [NSLocalizedDescriptionKey: "Destination is out of space; paused for the rest of this attempt"]
+            userInfo: [
+                NSLocalizedDescriptionKey: "Destination is out of space; paused for the rest of this attempt",
+                ResultFailureReason.userInfoKey: ResultFailureReason.outOfSpace.rawValue
+            ]
         )
     }
 
@@ -1140,7 +1153,7 @@ public final class DestinationWriter {
                 if Self.isOutOfSpace(error) {
                     spaceExhausted.pause(destination.index)
                 }
-                await onError(destination.index, relativePath, error)
+                await onError(destination.index, relativePath, Self.classifyingOutOfSpace(error))
             }
         }
 
@@ -1255,7 +1268,7 @@ public final class DestinationWriter {
                             spaceExhausted.pause(result.file.destination.index)
                         }
                         result.file.cleanup()
-                        await onError(result.file.destination.index, relativePath, error)
+                        await onError(result.file.destination.index, relativePath, Self.classifyingOutOfSpace(error))
                     } else {
                         survivors.append(result.file)
                     }
@@ -1436,7 +1449,7 @@ public final class DestinationWriter {
                     spaceExhausted.pause(file.destination.index)
                 }
                 file.cleanup()
-                await onError(file.destination.index, relativePath, error)
+                await onError(file.destination.index, relativePath, Self.classifyingOutOfSpace(error))
             }
         }
     }
@@ -1630,7 +1643,8 @@ public final class DestinationWriter {
             return existingDestinationConflictError(reason)
         }
         return existingDestinationConflictError(
-            "A hidden companion file on the backup differs from the source. macOS can create or update these files on exFAT drives. BitMatch is refusing to overwrite it. Nothing was overwritten. Keep the source intact and export the results before retrying."
+            "A hidden companion file on the backup differs from the source. macOS can create or update these files on exFAT drives. BitMatch is refusing to overwrite it. Nothing was overwritten. Keep the source intact and export the results before retrying.",
+            reason: .companionConflict
         )
     }
 
@@ -2411,11 +2425,13 @@ public final class DestinationWriter {
     }
     #endif
 
-    fileprivate static func existingDestinationConflictError(_ reason: String) -> NSError {
-        NSError(
+    fileprivate static func existingDestinationConflictError(_ reason: String, reason failureReason: ResultFailureReason? = nil) -> NSError {
+        var userInfo: [String: Any] = [NSLocalizedDescriptionKey: reason]
+        if let failureReason { userInfo[ResultFailureReason.userInfoKey] = failureReason.rawValue }
+        return NSError(
             domain: "DestinationWriter",
             code: NSFileWriteFileExistsError,
-            userInfo: [NSLocalizedDescriptionKey: reason]
+            userInfo: userInfo
         )
     }
 
