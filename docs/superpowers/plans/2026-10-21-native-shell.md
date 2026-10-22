@@ -157,6 +157,63 @@ git commit -am "Mac: bottom action bar with the readiness sentence; tab strip vi
 ```
 PR title: "Mac shell: bottom action bar and persistent tab strip". Base: main. Note in the body that readiness wording is unchanged and is spec step 5.
 
+### Task 4: Smart window fit (Mac)
+
+**Files:**
+- Create: `BitMatch/Views/MacWindowFitPolicy.swift`
+- Modify: `BitMatch/App/ContentView.swift` (`applyMeasuredContentHeight` ~line 704 and the `didFitWindowAtLaunch` state ~line 81; the `.onPreferenceChange` handlers for the three height keys; `windowObserversView` where window notifications are observed)
+- Modify: `BitMatch/Views/WindowPresentationPolicy.swift` only if a constant is missing
+- Test: `BitMatchTests/MacWindowHeightPolicyTests.swift`
+
+**Interfaces:**
+- Produces a pure policy:
+```swift
+enum MacWindowFitPolicy {
+    struct Input: Equatable {
+        var contentHeight: CGFloat      // combined scrollable + notice + actionBar (+ launchHeadroom at launch)
+        var windowContentHeight: CGFloat
+        var stableFor: TimeInterval     // seconds the measured height has been unchanged
+        var shorterFor: TimeInterval    // seconds content has been at least `shrinkSlack` shorter than the window
+        var userResizedSinceLastTabSwitch: Bool
+        var isLiveResizing: Bool
+    }
+    enum Decision: Equatable { case hold, case fit(toContentHeight: CGFloat) }
+    static let settleDelay: TimeInterval = 0.25
+    static let shrinkDelay: TimeInterval = 1.0
+    static let shrinkSlack: CGFloat = 120
+    static func decide(_ input: Input) -> Decision
+}
+```
+- Rules: `.hold` while `isLiveResizing` or `userResizedSinceLastTabSwitch`, or while `stableFor < settleDelay`. Grow (`contentHeight > windowContentHeight`): `.fit` once stable. Shrink (`windowContentHeight - contentHeight >= shrinkSlack`): `.fit` only when `shorterFor >= shrinkDelay`. Otherwise `.hold`. The fitted frame still goes through `MacWindowFramePolicy.fittedFrame` (floor 280, ceiling min(1000, screen), top edge fixed, width untouched).
+- Shell wiring: replace the launch-only guard with a small `@State` tracker that records when the combined height last changed, when it first became "shorter", and whether the user resized (set by `NSWindow.didEndLiveResizeNotification` when the new height differs from the last frame the shell set; cleared on tab switch and on History open/close). Evaluate `decide` on each height preference change and on a 250 ms `Task.sleep` after the last change; apply with `NSAnimationContext.runAnimationGroup` duration 0.42, timing ease-out, `window.animator().setFrame(...)`, honouring Reduce Motion (no animation). Launch keeps `launchHeadroom` and fits immediately (stableFor is treated as satisfied on the first measurement).
+
+- [ ] **Step 1: Write the failing tests**
+```swift
+@Test func growsOnceContentIsStable() {
+    let grow = MacWindowFitPolicy.Input(contentHeight: 800, windowContentHeight: 600, stableFor: 0.3, shorterFor: 0, userResizedSinceLastTabSwitch: false, isLiveResizing: false)
+    #expect(MacWindowFitPolicy.decide(grow) == .fit(toContentHeight: 800))
+    #expect(MacWindowFitPolicy.decide(.init(contentHeight: 800, windowContentHeight: 600, stableFor: 0.1, shorterFor: 0, userResizedSinceLastTabSwitch: false, isLiveResizing: false)) == .hold)
+}
+@Test func shrinksOnlyAfterTheDelayAndSlack() {
+    let base = MacWindowFitPolicy.Input(contentHeight: 400, windowContentHeight: 600, stableFor: 1, shorterFor: 0.5, userResizedSinceLastTabSwitch: false, isLiveResizing: false)
+    #expect(MacWindowFitPolicy.decide(base) == .hold)
+    var later = base; later.shorterFor = 1.2
+    #expect(MacWindowFitPolicy.decide(later) == .fit(toContentHeight: 400))
+    var small = later; small.contentHeight = 520   // only 80 shorter: within slack
+    #expect(MacWindowFitPolicy.decide(small) == .hold)
+}
+@Test func userResizeAndLiveResizeHold() {
+    var input = MacWindowFitPolicy.Input(contentHeight: 800, windowContentHeight: 600, stableFor: 1, shorterFor: 0, userResizedSinceLastTabSwitch: true, isLiveResizing: false)
+    #expect(MacWindowFitPolicy.decide(input) == .hold)
+    input.userResizedSinceLastTabSwitch = false; input.isLiveResizing = true
+    #expect(MacWindowFitPolicy.decide(input) == .hold)
+}
+```
+- [ ] **Step 2: Run `MacWindowHeightPolicyTests`; expect compile failure**
+- [ ] **Step 3: Implement the policy, then the shell wiring per Interfaces**
+- [ ] **Step 4: Run the suite; full suite under the lock; `./test.sh ipad-build`**
+- [ ] **Step 5: Commit** `git commit -am "Mac: window follows content with settle delay, slow shrink and manual-resize respect"`
+
 ---
 
 ## Not in this plan
