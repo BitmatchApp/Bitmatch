@@ -48,7 +48,8 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     }
 
     var queueSymbol: String {
-        switch safetyState {
+        if selectedFilesVerified { return "checkmark.circle" }
+        return switch safetyState {
         case .waiting: "clock"
         case .preparing, .copying, .verifying, .finishing: "arrow.triangle.2.circlepath"
         case .safeToErase: "checkmark.circle.fill"
@@ -56,6 +57,37 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         case .needsAttention, .interrupted: "exclamationmark.triangle.fill"
         case .failed: "xmark.octagon.fill"
         }
+    }
+
+    /// `<state word> <time> · <reason or backups> · <size>`; empty segments are dropped.
+    /// Running states keep the one-line status until the running row is reworked.
+    func metaLine(now: Date = Date(), calendar: Calendar = .current) -> String {
+        if isRunning { return oneLineStatus(timeRemaining: nil) }
+        let word: String
+        var needsReason = false
+        switch safetyState {
+        case .safeToErase: word = "Verified"
+        case .copiedNotVerified: word = "Copied"
+        case .needsAttention, .interrupted: word = "Paused"; needsReason = true
+        case .failed: word = "Stopped"; needsReason = true
+        default: word = "Queued"
+        }
+        var lead = word
+        if safetyState != .waiting, let endedAt {
+            let formatter = DateFormatter()
+            formatter.locale = calendar.locale ?? .current
+            formatter.timeZone = calendar.timeZone
+            formatter.dateFormat = "h:mm a"
+            lead += " " + formatter.string(from: endedAt)
+        }
+        let middle = needsReason
+            ? cause.map(QueueSessionPresentation.plainCause) ?? ""
+            : destinationNames.joined(separator: ", ")
+        let size = evidence.flatMap { text -> String? in
+            guard let range = text.range(of: " · ") else { return nil }
+            return String(text[range.upperBound...])
+        } ?? ""
+        return [lead, middle, size].filter { !$0.isEmpty }.joined(separator: " · ")
     }
 
     var isEditable: Bool { safetyState == .waiting }
@@ -538,6 +570,26 @@ struct QueueSessionPresentation: Equatable, Sendable {
             return names.count == 1 ? "1 destination on \(first)" : "\(names.count) destinations on \(first)"
         }
         return "\(names.count) destinations: \(names.joined(separator: ", "))"
+    }
+
+    /// Engine wording to plain language for the queue meta line; first clause only.
+    static func plainCause(_ cause: String) -> String {
+        var text = deduplicatedCause(cause)
+        let replacements = [
+            ("Original selected-file plan was not saved", "can't confirm every file was copied"),
+            ("selected-file plan was not saved", "can't confirm every file was copied"),
+            ("whole-card coverage cannot be confirmed", "can't confirm every file was copied"),
+            ("Keep the source.", ""),
+            ("destination", "backup"),
+            ("source", "card"),
+        ]
+        for (from, to) in replacements {
+            text = text.replacingOccurrences(of: from, with: to, options: .caseInsensitive)
+        }
+        let first = text.split(separator: ";", omittingEmptySubsequences: true).first.map(String.init) ?? text
+        var result = first.trimmingCharacters(in: .whitespacesAndNewlines)
+        while result.hasSuffix(".") { result.removeLast() }
+        return result.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     static func deduplicatedCause(_ cause: String) -> String {

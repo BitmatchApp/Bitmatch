@@ -4,6 +4,78 @@ import Testing
 import BitMatchEngine
 
 struct QueueSessionPresentationTests {
+    private func metaRow(_ fixture: QueuePresentationFixture, state: LocalTransferState = .completed,
+                         mode: VerificationMode = .standard, fileOutcome: ResultOutcome = .verified,
+                         summary: String = "Ready", ended: Bool = true,
+                         files: Int? = 486, bytes: Int64 = 48_100_000_000) throws -> QueueSessionRow {
+        var record = try fixture.record(name: "A7IV_CARD2", state: state, mode: mode, summary: summary,
+                                        files: files, bytes: bytes, fileOutcome: fileOutcome,
+                                        destinationNames: ["Shuttle A", "Shuttle B"])
+        if mode == .quick { record.quickOnlyUnverified = true }
+        record.endedAt = ended ? Date(timeIntervalSince1970: 1_760_992_860) : nil
+        let queue = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id], progress: nil, mountedSourceIDs: [])
+        return queue.rows[0]
+    }
+
+    private var newYork: Calendar {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(identifier: "America/New_York")!
+        cal.locale = Locale(identifier: "en_US")
+        return cal
+    }
+
+    @Test func metaLineFollowsTheGrammar() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let row = try metaRow(fixture)
+        #expect(row.metaLine(calendar: newYork) == "Verified 4:41 PM · Shuttle A, Shuttle B · 48.1 GB")
+    }
+
+    @Test func metaLineWithoutEndDateOmitsTime() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let row = try metaRow(fixture, ended: false)
+        #expect(row.metaLine(calendar: newYork) == "Verified · Shuttle A, Shuttle B · 48.1 GB")
+    }
+
+    @Test func metaLineDropsSizeWhenEvidenceHasNone() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let row = try metaRow(fixture, state: .queued, ended: false, files: nil)
+        #expect(row.evidence == nil)
+        #expect(row.metaLine(calendar: newYork) == "Queued · Shuttle A, Shuttle B")
+    }
+
+    @Test func metaLineSaysCopiedForUnverifiedCopies() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let row = try metaRow(fixture, state: .issues, mode: .quick, fileOutcome: .copiedUnverified)
+        #expect(row.safetyState == .copiedNotVerified)
+        #expect(row.metaLine(calendar: newYork) == "Copied 4:41 PM · Shuttle A, Shuttle B · 48.1 GB")
+    }
+
+    @Test func metaLineUsesPlainCauseWhenStoppedOrPaused() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let cause = "Original selected-file plan was not saved; whole-card coverage cannot be confirmed. Keep the source."
+        let paused = try metaRow(fixture, state: .issues, fileOutcome: .failed, summary: cause)
+        #expect(paused.cause != nil)
+        #expect(paused.metaLine(calendar: newYork).hasPrefix("Paused 4:41 PM · "))
+        let failed = try metaRow(fixture, state: .failed, fileOutcome: .failed, summary: cause)
+        let line = failed.metaLine(calendar: newYork)
+        #expect(line.hasPrefix("Stopped 4:41 PM · "))
+        #expect(line.split(separator: "·").count <= 3)
+        #expect(!line.contains("Shuttle A"))
+    }
+
+    @Test func plainCauseReplacesEngineWords() {
+        #expect(QueueSessionPresentation.plainCause(
+            "Original selected-file plan was not saved; whole-card coverage cannot be confirmed. Keep the source.")
+            == "can't confirm every file was copied")
+        #expect(QueueSessionPresentation.plainCause("Destination is full; Source unreadable.") == "backup is full")
+        #expect(QueueSessionPresentation.plainCause("Source disconnected.") == "card disconnected")
+    }
+
     @Test func queueLabelsSayWhatToDo() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
@@ -37,6 +109,7 @@ struct QueueSessionPresentationTests {
         #expect(row.statusText == "Selected files verified")
         #expect(row.statusTint == .gray)
         #expect(row.statusSymbol == "checkmark.circle")
+        #expect(row.queueSymbol == "checkmark.circle")
         #expect(row.action == nil && row.cause == nil)
         #expect(row.evidence?.hasPrefix("1 file ·") == true)
         #expect(outcome.finishTitle == "Selected files verified — Card")
@@ -832,13 +905,23 @@ private final class QueuePresentationFixture {
         wasReused: Bool = false,
         at seconds: TimeInterval = 0,
         projectID: UUID? = nil,
-        projectCardID: UUID? = nil
+        projectCardID: UUID? = nil,
+        files: Int? = nil,
+        bytes: Int64 = 0,
+        fileOutcome: ResultOutcome = .verified,
+        destinationNames: [String]? = nil
     ) throws -> LocalTransferRecord {
         let source = root.appendingPathComponent(name)
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        let backups = try (destinationNames ?? []).map { name -> URL in
+            let url = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+            return url
+        }
         var record = LocalTransferRecord(
             id: UUID(), createdAt: Date(timeIntervalSince1970: seconds),
-            source: try LocalTransferResource(url: source), destinations: [try LocalTransferResource(url: backup)],
+            source: try LocalTransferResource(url: source),
+            destinations: try (backups.isEmpty ? [backup] : backups).map { try LocalTransferResource(url: $0) },
             verificationMode: mode, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
             projectID: projectID, projectCardID: projectCardID
         )
@@ -863,6 +946,21 @@ private final class QueuePresentationFixture {
                     destination: "Shuttle A", destinationPath: backup.appendingPathComponent("clip\(index).mov").path,
                     wasReused: wasReused
                 )
+            }
+        }
+        if let files {
+            let roots = backups.isEmpty ? [backup] : backups
+            record.plannedFileCounts = roots.map { _ in files }
+            record.results = roots.flatMap { destination in
+                (0..<files).map { index in
+                    ResultRow(
+                        path: source.appendingPathComponent("clip\(index).mov").path,
+                        status: fileOutcome.statusText, size: index == 0 ? bytes : 0,
+                        checksum: fileOutcome == .verified ? "abc" : nil,
+                        destination: destination.lastPathComponent,
+                        destinationPath: destination.appendingPathComponent("clip\(index).mov").path
+                    )
+                }
             }
         }
         return record
