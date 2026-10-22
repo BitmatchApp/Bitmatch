@@ -10,11 +10,13 @@ struct MacActionBarHeightKey: PreferenceKey {
 }
 
 /// One sentence on what is missing (or the ready line) and the tab's primary
-/// button. Return presses the button while it is enabled; while disabled it
-/// does nothing, and the system draws the disabled look.
+/// button. Return presses the button while it is enabled and no text field is
+/// being edited; while disabled it does nothing, and the system draws the disabled look.
 struct MacWorkflowActionBar: View {
     let presentation: WorkflowActionBarPresentation
     let action: () -> Void
+    /// A text field is being edited: Return belongs to the field.
+    var isEditingText = false
 
     var body: some View {
         HStack(spacing: 16) {
@@ -22,7 +24,7 @@ struct MacWorkflowActionBar: View {
                 Text(sentence)
                     .font(.callout)
                     .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                    .fixedSize(horizontal: false, vertical: true)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } else {
                 Spacer(minLength: 0)
@@ -32,11 +34,13 @@ struct MacWorkflowActionBar: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .keyboardShortcut(.defaultAction)
+            .keyboardShortcut(presentation.isEnabled && !isEditingText ? KeyboardShortcut.defaultAction : nil)
             .disabled(!presentation.isEnabled)
+            .accessibilityHint(presentation.hint ?? "")
         }
         .padding(.horizontal, 24)
-        .frame(height: 56)
+        .padding(.vertical, 8)
+        .frame(minHeight: 56)
         .background(.bar)
         .overlay(alignment: .top) { Divider() }
         .background {

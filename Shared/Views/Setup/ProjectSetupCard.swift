@@ -13,6 +13,9 @@ import SwiftUI
 struct ProjectSetupCard<RemoteBackup: View>: View {
     @ObservedObject var coordinator: SharedAppCoordinator
     @ViewBuilder private var remoteBackup: () -> RemoteBackup
+    /// False while another button in the window owns Return (the Mac's
+    /// enabled action bar), so two buttons never share the default action.
+    private let claimsDefaultAction: Bool
 
     @State private var clientName = ""
     @State private var jobName = ""
@@ -24,8 +27,13 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
     @State private var presetName = ""
     @State private var didHydrate = false
 
-    init(coordinator: SharedAppCoordinator, @ViewBuilder remoteBackup: @escaping () -> RemoteBackup) {
+    init(
+        coordinator: SharedAppCoordinator,
+        claimsDefaultAction: Bool = true,
+        @ViewBuilder remoteBackup: @escaping () -> RemoteBackup
+    ) {
         self.coordinator = coordinator
+        self.claimsDefaultAction = claimsDefaultAction
         self.remoteBackup = remoteBackup
     }
 
@@ -401,7 +409,7 @@ struct ProjectSetupCard<RemoteBackup: View>: View {
                 Button("Set up \(viewModel.selectedWorkflow.sourceUnitLabel.lowercased())", action: setUpCard)
                     .buttonStyle(.borderedProminent)
                     .disabled(!presentation.canSetUpCard || coordinator.isProjectRunInProgress)
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(claimsDefaultAction ? KeyboardShortcut.defaultAction : nil)
                     .accessibilityHint("Analyzes the selected source and prepares its job package")
             }
         }
