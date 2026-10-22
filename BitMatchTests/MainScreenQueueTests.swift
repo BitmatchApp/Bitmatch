@@ -140,6 +140,44 @@ struct MainScreenQueueTests {
         await live.value
     }
 
+    private func makeCoordinatorWithPausedRunningCard() async throws
+        -> (SharedProjectFixture, SharedAppCoordinator, UUID, Task<Void, Never>) {
+        let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
+        let coordinator = fixture.coordinator
+        coordinator.reportSettings.makeReport = false
+        coordinator.generateASCMHL = false
+        let live = Task { await coordinator.startOperation() }
+        #expect(await waitUntil { await fixture.operations.starts.count == 1 })
+        let id = try #require(coordinator.queuePresentation.rows.first?.id)
+        // The journal still says running while the queue is paused on this card.
+        coordinator.pauseQueueAttempt(recordID: id, message: "Stopped unexpectedly")
+        return (fixture, coordinator, id, live)
+    }
+
+    private func finishLiveRun(_ fixture: SharedProjectFixture, _ coordinator: SharedAppCoordinator,
+                               _ live: Task<Void, Never>) async {
+        coordinator.cancelOperation()
+        await fixture.operations.gate.release()
+        await live.value
+        fixture.folders.cleanup()
+    }
+
+    @Test func removingPausedCardWorksWhileItsRecordIsStillRunning() async throws {
+        let (fixture, coordinator, id, live) = try await makeCoordinatorWithPausedRunningCard()
+        try coordinator.removePausedCardFromQueue(id)
+        #expect(!coordinator.queueSessionRecordIDs.contains(id))
+        #expect(coordinator.queuePausedRecordID == nil)
+        #expect(coordinator.transferJournal.records.contains { $0.id == id })
+        await finishLiveRun(fixture, coordinator, live)
+    }
+
+    @Test func removingANonPausedCardThrowsNamedReason() async throws {
+        let (fixture, coordinator, id, live) = try await makeCoordinatorWithPausedRunningCard()
+        #expect(throws: FileOperationError.self) { try coordinator.removePausedCardFromQueue(UUID()) }
+        #expect(coordinator.queuePausedRecordID == id)
+        await finishLiveRun(fixture, coordinator, live)
+    }
+
     @Test func startingOneCardAddsItsRunningRowToTheTransferList() async throws {
         let fixture = try await SharedProjectFixture.make(blocked: true, prepareCard: false)
         defer { fixture.folders.cleanup() }

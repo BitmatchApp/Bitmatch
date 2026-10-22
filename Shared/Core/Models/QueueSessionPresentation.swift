@@ -22,6 +22,10 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
     let verificationModeName: String
     /// Progress estimate only; nil for old or unmeasured queue records.
     var estimatedWorkBytes: Double? = nil
+    /// When the transfer settled; nil while it is waiting or running.
+    var endedAt: Date? = nil
+    /// Earlier attempts of the same card, oldest first. Their journal records stay.
+    private(set) var earlierAttemptIDs: [UUID] = []
 
     var isEditable: Bool { safetyState == .waiting }
     var isRunning: Bool { safetyState.isActiveQueueState }
@@ -70,6 +74,12 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         }
         if let outcome { return outcome.finishTitle }
         return "\(waitingText) · Waiting"
+    }
+
+    fileprivate func withEarlierAttempts(_ ids: [UUID]) -> Self {
+        var row = self
+        row.earlierAttemptIDs = ids
+        return row
     }
 
     /// A cached finish describes evidence, never whether the card is still
@@ -172,10 +182,25 @@ struct QueueSessionPresentation: Equatable, Sendable {
             session = records.reversed().filter { sessionIDs.contains($0.id) }
         }
         let runningID = session.first(where: { $0.state == .running })?.id
-        let rows = session.map { record in
+        // One row per card: a later attempt replaces an earlier one that ended
+        // without a clean finish, in the earlier attempt's place. Queued and
+        // running records are never collapsed. Journal records are untouched.
+        var attempts: [(record: LocalTransferRecord, earlier: [UUID])] = []
+        var lastAttempt: [String: Int] = [:]
+        for record in session {
+            let key = attemptKey(for: record)
+            if let index = lastAttempt[key], collapsesIntoLaterAttempt(attempts[index].record) {
+                attempts[index] = (record, attempts[index].earlier + [attempts[index].record.id])
+            } else {
+                attempts.append((record, []))
+                lastAttempt[key] = attempts.count - 1
+            }
+        }
+        let rows = attempts.map { attempt -> QueueSessionRow in
+            let record = attempt.record
             if record.state != .queued, record.state != .running,
                let completed = completedRows[record.id] {
-                return completed.showingSource(
+                return completed.withEarlierAttempts(attempt.earlier).showingSource(
                     isMounted: mountedSourceIDs.contains(record.id),
                     isEjected: ejectedSourceIDs.contains(record.id)
                 )
@@ -187,7 +212,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 record: record,
                 progress: record.id == runningID ? progress : nil,
                 isMounted: mountedSourceIDs.contains(record.id),
-                isEjected: ejectedSourceIDs.contains(record.id)
+                isEjected: ejectedSourceIDs.contains(record.id),
+                earlierAttemptIDs: attempt.earlier
             )
         }
         var tally = QueueTally()
@@ -259,6 +285,25 @@ struct QueueSessionPresentation: Equatable, Sendable {
         )
     }
 
+    /// The card a record belongs to: its volume and folder identity when known,
+    /// else its source path. A volume ID alone would merge two folders of one disk.
+    static func attemptKey(for record: LocalTransferRecord) -> String {
+        guard let volumeID = record.source.volumeID, let resourceID = record.source.resourceID else {
+            return record.source.url.path
+        }
+        return "\(volumeID)/\(resourceID)"
+    }
+
+    /// Judged by what the user sees, not the journal state: a completed run
+    /// that still needs attention is as unsettled as a failed one.
+    private static func collapsesIntoLaterAttempt(_ record: LocalTransferRecord) -> Bool {
+        guard record.state != .queued, record.state != .running else { return false }
+        switch TransferLibraryPresentation.safetyState(for: record) {
+        case .needsAttention, .failed, .interrupted, .copiedNotVerified: return true
+        default: return false
+        }
+    }
+
     /// The cached value contains only presentation fields, not the source
     /// record or its potentially large result array.
     static func completedRow(for record: LocalTransferRecord) -> QueueSessionRow? {
@@ -270,7 +315,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
         record: LocalTransferRecord,
         progress: OperationProgress?,
         isMounted: Bool,
-        isEjected: Bool
+        isEjected: Bool,
+        earlierAttemptIDs: [UUID] = []
     ) -> QueueSessionRow {
         let state: CardSafetyState
         if record.state == .running {
@@ -337,7 +383,9 @@ struct QueueSessionPresentation: Equatable, Sendable {
             outcome: outcome,
             destinationNames: destinationNames,
             verificationModeName: record.verificationMode.rawValue,
-            estimatedWorkBytes: estimatedWorkBytes(for: record)
+            estimatedWorkBytes: estimatedWorkBytes(for: record),
+            endedAt: record.endedAt,
+            earlierAttemptIDs: earlierAttemptIDs
         ).showingSource(isMounted: isMounted, isEjected: isEjected)
     }
 

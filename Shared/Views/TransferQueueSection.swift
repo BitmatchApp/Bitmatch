@@ -19,6 +19,7 @@ struct TransferQueueSection: View {
     @State private var retryTask: Task<Void, Never>?
     @State private var confirmingCancel = false
     @State private var errorMessage: String?
+    @State private var alertError: String?
     @State private var exportDocument: TransferHistoryDocument?
     @State private var exportType = UTType.json
     @State private var showingExporter = false
@@ -116,6 +117,13 @@ struct TransferQueueSection: View {
         ) { result in
             if case .failure(let error) = result { errorMessage = error.localizedDescription }
         }
+        .alert(
+            "Couldn't do that",
+            isPresented: Binding(get: { alertError != nil }, set: { if !$0 { alertError = nil } }),
+            presenting: alertError
+        ) { _ in
+            Button("OK") {}
+        } message: { Text($0) }
     }
 
     @ViewBuilder
@@ -896,8 +904,8 @@ struct TransferQueueSection: View {
     }
 
     private func perform(_ action: () throws -> Void) {
-        do { try action(); errorMessage = nil }
-        catch { errorMessage = error.localizedDescription }
+        do { try action(); errorMessage = nil; alertError = nil }
+        catch { alertError = error.localizedDescription }
     }
 
     private func moveWaitingCard(_ id: UUID, offset: Int, rows: [QueueSessionRow]) {

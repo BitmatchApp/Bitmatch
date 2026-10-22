@@ -1901,13 +1901,12 @@ class SharedAppCoordinator: ObservableObject {
         }
     }
 
-    /// Removes a stale failed/interrupted card from this queue without
-    /// deleting its History record. Unlike Skip and Continue, this does not
+    /// Removes the card pausing this queue, whatever its journal state,
+    /// without deleting its History record. Unlike Skip and Continue, this does not
     /// start waiting cards automatically.
     func removePausedCardFromQueue(_ expectedID: UUID) throws {
         guard queuePausedRecordID == expectedID,
-              let record = transferJournal.records.first(where: { $0.id == expectedID }),
-              Self.isQueueProblem(record) else {
+              transferJournal.records.contains(where: { $0.id == expectedID }) else {
             throw FileOperationError.unsafeOperation("Only the card pausing this queue can be removed.")
         }
         queueSessionRecordIDs.remove(expectedID)
@@ -2830,7 +2829,7 @@ class SharedAppCoordinator: ObservableObject {
         }
     }
 
-    private func pauseQueueAttempt(recordID: UUID, message: String) {
+    func pauseQueueAttempt(recordID: UUID, message: String) {
         queueIsRunning = false
         queuePausedRecordID = recordID
         queueMessage = message
