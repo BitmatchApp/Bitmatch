@@ -9,6 +9,8 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
     let buttonTitle: String
     let symbol: String
     let isEnabled: Bool
+    /// The accessibility hint of the underlying Start button, when it has one.
+    var hint: String?
 
     static func make(start: StartButtonPresentation) -> Self {
         // A step that is not done yet carries its instruction in the title
@@ -20,14 +22,16 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
                     ?? (start.title == "Start" ? nil : sentence(from: start.title)),
                 buttonTitle: start.action == .addToQueue ? "Add to queue" : "Start",
                 symbol: start.symbol,
-                isEnabled: false
+                isEnabled: false,
+                hint: start.accessibilityHint.isEmpty ? nil : start.accessibilityHint
             )
         }
         return Self(
             sentence: start.readyLine,
             buttonTitle: start.title,
             symbol: start.symbol,
-            isEnabled: true
+            isEnabled: true,
+            hint: start.accessibilityHint.isEmpty ? nil : start.accessibilityHint
         )
     }
 
@@ -69,8 +73,8 @@ struct WorkflowActionBarPresentation: Equatable, Sendable {
         switch step {
         case .chooseSource: return "Choose a source to start."
         case .addBackup: return "Add a destination to start."
-        case .prepareCard: return "Prepare the card to start."
-        case nil: return nil
+        // The button title already says it ("Set up the media to start").
+        case .prepareCard, nil: return nil
         }
     }
 

@@ -27,12 +27,13 @@ struct WorkflowActionBarPresentationTests {
     private static func start(
         title: String, canStart: Bool, blocker: String?, readyLine: String?,
         nextStep: StartButtonPresentation.NextStep? = nil,
-        action: StartButtonPresentation.Action = .start
+        action: StartButtonPresentation.Action = .start,
+        hint: String = ""
     ) -> StartButtonPresentation {
         StartButtonPresentation(
             title: title, symbol: "play.fill", canStart: canStart, action: action,
             startsProject: false, nextStep: nextStep, blocker: blocker, readyLine: readyLine,
-            accessibilityHint: ""
+            accessibilityHint: hint
         )
     }
 
@@ -81,6 +82,26 @@ struct WorkflowActionBarPresentationTests {
         #expect(WorkflowActionBarPresentation.make(start: backup).sentence == "Add a destination to start.")
         let bare = Self.start(title: "Start", canStart: false, blocker: nil, readyLine: nil)
         #expect(WorkflowActionBarPresentation.make(start: bare).sentence == nil)
+    }
+
+    @Test func prepareCardSaysTheButtonTitleAsASentence() {
+        let blocked = Self.start(
+            title: "Set up the media to start", canStart: false, blocker: nil, readyLine: nil,
+            nextStep: .prepareCard
+        )
+        let bar = WorkflowActionBarPresentation.make(start: blocked)
+        #expect(bar.sentence == "Set up the media to start.")
+        #expect(bar.buttonTitle == "Start" && !bar.isEnabled)
+    }
+
+    @Test func startCarriesItsAccessibilityHintAndOthersHaveNone() {
+        let blocked = Self.start(title: "Start", canStart: false, blocker: "Pick a backup.", readyLine: nil, hint: "Pick a backup first")
+        #expect(WorkflowActionBarPresentation.make(start: blocked).hint == "Pick a backup first")
+        let ready = Self.start(title: "Start", canStart: true, blocker: nil, readyLine: "Ready.", hint: "Copies the card")
+        #expect(WorkflowActionBarPresentation.make(start: ready).hint == "Copies the card")
+        let empty = Self.start(title: "Start", canStart: true, blocker: nil, readyLine: nil)
+        #expect(WorkflowActionBarPresentation.make(start: empty).hint == nil)
+        #expect(WorkflowActionBarPresentation.make(master: Self.master()).hint == nil)
     }
 
     @Test func compareBlockedUsesActionTitleAsSentenceAndCheckAsButton() {
