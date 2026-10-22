@@ -20,6 +20,7 @@ struct MacSetupView: View {
         CoordinatorSetupScreen(
             coordinator: coordinator,
             optionsExpanded: $optionsExpanded,
+            showsInlineStart: false,
             transferTransitionContext: transferTransitionContext
         ) { context, advanced in
             // The shared boxes, with the Mac's open panel and drag and drop.
@@ -36,7 +37,11 @@ struct MacSetupView: View {
             // A card macOS cannot read is a real, actionable problem.
             UnreadableMediaBanner()
         } projectSetup: {
-            ProjectSetupCard(coordinator: coordinator) {
+            // Return belongs to the action bar while its button is enabled.
+            ProjectSetupCard(
+                coordinator: coordinator,
+                claimsDefaultAction: !SetupPresentation.make(coordinator: coordinator).start.canStart
+            ) {
                 // SFTP is a documented Mac-only exception (AGENTS.md).
                 RemoteBackupDestinationView(coordinator: coordinator)
             }

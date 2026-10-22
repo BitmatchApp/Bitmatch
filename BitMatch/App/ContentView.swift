@@ -2,6 +2,26 @@
 import SwiftUI
 import AppKit
 
+/// What the window-fit shell remembers between height changes.
+private struct WindowFitTracker {
+    var lastHeight: CGFloat = 0
+    var lastChangeAt = ProcessInfo.processInfo.systemUptime
+    var shorterSince: TimeInterval?
+    /// Height of the last frame the shell set itself, so only a different
+    /// height after a live resize counts as the user's.
+    var lastSetHeight: CGFloat = 0
+    var userResized = false
+    var isLiveResizing = false
+    /// Height when the current live resize began.
+    var liveResizeStartHeight: CGFloat = 0
+    /// True while the shell itself sets a frame, so its own resize
+    /// notifications are not mistaken for the user's.
+    var isApplyingFrame = false
+    var hasFitted = false
+    /// Extra height kept at launch; dropped on the first tab or History change.
+    var headroom: CGFloat = WindowPresentationPolicy.launchHeadroom
+}
+
 private struct MacScrollableContentHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
@@ -67,16 +87,19 @@ struct MacMainView: View {
     @ObservedObject var remoteBackups: MacRemoteBackupController
     @ObservedObject private var errorHandler = GlobalErrorHandler.shared
     @State private var showingTransfers = false
+    @State private var isEditingText = false
     @State private var transferToReviewID: UUID?
     @State private var dismissedAttentionIDs: Set<UUID> = []
     
     // Dynamic window height management
     @State private var measuredScrollableContentHeight: CGFloat = 0
     @State private var measuredNoticeHeight: CGFloat = 0
+    @State private var measuredActionBarHeight: CGFloat = 0
+    @State private var masterReportBar: MasterReportBarRequest?
     @State private var hostingWindow: NSWindow?
     @State private var windowResizeTask: Task<Void, Never>?
     @State private var windowFrameAnimation: Task<Void, Never>?
-    @State private var didFitWindowAtLaunch = false
+    @State private var windowFit = WindowFitTracker()
     @State private var queueFlight: QueueFlight?
     @State private var flightTarget: CGRect?
     @State private var flightEndTask: Task<Void, Never>?
@@ -92,7 +115,6 @@ struct MacMainView: View {
     @State private var dropRejectionMessage = ""
     @State private var transitioningQueueID: UUID?
     @State private var queueTransitionClearTask: Task<Void, Never>?
-    @State private var queueAdmissionTask: Task<Void, Never>?
     @Namespace private var queueTransition
     /// Cancel asks once (thesis decision), from the button or ⌘.
     @State private var confirmingTransferCancel = false
@@ -268,6 +290,46 @@ struct MacMainView: View {
                 composerSourceChanged(from: old, to: new)
             }
         }
+        // The bar sits outside the scroll content, so the flight's
+        // coordinate space and frame preferences are unchanged.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if !showingTransfers, let bar = actionBar {
+                MacWorkflowActionBar(presentation: bar.presentation, action: bar.action, isEditingText: isEditingText)
+            }
+        }
+        .onPreferenceChange(MasterReportBarKey.self) { masterReportBar = $0 }
+    }
+
+    /// The current tab's presentation and the action the inline button used
+    /// to call. Nil only for a Master Report that has not reported yet.
+    private var actionBar: (presentation: WorkflowActionBarPresentation, action: () -> Void)? {
+        switch coordinator.currentMode {
+        case .copyAndVerify:
+            let start = SetupPresentation.make(coordinator: coordinator).start
+            let actions = CoordinatorSetupActions.make(
+                coordinator: coordinator,
+                enqueueSelection: { runSetupAdmission(startBatch: false) },
+                startSetupTransfers: { runSetupAdmission(startBatch: true) },
+                performQueueTransition: { operation in
+                    performQueueTransition(reduceMotion: reduceMotion, operation: operation)
+                }
+            )
+            return (.make(start: start), actions.start)
+        case .compareFolders:
+            return (.make(compare: ComparePresentation.make(coordinator: coordinator)),
+                    { ComparePresentation.startIfReady(coordinator) })
+        case .masterReport:
+            return masterReportBar.map { ($0.presentation, $0.action) }
+        }
+    }
+
+    private func runSetupAdmission(startBatch: Bool) {
+        CoordinatorSetupActions.runPreparedAdmission(
+            coordinator: coordinator,
+            startBatch: startBatch,
+            reduceMotion: reduceMotion,
+            completed: performCompletedQueueTransition
+        )
     }
 
     // MARK: - Composer to queue flight
@@ -377,14 +439,19 @@ struct MacMainView: View {
                 .keyboardShortcut("[", modifiers: .command)
                 .accessibilityHint("Returns to the transfer screen")
             }
-        } else {
+        }
         ToolbarItem(placement: .principal) {
-            Picker("Mode", selection: Binding(
-                get: { coordinator.currentMode },
-                set: { coordinator.switchMode(to: $0) }
+            // No segment is highlighted in History, so choosing the current
+            // tab there still fires and leaves History.
+            Picker("Mode", selection: Binding<AppMode?>(
+                get: { showingTransfers ? nil : coordinator.currentMode },
+                set: { mode in
+                    guard let mode else { return }
+                    selectTab(mode)
+                }
             )) {
                 ForEach(AppMode.allCases) { mode in
-                    Text(mode.rawValue).tag(mode)
+                    Text(mode.rawValue).tag(Optional(mode))
                 }
             }
             .pickerStyle(.segmented)
@@ -394,6 +461,7 @@ struct MacMainView: View {
             .disabled(isModeSwitchLocked)
             .accessibilityLabel("Mode")
         }
+        if !showingTransfers {
         // Standard toolbar spacing: no custom frames, padding, or button
         // styles on these items, so the icons sit evenly at system size.
         ToolbarItemGroup(placement: .primaryAction) {
@@ -636,43 +704,150 @@ struct MacMainView: View {
         }
     }
 
+    /// The one way to pick a tab (strip, ⌘1/2/3): History closes first.
+    private func selectTab(_ mode: AppMode) {
+        if HeaderPresentationPolicy.modeSelectionClosesHistory(showingHistory: showingTransfers) {
+            closeHistory()
+        }
+        coordinator.switchMode(to: mode)
+    }
+
     private func closeHistory() {
         showingTransfers = false
         transferToReviewID = nil
     }
 
-    /// Content often grows in steps (a summary line, then an info line a
-    /// moment later). Resizing once per step made the window restart its
-    /// animation mid-flight, so wait for the layout to settle and resize once.
+    /// Follows the content's height with the rules in `MacWindowFitPolicy`:
+    /// wait for the measurement to settle, grow at once, shrink slowly, and
+    /// leave a window the user resized alone until the next tab switch or
+    /// History toggle. A cancellable sleep re-evaluates after the last change.
     private func resizeWindowToMeasuredContent() {
-        windowResizeTask?.cancel()
-        windowResizeTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(80))
-            guard !Task.isCancelled else { return }
-            applyMeasuredContentHeight()
+        let combined = MacMeasuredContentHeight.combined(
+            scrollable: measuredScrollableContentHeight,
+            notice: measuredNoticeHeight,
+            actionBar: measuredActionBarHeight
+        )
+        if abs(combined - windowFit.lastHeight) > 0.5 {
+            windowFit.lastHeight = combined
+            windowFit.lastChangeAt = ProcessInfo.processInfo.systemUptime
+        }
+        if windowFit.hasFitted {
+            evaluateWindowFit()
+        } else {
+            // Launch: the first measurements arrive in steps; fit once they
+            // have stopped, without waiting for the settle or shrink delays.
+            windowResizeTask?.cancel()
+            windowResizeTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(80))
+                guard !Task.isCancelled else { return }
+                evaluateWindowFit()
+            }
         }
     }
 
-    private func applyMeasuredContentHeight() {
-        // Fit the window once, when it first appears. Resizing a window while
-        // its SwiftUI content is changing makes macOS briefly draw the whole
-        // window, title bar included, shifted up; so after launch the window
-        // keeps the size the user chose and new content scrolls inside it.
-        guard !didFitWindowAtLaunch else { return }
-        defer { didFitWindowAtLaunch = true }
-        guard let window = hostingWindow, measuredScrollableContentHeight > 0 else { return }
+    private func evaluateWindowFit() {
+        windowResizeTask?.cancel()
+        guard let window = hostingWindow, measuredScrollableContentHeight > 0,
+              !window.styleMask.contains(.fullScreen) else { return }
+        let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
+        let now = ProcessInfo.processInfo.systemUptime
+        let contentHeight = windowFit.lastHeight + windowFit.headroom
+        let windowContentHeight = window.frame.height - chromeHeight
+        let isShorter = windowContentHeight - contentHeight >= MacWindowFitPolicy.shrinkSlack
+        if !isShorter {
+            windowFit.shorterSince = nil
+        } else if windowFit.shorterSince == nil {
+            windowFit.shorterSince = now
+        }
+        let stableFor = windowFit.hasFitted ? now - windowFit.lastChangeAt : MacWindowFitPolicy.settleDelay
+        let shorterFor = windowFit.hasFitted
+            ? (windowFit.shorterSince.map { now - $0 } ?? 0)
+            : MacWindowFitPolicy.shrinkDelay
+        let input = MacWindowFitPolicy.Input(
+            contentHeight: contentHeight,
+            windowContentHeight: windowContentHeight,
+            stableFor: stableFor,
+            shorterFor: shorterFor,
+            userResizedSinceLastTabSwitch: windowFit.userResized,
+            isLiveResizing: windowFit.isLiveResizing
+        )
+        windowFit.hasFitted = true
+        switch MacWindowFitPolicy.decide(input) {
+        case .fit(let height):
+            applyFit(toContentHeight: height, window: window)
+        case .hold:
+            guard !windowFit.userResized, !windowFit.isLiveResizing else { return }
+            var wait: TimeInterval = 0
+            if stableFor < MacWindowFitPolicy.settleDelay {
+                wait = MacWindowFitPolicy.settleDelay - stableFor
+            } else if isShorter, shorterFor < MacWindowFitPolicy.shrinkDelay {
+                wait = MacWindowFitPolicy.shrinkDelay - shorterFor
+            } else {
+                return
+            }
+            windowResizeTask = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(wait + 0.02))
+                guard !Task.isCancelled else { return }
+                evaluateWindowFit()
+            }
+        }
+    }
+
+    private func applyFit(toContentHeight height: CGFloat, window: NSWindow) {
         guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame else { return }
         let chromeHeight = max(0, window.frame.height - window.contentLayoutRect.height)
         let newFrame = MacWindowFramePolicy.fittedFrame(
             currentFrame: window.frame,
-            measuredContentHeight: measuredScrollableContentHeight + measuredNoticeHeight
-                + WindowPresentationPolicy.launchHeadroom,
+            measuredContentHeight: height,
             windowChromeHeight: chromeHeight,
             visibleFrame: visibleFrame
         )
         guard !NSEqualRects(window.frame, newFrame) else { return }
+        windowFit.lastSetHeight = newFrame.height
         setWindowFrame(newFrame, window: window)
         saveWindowFrame(newFrame)
+    }
+
+    /// A tab switch or History toggle is a new screen: let the window follow
+    /// it again, and drop the launch headroom once the user has moved on.
+    private func resetWindowFitForNewScreen() {
+        windowFit.userResized = false
+        windowFit.headroom = 0
+        windowFit.lastChangeAt = ProcessInfo.processInfo.systemUptime
+        evaluateWindowFit()
+    }
+
+    /// A height change outside the shell's own frames and live resizes is the
+    /// user's: zoom, macOS tiling, Stage Manager. Leave the window alone until
+    /// the next tab switch or History toggle.
+    private func windowDidResize(_ window: NSWindow) {
+        guard !windowFit.isLiveResizing, !windowFit.isApplyingFrame,
+              !window.styleMask.contains(.fullScreen) else { return }
+        if MacWindowFitPolicy.isUserHeightChange(from: windowFit.lastSetHeight, to: window.frame.height) {
+            windowFit.userResized = true
+            windowResizeTask?.cancel()
+            windowFrameAnimation?.cancel()
+        }
+        windowFit.lastSetHeight = window.frame.height
+    }
+
+    /// Sets a frame the shell chose, marked so `windowDidResize` skips it.
+    private func applyShellFrame(_ frame: NSRect, window: NSWindow, display: Bool = true) {
+        windowFit.isApplyingFrame = true
+        window.setFrame(frame, display: display)
+        windowFit.isApplyingFrame = false
+    }
+
+    private func windowDidEndLiveResize() {
+        windowFit.isLiveResizing = false
+        if let window = hostingWindow {
+            if MacWindowFitPolicy.isUserHeightChange(from: windowFit.liveResizeStartHeight, to: window.frame.height) {
+                windowFit.userResized = true
+            }
+            // Later width-only drags must compare against this height.
+            windowFit.lastSetHeight = window.frame.height
+        }
+        windowResizeTask?.cancel()
     }
 
     private func setWindowFrame(_ frame: NSRect, window: NSWindow) {
@@ -682,7 +857,7 @@ struct MacMainView: View {
         // and toolbar, which read as the whole window jumping up.
         windowFrameAnimation?.cancel()
         guard !reduceMotion else {
-            window.setFrame(frame, display: true)
+            applyShellFrame(frame, window: window)
             return
         }
         let start = window.frame
@@ -692,7 +867,7 @@ struct MacMainView: View {
                 guard !Task.isCancelled else { return }
                 let t = Double(step) / Double(steps)
                 let eased = t < 0.5 ? 2 * t * t : 1 - pow(-2 * t + 2, 2) / 2
-                window.setFrame(MacWindowFramePolicy.interpolated(from: start, to: frame, progress: eased), display: true)
+                applyShellFrame(MacWindowFramePolicy.interpolated(from: start, to: frame, progress: eased), window: window)
                 try? await Task.sleep(for: .milliseconds(16))
             }
         }
@@ -716,12 +891,13 @@ struct MacMainView: View {
         let screen = NSScreen.screens.first(where: { $0.visibleFrame.intersects(frame) }) ?? NSScreen.main
         guard let visibleFrame = screen?.visibleFrame else { return }
         let constrained = MacWindowFramePolicy.constrainedFrame(frame, to: visibleFrame)
-        window.setFrame(constrained, display: false)
+        applyShellFrame(constrained, window: window, display: false)
+        windowFit.lastSetHeight = constrained.height
     }
 
     private func updateWindowTitle() {
         guard let hostingWindow else { return }
-        hostingWindow.title = showingTransfers ? "History" : "BitMatch"
+        hostingWindow.title = HeaderPresentationPolicy.windowTitle(mode: coordinator.currentMode, showingHistory: showingTransfers)
         hostingWindow.titleVisibility = showingTransfers ? .visible : .hidden
     }
     
@@ -737,6 +913,10 @@ struct MacMainView: View {
                 measuredNoticeHeight = height
                 resizeWindowToMeasuredContent()
             }
+            .onPreferenceChange(MacActionBarHeightKey.self) { height in
+                measuredActionBarHeight = height
+                resizeWindowToMeasuredContent()
+            }
             .onChange(of: hostingWindow != nil) { _, hasWindow in
                 guard hasWindow, let hostingWindow else { return }
                 restoreWindowFrame(in: hostingWindow)
@@ -745,6 +925,34 @@ struct MacMainView: View {
             }
             .onChange(of: showingTransfers) { _, _ in
                 updateWindowTitle()
+                resetWindowFitForNewScreen()
+            }
+            .onChange(of: coordinator.currentMode) { _, _ in
+                updateWindowTitle()
+                resetWindowFitForNewScreen()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.willStartLiveResizeNotification)) { note in
+                guard let window = note.object as? NSWindow, window === hostingWindow else { return }
+                windowFit.isLiveResizing = true
+                windowFit.liveResizeStartHeight = window.frame.height
+                windowResizeTask?.cancel()
+                windowFrameAnimation?.cancel()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didResizeNotification)) { note in
+                guard let window = note.object as? NSWindow, window === hostingWindow else { return }
+                windowDidResize(window)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSText.didBeginEditingNotification)) { note in
+                guard (note.object as? NSText)?.window === hostingWindow else { return }
+                isEditingText = true
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSText.didEndEditingNotification)) { note in
+                guard (note.object as? NSText)?.window === hostingWindow else { return }
+                isEditingText = false
+            }
+            .onReceive(NotificationCenter.default.publisher(for: NSWindow.didEndLiveResizeNotification)) { note in
+                guard let window = note.object as? NSWindow, window === hostingWindow else { return }
+                windowDidEndLiveResize()
             }
     }
     
@@ -758,41 +966,21 @@ struct MacMainView: View {
         notificationObserversView
             .onReceive(NotificationCenter.default.publisher(for: .switchToCopyMode)) { _ in
                 guard !isModeSwitchLocked else { return }
-                coordinator.switchMode(to: .copyAndVerify)
+                selectTab(.copyAndVerify)
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToCompareMode)) { _ in
                 guard !isModeSwitchLocked else { return }
-                coordinator.switchMode(to: .compareFolders)
+                selectTab(.compareFolders)
             }
             .onReceive(NotificationCenter.default.publisher(for: .switchToMasterReportMode)) { _ in
                 guard !isModeSwitchLocked else { return }
-                coordinator.switchMode(to: .masterReport)
+                selectTab(.masterReport)
             }
             .onReceive(NotificationCenter.default.publisher(for: .startVerification)) { _ in
-                switch coordinator.currentMode {
-                case .copyAndVerify:
-                    guard coordinator.queuePausedRecordID == nil else { return }
-                    let presentation = SetupPresentation.make(coordinator: coordinator)
-                    guard presentation.start.canStart else { return }
-                    if presentation.start.action == .addToQueue {
-                        enqueueSelectionPrepared()
-                        return
-                    }
-                    if !presentation.start.startsProject && SetupStartPolicy.startsSetupBatch(
-                        stagedCardCount: coordinator.stagedSetupTransfers.count,
-                        hasComposerCard: coordinator.sourceURL != nil && !coordinator.destinationURLs.isEmpty,
-                        isOperationInProgress: coordinator.isOperationInProgress
-                    ) {
-                        startSetupTransfersPrepared()
-                    } else {
-                        Task { await coordinator.startCurrentMode() }
-                    }
-                case .compareFolders:
-                    // ⌘R obeys the same readiness rule as the Compare button.
-                    ComparePresentation.startIfReady(coordinator)
-                case .masterReport:
-                    break
-                }
+                // ⌘R is the bar's button: the same readiness rule and the same
+                // admission path. Master Report has no ⌘R action.
+                guard coordinator.currentMode != .masterReport else { return }
+                actionBar?.action()
             }
             .onReceive(NotificationCenter.default.publisher(for: .cancelOperation)) { _ in
                 // ⌘. does nothing when nothing runs. A transfer asks first,
@@ -824,43 +1012,6 @@ struct MacMainView: View {
             .onReceive(NotificationCenter.default.publisher(for: .clearTestData)) { _ in
                 coordinator.resetForNewOperation()
             }
-    }
-
-    private func enqueueSelectionPrepared() {
-        guard queueAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        queueAdmissionTask = Task { @MainActor in
-            defer { queueAdmissionTask = nil }
-            do {
-                let id = try await coordinator.enqueueSelectionPrepared()
-                performCompletedQueueTransition(
-                    reduceMotion: reduceMotion,
-                    previousEditingID: previousEditingID,
-                    committedID: id
-                )
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
-    }
-
-    private func startSetupTransfersPrepared() {
-        guard queueAdmissionTask == nil else { return }
-        let previousEditingID = coordinator.editingSetupTransferID
-        queueAdmissionTask = Task { @MainActor in
-            defer { queueAdmissionTask = nil }
-            do {
-                if let id = try await coordinator.startSetupTransfersPrepared() {
-                    performCompletedQueueTransition(
-                        reduceMotion: reduceMotion,
-                        previousEditingID: previousEditingID,
-                        committedID: id
-                    )
-                }
-            } catch {
-                await coordinator.showError(error)
-            }
-        }
     }
 }
 

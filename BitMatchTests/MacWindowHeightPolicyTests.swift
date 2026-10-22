@@ -5,6 +5,12 @@ import Testing
 struct MacWindowHeightPolicyTests {
     private typealias Policy = MacWindowHeightPolicy
 
+    @Test func launchFitIncludesTheActionBar() {
+        #expect(MacMeasuredContentHeight.combined(scrollable: 612, notice: 0, actionBar: 56) == 668)
+        #expect(MacMeasuredContentHeight.combined(scrollable: 612, notice: 40, actionBar: 0) == 652)
+        #expect(MacMeasuredContentHeight.combined(scrollable: -5, notice: 0, actionBar: 56) == 56)
+    }
+
     @Test func measuredContentAndRealWindowChromeSetTheHeight() {
         let height = Policy.fittedHeight(
             measuredContentHeight: 612,
@@ -200,5 +206,34 @@ struct MacWindowHeightPolicyTests {
         #expect(frame.maxX == visible.maxX)
         #expect(frame.minY == visible.minY)
         #expect(visible.contains(frame))
+    }
+
+    @Test func growsOnceContentIsStable() {
+        let grow = MacWindowFitPolicy.Input(contentHeight: 800, windowContentHeight: 600, stableFor: 0.3, shorterFor: 0, userResizedSinceLastTabSwitch: false, isLiveResizing: false)
+        #expect(MacWindowFitPolicy.decide(grow) == .fit(toContentHeight: 800))
+        #expect(MacWindowFitPolicy.decide(.init(contentHeight: 800, windowContentHeight: 600, stableFor: 0.1, shorterFor: 0, userResizedSinceLastTabSwitch: false, isLiveResizing: false)) == .hold)
+    }
+
+    @Test func shrinksOnlyAfterTheDelayAndSlack() {
+        let base = MacWindowFitPolicy.Input(contentHeight: 400, windowContentHeight: 600, stableFor: 1, shorterFor: 0.5, userResizedSinceLastTabSwitch: false, isLiveResizing: false)
+        #expect(MacWindowFitPolicy.decide(base) == .hold)
+        var later = base; later.shorterFor = 1.2
+        #expect(MacWindowFitPolicy.decide(later) == .fit(toContentHeight: 400))
+        var small = later; small.contentHeight = 520   // only 80 shorter: within slack
+        #expect(MacWindowFitPolicy.decide(small) == .hold)
+    }
+
+    @Test func userResizeAndLiveResizeHold() {
+        var input = MacWindowFitPolicy.Input(contentHeight: 800, windowContentHeight: 600, stableFor: 1, shorterFor: 0, userResizedSinceLastTabSwitch: true, isLiveResizing: false)
+        #expect(MacWindowFitPolicy.decide(input) == .hold)
+        input.userResizedSinceLastTabSwitch = false; input.isLiveResizing = true
+        #expect(MacWindowFitPolicy.decide(input) == .hold)
+    }
+
+    @Test func onlyAHeightChangeBeyondOnePointIsTheUsers() {
+        #expect(!MacWindowFitPolicy.isUserHeightChange(from: 700, to: 700.5))
+        #expect(!MacWindowFitPolicy.isUserHeightChange(from: 700, to: 699.2))
+        #expect(MacWindowFitPolicy.isUserHeightChange(from: 700, to: 702))
+        #expect(MacWindowFitPolicy.isUserHeightChange(from: 700, to: 400))
     }
 }

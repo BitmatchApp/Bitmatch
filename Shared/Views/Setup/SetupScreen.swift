@@ -354,9 +354,6 @@ struct SetupStartControl: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.regular)
             .buttonBorderShape(.roundedRectangle(radius: usesBottomBar ? 12 : 8))
-            // Grey while waiting on a step or a problem: a button that
-            // cannot be pressed should not look pressable.
-            .tint(start.canStart ? Color.accentColor : Color.gray)
             .disabled(!start.canStart)
             // The glow lives in its own layer with its own state: a
             // repeating animation on the button itself swept every layout

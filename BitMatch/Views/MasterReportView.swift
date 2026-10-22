@@ -10,7 +10,11 @@ struct MasterReportView: View {
     @ObservedObject var coordinator: SharedAppCoordinator
 
     var body: some View {
-        MasterReportScreen(reportSettings: $coordinator.reportSettings, platform: Self.platform)
+        MasterReportScreen(
+            reportSettings: $coordinator.reportSettings,
+            platform: Self.platform,
+            showsInlineAction: false
+        )
     }
 
     static var platform: MasterReportPlatform {
