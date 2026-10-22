@@ -110,6 +110,8 @@ struct StartButtonPresentation: Equatable, Sendable {
         }
 
         if isQueuePaused {
+            // The bar must say why Start is off: a paused queue shows a live
+            // card and backups, so a silent disabled button reads as broken.
             return Self(
                 title: "Start",
                 symbol: "play.fill",
@@ -117,7 +119,7 @@ struct StartButtonPresentation: Equatable, Sendable {
                 action: .start,
                 startsProject: isProject,
                 nextStep: nil,
-                blocker: nil,
+                blocker: "Review, skip, or remove the paused card first.",
                 readyLine: nil,
                 accessibilityHint: "Review, skip, or remove the paused card first"
             )

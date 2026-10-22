@@ -37,6 +37,8 @@ All notable changes to this project will be documented in this file.
 - Older Quick transfers keep their “not verified” counts in recovery and results, even when an old record used a verified label.
 - Diagnostics handle overlapping writers more reliably and explain which final backup check stopped a transfer, without including footage names or paths.
 - Improved Standard retries for empty files on exFAT, with a fresh read before accepting a changed file identifier. Other file changes still stop the transfer.
+- Fixed queue row controls (the ⋯ menu and the expand chevron) not responding to clicks in the rebuilt row; the decorative fill layers no longer intercept them.
+- When a failed attempt pauses the queue, the Start bar now says "Review, skip, or remove the paused card first." instead of showing a silently disabled button.
 
 ## [0.2.10] - 2026-10-20
 

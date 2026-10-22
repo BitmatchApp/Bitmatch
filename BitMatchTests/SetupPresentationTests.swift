@@ -378,6 +378,7 @@ struct SetupPresentationTests {
         )
         #expect(!presentation.start.canStart)
         #expect(presentation.start.title == "Start")
+        #expect(presentation.start.blocker == "Review, skip, or remove the paused card first.")
         #expect(presentation.showsStartArea)
     }
 
