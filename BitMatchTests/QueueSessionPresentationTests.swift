@@ -898,6 +898,22 @@ struct QueueSessionPresentationTests {
         // Eject All must not pick a card that is already unmounting.
         #expect(ejecting.ejectableCardIDs.isEmpty)
     }
+
+    @Test func pausedStripAndRemoveConfirmationWording() throws {
+        let fixture = try QueuePresentationFixture(); defer { fixture.cleanup() }
+        let record = try fixture.record(name: "A7IV_CARD1", state: .issues)
+        let queue = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id], progress: nil,
+            mountedSourceIDs: [], pausedRecordID: record.id)
+        #expect(queue.pausedStripText == "Paused at A7IV_CARD1. Keep that card until you review it.")
+        let confirm = try #require(QueueSessionPresentation.removeConfirmation(for: queue.rows[0]))
+        #expect(confirm.title == "Remove A7IV_CARD1 from the queue?")
+        #expect(confirm.message == "It isn't safe to erase yet. Files already copied stay on the backups.")
+        let safe = try fixture.record(name: "S1", state: .completed)
+        let safeQueue = QueueSessionPresentation.make(records: [safe], sessionIDs: [safe.id], progress: nil, mountedSourceIDs: [])
+        if safeQueue.rows[0].safetyState.isSafe {
+            #expect(QueueSessionPresentation.removeConfirmation(for: safeQueue.rows[0]) == nil)
+        }
+    }
 }
 
 private final class QueuePresentationFixture {

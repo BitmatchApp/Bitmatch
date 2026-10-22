@@ -274,6 +274,22 @@ struct QueueSessionPresentation: Equatable, Sendable {
     let pausedCardID: UUID?
     let pausedTitle: String?
     let pausedCause: String?
+    /// One line for the amber strip; the actions live on the paused row.
+    let pausedStripText: String?
+
+    struct RemoveConfirmation: Equatable {
+        let title: String
+        let message: String
+    }
+
+    /// nil when the card is safe to erase, so removing it needs no question.
+    static func removeConfirmation(for row: QueueSessionRow) -> RemoveConfirmation? {
+        guard !row.safetyState.isSafe else { return nil }
+        return RemoveConfirmation(
+            title: "Remove \(row.cardName) from the queue?",
+            message: "It isn't safe to erase yet. Files already copied stay on the backups."
+        )
+    }
 
     var isMultiCard: Bool { rows.count >= 2 }
     var hasStarted: Bool { rows.contains { $0.safetyState != .waiting } }
@@ -412,7 +428,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 }
                 return "Queue paused — \(row.cardName) \(state)"
             },
-            pausedCause: paused?.cause.map(deduplicatedCause)
+            pausedCause: paused?.cause.map(deduplicatedCause),
+            pausedStripText: paused.map { "Paused at \($0.cardName). Keep that card until you review it." }
         )
     }
 
