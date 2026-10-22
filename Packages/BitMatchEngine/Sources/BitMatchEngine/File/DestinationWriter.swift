@@ -1644,7 +1644,7 @@ public final class DestinationWriter {
         }
         return existingDestinationConflictError(
             "A hidden companion file on the backup differs from the source. macOS can create or update these files on exFAT drives. BitMatch is refusing to overwrite it. Nothing was overwritten. Keep the source intact and export the results before retrying.",
-            reason: .companionConflict
+            failureReason: .companionConflict
         )
     }
 
@@ -2425,7 +2425,7 @@ public final class DestinationWriter {
     }
     #endif
 
-    fileprivate static func existingDestinationConflictError(_ reason: String, reason failureReason: ResultFailureReason? = nil) -> NSError {
+    fileprivate static func existingDestinationConflictError(_ reason: String, failureReason: ResultFailureReason? = nil) -> NSError {
         var userInfo: [String: Any] = [NSLocalizedDescriptionKey: reason]
         if let failureReason { userInfo[ResultFailureReason.userInfoKey] = failureReason.rawValue }
         return NSError(

@@ -628,6 +628,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
                 let drive = TransferOutcomePresentation.destinationDriveName(
                     URL(fileURLWithPath: issue.id, isDirectory: true)
                 )
+                if let reason = issue.sharedFailureReason { return "\(reason.backupLead(drive)) · \(files)" }
                 return "\(files) on \(drive)"
             }
         }

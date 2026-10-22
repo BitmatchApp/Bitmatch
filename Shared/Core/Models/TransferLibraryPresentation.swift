@@ -11,10 +11,12 @@ enum TransferHistoryResultPresentation {
         if row.recopyOutcome == "recovered" {
             return row.status + " · recovered after one re-copy (first copy failed verification)"
         }
-        guard let note = row.markingNote else {
-            return row.recopyOutcome == "stillFailed" ? row.status + " · re-copy also failed" : row.status
-        }
-        return row.status + " · " + note + (row.recopyOutcome == "stillFailed" ? " · re-copy also failed" : "")
+        let reasonNote = row.failureReason
+            .flatMap(ResultFailureReason.init(rawValue:))
+            .map { " · " + $0.rowNote } ?? ""
+        let recopy = row.recopyOutcome == "stillFailed" ? " · re-copy also failed" : ""
+        guard let note = row.markingNote else { return row.status + recopy + reasonNote }
+        return row.status + " · " + note + recopy + reasonNote
     }
 }
 

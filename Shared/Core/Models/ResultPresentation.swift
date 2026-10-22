@@ -397,6 +397,24 @@ enum DestinationVolumeLabel {
     }
 }
 
+extension ResultFailureReason {
+    /// Suffix for one row in History/Review.
+    var rowNote: String {
+        switch self {
+        case .outOfSpace: return "backup out of space"
+        case .companionConflict: return "the backup keeps its own hidden companion file"
+        }
+    }
+
+    /// Lead-in for a backup whose failures all share this reason.
+    func backupLead(_ name: String) -> String {
+        switch self {
+        case .outOfSpace: return "\(name) ran out of space"
+        case .companionConflict: return "\(name) keeps its own hidden companion files"
+        }
+    }
+}
+
 /// Summaries describe retained result evidence, never infer completion from an empty list.
 struct DestinationResultSummary: Identifiable {
     let id: String
@@ -410,6 +428,14 @@ struct DestinationResultSummary: Identifiable {
         rows.filter {
             $0.isSuccessStatus && (verificationMode == .quick || !$0.isVerifiedStatus || $0.checksum?.isEmpty != false)
         }.count
+    }
+    /// Non-nil only when issueCount > 0 and every failing row carries the same known reason.
+    var sharedFailureReason: ResultFailureReason? {
+        let failing = rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        guard !failing.isEmpty else { return nil }
+        let reasons = failing.map { $0.failureReason.flatMap(ResultFailureReason.init(rawValue:)) }
+        guard let reason = reasons.first ?? nil, reasons.allSatisfy({ $0 == reason }) else { return nil }
+        return reason
     }
     var needsAttention: Bool { rows.isEmpty || issueCount > 0 || unverifiedCount > 0 || excludedCount > 0 }
     var detail: String {

@@ -8,6 +8,10 @@ struct AppleDoubleSelectionView: View {
         Toggle("Ignore AppleDouble metadata files", isOn: $review.enabled)
         Text("Skip recognized macOS ._ companion files during transfers. Turn off to preserve them. Other hidden files and camera sidecars are kept.")
             .font(.footnote).foregroundStyle(.secondary)
+        if !review.enabled {
+            Text("exFAT and FAT backups keep their own hidden companion files, so the card's ._ files can't be copied there and will be reported as failed.")
+                .font(.footnote).foregroundStyle(.secondary)
+        }
         if review.enabled, let paths = review.paths, !paths.isEmpty {
             DisclosureGroup("Excluded files (\(paths.count))") {
                 ScrollView {

@@ -15,7 +15,8 @@ struct TransferOutcomePresentationTests {
         _ outcome: ResultOutcome,
         size: Int64 = 100,
         backup: URL,
-        wasReused: Bool = false
+        wasReused: Bool = false,
+        failureReason: String? = nil
     ) -> ResultRow {
         ResultRow(
             path: "/Card/\(name)",
@@ -24,7 +25,8 @@ struct TransferOutcomePresentationTests {
             checksum: outcome == .verified ? "abc" : nil,
             destination: backup.lastPathComponent,
             destinationPath: backup.appendingPathComponent(name).path,
-            wasReused: wasReused
+            wasReused: wasReused,
+            failureReason: failureReason
         )
     }
 
@@ -80,6 +82,26 @@ struct TransferOutcomePresentationTests {
             duration: seconds, sourceFileCount: files, sourceBytes: 100,
             verificationMode: mode, canRetry: true, canExport: true
         )
+    }
+
+    @Test func oneBackupOutOfSpaceIsNamedInTheIssueReason() {
+        let mid = URL(fileURLWithPath: "/Volumes/BMMID/Card", isDirectory: true)
+        let whee = URL(fileURLWithPath: "/Volumes/WheeDrive/Card", isDirectory: true)
+        func failed(_ n: String, _ backup: URL) -> ResultRow {
+            row(n, .failed, backup: backup, failureReason: "outOfSpace")
+        }
+        func build(_ rows: [ResultRow]) -> TransferOutcomePresentation {
+            TransferOutcomePresentation.make(
+                state: done, rows: rows, destinations: [mid, whee],
+                hasErrors: true, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+                duration: 5, sourceFileCount: 3, sourceBytes: 100,
+                verificationMode: .standard, canRetry: true, canExport: true
+            )
+        }
+        let oneBackup = (0..<3).map { failed("F\($0).mov", mid) } + (0..<3).map { row("V\($0).mov", .verified, backup: whee) }
+        #expect(build(oneBackup).verdict.detail == "BMMID ran out of space · 3 files failed")
+        let both = (0..<3).map { failed("F\($0).mov", mid) } + (0..<3).map { failed("G\($0).mov", whee) }
+        #expect(build(both).verdict.detail == "6 files failed")
     }
 
     private var done: OperationState { .completed(.init(success: true, message: "Verified")) }

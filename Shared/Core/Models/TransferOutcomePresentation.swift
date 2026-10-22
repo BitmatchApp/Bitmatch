@@ -598,6 +598,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                         destinationDriveName(URL(fileURLWithPath: summary.id, isDirectory: true))
                     )
                     let files = summary.issueCount == 1 ? "1 file failed" : "\(summary.issueCount) files failed"
+                    if let reason = summary.sharedFailureReason { return "\(reason.backupLead(name)) · \(files)" }
                     return "\(files) on \(name)"
                 }
                 return counts.needsAttention == 1 ? "1 file failed" : "\(counts.needsAttention) files failed"

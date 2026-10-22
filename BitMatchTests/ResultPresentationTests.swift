@@ -3,6 +3,23 @@ import XCTest
 import BitMatchEngine
 
 final class ResultPresentationTests: XCTestCase {
+    func testSharedFailureReasonRequiresEveryFailureToAgree() {
+        func row(_ name: String, _ outcome: ResultOutcome, _ reason: String?) -> ResultRow {
+            ResultRow(path: "/card/\(name)", status: outcome.statusText, size: 4, checksum: outcome == .verified ? "abc" : nil,
+                      destination: "Backup", failureReason: reason)
+        }
+        func summary(_ rows: [ResultRow]) -> DestinationResultSummary {
+            DestinationResultSummary(id: "/Volumes/Backup", title: "Backup", rows: rows)
+        }
+        XCTAssertEqual(summary([row("a", .failed, "outOfSpace"), row("b", .failed, "outOfSpace"), row("c", .verified, nil)]).sharedFailureReason, .outOfSpace)
+        XCTAssertNil(summary([row("a", .failed, "outOfSpace"), row("b", .failed, nil)]).sharedFailureReason)
+        XCTAssertNil(summary([row("a", .failed, "outOfSpace"), row("b", .failed, "companionConflict")]).sharedFailureReason)
+        XCTAssertNil(summary([row("a", .verified, nil)]).sharedFailureReason)
+        XCTAssertNil(summary([row("a", .failed, "somethingNew")]).sharedFailureReason)
+        XCTAssertEqual(ResultFailureReason.outOfSpace.backupLead("BMMID"), "BMMID ran out of space")
+        XCTAssertEqual(ResultFailureReason.companionConflict.backupLead("T9"), "T9 keeps its own hidden companion files")
+    }
+
     func testSameDiskDestinationsNeverProduceATwoDestinationCompletionClaim() {
         struct SameDisk: PhysicalDiskIdentityProviding {
             func physicalDiskIdentity(for url: URL) -> String? { "disk5" }
