@@ -57,3 +57,11 @@ The candidate was a Developer ID signed Release archive of `main` at `e84aba44` 
 - The signed walkthrough used synthesized clicks on an idle desktop while another session's test apps repeatedly took focus; every observation above was confirmed from the app's own state (journal, diagnostics, accessibility tree), not from screenshots alone.
 - Three Mac tests are load-sensitive under concurrent test runs (MainScreenQueueTests editCancel, SFTPRemoteBackupProcessTests cancellation, SharedSelectionTests supersededScan); they pass alone and under the test lock. They are not release blockers but should not be read as flakes in CI, which is disabled.
 - Visual follow-ups not in this release: History's first-six stagger, the drive plug-in slide, per-destination verify fractions in the row.
+
+## Release results (October 22, 2026)
+
+- `Scripts/release_mac.sh 0.2.11` at `d8c58e50`: archive signed, Sparkle helpers re-signed, notarized and stapled; Gatekeeper accepted the app and the DMG as "Notarized Developer ID". `dist/BitMatch-0.2.11.dmg` sha256 `31d678d381688fd0a056cff328bce37c600675ded2490008cc67bfddc03a8203`, 0.2.11 build 22.
+- Smoke test of the archived app: launched alone, restored the paused record from the walkthrough with "A previous transfer was interrupted", showed the paused-queue bar sentence, opened Advanced and History, quit cleanly; no crash in its log.
+- Tag `v0.2.11` on `d8c58e50`; GitHub release published as Latest with the DMG and `.sha256`.
+- `Scripts/bump_cask.sh 0.2.11`: published checksum matched, cask at 0.2.11, `brew audit` passed.
+- `Scripts/publish_appcast.sh 0.2.11`: signed entry pushed to `bitmatchapp.github.io` (`40d16ef`).
