@@ -20,6 +20,7 @@ struct TransferQueueSection: View {
     @State private var confirmingCancel = false
     @State private var errorMessage: String?
     @State private var alertError: String?
+    @State private var pendingRemoval: QueueSessionRow?
     @State private var exportDocument: TransferHistoryDocument?
     @State private var exportType = UTType.json
     @State private var showingExporter = false
@@ -58,15 +59,7 @@ struct TransferQueueSection: View {
             if !presentation.rows.isEmpty {
                 VStack(alignment: .leading, spacing: 10) {
                     if presentation.pausedCardID != nil {
-                        QueuePauseBanner(
-                            presentation: presentation,
-                            review: { id in
-                                coordinator.markQueueTransferReviewed(id)
-                                expand(id)
-                            },
-                            skipAndContinue: coordinator.skipPausedCardAndContinue,
-                            remove: removePausedCard
-                        )
+                        QueuePauseBanner(presentation: presentation)
                     }
                     header(presentation)
                     queueRunningNotice(presentation)
@@ -74,6 +67,19 @@ struct TransferQueueSection: View {
                     addCardButton(presentation)
                     if let errorMessage {
                         Text(errorMessage).font(.caption).foregroundStyle(CardSafetyTint.red.color)
+                    }
+                }
+                .alert(
+                    pendingRemoval.flatMap(QueueSessionPresentation.removeConfirmation(for:))?.title
+                        ?? "Remove from the queue?",
+                    isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
+                    presenting: pendingRemoval
+                ) { row in
+                    Button("Remove", role: .destructive) { removeFromList(row) }
+                    Button("Cancel", role: .cancel) {}
+                } message: { row in
+                    if let confirmation = QueueSessionPresentation.removeConfirmation(for: row) {
+                        Text(confirmation.message)
                     }
                 }
                 .padding(12)
@@ -165,11 +171,27 @@ struct TransferQueueSection: View {
 
     private func headerTitle(_ presentation: QueueSessionPresentation) -> some View {
         VStack(alignment: .leading, spacing: 2) {
-            Text("Transfers").font(.headline).accessibilityAddTraits(.isHeader)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text("Transfers").font(.headline).accessibilityAddTraits(.isHeader)
+                if !presentation.tally.queueHeaderText.isEmpty {
+                    tallyText(presentation.tally.queueHeaderText).font(.callout).lineLimit(2)
+                }
+            }
             if let detail = presentation.headerDetail {
                 Text(detail).font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    /// "2 safe to erase · 1 keep the card", with the two states that matter in colour.
+    private func tallyText(_ text: String) -> Text {
+        var result = Text("")
+        for (index, part) in text.components(separatedBy: " \u{00B7} ").enumerated() {
+            let color: Color = part.hasSuffix("safe to erase") ? CardSafetyTint.green.color
+                : part.hasSuffix("keep the card") ? CardSafetyTint.amber.color : .secondary
+            result = result + Text(index == 0 ? part : " \u{00B7} " + part).foregroundColor(color)
+        }
+        return result
     }
 
     @ViewBuilder
@@ -295,157 +317,163 @@ struct TransferQueueSection: View {
         .overlay {
             RoundedRectangle(cornerRadius: 8).strokeBorder(borderColor(for: row))
         }
+        .overlay(alignment: .leading) { attentionEdge(for: row) }
         .clipShape(RoundedRectangle(cornerRadius: 8))
         .accessibilityElement(children: .contain)
     }
 
-    @ViewBuilder
     private func collapsedRow(_ row: QueueSessionRow) -> some View {
-        #if os(macOS)
-        macCollapsedRow(row)
-        #else
-        mobileCollapsedRow(row)
-        #endif
-    }
-
-    private func macCollapsedRow(_ row: QueueSessionRow) -> some View {
-        HStack(spacing: 8) {
-            if row.isEditable || row.isFinished {
-                removeIcon(row)
+        let detail = row.isRunning
+            ? row.runningDetail(progress: progress.progress, timeRemaining: liveProgressPresentation.timeRemaining)
+            : nil
+        let meta = detail?.metaLine ?? row.metaLine()
+        return VStack(alignment: .leading, spacing: 5) {
+            if coordinator.editingSetupTransferID == row.id {
+                Spacer(minLength: 0).frame(maxWidth: .infinity, minHeight: 30)
             } else {
-                statusIcon(row)
-            }
-            if coordinator.editingSetupTransferID != row.id {
-                collapsedSummary(row)
-            } else {
-                Spacer(minLength: 0)
-            }
-            if row.isEditable {
-                Text("Waiting").font(.caption).foregroundStyle(.secondary)
-                Button("Edit") { edit(row.id) }
-                    .buttonStyle(.borderless)
-                    .disabled(editTask != nil)
-            } else {
-                compactAction(row)
-                expandButton(row)
-            }
-        }
-        .frame(minHeight: 46)
-        .padding(.horizontal, 8)
-        .contentShape(Rectangle())
-        .onTapGesture { selectOrExpand(row) }
-        .accessibilityLabel(row.accessibilityStatus)
-        .contextMenu { waitingContextMenu(row) }
-    }
-
-    @ViewBuilder
-    private func mobileCollapsedRow(_ row: QueueSessionRow) -> some View {
-        if row.isFinished {
-            mobileFinishedRow(row)
-        } else {
-            mobileActiveRow(row)
-        }
-    }
-
-    private func mobileFinishedRow(_ row: QueueSessionRow) -> some View {
-        HStack(spacing: 8) {
-            removeIcon(row)
-            statusIcon(row)
-            mobileFinishedSummary(row)
-            Spacer(minLength: 4)
-            expandButton(row)
-        }
-        .frame(minHeight: 46)
-        .padding(.horizontal, 8)
-        .contentShape(Rectangle())
-        .onTapGesture { selectOrExpand(row) }
-        .accessibilityLabel(row.accessibilityStatus)
-    }
-
-    private func mobileActiveRow(_ row: QueueSessionRow) -> some View {
-        VStack(alignment: .leading, spacing: 5) {
-            HStack(alignment: .center, spacing: 8) {
-                if row.isEditable { removeIcon(row) }
-                else { statusIcon(row) }
-                if coordinator.editingSetupTransferID != row.id {
-                    if row.isEditable {
-                        mobileWaitingSummary(row)
-                    } else {
-                        collapsedSummary(row)
-                    }
-                } else {
-                    Spacer(minLength: 0)
-                }
-                if row.isEditable {
-                    Button("Waiting · Edit") { edit(row.id) }
-                        .font(.caption)
-                        .buttonStyle(.plain)
-                        .foregroundStyle(Color.accentColor)
-                        .fixedSize()
-                        .disabled(editTask != nil)
-                } else {
-                    compactAction(row)
-                    expandButton(row)
+                QueueRowContent(row: row, metaLine: meta, detail: detail, headline: headline(row)) {
+                    rowControls(row)
                 }
             }
-            .frame(minHeight: 44)
+            #if os(iOS)
             if row.isRunning, let fraction = row.progressFraction {
                 ProgressView(value: min(max(fraction, 0), 1))
                     .progressViewStyle(.linear)
                     .tint(.accentColor)
-                    .accessibilityLabel(row.statusText)
+                    .accessibilityHidden(true)
             }
-        }
-        .padding(.horizontal, 10)
-        .padding(.vertical, 4)
-        .contentShape(Rectangle())
-        .onTapGesture { selectOrExpand(row) }
-        .accessibilityLabel(row.accessibilityStatus)
-        .contextMenu { waitingContextMenu(row) }
-    }
-
-    private func mobileWaitingSummary(_ row: QueueSessionRow) -> some View {
-        ViewThatFits(in: .horizontal) {
-            Text(row.waitingText)
-                .font(.subheadline)
-                .lineLimit(1)
-                .fixedSize(horizontal: true, vertical: false)
-
-            HStack(spacing: 4) {
-                Text(row.cardName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .layoutPriority(1)
-                Text("→ \(row.waitingDestinationText)")
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            .font(.subheadline)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(row.waitingText)
-    }
-
-    private func removeIcon(_ row: QueueSessionRow) -> some View {
-        Button { removeFromList(row) } label: {
-            #if os(macOS)
-            Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.secondary).frame(width: 24, height: 24)
-            #else
-            Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.secondary).frame(width: 44, height: 44)
             #endif
         }
-        .buttonStyle(.borderless)
-        .help(removeHelp(for: row))
-        .accessibilityLabel(removeHelp(for: row))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .frame(minHeight: 46)
+        .contentShape(Rectangle())
+        .onTapGesture { selectOrExpand(row) }
+        .contextMenu { rowMenuItems(row) }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(row.queueLabel). \(row.cardName). \(meta)")
+        .accessibilityActions { rowAccessibilityActions(row) }
     }
 
-    private func statusIcon(_ row: QueueSessionRow) -> some View {
-        Image(systemName: row.statusSymbol)
-            .foregroundStyle(row.isRunning ? Color.accentColor : row.statusTint.color)
-            .frame(width: 24).accessibilityHidden(true)
+    private enum RowPrimary { case pause, resume, eject, review }
+
+    private func primary(for row: QueueSessionRow) -> RowPrimary? {
+        if row.isRunning {
+            switch liveProgressPresentation.controls.primary {
+            case .some(.pause): return .pause
+            case .some(.resume): return .resume
+            case .none: return nil
+            }
+        }
+        switch row.action {
+        case .some(.eject):
+            guard QueueEjectPolicy.canOfferEject(row: row, platformSupportsEject: ejectSource != nil),
+                  heroID != row.id, !expandedIDs.contains(row.id) else { return nil }
+            return .eject
+        case .some(.review): return .review
+        default: return nil
+        }
+    }
+
+    private func runPrimary(_ kind: RowPrimary, for row: QueueSessionRow) {
+        switch kind {
+        case .pause: Task { await coordinator.pauseOperation() }
+        case .resume: Task { await coordinator.resumeOperation() }
+        case .eject: eject(row.id)
+        case .review:
+            coordinator.markQueueTransferReviewed(row.id)
+            expand(row.id)
+        }
+    }
+
+    private func primaryName(_ kind: RowPrimary) -> String {
+        switch kind {
+        case .pause: "Pause"
+        case .resume: "Resume"
+        case .eject: "Eject"
+        case .review: "Review"
+        }
+    }
+
+    /// One primary button, then the menu. Everything else lives in the menu.
+    private func rowControls(_ row: QueueSessionRow) -> some View {
+        HStack(spacing: 6) {
+            if let kind = primary(for: row) {
+                switch kind {
+                case .review:
+                    Button(primaryName(kind)) { runPrimary(kind, for: row) }
+                        .buttonStyle(.borderedProminent)
+                case .eject:
+                    Button(primaryName(kind)) { runPrimary(kind, for: row) }
+                        .buttonStyle(.bordered)
+                        .accessibilityLabel("Eject \(row.cardName)")
+                case .pause, .resume:
+                    Button(primaryName(kind)) { runPrimary(kind, for: row) }
+                        .buttonStyle(.bordered)
+                }
+            } else if ejectSource != nil {
+                EjectProgressLabel(action: row.action)
+            }
+            if !row.isRunning {
+                Menu {
+                    rowMenuItems(row)
+                } label: {
+                    Text("\u{22EF}").font(.title3.weight(.semibold))
+                        .frame(minWidth: 24, minHeight: 24)
+                        .accessibilityLabel("More actions for \(row.cardName)")
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+            }
+            if !row.isEditable { expandButton(row) }
+        }
+        #if os(iOS)
+        .controlSize(.large)
+        #endif
+    }
+
+    @ViewBuilder
+    private func rowMenuItems(_ row: QueueSessionRow) -> some View {
+        if coordinator.queuePresentation.pausedCardID == row.id {
+            Button("Skip and continue") { coordinator.skipPausedCardAndContinue(row.id) }
+        }
+        if row.isEditable {
+            Button("Edit") { edit(row.id) }
+                .disabled(editTask != nil)
+            Button("Move to top") { moveToTop(row.id) }
+        }
+        if !row.isRunning {
+            Button("Remove from queue", role: .destructive) { requestRemove(row) }
+        }
+        if row.isFinished, let outcome = row.outcome, outcome.canExport {
+            Menu("Export") {
+                Button("JSON report") { export(row.id, asCSV: false) }
+                Button("CSV results") { export(row.id, asCSV: true) }
+            }
+        }
+    }
+
+    /// The row reads as one element, so its buttons are offered as actions.
+    /// Waiting rows get Edit and Remove from their reorderable wrapper.
+    @ViewBuilder
+    private func rowAccessibilityActions(_ row: QueueSessionRow) -> some View {
+        if let kind = primary(for: row) {
+            Button(primaryName(kind)) { runPrimary(kind, for: row) }
+        }
+        if coordinator.queuePresentation.pausedCardID == row.id {
+            Button("Skip and continue") { coordinator.skipPausedCardAndContinue(row.id) }
+        }
+        if !row.isRunning && !row.isEditable {
+            Button("Remove from queue") { requestRemove(row) }
+        }
+        if row.isFinished, let outcome = row.outcome, outcome.canExport {
+            Button("Export JSON report") { export(row.id, asCSV: false) }
+            Button("Export CSV results") { export(row.id, asCSV: true) }
+        }
+        if !row.isEditable {
+            Button(expandedIDs.contains(row.id) ? "Collapse" : "Expand") { toggleExpanded(row.id) }
+        }
     }
 
     private func expandButton(_ row: QueueSessionRow) -> some View {
@@ -462,16 +490,6 @@ struct TransferQueueSection: View {
         .accessibilityLabel(expandedIDs.contains(row.id) ? "Collapse \(row.cardName)" : "Expand \(row.cardName)")
     }
 
-    @ViewBuilder
-    private func waitingContextMenu(_ row: QueueSessionRow) -> some View {
-        if row.isEditable {
-            Button("Edit") { edit(row.id) }
-                .disabled(editTask != nil)
-            Button("Move to Top") { moveToTop(row.id) }
-            Button("Remove", role: .destructive) { remove(row.id) }
-        }
-    }
-
     private func selectOrExpand(_ row: QueueSessionRow) {
         if row.isEditable {
             selectedWaitingID = row.id
@@ -481,25 +499,21 @@ struct TransferQueueSection: View {
         }
     }
 
-    private func collapsedText(_ row: QueueSessionRow) -> String {
-        row.isEditable
-            ? row.waitingText
-            : row.oneLineStatus(timeRemaining: row.isRunning ? liveProgressPresentation.timeRemaining : nil)
+    private var headlineFont: Font {
+        #if os(macOS)
+        .system(size: 15, weight: .semibold)
+        #else
+        .headline
+        #endif
     }
 
+    /// Carries the composer flight's matched geometry.
     @ViewBuilder
-    private func collapsedSummary(_ row: QueueSessionRow) -> some View {
-        #if os(macOS)
-        let text = Text(collapsedText(row))
-            .font(.subheadline.weight(row.isFinished ? .medium : .regular))
+    private func headline(_ row: QueueSessionRow) -> some View {
+        let text = Text(row.cardName)
+            .font(headlineFont)
             .lineLimit(1).truncationMode(.middle)
             .frame(maxWidth: .infinity, alignment: .leading)
-        #else
-        let text = Text(collapsedText(row))
-            .font(.subheadline.weight(row.isFinished ? .medium : .regular))
-            .lineLimit(row.isEditable ? 1 : 2).truncationMode(.middle)
-            .frame(maxWidth: .infinity, alignment: .leading)
-        #endif
         if let transferTransitionContext {
             if reduceMotion {
                 text.transition(.opacity)
@@ -513,37 +527,6 @@ struct TransferQueueSection: View {
             }
         } else {
             text
-        }
-    }
-
-    @ViewBuilder
-    private func compactAction(_ row: QueueSessionRow) -> some View {
-        switch row.action {
-        case .some(.eject):
-            if QueueEjectPolicy.canOfferEject(
-                row: row,
-                platformSupportsEject: ejectSource != nil
-            ), heroID != row.id && !expandedIDs.contains(row.id) {
-                Button("Eject") { eject(row.id) }.accessibilityLabel("Eject \(row.cardName)")
-            }
-        case .some(.review):
-            #if os(macOS)
-            Button("Review") {
-                coordinator.markQueueTransferReviewed(row.id)
-                expand(row.id)
-            }
-            #else
-            Button("Review") {
-                coordinator.markQueueTransferReviewed(row.id)
-                expand(row.id)
-            }
-            .controlSize(.large)
-            .buttonStyle(.bordered)
-            #endif
-        case .some(.ejected), .some(.ejecting), .some(.removed):
-            if ejectSource != nil { EjectProgressLabel(action: row.action) }
-        case .none:
-            EmptyView()
         }
     }
 
@@ -563,32 +546,6 @@ struct TransferQueueSection: View {
                 .accessibilityElement(children: .combine)
         }
         #endif
-    }
-
-    private func mobileFinishedSummary(_ row: QueueSessionRow) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(spacing: 4) {
-                Text(row.cardName)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text("· " + row.statusText.lowercased())
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-            .font(.subheadline.weight(.medium))
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text(row.cardName)
-                    .font(.subheadline.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Text(row.statusText.lowercased())
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
-            }
-        }
     }
 
     @ViewBuilder
@@ -804,13 +761,28 @@ struct TransferQueueSection: View {
     }
 
     private func baseColor(for row: QueueSessionRow) -> Color {
-        if row.isFinished { return row.statusTint.color.opacity(0.08) }
+        // Only problems tint a finished row; a safe card stays on the plain surface.
+        if row.isFinished {
+            return row.statusTint == .green ? Color.primary.opacity(0.025) : row.statusTint.color.opacity(0.08)
+        }
         if selectedWaitingID == row.id { return Color.accentColor.opacity(0.08) }
         return Color.primary.opacity(0.025)
     }
 
     private func borderColor(for row: QueueSessionRow) -> Color {
-        row.isFinished ? row.statusTint.color.opacity(0.28) : Color.primary.opacity(0.07)
+        row.isFinished && row.statusTint != .green ? row.statusTint.color.opacity(0.28) : Color.primary.opacity(0.07)
+    }
+
+    @ViewBuilder
+    private func attentionEdge(for row: QueueSessionRow) -> some View {
+        switch row.safetyState {
+        case .needsAttention, .interrupted:
+            Rectangle().fill(CardSafetyTint.amber.color).frame(width: 4).accessibilityHidden(true)
+        case .failed:
+            Rectangle().fill(CardSafetyTint.red.color).frame(width: 6).accessibilityHidden(true)
+        default:
+            EmptyView()
+        }
     }
 
     private func toggleExpanded(_ id: UUID) {
@@ -899,15 +871,19 @@ struct TransferQueueSection: View {
     }
     private func removePausedCard(_ id: UUID) { perform { try coordinator.removePausedCardFromQueue(id) } }
 
-    private func removeFromList(_ row: QueueSessionRow) {
-        if row.isFinished { removeFinished(row.id) }
-        else if row.isEditable { remove(row.id) }
+    /// Asks first unless the card is safe to erase (or still waiting, with nothing copied).
+    private func requestRemove(_ row: QueueSessionRow) {
+        if !row.isEditable, QueueSessionPresentation.removeConfirmation(for: row) != nil {
+            pendingRemoval = row
+        } else {
+            removeFromList(row)
+        }
     }
 
-    private func removeHelp(for row: QueueSessionRow) -> String {
-        row.isFinished
-            ? "Remove \(row.cardName) from the list — it stays in History"
-            : "Remove \(row.cardName) from the queue"
+    private func removeFromList(_ row: QueueSessionRow) {
+        if coordinator.queuePresentation.pausedCardID == row.id { removePausedCard(row.id) }
+        else if row.isFinished { removeFinished(row.id) }
+        else if row.isEditable { remove(row.id) }
     }
 
     private func moveToTop(_ id: UUID) {
@@ -1137,49 +1113,22 @@ extension CardSafetyTint {
     }
 }
 
-/// The queue owns the interruption announcement and its recovery actions.
-/// Button labels stay short because the title already names the card.
+/// One amber line that says which card the queue stopped at. Review, Skip and
+/// Remove live on that card's row.
 struct QueuePauseBanner: View {
     let presentation: QueueSessionPresentation
-    let review: (UUID) -> Void
-    let skipAndContinue: (UUID) -> Void
-    let remove: (UUID) -> Void
 
     var body: some View {
-        if let id = presentation.pausedCardID,
-           let title = presentation.pausedTitle,
-           let cardName = presentation.rows.first(where: { $0.id == id })?.cardName {
-            VStack(alignment: .leading, spacing: 8) {
-                Text(title)
-                    .font(.headline)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                    .help(cardName)
-                if let cause = presentation.pausedCause {
-                    Text(cause)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) { buttons(id: id) }
-                    VStack(alignment: .leading, spacing: 8) { buttons(id: id) }
-                }
-            }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(CardSafetyTint.amber.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
-            .accessibilityElement(children: .contain)
+        if let text = presentation.pausedStripText {
+            Text(text)
+                .font(.callout.weight(.medium))
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .help(text)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(CardSafetyTint.amber.color.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
         }
-    }
-
-    @ViewBuilder
-    private func buttons(id: UUID) -> some View {
-        Button("Review") { review(id) }
-            .buttonStyle(.borderedProminent)
-        Button("Skip and Continue") { skipAndContinue(id) }
-            .buttonStyle(.bordered)
-        Button("Remove from Queue", role: .destructive) { remove(id) }
-            .buttonStyle(.bordered)
     }
 }

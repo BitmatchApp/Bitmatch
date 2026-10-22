@@ -275,7 +275,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
     let pausedTitle: String?
     let pausedCause: String?
     /// One line for the amber strip; the actions live on the paused row.
-    let pausedStripText: String?
+    var pausedStripText: String? = nil
 
     struct RemoveConfirmation: Equatable {
         let title: String
