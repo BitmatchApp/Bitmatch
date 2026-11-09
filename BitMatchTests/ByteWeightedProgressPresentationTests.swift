@@ -9,7 +9,8 @@ struct ByteWeightedProgressPresentationTests {
         let pipeline = OperationProgress(overallProgress: 1, currentFile: nil,
             filesProcessed: 2, totalFiles: 2, currentStage: .completed,
             speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
-            bytesProcessed: 200, totalBytes: 100, workBytesProcessed: 500, totalWorkBytes: 500)
+            bytesProcessed: 200, totalBytes: 100, workBytesProcessed: 500, totalWorkBytes: 500,
+            perDestinationVerifiedFiles: [1, 1])
         let withMHL = CopyVerifyExecutor.pipelineProgress(pipeline, destinationCount: 2, includeMHL: true)
         #expect(abs(withMHL.overallProgress - 5.0 / 7.0) < 0.00001)
         let beginning = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 0, totalBytes: 200,
@@ -25,6 +26,10 @@ struct ByteWeightedProgressPresentationTests {
         #expect(CopyVerifyExecutor.pipelineProgress(pipeline, destinationCount: 2, includeMHL: false).overallProgress == 0.99)
         // Mapping the bar cannot change actual copied bytes.
         #expect(withMHL.bytesProcessed == pipeline.bytesProcessed)
+        #expect(withMHL.perDestinationVerifiedFiles == [1, 1])
+        let retained = CopyVerifyExecutor.mhlProgress(.init(bytesProcessed: 0, totalBytes: 200,
+            filesProcessed: 0, totalFiles: 2, published: false), mediaProgress: withMHL)
+        #expect(retained.perDestinationVerifiedFiles == [1, 1])
     }
 
     @Test func failedBackupKeepsItsUnfinishedBudgetDuringPartialHandoff() {

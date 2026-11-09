@@ -187,7 +187,6 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         canExport: Bool,
         sourceName: String = "",
         completionReason: String? = nil,
-        independentDestinationCount: Int? = nil,
         selectedFileVerificationQualified: Bool = false
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
@@ -200,17 +199,13 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors
         )
-        let claimedDestinationCount = min(
-            destinations.count,
-            max(0, independentDestinationCount ?? destinations.count)
-        )
         let baseVerdict = CompletionVerdictPresentation.make(
             state: state,
             rows: rows,
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors,
             cardName: sourceName,
-            backupCount: claimedDestinationCount
+            backupCount: destinations.count
         )
         let safetyState = CardSafetyState.make(state: state, verdict: resolved)
         let counts = OutcomeFileCounts.make(rows: rows, verificationMode: verificationMode)
@@ -284,7 +279,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 rows: rows,
                 hasErrors: hasErrors,
                 hasCriticalErrors: hasCriticalErrors,
-                backupCount: claimedDestinationCount
+                backupCount: destinations.count
             ).sourceGuidance
         )
 
@@ -591,6 +586,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         switch safetyState {
         case .needsAttention:
             if counts.needsAttention > 0 {
+                if rows.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceUnstable.rawValue }) {
+                    return "The card changed or could not be read consistently · Review all backups"
+                }
+                if rows.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceReadFailed.rawValue }) {
+                    return "The card could not be read · Review all backups"
+                }
                 let summaries = DestinationResultSummary.make(rows: rows, destinations: destinations)
                     .filter { $0.issueCount > 0 }
                 if summaries.count == 1, let summary = summaries.first {

@@ -60,7 +60,7 @@ struct QueueRowContent<Headline: View, Controls: View>: View {
             Text(detail?.metaLine ?? metaLine)
                 .font(.callout).monospacedDigit()
                 .foregroundStyle(.secondary)
-                .lineLimit(2)
+                .lineLimit(row.isRunning ? nil : 2)
             if row.isRunning, showsFile && shownFile != nil || shownTimeAndRate != nil {
                 HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Text(showsFile ? shownFile ?? "" : "")

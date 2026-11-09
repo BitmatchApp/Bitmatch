@@ -345,10 +345,7 @@ struct TransferProgressPresentationTests {
         #expect(p.destinations.first?.helpPath == folder.path)
     }
 
-    /// Audit C1: a fully processed backup is "Processed", then "Verifying", and
-    /// never "Done" or a verdict while the run is still going.
-    /// Plant: in `TransferProgressPresentation.rows`, replace
-    /// `state = phase == .verifying ? .verifying : .copied` with `state = .copied`.
+    /// Copy counts alone do not identify which backup is being read back.
     @Test func copiedBackupIsNotAVerdict() {
         let copying = make(
             state: .inProgress,
@@ -360,7 +357,7 @@ struct TransferProgressPresentationTests {
         )
 
         #expect(copying.destinations.allSatisfy { $0.state == .copied && $0.stateLabel == "Processed" })
-        #expect(verifying.destinations.allSatisfy { $0.state == .verifying && $0.stateLabel == "Verifying" })
+        #expect(verifying.destinations.allSatisfy { $0.state == .copied && $0.stateLabel == "Processed" })
         #expect(verifying.destinations.allSatisfy { !$0.symbol.contains("checkmark") })
     }
 

@@ -17,6 +17,10 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
         guard url.isFileURL, !Task.isCancelled else { return nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        // A mount or BSD name does not identify the physical stores behind a
+        // network share. Missing locality is also insufficient evidence.
+        let locality = try? url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal
+        guard locality == true else { return nil }
         guard let session = DASessionCreate(kCFAllocatorDefault),
               let disk = SelectedVolumeDiskResolver.disk(
                 for: url,
@@ -81,9 +85,10 @@ public struct BackupIndependenceAssessment: Equatable, Sendable {
     /// Current product-policy count. Unresolved destinations each count once;
     /// this is not proof that they live on separate physical devices.
     public let independentCopyCount: Int
-    /// Proven-independent count for safety gates: only destinations whose
-    /// physical identity resolved into distinct groups. Unresolved identity
-    /// is an evidence gap and must never satisfy a required copy count.
+    /// Resolved identity groups used by current safety gates. Unresolved
+    /// identity must not satisfy a required copy count. Resolved group names
+    /// alone do not prove the underlying physical stores of composite or
+    /// network volumes are independent.
     public var provenIndependentCopyCount: Int { resolvedIdentityGroupCount }
     public let warnings: [String]
 

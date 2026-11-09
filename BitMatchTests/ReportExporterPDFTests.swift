@@ -70,7 +70,7 @@ struct ReportExporterPDFTests {
             ResultRow(path: "/card/clip.mov", status: ResultOutcome.verified.statusText,
                       size: 5, checksum: "digest", destination: destination.path),
             ResultRow(path: "/card/other.mov", status: ResultOutcome.failed.statusText,
-                      size: 5, checksum: nil, destination: destination.path),
+                      size: 5, checksum: nil, destination: destination.path, failureReason: "sourceUnstable"),
             ResultRow(path: "/card/._clip.mov", status: ResultOutcome.excludedAppleDouble.statusText,
                       size: 1, checksum: nil, destination: destination.path)
         ]
@@ -90,12 +90,14 @@ struct ReportExporterPDFTests {
         #expect(text.contains("no separate card reread"))
         #expect(text.contains("Saved: 1/2 selected backup results marked verified"))
         #expect(text.contains("NOT SAFE TO ERASE"))
+        #expect(text.contains("card changed or could not be read consistently"))
 
         let csvURL = try #require(files.first { $0.pathExtension == "csv" })
         let csv = try String(contentsOf: csvURL, encoding: .utf8)
         #expect(csv.contains("Recorded Verified Backup Results,1"))
         #expect(csv.contains("Recorded Excluded Source Files,1"))
         #expect(csv.contains("selected mode does not prove every check finished"))
+        #expect(csv.contains("card changed or could not be read consistently"))
 
         let jsonURL = try #require(files.first { $0.pathExtension == "json" })
         let json = try Data(contentsOf: jsonURL)
@@ -107,6 +109,8 @@ struct ReportExporterPDFTests {
         #expect(scope["recordedVerifiedResults"] as? Int == 1)
         #expect(scope["recordedExcludedSourceFiles"] as? Int == 1)
         #expect(object["safeToErase"] as? Bool == false)
+        let reportRows = try #require(object["results"] as? [[String: Any]])
+        #expect(reportRows.contains { $0["failureReason"] as? String == "sourceUnstable" })
         #expect(EvidenceReader.snapshot(reportData: json, reportURL: jsonURL) != nil)
     }
 }

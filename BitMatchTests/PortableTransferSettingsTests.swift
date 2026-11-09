@@ -12,14 +12,113 @@ struct PortableTransferSettingsTests {
         let defaults: UserDefaults
         let folders: CoordinatorFolders
         let coordinator: SharedAppCoordinator
+        let projectStore: InMemoryPhotographerJobStore
         @MainActor init() throws {
             defaults = try #require(UserDefaults(suiteName: name))
             folders = try CoordinatorFolders()
+            projectStore = InMemoryPhotographerJobStore()
             coordinator = SharedAppCoordinator(platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
                 transferJournal: LocalTransferJournal(fileURL: folders.journalURL),
-                projectStore: InMemoryPhotographerJobStore(), defaults: defaults)
+                projectStore: projectStore, defaults: defaults)
         }
         deinit { defaults.removePersistentDomain(forName: name); folders.cleanup() }
+    }
+
+    @Test func recipeStructuresTravelWithoutPresetNamesOrAutomaticSelection() throws {
+        let source = try Fixture()
+        let target = try Fixture()
+        source.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "PRIVATE_CLIENT_RECIPE")
+        let exported = try source.coordinator.portableTransferSettingsForExport().encoded()
+        #expect(!String(decoding: exported, as: UTF8.self).contains("PRIVATE_CLIENT_RECIPE"))
+        let object = try #require(JSONSerialization.jsonObject(with: exported) as? [String: Any])
+        let recipes = try #require(object["folderRecipes"] as? [[String: Any]])
+        #expect(recipes.allSatisfy { Set($0.keys) == ["layers"] })
+        let layers = try #require(recipes.first?["layers"] as? [[String: Any]])
+        #expect(layers.allSatisfy { Set($0.keys) == ["kind", "isEnabled"] })
+        let preset = try #require(source.projectStore.storedPresets.first)
+        #expect(!String(decoding: exported, as: UTF8.self).contains(preset.id.uuidString))
+        for layer in preset.recipe.layers {
+            #expect(!String(decoding: exported, as: UTF8.self).contains(layer.id.uuidString))
+        }
+        let originalDraft = target.coordinator.photographerJobViewModel.draftRecipe
+        let model = TransferSettingsImportModel()
+        try model.preview(exported, coordinator: target.coordinator)
+        #expect(model.review?.changes.contains(where: { $0.title == "Folder recipes" }) == true)
+        try model.apply(to: target.coordinator)
+        #expect(target.projectStore.storedPresets.count == 1)
+        #expect(target.projectStore.storedPresets[0].name == "Imported recipe 1")
+        #expect(target.coordinator.photographerJobViewModel.draftRecipe == originalDraft)
+        #expect(target.coordinator.photographerJobViewModel.portableFolderRecipes
+            == source.coordinator.photographerJobViewModel.portableFolderRecipes)
+        try model.preview(exported, coordinator: target.coordinator)
+        #expect(model.review?.changes.isEmpty == true)
+    }
+
+    @Test func legacySettingsLeaveExistingRecipesAlone() throws {
+        let target = try Fixture()
+        target.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "Existing")
+        let before = target.projectStore.storedPresets
+        let model = TransferSettingsImportModel()
+        try model.preview(changed(target.coordinator.portableTransferSettings).encoded(), coordinator: target.coordinator)
+        try model.apply(to: target.coordinator)
+        #expect(target.projectStore.storedPresets == before)
+    }
+
+    @Test func importAddsDistinctRecipesOnlyAndPreservesExistingPresets() throws {
+        let target = try Fixture()
+        target.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "Existing")
+        let before = target.projectStore.storedPresets
+        let existing = try #require(target.coordinator.photographerJobViewModel.portableFolderRecipes.first)
+        let newRecipe = PortableTransferSettings.Recipe(layers: [.init(kind: .cardNumber, isEnabled: true)])
+        let base = target.coordinator.portableTransferSettings
+        let proposal = PortableTransferSettings(verificationMode: base.verificationMode,
+            generateASCMHL: base.generateASCMHL, ignoreAppleDouble: base.ignoreAppleDouble,
+            reports: base.reports, naming: base.naming, folderRecipes: [existing, newRecipe, newRecipe])
+        let model = TransferSettingsImportModel()
+        try model.preview(proposal.encoded(), coordinator: target.coordinator)
+        #expect(model.review?.changes.first(where: { $0.title == "Folder recipes" })?.after == "2 saved")
+        try model.apply(to: target.coordinator)
+        #expect(target.projectStore.storedPresets.count == 2)
+        #expect(target.projectStore.storedPresets.contains(before[0]))
+        #expect(target.coordinator.photographerJobViewModel.portableFolderRecipes.contains(newRecipe))
+    }
+
+    @Test(arguments: ["unknown-recipe", "unknown-layer", "duplicate-layer", "empty", "too-many", "version-one"])
+    func malformedRecipeFilesAreRejected(kind: String) throws {
+        let fixture = try Fixture()
+        fixture.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "Source")
+        let data = try fixture.coordinator.portableTransferSettingsForExport().encoded()
+        var object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        var recipes = try #require(object["folderRecipes"] as? [[String: Any]])
+        var layers = try #require(recipes[0]["layers"] as? [[String: Any]])
+        switch kind {
+        case "unknown-recipe": recipes[0]["name"] = "private"
+        case "unknown-layer": layers[0]["path"] = "/private"; recipes[0]["layers"] = layers
+        case "duplicate-layer": layers.append(layers[0]); recipes[0]["layers"] = layers
+        case "empty": recipes[0]["layers"] = []
+        case "too-many": recipes = Array(repeating: recipes[0], count: 33)
+        case "version-one": object["schemaVersion"] = 1
+        default: break
+        }
+        object["folderRecipes"] = recipes
+        let altered = try JSONSerialization.data(withJSONObject: object)
+        #expect(throws: (any Error).self) { _ = try PortableTransferSettings.decode(altered) }
+    }
+
+    @Test func recipeStoreFailureLeavesSettingsAndPresetsUnchanged() throws {
+        let source = try Fixture()
+        let target = try Fixture()
+        source.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "Source recipe")
+        source.coordinator.generateASCMHL = !target.coordinator.generateASCMHL
+        let exported = try source.coordinator.portableTransferSettingsForExport().encoded()
+        let original = target.coordinator.portableTransferSettings
+        let model = TransferSettingsImportModel()
+        try model.preview(exported, coordinator: target.coordinator)
+        target.projectStore.errorOnSave = PortableRecipeImportError.unavailable
+        #expect(throws: (any Error).self) { try model.apply(to: target.coordinator) }
+        #expect(target.projectStore.storedPresets.isEmpty)
+        #expect(target.coordinator.portableTransferSettings == original)
+        #expect(model.review != nil)
     }
 
     private func changed(_ current: PortableTransferSettings) -> PortableTransferSettings {

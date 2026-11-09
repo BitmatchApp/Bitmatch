@@ -31,6 +31,18 @@ final class FolderInfoService: ObservableObject {
     private var sourceGeneration = 0
     private var leftGeneration = 0
     private var rightGeneration = 0
+    private var destinationGeneration = 0
+    private let destinationMetadataWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
+    private let destinationMetadataNamespace = UUID().uuidString
+    private let scanWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
+    private let scanNamespace = UUID().uuidString
+    private let destinationModificationDate: @Sendable (URL) -> Date?
+
+    init(destinationModificationDate: @escaping @Sendable (URL) -> Date? = {
+        try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
+    }) {
+        self.destinationModificationDate = destinationModificationDate
+    }
 
     // MARK: - Public API
 
@@ -57,29 +69,32 @@ final class FolderInfoService: ObservableObject {
         folderInfoLoadingState[url] = true
         // Owned task: cancellation stops enumeration; the generation guard
         // stops stale results from publishing.
-        sourceWork = Task.detached(priority: .userInitiated) { [weak self] in
+        sourceWork = Task { [weak self] in
             guard let self else { return }
             if Task.isCancelled { return }
             let fullResult: Result<(EnhancedFolderInfo, String), Error>
             do {
-                fullResult = .success(try self.scanEnhancedFolderInfo(for: url))
+                let result = try await self.scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".source"
+                ) { check in
+                    try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check)
+                }
+                fullResult = .success(result)
             } catch {
                 fullResult = .failure(error)
             }
-            await MainActor.run {
-                guard generation == self.sourceGeneration, self.sourceURL == url else { return }
-                switch fullResult {
-                case .success(let (fullInfo, fingerprint)):
-                    self.sourceFolderInfo = fullInfo
-                    self.sourceFingerprint = fingerprint
-                    self.sourceScanError = nil
-                case .failure(let error):
-                    self.sourceFolderInfo = nil
-                    self.sourceFingerprint = nil
-                    self.sourceScanError = error.localizedDescription
-                }
-                self.folderInfoLoadingState[url] = false
+            guard generation == self.sourceGeneration, self.sourceURL == url else { return }
+            switch fullResult {
+            case .success(let (fullInfo, fingerprint)):
+                self.sourceFolderInfo = fullInfo
+                self.sourceFingerprint = fingerprint
+                self.sourceScanError = nil
+            case .failure(let error):
+                self.sourceFolderInfo = nil
+                self.sourceFingerprint = nil
+                self.sourceScanError = error.localizedDescription
             }
+            self.folderInfoLoadingState[url] = false
         }
     }
 
@@ -97,21 +112,24 @@ final class FolderInfoService: ObservableObject {
             return
         }
         folderInfoLoadingState[url] = true
-        leftWork = Task.detached(priority: .userInitiated) { [weak self] in
+        leftWork = Task { [weak self] in
             guard let self else { return }
-            if Task.isCancelled { return }
-            let fastInfo = self.scanFastFolderInfo(for: url)
-            await MainActor.run {
-                guard generation == self.leftGeneration, self.leftURL == url else { return }
+            do {
+                let fastInfo = try await self.scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".left"
+                ) { check in try Self.scanFastFolderInfo(for: url, checkCancellation: check) }
+                guard generation == self.leftGeneration, self.leftURL == url, !Task.isCancelled else { return }
                 self.leftFolderInfo = fastInfo
-            }
-            if Task.isCancelled { return }
-            let fullInfo = (try? self.scanEnhancedFolderInfo(for: url))?.0
-            await MainActor.run {
-                guard generation == self.leftGeneration, self.leftURL == url else { return }
+                let fullInfo = try await self.scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".left"
+                ) { check in try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check).0 }
+                guard generation == self.leftGeneration, self.leftURL == url, !Task.isCancelled else { return }
                 self.leftFolderInfo = fullInfo
-                self.folderInfoLoadingState[url] = false
+            } catch {
+                guard generation == self.leftGeneration, self.leftURL == url, !Task.isCancelled else { return }
+                self.leftFolderInfo = nil
             }
+            self.folderInfoLoadingState[url] = false
         }
     }
 
@@ -129,27 +147,41 @@ final class FolderInfoService: ObservableObject {
             return
         }
         folderInfoLoadingState[url] = true
-        rightWork = Task.detached(priority: .userInitiated) { [weak self] in
+        rightWork = Task { [weak self] in
             guard let self else { return }
-            if Task.isCancelled { return }
-            let fastInfo = self.scanFastFolderInfo(for: url)
-            await MainActor.run {
-                guard generation == self.rightGeneration, self.rightURL == url else { return }
+            do {
+                let fastInfo = try await self.scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".right"
+                ) { check in try Self.scanFastFolderInfo(for: url, checkCancellation: check) }
+                guard generation == self.rightGeneration, self.rightURL == url, !Task.isCancelled else { return }
                 self.rightFolderInfo = fastInfo
-            }
-            if Task.isCancelled { return }
-            let fullInfo = (try? self.scanEnhancedFolderInfo(for: url))?.0
-            await MainActor.run {
-                guard generation == self.rightGeneration, self.rightURL == url else { return }
+                let fullInfo = try await self.scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".right"
+                ) { check in try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check).0 }
+                guard generation == self.rightGeneration, self.rightURL == url, !Task.isCancelled else { return }
                 self.rightFolderInfo = fullInfo
-                self.folderInfoLoadingState[url] = false
+            } catch {
+                guard generation == self.rightGeneration, self.rightURL == url, !Task.isCancelled else { return }
+                self.rightFolderInfo = nil
             }
+            self.folderInfoLoadingState[url] = false
         }
     }
 
     /// Update destination folder infos when destination list changes
     func updateDestinations(_ urls: [URL]) async {
+        destinationGeneration &+= 1
+        let generation = destinationGeneration
+        let removedURLs = Set(destinationURLs).subtracting(urls)
+        for url in removedURLs {
+            destinationMetadataWorker.cancel(jobKey: destinationMetadataJobKey(for: url))
+        }
         destinationURLs = urls
+        let urlSet = Set(urls)
+        destinationFolderInfos = destinationFolderInfos.filter { urlSet.contains($0.key) }
+        folderInfoLoadingState = folderInfoLoadingState.filter {
+            urlSet.contains($0.key) || $0.key == sourceURL || $0.key == leftURL || $0.key == rightURL
+        }
 
         // Find new URLs that need scanning
         let newURLs = urls.filter { destinationFolderInfos[$0] == nil }
@@ -159,51 +191,35 @@ final class FolderInfoService: ObservableObject {
                 folderInfoLoadingState[url] = true
             }
 
-            // Scan in batches to avoid I/O saturation
-            var results: [(URL, EnhancedFolderInfo?)] = []
-            let chunkSize = 6
-            var index = 0
-
-            while index < newURLs.count {
-                // Structured group: parent cancellation propagates, so a
-                // superseded selection stops the remaining chunks.
-                guard !Task.isCancelled else { return }
-                let end = min(index + chunkSize, newURLs.count)
-                let slice = Array(newURLs[index..<end])
-
-                await withTaskGroup(of: (URL, EnhancedFolderInfo?).self) { group in
-                    for url in slice {
-                        group.addTask {
-                            guard !Task.isCancelled else { return (url, nil) }
-                            // Lightweight info to avoid scanning large destination volumes
-                            let info = await self.getLightweightFolderInfo(for: url)
-                            return (url, info)
-                        }
-                    }
-                    for await pair in group {
-                        results.append(pair)
+            // Refill as each check finishes, so one blocked mount does not
+            // hold later selected backups behind an entire batch.
+            await withTaskGroup(of: (URL, EnhancedFolderInfo?).self) { group in
+                var nextIndex = 0
+                for _ in 0..<min(6, newURLs.count) {
+                    let url = newURLs[nextIndex]
+                    nextIndex += 1
+                    group.addTask {
+                        guard !Task.isCancelled else { return (url, nil) }
+                        return (url, await self.getLightweightFolderInfo(for: url))
                     }
                 }
-                index = end
+                while let (url, info) = await group.next() {
+                    guard !Task.isCancelled, destinationGeneration == generation, destinationURLs == urls else {
+                        group.cancelAll()
+                        continue
+                    }
+                    destinationFolderInfos[url] = info
+                    folderInfoLoadingState[url] = false
+                    if nextIndex < newURLs.count {
+                        let nextURL = newURLs[nextIndex]
+                        nextIndex += 1
+                        group.addTask {
+                            guard !Task.isCancelled else { return (nextURL, nil) }
+                            return (nextURL, await self.getLightweightFolderInfo(for: nextURL))
+                        }
+                    }
+                }
             }
-
-            // A newer selection may have arrived while scanning; never let
-            // stale results (or the cleanup below) clobber it.
-            guard destinationURLs == urls else { return }
-
-            for (url, info) in results {
-                destinationFolderInfos[url] = info
-                folderInfoLoadingState[url] = false
-            }
-        }
-
-        // Clean up removed URLs
-        let urlSet = Set(urls)
-        destinationFolderInfos = destinationFolderInfos.filter { urlSet.contains($0.key) }
-
-        // Keep loading state for source/left/right URLs
-        folderInfoLoadingState = folderInfoLoadingState.filter {
-            urlSet.contains($0.key) || $0.key == sourceURL || $0.key == leftURL || $0.key == rightURL
         }
     }
 
@@ -240,23 +256,32 @@ final class FolderInfoService: ObservableObject {
     // MARK: - Private Scanning Methods
 
     /// Perf 8: Fast pass - count + size only, returns quickly.
-    /// Synchronous: callers run it on an owned background task so
-    /// cancellation actually stops the enumeration.
+    /// Synchronous: the bounded worker supplies cancellation checks between
+    /// filesystem calls, including when a stale scan is released from a stall.
     ///
     /// Counts with the engine's enumeration (`CardSource`), not a Foundation
     /// enumerator: Foundation hides `._` AppleDouble sidecars on Apple
     /// filesystems, so setup's count must come from the same manifest the
     /// transfer copies and verifies.
-    nonisolated private func scanFastFolderInfo(for url: URL) -> EnhancedFolderInfo? {
-            if Task.isCancelled { return nil }
-            guard let entries = try? CardSource.enumerateRegularFiles(base: url) else { return nil }
-            if Task.isCancelled { return nil }
+    nonisolated private static func scanFastFolderInfo(for url: URL, checkCancellation: @Sendable () throws -> Void) throws -> EnhancedFolderInfo? {
+            try checkCancellation()
+            let entries: [FileEntry]
+            do {
+                entries = try CardSource.enumerateRegularFiles(base: url, checkCancellation: checkCancellation)
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                return nil
+            }
+            try checkCancellation()
             var totalSize: Int64 = 0
             for entry in entries {
+                try checkCancellation()
                 totalSize += entry.size
             }
 
             let folderModified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+            try checkCancellation()
             return EnhancedFolderInfo(
                 url: url,
                 fileCount: entries.count,
@@ -271,13 +296,13 @@ final class FolderInfoService: ObservableObject {
     }
 
     /// Full scan for source folders - includes file type breakdown.
-    /// Synchronous: callers run it on an owned background task so
-    /// cancellation actually stops the enumeration.
+    /// Synchronous: the bounded worker supplies cancellation checks between
+    /// filesystem calls, including when a stale scan is released from a stall.
     ///
     /// Built on the engine's enumeration (`CardSource`) for the same reason
     /// as the fast pass: the count, sizes, and dates must match the manifest
     /// the transfer copies and verifies, including `._` sidecars.
-    nonisolated private func scanEnhancedFolderInfo(for url: URL) throws -> (EnhancedFolderInfo, String) {
+    nonisolated private static func scanEnhancedFolderInfo(for url: URL, checkCancellation: @Sendable () throws -> Void) throws -> (EnhancedFolderInfo, String) {
             var fileCount = 0
             var totalSize: Int64 = 0
             var fileTypeBreakdown: [String: Int] = [:]
@@ -285,9 +310,9 @@ final class FolderInfoService: ObservableObject {
             var oldestFile: Date? = nil
             var newestFile: Date? = nil
 
-            let entries = try CardSource.enumerateRegularFiles(base: url)
+            let entries = try CardSource.enumerateRegularFiles(base: url, checkCancellation: checkCancellation)
             for entry in entries {
-                try Task.checkCancellation()
+                try checkCancellation()
                 fileCount += 1
                 totalSize += max(0, entry.size)
                 let fileExtension = entry.url.pathExtension.uppercased()
@@ -308,6 +333,7 @@ final class FolderInfoService: ObservableObject {
             }
 
             let folderModified = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+            try checkCancellation()
 
             let info = EnhancedFolderInfo(
                 url: url,
@@ -320,13 +346,22 @@ final class FolderInfoService: ObservableObject {
                 oldestFileDate: oldestFile,
                 newestFileDate: newestFile
             )
-            return (info, SourceFingerprint.make(entries))
+            let fingerprint = SourceFingerprint.make(entries)
+            try checkCancellation()
+            return (info, fingerprint)
     }
 
-    /// Lightweight scan for destination folders - just basic metadata
-    nonisolated private func getLightweightFolderInfo(for url: URL) async -> EnhancedFolderInfo? {
-        return await Task.detached(priority: .utility) {
-            let lastMod = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? Date()
+    private func destinationMetadataJobKey(for url: URL) -> String {
+        destinationMetadataNamespace + ".destination." + url.path
+    }
+
+    /// Lightweight scan for destination folders - just basic metadata.
+    private func getLightweightFolderInfo(for url: URL) async -> EnhancedFolderInfo? {
+        let readModificationDate = destinationModificationDate
+        return try? await destinationMetadataWorker.perform(
+            mountKey: DriveAccessWorker.mountKey(for: url), jobKey: destinationMetadataJobKey(for: url)
+        ) {
+            let lastMod = readModificationDate(url) ?? Date()
             return EnhancedFolderInfo(
                 url: url,
                 fileCount: 0,
@@ -338,6 +373,6 @@ final class FolderInfoService: ObservableObject {
                 oldestFileDate: nil,
                 newestFileDate: nil
             )
-        }.value
+        }
     }
 }

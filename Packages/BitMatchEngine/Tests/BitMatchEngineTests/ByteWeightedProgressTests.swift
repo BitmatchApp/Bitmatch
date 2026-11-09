@@ -8,6 +8,17 @@ struct ByteWeightedProgressTests {
         FileEntry(url: URL(fileURLWithPath: "/unused/\(path)"), relativePath: path, size: bytes)
     }
 
+    @Test func verifiedFileCountsArePerBackupAndIdempotent() {
+        let meter = TransferWorkMeter(files: [entry("empty", 0), entry("clip", 100)], destinationCount: 2, mode: .standard)
+        #expect(meter.snapshot().verifiedFiles == [0, 0])
+        meter.verified(path: "empty", destination: 0)
+        meter.verified(path: "empty", destination: 0)
+        meter.verified(path: "clip", destination: 1)
+        #expect(meter.snapshot().verifiedFiles == [1, 1])
+        meter.verified(path: "clip", destination: 0)
+        #expect(meter.snapshot().verifiedFiles == [2, 1])
+    }
+
     @Test func perFileAndDestinationCapsDoNotSpendAnotherClipsWork() {
         let meter = TransferWorkMeter(files: [entry("sidecar", 1), entry("clip", 999)], destinationCount: 2, mode: .standard)
         meter.copied(path: "sidecar", destination: 0)

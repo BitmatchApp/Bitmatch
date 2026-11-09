@@ -263,6 +263,7 @@ public struct JSONReportItem: Codable, Sendable {
     public let checksum: String?
     public let byteCount: Int64?
     public let clipIntegrity: ClipIntegrityFinding?
+    public let failureReason: String?
 
     public init(from row: ResultRow) {
         self.path = row.path
@@ -272,6 +273,7 @@ public struct JSONReportItem: Codable, Sendable {
         self.checksum = row.checksum
         self.byteCount = row.size
         self.clipIntegrity = row.clipIntegrity
+        self.failureReason = row.isSuccessStatus ? nil : row.failureReason.flatMap(ResultFailureReason.init(rawValue:))?.rawValue
     }
 }
 
@@ -527,7 +529,8 @@ public enum EvidenceWriter: Sendable {
             let card = project?.card ?? ""
             let packagePath = project?.packagePath ?? ""
             let verified = result.isVerifiedStatus && result.checksum?.isEmpty == false && prefs?.verificationMode != .quick
-            let details = verified ? "Verified" : result.status
+            let reason = result.isSuccessStatus ? nil : result.failureReason.flatMap(ResultFailureReason.init(rawValue:))
+            let details = verified ? "Verified" : (reason.map { result.status + " · " + $0.rowNote } ?? result.status)
             
             // Per-file times are not measured; the column stays for existing
             // spreadsheets but is empty rather than interpolated (Promise 3).

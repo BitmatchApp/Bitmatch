@@ -24,14 +24,14 @@ struct QueueSessionPresentationTests {
         return cal
     }
 
-    @Test func runningDetailNamesPhaseBackupFileAndRate() throws {
+    @Test func runningDetailNamesPhaseFileAndRate() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }
         let record = try fixture.record(name: "B_CAM", state: .running, destinationNames: ["Shuttle A", "Shuttle B", "Shuttle C"])
         let progress = runningProgress(stage: .verifying, speed: 557_000_000, perDestination: [1, 0.4, 0])
         let row = try runningRow(record, progress)
         let detail = try #require(row.runningDetail(progress: progress, timeRemaining: "12 min", rate: "557 MB/s"))
-        #expect(detail.metaLine == "Verifying Shuttle B · 2 of 3 backups · 218 GB")
+        #expect(detail.metaLine == "Verifying backups · 218 GB")
         #expect(detail.currentFile == "B007C012.mov")
         #expect(detail.timeAndRate == "About 12 min · 557 MB/s")
     }
@@ -44,7 +44,7 @@ struct QueueSessionPresentationTests {
             try #require(try runningRow(record, p).runningDetail(progress: p, timeRemaining: time, rate: rate))
         }
         #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil), nil).metaLine == "Copying to Shuttle A, Shuttle B · 218 GB")
-        #expect(try detail(runningProgress(stage: .verifying, speed: nil, perDestination: [1, 1]), nil).metaLine == "Verifying Shuttle B · 2 of 2 backups · 218 GB")
+        #expect(try detail(runningProgress(stage: .verifying, speed: nil, perDestination: [1, 1]), nil).metaLine == "Verifying backups · 218 GB")
         #expect(try detail(runningProgress(stage: .generating, speed: nil, perDestination: nil), nil).metaLine == "Finishing · 218 GB")
         #expect(try detail(runningProgress(stage: .preparing, speed: nil, perDestination: nil), nil).metaLine == "Preparing")
         #expect(try detail(runningProgress(stage: .copying, speed: nil, perDestination: nil, file: ""), nil).currentFile == nil)
@@ -59,6 +59,26 @@ struct QueueSessionPresentationTests {
         let waiting = try fixture.record(name: "A_CAM", state: .queued)
         let waitingRow = QueueSessionPresentation.make(records: [waiting], sessionIDs: [waiting.id], progress: nil, mountedSourceIDs: [waiting.id]).rows[0]
         #expect(waitingRow.runningDetail(progress: nil, timeRemaining: nil) == nil)
+    }
+
+    @Test func verifyingRowShowsOnlyMeasuredBackupMatches() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(name: "B_CAM", state: .running, destinationNames: ["Shuttle A", "Shuttle B"])
+        let progress = OperationProgress(overallProgress: 0.6, currentFile: nil, filesProcessed: 4, totalFiles: 4,
+            currentStage: .verifying, speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
+            bytesProcessed: nil, totalBytes: nil, perDestinationTotals: [2, 2],
+            perDestinationVerifiedFiles: [2, 1])
+        let row = try runningRow(record, progress)
+        let detail = try #require(row.runningDetail(progress: progress, timeRemaining: nil))
+        #expect(detail.metaLine.contains("Matched so far Shuttle A 2/2, Shuttle B 1/2"))
+        let incomplete = OperationProgress(overallProgress: 0.6, currentFile: nil, filesProcessed: 4, totalFiles: 4,
+            currentStage: .verifying, speed: nil, elapsedTime: nil, averageSpeed: nil, peakSpeed: nil,
+            bytesProcessed: nil, totalBytes: nil, perDestinationTotals: [2, 2],
+            perDestinationVerifiedFiles: [2])
+        let incompleteRow = try runningRow(record, incomplete)
+        let incompleteDetail = try #require(incompleteRow.runningDetail(progress: incomplete, timeRemaining: nil))
+        #expect(!incompleteDetail.metaLine.contains("Matched so far"))
     }
 
     private func runningProgress(stage: ProgressStage, speed: Double?, perDestination: [Double]?, file: String = "/Volumes/B_CAM/CLIP/B007C012.mov") -> OperationProgress {
@@ -184,6 +204,15 @@ struct QueueSessionPresentationTests {
         let plainRow = try #require(queue.rows.first { $0.id == plain.id })
         #expect(spaceRow.cause == "Shuttle A ran out of space · 3 files failed")
         #expect(plainRow.cause == "3 files failed on Shuttle A")
+    }
+
+    @Test func causeNamesSourceInstability() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(name: "A", state: .issues, results: [.failed], failureReason: "sourceUnstable")
+        let row = try #require(QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
+            progress: nil, mountedSourceIDs: []).rows.first)
+        #expect(row.cause == "The card changed or could not be read consistently · Review all backups")
     }
 
     @Test func queueLabelsSayWhatToDo() throws {

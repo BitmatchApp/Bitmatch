@@ -52,7 +52,6 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
         case copying
         /// Every file was processed for this backup; failures may be included.
         case copied
-        case verifying
     }
 
     let id: String
@@ -62,8 +61,8 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
     /// Complete path, available on hover without crowding the row.
     let helpPath: String
     let state: State
-    /// This backup's own copied fraction, or nil when the engine has not
-    /// reported per-backup counts yet. Never the overall fraction.
+    /// This backup's estimated share of transfer work, or its processed-file
+    /// fraction when byte-weighted work is unavailable. It is not a verdict.
     let fraction: Double?
     let countText: String?
     /// Observed I/O only; no path, verification verdict or drive-health claim.
@@ -76,7 +75,6 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
         case .waiting: "Waiting"
         case .copying: "Copying"
         case .copied: "Processed"
-        case .verifying: "Verifying"
         }
     }
 
@@ -121,7 +119,6 @@ struct DestinationProgressRow: Equatable, Identifiable, Sendable {
         case .waiting: "clock"
         case .copying: "arrow.right.doc.on.clipboard"
         case .copied: "doc.on.doc"
-        case .verifying: "magnifyingglass"
         }
     }
 }
@@ -420,7 +417,7 @@ struct TransferProgressPresentation: Equatable, Sendable {
                 fraction = total > 0 ? Double(done) / Double(total) : nil
                 countText = total > 0 ? "\(done.formatted()) of \(total.formatted())" : nil
                 if total > 0 && done >= total {
-                    state = phase == .verifying ? .verifying : .copied
+                    state = .copied
                 } else if done > 0 {
                     state = .copying
                 }

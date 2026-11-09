@@ -114,6 +114,26 @@ final class CoreDataPhotographerJobStore: PhotographerJobStore {
         }
     }
 
+    func addPresetsAtomically(_ additions: [PhotographerPreset]) throws {
+        try requireStore()
+        do {
+            guard Set(additions.map(\.id)).count == additions.count else { throw PortableRecipeImportError.duplicateID }
+            for preset in additions {
+                guard try existingRecord(for: preset.id, entityName: Entity.preset) == nil else {
+                    throw PortableRecipeImportError.duplicateID
+                }
+                let record = try record(for: preset.id, entityName: Entity.preset)
+                record.setValue(preset.id, forKey: "id")
+                record.setValue(Date(), forKey: "updatedAt")
+                record.setValue(try encode(preset), forKey: "payload")
+            }
+            try saveIfNeeded()
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
     func profiles() throws -> [RemoteDestinationProfile] {
         try requireStore()
         let request = NSFetchRequest<NSManagedObject>(entityName: Entity.profile)

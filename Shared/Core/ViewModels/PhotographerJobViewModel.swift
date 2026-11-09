@@ -19,9 +19,10 @@ enum FolderLayerMoveDirection: Sendable {
 
 @MainActor
 final class PhotographerJobViewModel: ObservableObject {
+    private static let preparationWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
     typealias PreliminaryAnalyzer = @Sendable ([FileEntry]) throws -> CardAnalysis
     typealias ConfirmedAnalyzer = @Sendable ([ResultRow]) throws -> String
-    typealias EntryEnumerator = @Sendable (URL) throws -> [FileEntry]
+    typealias EntryEnumerator = @Sendable (URL, @Sendable () throws -> Void) throws -> [FileEntry]
 
     @Published private(set) var jobs: [PhotographerJob] = []
     @Published private(set) var presets: [PhotographerPreset] = []
@@ -83,13 +84,14 @@ final class PhotographerJobViewModel: ObservableObject {
     private var setupPreparationInvalidated = false
     private var setupTask: Task<Void, Never>?
     private var setupGeneration = UUID()
+    private let preparationWorkerKey = "project-preparation-\(UUID().uuidString)"
 
     init(
         store: any PhotographerJobStore,
         now: @escaping () -> Date = Date.init,
         preliminaryAnalyzer: @escaping PreliminaryAnalyzer = { try PhotographerCardAnalyzer.preliminaryAnalysis(entries: $0) },
         confirmedAnalyzer: @escaping ConfirmedAnalyzer = { try PhotographerCardAnalyzer.confirmedFingerprint(results: $0) },
-        entryEnumerator: @escaping EntryEnumerator = { try CardSource.enumerateRegularFiles(base: $0) },
+        entryEnumerator: @escaping EntryEnumerator = { url, check in try CardSource.enumerateRegularFiles(base: url, checkCancellation: check) },
         remoteBackupCoordinator: (any ProjectRemoteCoordinator)? = nil,
         workflowDefaults: UserDefaults = .standard
     ) {
@@ -328,22 +330,24 @@ final class PhotographerJobViewModel: ObservableObject {
         currentSetupSignature = setupSignature
         let enumerator = entryEnumerator
         let analyzer = preliminaryAnalyzer
+        let workerKey = preparationWorkerKey
         let standardizedSource = sourceURL.standardizedFileURL
         currentSourcePath = standardizedPath(standardizedSource)
         setupTask = Task { [weak self] in
-            let worker = Task.detached(priority: .userInitiated) {
-                do {
-                    let entries = try enumerator(standardizedSource)
-                    try Task.checkCancellation()
-                    return Result<CardAnalysis, Error>.success(try analyzer(entries))
-                } catch {
-                    return .failure(error)
+            let result: Result<CardAnalysis, Error>
+            do {
+                let analysis = try await Self.preparationWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: standardizedSource)], jobKey: workerKey
+                ) { check in
+                    let entries = try enumerator(standardizedSource, check)
+                    try check()
+                    let analysis = try analyzer(entries)
+                    try check()
+                    return analysis
                 }
-            }
-            let result = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
+                result = .success(analysis)
+            } catch {
+                result = .failure(error)
             }
             guard let self, self.setupGeneration == generation else { return }
             self.isPreparing = false
@@ -997,6 +1001,68 @@ final class PhotographerJobViewModel: ObservableObject {
         } catch {
             lastError = error.localizedDescription
         }
+    }
+
+    var portableFolderRecipes: [PortableTransferSettings.Recipe] {
+        presets.map { preset in
+            PortableTransferSettings.Recipe(layers: preset.recipe.layers.map {
+                .init(kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+        }
+    }
+
+    func validatedPortableFolderRecipes() throws -> [PortableTransferSettings.Recipe] {
+        let stored = try store.presets().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let recipes = stored.map { preset in
+            PortableTransferSettings.Recipe(layers: preset.recipe.layers.map {
+                .init(kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+        }
+        guard samePortableRecipes(recipes, portableFolderRecipes) else { throw TransferSettingsImportError.settingsChanged }
+        return portableFolderRecipes
+    }
+
+    func importPortableFolderRecipes(_ recipes: [PortableTransferSettings.Recipe]) throws {
+        guard recipes.count <= 32, recipes.allSatisfy(\.isValid) else { throw TransferSettingsImportError.invalidFile }
+        let stored = try store.presets().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let storedRecipes = stored.map { preset in
+            PortableTransferSettings.Recipe(layers: preset.recipe.layers.map {
+                .init(kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+        }
+        guard samePortableRecipes(storedRecipes, portableFolderRecipes) else { throw TransferSettingsImportError.settingsChanged }
+        var knownRecipes = storedRecipes
+        var names = Set(stored.map { $0.name.lowercased() })
+        var additions: [PhotographerPreset] = []
+        var ordinal = 1
+        for recipe in recipes where !knownRecipes.contains(recipe) {
+            var name = "Imported recipe \(ordinal)"
+            while names.contains(name.lowercased()) {
+                ordinal += 1
+                name = "Imported recipe \(ordinal)"
+            }
+            ordinal += 1
+            names.insert(name.lowercased())
+            knownRecipes.append(recipe)
+            let id = UUID()
+            let folderRecipe = FolderRecipe(id: id, name: name, layers: recipe.layers.map {
+                FolderLayer(id: UUID(), kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+            additions.append(PhotographerPreset(id: id, name: name, eventType: .wedding,
+                recipe: folderRecipe, requiredLocalCopyCount: 2))
+        }
+        guard !additions.isEmpty else { return }
+        try store.addPresetsAtomically(additions)
+        presets = (stored + additions).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func samePortableRecipes(_ lhs: [PortableTransferSettings.Recipe], _ rhs: [PortableTransferSettings.Recipe]) -> Bool {
+        var remaining = rhs
+        for recipe in lhs {
+            guard let index = remaining.firstIndex(of: recipe) else { return false }
+            remaining.remove(at: index)
+        }
+        return remaining.isEmpty
     }
 
     func selectPreset(id: UUID) {

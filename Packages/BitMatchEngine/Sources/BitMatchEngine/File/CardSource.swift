@@ -196,17 +196,18 @@ public enum CardSource: Sendable {
     /// cloud-managed root is refused before enumeration starts.
     public static func enumerateRegularFiles(
         base: URL,
+        checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
         isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile
     ) throws -> [FileEntry] {
-        try Task.checkCancellation()
+        try checkCancellation()
         if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
             throw CloudManagedSourceError()
         }
-        let tree = try enumerateTree(base: base)
+        let tree = try enumerateTree(base: base, checkCancellation: checkCancellation)
         var entries: [FileEntry] = []
         var datalessPaths: [String] = []
         for entry in tree {
-            try Task.checkCancellation()
+            try checkCancellation()
             guard entry.kind == .regularFile else { continue }
             if isDataless(entry.url) {
                 datalessPaths.append(entry.relativePath)
@@ -225,14 +226,14 @@ public enum CardSource: Sendable {
                 firstFileName: first
             )
         }
-        try Task.checkCancellation()
+        try checkCancellation()
         return entries
     }
 
     /// Enumerates through directory descriptors because Foundation hides every
     /// `._` name on Apple filesystems. Symlinks are never followed.
-    static func enumerateTree(base: URL) throws -> [TreeEntry] {
-        try Task.checkCancellation()
+    static func enumerateTree(base: URL, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> [TreeEntry] {
+        try checkCancellation()
         if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
             throw CloudManagedSourceError()
         }
@@ -256,9 +257,9 @@ public enum CardSource: Sendable {
             throw BitMatchError.fileNotFound(base)
         }
 
-        return try enumerateTree(directoryFD: rootFD, root: root)
+        return try enumerateTree(directoryFD: rootFD, root: root, checkCancellation: checkCancellation)
 #else
-        return try foundationTree(base: base)
+        return try foundationTree(base: base, checkCancellation: checkCancellation)
 #endif
     }
 
@@ -268,6 +269,7 @@ public enum CardSource: Sendable {
     static func enumerateTree(
         directoryFD: Int32,
         root: URL,
+        checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
         onRootEntryRead: ((String) throws -> Void)? = nil
     ) throws -> [TreeEntry] {
         var entries: [TreeEntry] = []
@@ -277,9 +279,10 @@ public enum CardSource: Sendable {
             relativeDirectory: "",
             depth: 0,
             onRootEntryRead: onRootEntryRead,
+            checkCancellation: checkCancellation,
             entries: &entries
         )
-        try Task.checkCancellation()
+        try checkCancellation()
         return entries.sorted { $0.relativePath < $1.relativePath }
     }
 
@@ -289,6 +292,7 @@ public enum CardSource: Sendable {
         relativeDirectory: String,
         depth: Int,
         onRootEntryRead: ((String) throws -> Void)?,
+        checkCancellation: @Sendable () throws -> Void,
         entries: inout [TreeEntry]
     ) throws {
         let scanFD = Darwin.dup(directoryFD)
@@ -304,7 +308,7 @@ public enum CardSource: Sendable {
         defer { _ = closedir(directory) }
 
         while true {
-            try Task.checkCancellation()
+            try checkCancellation()
             errno = 0
             let rawEntry = readdir(directory)
             let readError = errno
@@ -370,6 +374,7 @@ public enum CardSource: Sendable {
                         relativeDirectory: relativePath,
                         depth: depth + 1,
                         onRootEntryRead: onRootEntryRead,
+                        checkCancellation: checkCancellation,
                         entries: &entries
                     )
                     _ = Darwin.close(childFD)
@@ -404,7 +409,7 @@ public enum CardSource: Sendable {
         )
     }
 #else
-    private static func foundationTree(base: URL) throws -> [TreeEntry] {
+    private static func foundationTree(base: URL, checkCancellation: @Sendable () throws -> Void) throws -> [TreeEntry] {
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
             .fileSizeKey, .contentModificationDateKey,
@@ -423,7 +428,7 @@ public enum CardSource: Sendable {
         let resolver = RelativePathResolver(base: base)
         var entries: [TreeEntry] = []
         while let item = enumerator.nextObject() as? URL {
-            try Task.checkCancellation()
+            try checkCancellation()
             if enumerator.level == 1, isRootVolumeMetadataDirectory(item) {
                 enumerator.skipDescendants()
                 continue
@@ -443,7 +448,7 @@ public enum CardSource: Sendable {
             ))
         }
         if let traversalError = traversalError.withLock({ $0 }) { throw traversalError }
-        try Task.checkCancellation()
+        try checkCancellation()
         return entries
     }
 #endif

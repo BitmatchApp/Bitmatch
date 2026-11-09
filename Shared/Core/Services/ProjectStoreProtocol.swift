@@ -7,6 +7,7 @@ protocol PhotographerJobStore {
     func deleteJob(id: UUID) throws
     func presets() throws -> [PhotographerPreset]
     func save(_ preset: PhotographerPreset) throws
+    func addPresetsAtomically(_ presets: [PhotographerPreset]) throws
     func profiles() throws -> [RemoteDestinationProfile]
     func save(_ profile: RemoteDestinationProfile) throws
     func deleteProfile(id: UUID) throws
@@ -21,6 +22,7 @@ protocol PhotographerJobStore {
 }
 
 extension PhotographerJobStore {
+    func addPresetsAtomically(_: [PhotographerPreset]) throws { throw PortableRecipeImportError.unavailable }
     var isAvailable: Bool { true }
     func whenAvailable(_: @escaping () -> Void) {}
     func profiles() throws -> [RemoteDestinationProfile] { [] }
@@ -32,4 +34,15 @@ extension PhotographerJobStore {
     func queueItems() throws -> [RemoteQueueItem] { [] }
     func save(_: RemoteQueueItem) throws {}
     func deleteQueueItem(id _: UUID) throws {}
+}
+
+enum PortableRecipeImportError: LocalizedError {
+    case unavailable, duplicateID
+
+    var errorDescription: String? {
+        switch self {
+        case .unavailable: "Folder recipes could not be imported into this store."
+        case .duplicateID: "A folder recipe changed while importing. Try again."
+        }
+    }
 }

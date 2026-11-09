@@ -4,6 +4,7 @@ import BitMatchEngine
 
 /// Finished transfers in the same window as the operational workflow.
 struct TransferLibraryView: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var coordinator: SharedAppCoordinator
     @ObservedObject var journal: LocalTransferJournal
     @State private var search = ""
@@ -18,6 +19,7 @@ struct TransferLibraryView: View {
     @State private var reauthorizeRecord: LocalTransferRecord?
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
+    @State private var historyAppeared = false
     @StateObject private var historySearch = TransferHistorySearchModel()
     private let initialRecordID: UUID?
     private let onBack: (() -> Void)?
@@ -74,11 +76,15 @@ struct TransferLibraryView: View {
             // Search only makes sense once History has something to search,
             // and it never grabs focus on its own — `.searchable` never autofocuses.
             .modifier(OptionalSearchable(isActive: counts.history > 0, text: searchBinding))
-            .onAppear { historySearch.resume(records: journal.records, query: search) }
+            .onAppear {
+                historySearch.resume(records: journal.records, query: search)
+                historyAppeared = true
+            }
             .onReceive(journal.$records) { records in
                 historySearch.replaceRecords(records)
             }
             .onDisappear {
+                historyAppeared = false
                 pdfTask?.cancel()
                 retryTask?.cancel()
                 historySearch.cancel()
@@ -101,6 +107,7 @@ struct TransferLibraryView: View {
 
     @ViewBuilder
     private func listContent(matches: [TransferLibraryPresentation.SearchMatch], historyCount: Int) -> some View {
+        let entranceOrder = Dictionary(uniqueKeysWithValues: matches.prefix(6).enumerated().map { ($0.element.id, $0.offset) })
         VStack(spacing: 0) {
             if let message = coordinator.queueMessage ?? journal.persistenceError ?? errorMessage {
                 VStack(alignment: .leading, spacing: 8) {
@@ -122,6 +129,11 @@ struct TransferLibraryView: View {
                     List {
                         ForEach(matches) { match in
                             rowView(match.record, clipLine: match.clipLine)
+                                .opacity(reduceMotion || historyAppeared || entranceOrder[match.id] == nil ? 1 : 0)
+                                .animation(
+                                    reduceMotion ? nil : .easeOut(duration: 0.02).delay(Double(entranceOrder[match.id] ?? 0) * 0.02),
+                                    value: historyAppeared
+                                )
                                 .id(match.id)
                                 .listRowInsets(EdgeInsets(top: 0, leading: 16, bottom: 0, trailing: 16))
                                 .listRowSeparator(.visible)
@@ -329,10 +341,14 @@ struct TransferLibraryView: View {
             }
             Text("Counts describe saved result rows, including exclusions. Missing measurements are shown as —.")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records)
+            TransferRecoveryDetails(record: record, history: coordinator.transferJournal.records, showAll: true)
             Text("Source: \(record.source.url.path)").textSelection(.enabled)
             ForEach(record.destinations.indices, id: \.self) { index in
                 Text("Destination: \(record.destinations[index].url.path)").textSelection(.enabled)
+            }
+            if record.destinations.count > 1 {
+                Text("This saved record does not establish that these backups are on separate physical devices.")
+                    .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if actions.retryWithoutASCMHL {
                 Button("Retry without ASC MHL") {
@@ -663,6 +679,7 @@ private struct TransferDiagnosticsDocument: FileDocument {
 struct TransferRecoveryDetails: View {
     let record: LocalTransferRecord
     let history: [LocalTransferRecord]
+    var showAll = false
 
     private var summaries: [TransferRecoverySummary] { TransferRecoverySummary.make(record) }
     private var isRecovery: Bool {
@@ -671,7 +688,7 @@ struct TransferRecoveryDetails: View {
     }
 
     var body: some View {
-        if isRecovery {
+        if isRecovery || (showAll && !record.results.isEmpty) {
             VStack(alignment: .leading, spacing: 8) {
                 if let previousID = record.retryOf {
                     if let previous = history.first(where: { $0.id == previousID }) {
@@ -682,10 +699,12 @@ struct TransferRecoveryDetails: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                Text("Saved results by backup · not a current check")
+                    .font(.caption.weight(.semibold))
                 ForEach(summaries) { summary in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(summary.title).font(.caption.weight(.semibold))
-                        Text("Verified: \(summary.reused) reused · \(summary.copied) copied")
+                        Text("Recorded verified: \(summary.reused) reused · \(summary.copied) copied")
                         if summary.unverified > 0 { Text("\(summary.unverified) copied, unverified") }
                         Text("\(summary.failed) failed · \(summary.pending.map(String.init) ?? "—") pending")
                         if summary.excluded > 0 { Text("\(summary.excluded) excluded") }

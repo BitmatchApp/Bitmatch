@@ -233,16 +233,21 @@ struct LocalTransferJournalTests {
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), retryOf: UUID())
         record.plannedFileCounts = [2]
         record.results = [ResultRow(path: "a.mov", status: ResultOutcome.verified.statusText, size: 1,
-                                   checksum: "abc", destination: "Backup", wasReused: true)]
+                                   checksum: "abc", destination: "Backup", wasReused: true),
+                          ResultRow(path: "b.mov", status: ResultOutcome.failed.statusText, size: 1,
+                                   checksum: nil, destination: "Backup", failureReason: "sourceReadFailed")]
         let json = try TransferHistoryDocument(record: record, asCSV: false)
         let payload = try #require(JSONSerialization.jsonObject(with: json.data) as? [String: Any])
         #expect(payload["retryOf"] as? String == record.retryOf?.uuidString)
         #expect(payload["plannedFileCounts"] as? [Int] == [2])
+        let exportedRows = try #require(payload["results"] as? [[String: Any]])
+        #expect(exportedRows.contains { $0["failureReason"] as? String == "sourceReadFailed" })
         #expect(!String(decoding: json.data, as: UTF8.self).contains(record.source.bookmark.base64EncodedString()))
         let csv = String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self)
         #expect(csv.contains("client,reused"))
         #expect(csv.contains("\"retryOf\",\"\(try #require(record.retryOf).uuidString)\""))
         #expect(csv.contains("\"plannedFileCounts\",\"2\""))
+        #expect(csv.contains("the card could not be read"))
     }
 
     @Test func runningAttemptPersistsIndependentDestinationCount() throws {
@@ -293,6 +298,35 @@ struct LocalTransferJournalTests {
         #expect(restored.records.first?.results.isEmpty == true)
         #expect(restored.records.first?.endedAt != nil)
 
+    }
+
+    @Test func interruptedRetryRetainsPriorFailureAndLineageAcrossRelaunch() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        var originalID = UUID()
+        var retryID = UUID()
+        let failed = ResultRow(path: "clip.mov", status: ResultOutcome.failed.statusText, size: 1,
+                               checksum: nil, destination: "Backup",
+                               destinationPath: f.destination.appendingPathComponent("clip.mov").path)
+        do {
+            let journal = LocalTransferJournal(fileURL: f.journal)
+            originalID = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                                             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+            try journal.markRunning(id: originalID)
+            try journal.recordPlan(id: originalID, fileCounts: [1])
+            try journal.finish(id: originalID, results: [failed], summary: "Read failed", hadIssues: true)
+            retryID = try journal.requeue(id: originalID)
+            try journal.markRunning(id: retryID)
+        }
+        let reopened = LocalTransferJournal(fileURL: f.journal)
+        let original = try #require(reopened.records.first { $0.id == originalID })
+        let retry = try #require(reopened.records.first { $0.id == retryID })
+        #expect(original.state == .issues)
+        #expect(original.results.first?.id == failed.id)
+        #expect(original.summary == "Read failed")
+        #expect(retry.state == .interrupted)
+        #expect(retry.retryOf == originalID)
+        #expect(retry.endedAt != nil)
     }
 
     @Test func historyPreservesFullResultsAndRejectsFalseSuccess() throws {

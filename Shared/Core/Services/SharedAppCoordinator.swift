@@ -384,6 +384,7 @@ class SharedAppCoordinator: ObservableObject {
     private var selectedSourceIdentity: LocalTransferResource?
     private var selectedDestinationIdentities: [URL: LocalTransferResource] = [:]
     private let driveAccessWorker: DriveAccessWorker
+    private let queuedSourceScanWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 2, useBlockingThreads: true)
     private let driveJobNamespace = UUID().uuidString
     private let sourceAvailability: SourceAvailabilityModel
     private var selectionGeneration = 0
@@ -2199,8 +2200,14 @@ class SharedAppCoordinator: ObservableObject {
             activeProjectCardID = nil
             projectRunCameraSettings = nil
             let queuedSourceURL = access.sourceURL
-            let sourceScan = Task.detached(priority: .userInitiated) {
-                try CardSource.enumerateRegularFiles(base: queuedSourceURL)
+            let scanWorker = queuedSourceScanWorker
+            let scanKey = driveJobNamespace + ".source-scan.\(invocationID)"
+            let sourceScan = Task {
+                try await scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: queuedSourceURL)], jobKey: scanKey
+                ) { check in
+                    try CardSource.enumerateRegularFiles(base: queuedSourceURL, checkCancellation: check)
+                }
             }
             queuedSourceScanTask = sourceScan
             let sourceManifest = try await sourceScan.value
@@ -2234,7 +2241,7 @@ class SharedAppCoordinator: ObservableObject {
                 estimatedBytes: sourceBytes,
                 plannedTotalBytes: sourceBytes * Int64(access.destinationURLs.count),
                 sourceIsKnownEmpty: sourceManifest.isEmpty,
-                independentDestinationCount: independence.independentCopyCount,
+                independentDestinationCount: independence.provenIndependentCopyCount,
                 photographerReportFinalizer: nil
             )
             await executeOperation(context, queuedInvocationID: invocationID)
@@ -2361,7 +2368,7 @@ class SharedAppCoordinator: ObservableObject {
             estimatedBytes: sourceInfo?.totalSize ?? 1_000_000_000,
             plannedTotalBytes: sourceInfo.map { $0.totalSize * Int64(destinationURLs.count) },
             sourceIsKnownEmpty: sourceInfo?.fileCount == 0,
-            independentDestinationCount: independence.independentCopyCount,
+            independentDestinationCount: independence.provenIndependentCopyCount,
             photographerReportFinalizer: selectedReportFinalizer
         )
         await executeOperation(context)

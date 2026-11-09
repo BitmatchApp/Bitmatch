@@ -13,9 +13,9 @@ public enum AppleDoubleSelection {
         13: 0, 14: 4, 15: 4
     ]
 
-    public static func companions(in manifest: [FileEntry]) throws -> [FileEntry] {
+    public static func companions(in manifest: [FileEntry], checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [FileEntry] {
         try manifest.filter { entry in
-            try Task.checkCancellation()
+            try checkCancellation()
             guard entry.url.lastPathComponent.hasPrefix("._"), entry.size >= 26 else { return false }
             let name = String(entry.url.lastPathComponent.dropFirst(2))
             guard !name.isEmpty else { return false }
@@ -26,7 +26,7 @@ public enum AppleDoubleSelection {
             let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
             guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
             defer { close(fd) }
-            return try isMetadataOnlyCompanion(fd: fd, size: entry.size)
+            return try isMetadataOnlyCompanion(fd: fd, size: entry.size, checkCancellation: checkCancellation)
         }.sorted { $0.relativePath < $1.relativePath }
     }
 
@@ -34,7 +34,7 @@ public enum AppleDoubleSelection {
     /// filesystem-created companions beside a directly published FAT history.
     /// The caller owns the descriptor, which can be opened relative to a
     /// pinned directory without following the companion's pathname.
-    static func isMetadataOnlyCompanion(fd: Int32, size: Int64) throws -> Bool {
+    static func isMetadataOnlyCompanion(fd: Int32, size: Int64, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> Bool {
         guard size >= 26 else { return false }
         var before = stat()
         guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
@@ -45,7 +45,7 @@ public enum AppleDoubleSelection {
             var buffer = [UInt8](repeating: 0, count: count)
             var done = 0
             while done < count {
-                try Task.checkCancellation()
+                try checkCancellation()
                 let received = buffer.withUnsafeMutableBytes { bytes in
                     pread(fd, bytes.baseAddress!.advanced(by: done), count - done, offset + Int64(done))
                 }
@@ -92,8 +92,9 @@ public enum AppleDoubleSelection {
         return true
     }
 
-    public static func review(source: URL) throws -> [String] {
-        try companions(in: CardSource.enumerateRegularFiles(base: source)).map(\.relativePath)
+    public static func review(source: URL, checkCancellation: () throws -> Void = { try Task.checkCancellation() }) throws -> [String] {
+        try companions(in: CardSource.enumerateRegularFiles(base: source, checkCancellation: checkCancellation),
+                       checkCancellation: checkCancellation).map(\.relativePath)
     }
 
     /// Re-prove the classification at Start. A stale review must never silently

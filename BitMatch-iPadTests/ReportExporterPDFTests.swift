@@ -268,7 +268,8 @@ struct ReportPDFNativeRowTests {
             ResultRow(path: "/card/legacy.mov", status: ResultOutcome.verified.statusText, size: 1,
                       checksum: "legacy", destination: "/backup", destinationPath: "/backup/legacy.mov"),
             ResultRow(path: "/card/failed.mov", status: ResultOutcome.failed.statusText, size: 1,
-                      checksum: nil, destination: "/backup", destinationPath: "/backup/failed.mov")
+                      checksum: nil, destination: "/backup", destinationPath: "/backup/failed.mov",
+                      failureReason: "sourceUnstable")
         ]
         let summary = ReportSummary(
             jobID: UUID(), started: Date(), finished: Date().addingTimeInterval(1), mode: .copyAndVerify,
@@ -288,6 +289,7 @@ struct ReportPDFNativeRowTests {
         let document = try #require(PDFDocument(data: data))
         let text = try #require(document.string)
         #expect(text.contains("NOT SAFE TO ERASE"))
+        #expect(text.contains("card changed or could not be read consistently"))
         #expect(!text.contains("VERIFICATION SUCCESSFUL"))
         for row in rows { #expect(text.contains(row.fileName)) }
         if let output = ProcessInfo.processInfo.environment["BITMATCH_PDF_EDGE_ARTIFACTS"] {

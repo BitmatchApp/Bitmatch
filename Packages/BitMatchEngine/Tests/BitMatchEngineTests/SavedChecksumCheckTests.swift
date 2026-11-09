@@ -4,6 +4,22 @@ import Testing
 @testable import BitMatchEngine
 
 struct SavedChecksumCheckTests {
+    @Test(arguments: [false, true])
+    func adjacentChecksumManifestAcceptsLeadingUTF8BOM(withHeader: Bool) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "original", under: root)
+        let report = try writeReport(root: root, target: file, checksum: sha256("original"), date: date(2026, 2, 1))
+        let header = withHeader ? "# BitMatch Checksum Manifest\n" : ""
+        let content = header + "\(sha256("original"))  \(file.path)\n"
+        let manifest = report.deletingPathExtension().appendingPathExtension("sha-256.txt")
+        let bytes = Data([0xef, 0xbb, 0xbf]) + Data(content.utf8)
+        try bytes.write(to: manifest)
+        let result = try await run(root)
+        #expect(result.isIntact)
+        #expect(try Data(contentsOf: manifest) == bytes)
+    }
+
     /// Plant: ignore a damaged adjacent manifest and fall back to the JSON digest.
     @Test(arguments: ["oversized", "invalid-utf8", "malformed", "invalid-digest", "conflicting-duplicate"])
     func damagedAdjacentManifestCannotBeIgnored(kind: String) async throws {
@@ -55,7 +71,7 @@ struct SavedChecksumCheckTests {
         }
     }
 
-    @Test(arguments: ["", "# BitMatch Checksum Manifest\n"])
+    @Test(arguments: ["", "# BitMatch Checksum Manifest\n", "\u{feff}# BitMatch Checksum Manifest\n"])
     func emptyAdjacentManifestCannotBeIgnored(text: String) async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

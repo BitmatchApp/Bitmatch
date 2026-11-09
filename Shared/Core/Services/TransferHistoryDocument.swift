@@ -123,6 +123,7 @@ private struct HistoryResult: Encodable {
     let destinationPath: String?
     let clipIntegrity: ClipIntegrityFinding?
     let wasReused: Bool?
+    let failureReason: String?
 
     init(row: ResultRow, mode: VerificationMode) {
         id = row.id
@@ -135,5 +136,6 @@ private struct HistoryResult: Encodable {
         destinationPath = row.destinationPath
         clipIntegrity = row.clipIntegrity
         wasReused = row.wasReused ? true : nil
+        failureReason = row.isSuccessStatus ? nil : row.failureReason.flatMap(ResultFailureReason.init(rawValue:))?.rawValue
     }
 }

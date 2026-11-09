@@ -1,10 +1,30 @@
 import XCTest
+import Synchronization
 @testable import BitMatchEngine
 #if canImport(Darwin)
 import Darwin
 #endif
 
 final class CardSourceTests: XCTestCase {
+    func testExplicitCancellationCheckStopsDescriptorWalk() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cancelled-walk-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = root.appendingPathComponent("clip.txt")
+        try Data("original".utf8).write(to: file)
+        let checks = Mutex(0)
+        XCTAssertThrowsError(try CardSource.enumerateRegularFiles(base: root, checkCancellation: {
+            let count = checks.withLock { value in
+                value += 1
+                return value
+            }
+            if count >= 4 { throw CancellationError() }
+        })) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(try Data(contentsOf: file), Data("original".utf8))
+    }
     func testMissingRootThrowsInsteadOfReturningEmptyManifest() {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-manifest-\(UUID().uuidString)")

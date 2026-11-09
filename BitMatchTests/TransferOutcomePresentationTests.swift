@@ -106,6 +106,22 @@ struct TransferOutcomePresentationTests {
 
     private var done: OperationState { .completed(.init(success: true, message: "Verified")) }
 
+    @Test func unstableSourceIsIdentifiedAcrossBackups() {
+        let rows = [row("A.mov", .failed, backup: backupA, failureReason: "sourceUnstable"),
+                    row("A.mov", .failed, backup: backupB, failureReason: "sourceUnstable")]
+        let outcome = make(state: done, rows: rows, hasErrors: true)
+        #expect(outcome.verdict.detail.contains("card changed or could not be read consistently"))
+        #expect(outcome.safetyState != .safeToErase)
+    }
+
+    @Test func sourceReadFailureIsNotDescribedAsABackupFailure() {
+        let rows = [row("A.mov", .failed, backup: backupA, failureReason: "sourceReadFailed"),
+                    row("A.mov", .failed, backup: backupB, failureReason: "sourceReadFailed")]
+        let outcome = make(state: done, rows: rows, hasErrors: true)
+        #expect(outcome.verdict.detail.contains("card could not be read"))
+        #expect(outcome.safetyState != .safeToErase)
+    }
+
     @Test func heroSubtitleIsExactForStandardVerify() {
         let outcome = make(state: done, mode: .standard, files: 486, destinations: 2, seconds: 95)
         #expect(outcome.heroSubtitle == "486 files read back from both backups and matched to the card. 1m 35s.")

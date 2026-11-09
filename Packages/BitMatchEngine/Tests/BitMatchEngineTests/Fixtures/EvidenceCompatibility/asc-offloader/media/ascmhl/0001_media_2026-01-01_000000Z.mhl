@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<hashlist version="2.0" xmlns="urn:ASC:MHL:v2.0">
+  <creatorinfo>
+    <creationdate>2026-01-01T00:00:00+00:00</creationdate>
+    <hostname>synthetic</hostname>
+    <tool version="0.1.0">Offloader</tool>
+  </creatorinfo>
+  <processinfo>
+    <process>transfer</process>
+  </processinfo>
+  <hashes>
+    <hash>
+      <path size="33" lastmodificationdate="2026-01-01T00:00:00+00:00">café clip.txt</path>
+      <md5 action="original" hashdate="2026-01-01T00:00:00+00:00">cae63765bb8cb41a986276cdf7cdbd9e</md5>
+    </hash>
+    <hash>
+      <path size="0" lastmodificationdate="2026-01-01T00:00:00+00:00">empty.mov</path>
+      <md5 action="original" hashdate="2026-01-01T00:00:00+00:00">d41d8cd98f00b204e9800998ecf8427e</md5>
+    </hash>
+  </hashes>
+</hashlist>

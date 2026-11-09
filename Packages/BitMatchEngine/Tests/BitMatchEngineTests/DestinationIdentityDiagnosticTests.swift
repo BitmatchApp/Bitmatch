@@ -11,12 +11,14 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
         let domain: String
         let code: Int
         let description: String
+        let reason: String?
 
         init(_ error: Error) {
             let nsError = error as NSError
             domain = nsError.domain
             code = nsError.code
             description = nsError.localizedDescription
+            reason = nsError.userInfo[ResultFailureReason.userInfoKey] as? String
         }
     }
 
@@ -343,6 +345,7 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
                        "Source file changed during copy; keep the source and inspect the backup for a partial file")
         let row = try XCTUnwrap(operation.results.first)
         XCTAssertFalse(row.success)
+        XCTAssertEqual(row.failureReason, ResultFailureReason.sourceUnstable.rawValue)
         let returnedError = try XCTUnwrap(row.error as NSError?)
         XCTAssertEqual(returnedError.domain, "TransferPipeline")
         XCTAssertEqual(returnedError.code, 256, "The pipeline must retain its fail-closed card-changed result")
@@ -523,6 +526,8 @@ final class DestinationIdentityDiagnosticTests: XCTestCase, @unchecked Sendable 
         let guardError = try XCTUnwrap(guardedFailure.withLock { $0 })
         let row = try XCTUnwrap(operation.results.first)
         XCTAssertFalse(row.success)
+        XCTAssertEqual(guardError.reason, ResultFailureReason.sourceUnstable.rawValue)
+        XCTAssertEqual(row.failureReason, ResultFailureReason.sourceUnstable.rawValue)
         let returnedError = try XCTUnwrap(row.error as NSError?)
         XCTAssertEqual(returnedError.domain, "TransferPipeline")
         XCTAssertEqual(returnedError.code, 256, "The pipeline must retain its fail-closed card-changed result")

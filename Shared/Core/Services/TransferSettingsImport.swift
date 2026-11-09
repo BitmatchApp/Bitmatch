@@ -48,7 +48,10 @@ final class TransferSettingsImportModel: ObservableObject {
         review = nil
         guard coordinator.canImportTransferSettings else { throw TransferSettingsImportError.busy }
         let decoded = try PortableTransferSettings.decode(data)
-        review = TransferSettingsReview(current: coordinator.portableTransferSettings, proposed: decoded)
+        let current: PortableTransferSettings
+        if decoded.folderRecipes == nil { current = coordinator.portableTransferSettings }
+        else { current = try coordinator.portableTransferSettingsForExport() }
+        review = TransferSettingsReview(current: current, proposed: decoded)
     }
 
     func cancel() { review = nil }
@@ -78,12 +81,27 @@ extension SharedAppCoordinator {
                 autoNumber: naming.autoNumber, groupByCamera: naming.groupByCamera))
     }
 
+    func portableTransferSettingsForExport() throws -> PortableTransferSettings {
+        let current = portableTransferSettings
+        let recipes = try photographerJobViewModel.validatedPortableFolderRecipes()
+        return PortableTransferSettings(verificationMode: current.verificationMode,
+            generateASCMHL: current.generateASCMHL, ignoreAppleDouble: current.ignoreAppleDouble,
+            reports: current.reports, naming: current.naming,
+            folderRecipes: recipes.isEmpty ? nil : recipes)
+    }
+
     func applyTransferSettings(_ review: TransferSettingsReview) throws {
         // A transfer or queue can start while the preview is open. Recheck on
         // the main actor immediately before changing any preference.
         guard canImportTransferSettings else { throw TransferSettingsImportError.busy }
-        guard portableTransferSettings == review.current else { throw TransferSettingsImportError.settingsChanged }
+        let current: PortableTransferSettings
+        if review.proposed.folderRecipes == nil { current = portableTransferSettings }
+        else { current = try portableTransferSettingsForExport() }
+        guard current == review.current else { throw TransferSettingsImportError.settingsChanged }
         let proposed = review.proposed
+        if let recipes = proposed.folderRecipes {
+            try photographerJobViewModel.importPortableFolderRecipes(recipes)
+        }
         verificationMode = proposed.verificationMode
         generateASCMHL = proposed.generateASCMHL
         var reports = reportSettings

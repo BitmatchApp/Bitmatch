@@ -70,17 +70,19 @@ final class DriveAccessWorker {
 
     private let maxConcurrent: Int
     private let maxQueued: Int
+    private let useBlockingThreads: Bool
     private var queued: [Job] = []
     private var running: [UUID: RunningJob] = [:]
 
     var runningCount: Int { running.count }
     var queuedCount: Int { queued.count }
 
-    init(maxConcurrent: Int = 2, maxQueued: Int = 8) {
+    init(maxConcurrent: Int = 2, maxQueued: Int = 8, useBlockingThreads: Bool = false) {
         precondition(maxConcurrent > 0)
         precondition(maxQueued >= 0)
         self.maxConcurrent = maxConcurrent
         self.maxQueued = maxQueued
+        self.useBlockingThreads = useBlockingThreads
     }
 
     /// The mount grouping key is lexical. It does not standardize the URL,
@@ -98,7 +100,8 @@ final class DriveAccessWorker {
         return volumesPrefix + firstComponent
     }
 
-    /// Runs `operation` on a detached utility task. `jobKey` is consumer-owned
+    /// Runs `operation` away from the UI actor. Blocking-thread mode is for
+    /// bodies that do not depend on Swift task cancellation. `jobKey` is consumer-owned
     /// and must be namespaced; a newer request with that key cancels its queued
     /// predecessor and settles any previous caller exactly once.
     func perform<Value: Sendable>(
@@ -115,6 +118,16 @@ final class DriveAccessWorker {
         mountKeys: Set<String>,
         jobKey: String,
         operation: @escaping @Sendable () throws -> Value
+    ) async throws -> Value {
+        try await performCancellable(mountKeys: mountKeys, jobKey: jobKey) { _ in try operation() }
+    }
+
+    /// The supplied check also works on blocking threads, where Swift task
+    /// cancellation is not available inside the synchronous operation.
+    func performCancellable<Value: Sendable>(
+        mountKeys: Set<String>,
+        jobKey: String,
+        operation: @escaping @Sendable (@Sendable () throws -> Void) throws -> Value
     ) async throws -> Value {
         let id = UUID()
         let completion = Completion<Value>()
@@ -139,7 +152,13 @@ final class DriveAccessWorker {
                         // If it races with a blocked operation, its returned
                         // value stays local here and is dropped if already settled.
                         guard completion.isPending else { return }
-                        do { completion.resolve(.success(try operation())) }
+                        do {
+                            let check: @Sendable () throws -> Void = {
+                                guard completion.isPending else { throw CancellationError() }
+                                try Task.checkCancellation()
+                            }
+                            completion.resolve(.success(try operation(check)))
+                        }
                         catch { completion.resolve(.failure(error)) }
                     })
                 enqueue(job)
@@ -152,7 +171,8 @@ final class DriveAccessWorker {
 
     /// Cancels all queued and active requests owned by this namespaced key.
     /// Active synchronous operations retain their slot and mount exclusion
-    /// until they return, though their detached task receives cancellation.
+    /// until they return. Detached tasks receive cancellation; a synchronous
+    /// body already running on a blocking thread continues until it returns.
     func cancel(jobKey: String) {
         let removed = queued.filter { $0.jobKey == jobKey }
         queued.removeAll { $0.jobKey == jobKey }
@@ -168,8 +188,8 @@ final class DriveAccessWorker {
         guard job.isPending() else { return }
 
         // Coalesce the key as a unit. Running calls cannot be stopped at a
-        // blocked syscall, but their awaiters settle and their tasks are marked
-        // cancelled; they continue to hold their mount slot until return.
+        // blocked syscall, but their awaiters settle; they continue to hold
+        // their mount slot until return.
         let superseded = queued.filter { $0.jobKey == job.jobKey }
         queued.removeAll { $0.jobKey == job.jobKey }
         superseded.forEach { $0.cancelCaller() }
@@ -216,8 +236,21 @@ final class DriveAccessWorker {
 
     private func start(_ job: Job) {
         running[job.id] = RunningJob(job: job)
+        let useBlockingThreads = useBlockingThreads
         let task = Task.detached(priority: .utility) { [weak self] in
-            if job.isPending() { job.execute() }
+            if useBlockingThreads {
+                // Only use this mode for operations that do not rely on
+                // Task cancellation inside their synchronous body. A blocked
+                // call keeps its worker and mount slots until it returns.
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global(qos: .utility).async {
+                        if job.isPending() { job.execute() }
+                        continuation.resume()
+                    }
+                }
+            } else if job.isPending() {
+                job.execute()
+            }
             await self?.finish(job.id)
         }
         running[job.id]?.task = task

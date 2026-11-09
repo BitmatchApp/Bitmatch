@@ -1169,7 +1169,11 @@ public final class DestinationWriter {
             try hooks?.beforeSourceOpen?(source)
             sourceHandle = try uncachedSourceHandle(for: source)
             hooks?.sourceDidOpen?(source)
+        } catch is CancellationError {
+            for file in active { file.cleanup() }
+            throw CancellationError()
         } catch {
+            let error = sourceReadError(error)
             for file in active { file.cleanup() }
             for destination in pendingReuse {
                 await onError(destination.index, relativePath, error)
@@ -1183,7 +1187,7 @@ public final class DestinationWriter {
 
         var initialSourceStat = stat()
         guard fstat(sourceHandle.fileDescriptor, &initialSourceStat) == 0 else {
-            let error = NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to inspect source file"])
+            let error = sourceReadError(NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to inspect source file"]))
             for file in active { file.cleanup() }
             for destination in pendingReuse { await onError(destination.index, relativePath, error) }
             for file in active { await onError(file.destination.index, relativePath, error) }
@@ -1203,7 +1207,7 @@ public final class DestinationWriter {
                 try Task.checkCancellation()
                 if let pauseCheck { try await pauseCheck() }
                 let requested = min(chunkSize, Int(sourceSize - bytesRead))
-                var data = try sourceHandle.read(upToCount: requested) ?? Data()
+                var data = try readSource(sourceHandle, upToCount: requested)
                 guard !data.isEmpty else {
                     recordSourceStabilityFailure(.copyReadShort, sourceIdentityPresent: true,
                                                  currentSourceIdentityPresent: false)
@@ -1279,7 +1283,7 @@ public final class DestinationWriter {
             }
 
             if !active.isEmpty {
-                let trailingData = try sourceHandle.read(upToCount: 1) ?? Data()
+                let trailingData = try readSource(sourceHandle, upToCount: 1)
                 let finalSourceAttributes: [FileAttributeKey: Any]
                 do {
                     finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
@@ -1485,19 +1489,36 @@ public final class DestinationWriter {
         let flags = O_RDONLY | O_NOFOLLOW | O_CLOEXEC
         let fd = source.path.withCString { Darwin.open($0, flags) }
         guard fd >= 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to open source file"])
+            throw sourceReadError(NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to open source file"]))
         }
         var info = stat()
         guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
             _ = Darwin.close(fd)
-            throw FileOperationError.unsafeOperation("Source item is not a regular file")
+            throw sourceReadError(FileOperationError.unsafeOperation("Source item is not a regular file"))
         }
         guard fcntl(fd, F_NOCACHE, 1) != -1 else {
             let failure = errno
             _ = Darwin.close(fd)
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure), userInfo: [NSLocalizedDescriptionKey: "Unable to bypass the source read cache"])
+            throw sourceReadError(NSError(domain: NSPOSIXErrorDomain, code: Int(failure), userInfo: [NSLocalizedDescriptionKey: "Unable to bypass the source read cache"]))
         }
         return FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+    }
+
+    private static func sourceReadError(_ error: Error) -> NSError {
+        let original = error as NSError
+        var info = original.userInfo
+        if info[ResultFailureReason.userInfoKey] == nil {
+            let changedDuringChecksum = original.domain == "ChecksumEngine" && [-10, -11].contains(original.code)
+            info[ResultFailureReason.userInfoKey] = changedDuringChecksum
+                ? ResultFailureReason.sourceUnstable.rawValue : ResultFailureReason.sourceReadFailed.rawValue
+        }
+        return NSError(domain: original.domain, code: original.code, userInfo: info)
+    }
+
+    private static func readSource(_ handle: FileHandle, upToCount count: Int) throws -> Data {
+        do { return try handle.read(upToCount: count) ?? Data() }
+        catch is CancellationError { throw CancellationError() }
+        catch { throw sourceReadError(error) }
     }
 
     private static func writeAll(
@@ -1530,8 +1551,18 @@ public final class DestinationWriter {
         NSError(
             domain: "DestinationWriter",
             code: -4,
-            userInfo: [NSLocalizedDescriptionKey: "Source file changed during copy; keep the source and inspect the backup for a partial file"]
+            userInfo: [
+                NSLocalizedDescriptionKey: "Source file changed during copy; keep the source and inspect the backup for a partial file",
+                ResultFailureReason.userInfoKey: ResultFailureReason.sourceUnstable.rawValue
+            ]
         )
+    }
+
+    private static func sourceInstabilityError(_ error: Error) -> NSError {
+        let original = error as NSError
+        var info = original.userInfo
+        info[ResultFailureReason.userInfoKey] = ResultFailureReason.sourceUnstable.rawValue
+        return NSError(domain: original.domain, code: original.code, userInfo: info)
     }
 
     private static func recordSourceStabilityFailure(
@@ -1906,18 +1937,24 @@ public final class DestinationWriter {
         let sourceSize = try sourceFileSize(source)
         func sourceChecksum(_ type: ChecksumAlgorithm) async throws -> String {
             let lastBytes = Mutex<Int64>(0)
-            return try await checksumService.generateChecksum(for: source, type: type) { fraction, _ in
-                guard fraction.isFinite else { return }
-                let current: Int64 = fraction >= 1 ? sourceSize
-                    : max(0, Int64(Double(sourceSize) * max(0, fraction)))
-                let delta = lastBytes.withLock { last -> Int64 in
-                    let delta = max(0, current - last)
-                    last = max(last, current)
-                    return delta
+            do {
+                return try await checksumService.generateChecksum(for: source, type: type) { fraction, _ in
+                    guard fraction.isFinite else { return }
+                    let current: Int64 = fraction >= 1 ? sourceSize
+                        : max(0, Int64(Double(sourceSize) * max(0, fraction)))
+                    let delta = lastBytes.withLock { last -> Int64 in
+                        let delta = max(0, current - last)
+                        last = max(last, current)
+                        return delta
+                    }
+                    if delta > 0 {
+                        onIOBytes?(destinationIndex, relativePath, .sourceHashing, Int(delta), 0, ProcessInfo.processInfo.systemUptime)
+                    }
                 }
-                if delta > 0 {
-                    onIOBytes?(destinationIndex, relativePath, .sourceHashing, Int(delta), 0, ProcessInfo.processInfo.systemUptime)
-                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                throw sourceReadError(error)
             }
         }
         if let sourceReadEvidence {
@@ -2151,7 +2188,7 @@ public final class DestinationWriter {
 
         var initial = stat()
         guard fstat(handle.fileDescriptor, &initial) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to inspect source file"])
+            throw sourceReadError(NSError(domain: NSPOSIXErrorDomain, code: Int(errno), userInfo: [NSLocalizedDescriptionKey: "Unable to inspect source file"]))
         }
         var hasher = MultiDigestHasher(algorithms: algorithms)
         var bytesRead: Int64 = 0
@@ -2161,7 +2198,7 @@ public final class DestinationWriter {
             let requested = min(4 * 1024 * 1024, Int(Int64(initial.st_size) - bytesRead))
             // Drain each chunk's buffer; see readPinnedDestination.
             let count = try autoreleasepool { () throws -> Int in
-                let read = try handle.read(upToCount: requested) ?? Data()
+                let read = try readSource(handle, upToCount: requested)
                 let data = try hooks?.transformVerificationSourceRead?(relativePath, read) ?? read
                 guard data.count == read.count else {
                     recordSourceStabilityFailure(.thoroughReadLengthMismatch,
@@ -2182,7 +2219,7 @@ public final class DestinationWriter {
             onIOBytes?(-1, relativePath, .sourceVerifying, count, 0, ProcessInfo.processInfo.systemUptime)
             bytesRead += Int64(count)
         }
-        let trailingData = try handle.read(upToCount: 1) ?? Data()
+        let trailingData = try readSource(handle, upToCount: 1)
         var final = stat()
         guard trailingData.isEmpty else {
             recordSourceStabilityFailure(.thoroughFinalTrailingData,
@@ -2280,7 +2317,14 @@ public final class DestinationWriter {
         hooks: FanOutHooks? = nil,
         onIOBytes: IOByteCallback? = nil
     ) async throws -> Bool {
-        let sourceAttributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        let sourceAttributes: [FileAttributeKey: Any]
+        do {
+            sourceAttributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw sourceReadError(error)
+        }
         let sourceSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? -1
         let sourceIdentity = fileIdentity(from: sourceAttributes)
         let sourceModificationDate = sourceAttributes[.modificationDate] as? Date
@@ -2303,7 +2347,7 @@ public final class DestinationWriter {
             try await PauseGate.waitIfCurrentIsPaused()
             // Drain each chunk's buffers; see readPinnedDestination.
             let (sourceCount, destinationCount, same, readSeconds, readEnded) = try autoreleasepool { () throws -> (Int, Int, Bool, TimeInterval, TimeInterval) in
-                let sourceRead = try sourceHandle.read(upToCount: 4 * 1024 * 1024) ?? Data()
+                let sourceRead = try readSource(sourceHandle, upToCount: 4 * 1024 * 1024)
                 let sourceData = try hooks?.transformVerificationSourceRead?(relativePath, sourceRead) ?? sourceRead
                 guard sourceData.count == sourceRead.count else {
                     recordSourceStabilityFailure(.comparisonReadLengthMismatch,
@@ -2322,6 +2366,8 @@ public final class DestinationWriter {
                     recordSourceStabilityFailure(.comparisonReadShort,
                                                  sourceIdentityPresent: true,
                                                  currentSourceIdentityPresent: false)
+                    throw sourceInstabilityError(NSError(domain: "DestinationWriter", code: -11,
+                        userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"]))
                 }
                 throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
             }
@@ -2333,14 +2379,15 @@ public final class DestinationWriter {
             bytesRead += Int64(sourceCount)
         }
 
-        let sourceTrailingData = try sourceHandle.read(upToCount: 1) ?? Data()
+        let sourceTrailingData = try readSource(sourceHandle, upToCount: 1)
         let destinationTrailingData = try destinationHandle.read(upToCount: 1) ?? Data()
         let destinationFinal = try pinnedDestination.snapshot()
         guard sourceTrailingData.isEmpty else {
             recordSourceStabilityFailure(.comparisonSourceTrailingData,
                                          sourceIdentityPresent: true,
                                          currentSourceIdentityPresent: false)
-            throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
+            throw sourceInstabilityError(NSError(domain: "DestinationWriter", code: -11,
+                userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"]))
         }
         guard destinationTrailingData.isEmpty else {
             throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
@@ -2348,14 +2395,14 @@ public final class DestinationWriter {
         let sourceFinalAttributes: [FileAttributeKey: Any]
         do {
             sourceFinalAttributes = try FileManager.default.attributesOfItem(atPath: source.path)
+        } catch is CancellationError {
+            throw CancellationError()
         } catch {
-            if !(error is CancellationError) {
-                recordSourceStabilityFailure(.comparisonSourceChanged,
-                                             sourceIdentityPresent: true,
-                                             currentSourceIdentityPresent: false,
-                                             lookupError: error)
-            }
-            throw error
+            recordSourceStabilityFailure(.comparisonSourceChanged,
+                                         sourceIdentityPresent: true,
+                                         currentSourceIdentityPresent: false,
+                                         lookupError: error)
+            throw sourceInstabilityError(error)
         }
         guard sourceRemainedStable(
             initialSize: sourceSize,
@@ -2371,7 +2418,8 @@ public final class DestinationWriter {
                                             finalAttributes: sourceFinalAttributes),
                                          sourceIdentityPresent: true,
                                          currentSourceIdentityPresent: true)
-            throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
+            throw sourceInstabilityError(NSError(domain: "DestinationWriter", code: -11,
+                userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"]))
         }
         guard pinnedFileRemainedStable(destinationInitial, destinationFinal) else {
             throw NSError(domain: "DestinationWriter", code: -11, userInfo: [NSLocalizedDescriptionKey: "File changed while comparing bytes"])
@@ -2380,8 +2428,14 @@ public final class DestinationWriter {
     }
 
     private static func sourceFileSize(_ source: URL) throws -> Int64 {
-        let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
-        return (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        do {
+            let attributes = try FileManager.default.attributesOfItem(atPath: source.path)
+            return (attributes[.size] as? NSNumber)?.int64Value ?? 0
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw sourceReadError(error)
+        }
     }
 
     private static func sourceIdentity(

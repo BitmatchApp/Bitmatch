@@ -44,6 +44,137 @@ struct EvidenceCompatibilityTests {
         try Data(text.utf8).write(to: url)
     }
 
+    @Test(arguments: ["valid", "bad-md5", "bad-xxh64", "bad-sha256", "unsupported", "bad-size", "duplicate"])
+    func ascRequiresEverySuppliedDigestAndValidSize(kind: String) async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data().write(to: root.appendingPathComponent("empty.bin"))
+        let sha = kind == "bad-sha256" ? String(repeating: "0", count: 64)
+            : "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        let md5 = kind == "bad-md5" ? String(repeating: "0", count: 32) : "d41d8cd98f00b204e9800998ecf8427e"
+        let xxh = kind == "bad-xxh64" ? String(repeating: "0", count: 16) : "ef46db3751d8e999"
+        let extra = kind == "unsupported" ? "<sha1>unsupported</sha1>"
+            : (kind == "duplicate" ? "<sha-256>\(sha)</sha-256>" : "")
+        let size = kind == "bad-size" ? "1" : "0"
+        let manifest = """
+        <hashlist xmlns="urn:ASC:MHL:v2.0" version="2.0"><hashes><hash>
+        <path size="\(size)">empty.bin</path><sha256>\(sha)</sha256><md5>\(md5)</md5><xxh64>\(xxh)</xxh64>\(extra)
+        </hash></hashes></hashlist>
+        """
+        try write(manifest, path: "ascmhl/0001_test.mhl", root: root)
+        let before = try contents(root)
+        if kind == "unsupported" || kind == "duplicate" {
+            await #expect(throws: (any Error).self) { _ = try await checker.discover(under: root) }
+        } else {
+            let result = try await run(root)
+            #expect(result.isIntact == (kind == "valid"))
+        }
+        #expect(try contents(root) == before)
+    }
+
+    @Test(arguments: [false, true])
+    func ascHistoryRejectsConflictingGenerations(conflicting: Bool) async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        let first = xml()
+        let second = conflicting ? first.replacingOccurrences(of: md5("A"), with: md5("B")) : first
+        try write(first, path: "ascmhl/0001_first.mhl", root: root)
+        try write(second, path: "ascmhl/0002_second.mhl", root: root)
+        let before = try contents(root)
+        if conflicting {
+            await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+                _ = try await checker.discover(under: root)
+            }
+        } else {
+            #expect(try await run(root).isIntact)
+        }
+        #expect(try contents(root) == before)
+    }
+
+    @Test func ascHistoryRejectsConflictingRecordedSizes() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        let first = xml().replacingOccurrences(of: "<path>a.txt</path>", with: "<path size=\"1\">a.txt</path>")
+        let second = first.replacingOccurrences(of: "size=\"1\"", with: "size=\"2\"")
+        try write(first, path: "ascmhl/0001_first.mhl", root: root)
+        try write(second, path: "ascmhl/0002_second.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
+    @Test(arguments: [false, true])
+    func laterASCRecordCannotDropEarlierDigest(earlierIsWrong: Bool) async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        let earlier = earlierIsWrong ? xml().replacingOccurrences(of: md5("A"), with: md5("B")) : xml()
+        let sha = SHA256.hash(data: Data("A".utf8)).map { String(format: "%02x", $0) }.joined()
+        let later = xml().replacingOccurrences(of: "<md5>\(md5("A"))</md5>", with: "<sha256>\(sha)</sha256>")
+        try write(earlier, path: "ascmhl/0001_first.mhl", root: root)
+        try write(later, path: "ascmhl/0002_second.mhl", root: root)
+        let result = try await run(root)
+        #expect(result.isIntact == !earlierIsWrong)
+        if earlierIsWrong { #expect(result.changedPaths == ["a.txt"]) }
+    }
+
+    @Test func laterASCRecordCannotDropEarlierSize() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        let earlier = xml().replacingOccurrences(of: "<path>a.txt</path>", with: "<path size=\"2\">a.txt</path>")
+        try write(earlier, path: "ascmhl/0001_first.mhl", root: root)
+        try write(xml(), path: "ascmhl/0002_second.mhl", root: root)
+        let result = try await run(root)
+        #expect(!result.isIntact)
+        #expect(result.changedPaths == ["a.txt"])
+    }
+
+    @Test(arguments: ["changed", "replaced", "added"])
+    func unchainedASCInventoryCannotChangeAfterDiscovery(kind: String) async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        try write(xml(), path: "ascmhl/0001_first.mhl", root: root)
+        let manifest = root.appendingPathComponent("ascmhl/0001_first.mhl")
+        let discovery = try await checker.discover(under: root)
+        if kind == "changed" {
+            try Data((xml() + "<!-- changed -->").utf8).write(to: manifest)
+        } else if kind == "replaced" {
+            let bytes = try Data(contentsOf: manifest)
+            try FileManager.default.removeItem(at: manifest)
+            try bytes.write(to: manifest)
+        } else {
+            try write(xml(), path: "ascmhl/0002_extra.mhl", root: root)
+        }
+        let before = try contents(root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.check(discovery) { _ in }
+        }
+        #expect(try contents(root) == before)
+    }
+
+    @Test func unchainedASCInventoryCannotChangeDuringMediaRead() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write("A", path: "a.txt", root: root)
+        try write(xml(), path: "ascmhl/0001_first.mhl", root: root)
+        let manifest = root.appendingPathComponent("ascmhl/0001_first.mhl")
+        let checking = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
+            inventoryChunkRead: { _, _ in
+                let handle = try FileHandle(forWritingTo: manifest)
+                defer { try? handle.close() }
+                try handle.seekToEnd()
+                try handle.write(contentsOf: Data("<!-- changed -->".utf8))
+            })
+        let discovery = try await checking.discover(under: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checking.check(discovery) { _ in }
+        }
+    }
+
     /// Plant: trim <path> text, or resolve nested manifests relative to the selected root.
     @Test(arguments: ["md5", "xxh64"])
     func officialReferenceFilesIncludingWhitespaceAndNestedRoots(algorithm: String) async throws {

@@ -99,7 +99,7 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         timeFormatters.string(from: date, calendar: calendar)
     }
 
-    /// Phase, backup index, file and pace for the one running row; nil otherwise.
+    /// Phase, file and pace for the one running row; nil otherwise.
     /// `rate` is the averaged copy rate the expanded screen shows
     /// (`TransferProgressPresentation.speed`); the raw sample is never used.
     func runningDetail(
@@ -114,13 +114,20 @@ struct QueueSessionRow: Identifiable, Equatable, Sendable {
         case .copying:
             meta = joined(["Copying to " + destinationNames.joined(separator: ", "), size])
         case .verifying:
-            let fractions = progress?.perDestinationProgress ?? []
-            let index = fractions.firstIndex(where: { $0 < 1 }) ?? max(0, destinationNames.count - 1)
-            let name = destinationNames.indices.contains(index) ? destinationNames[index] : nil
-            let count = destinationNames.count
+            let counts: String? = {
+                guard !destinationNames.isEmpty,
+                      let verified = progress?.perDestinationVerifiedFiles,
+                      let totals = progress?.perDestinationTotals,
+                      verified.count == destinationNames.count, totals.count == destinationNames.count,
+                      totals.allSatisfy({ $0 > 0 }) else { return nil }
+                return destinationNames.indices.map { index in
+                    let count = min(max(0, verified[index]), totals[index])
+                    return "\(destinationNames[index]) \(count)/\(totals[index])"
+                }.joined(separator: ", ")
+            }()
             meta = joined([
-                name.map { "Verifying \($0)" } ?? "Verifying",
-                count > 1 ? "\(index + 1) of \(count) backups" : nil,
+                destinationNames.count == 1 ? "Verifying \(destinationNames[0])" : "Verifying backups",
+                counts.map { "Matched so far \($0)" },
                 size
             ])
         case .finishing:
@@ -610,7 +617,6 @@ struct QueueSessionPresentation: Equatable, Sendable {
             canExport: true,
             sourceName: record.title,
             completionReason: displayedReason,
-            independentDestinationCount: record.independentDestinationCount,
             selectedFileVerificationQualified: TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
         )
     }
@@ -618,6 +624,12 @@ struct QueueSessionPresentation: Equatable, Sendable {
     private static func cause(for record: LocalTransferRecord, state: CardSafetyState) -> String? {
         guard state == .needsAttention || state == .failed || state == .interrupted else { return nil }
         if state == .needsAttention {
+            if record.results.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceUnstable.rawValue }) {
+                return "The card changed or could not be read consistently · Review all backups"
+            }
+            if record.results.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceReadFailed.rawValue }) {
+                return "The card could not be read · Review all backups"
+            }
             let issues = DestinationResultSummary.make(
                 rows: record.results,
                 destinations: record.destinations.map(\.url)

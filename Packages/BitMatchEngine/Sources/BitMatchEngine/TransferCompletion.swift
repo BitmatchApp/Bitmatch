@@ -456,6 +456,10 @@ public enum TransferCompletion: Sendable {
                     failedMessage += "; a backup ran out of space"
                 case .companionConflict:
                     failedMessage += "; the backup keeps its own hidden companion files, so the card's AppleDouble files could not be copied there. Turn on Ignore AppleDouble metadata files"
+                case .sourceUnstable:
+                    failedMessage += "; the card changed or could not be read consistently. Keep the card"
+                case .sourceReadFailed:
+                    failedMessage += "; the card could not be read. Keep the card"
                 }
             }
             fileResultsMessage = failedMessage

@@ -442,7 +442,8 @@ final class CopyVerifyExecutor {
                 elapsedTime: nil, averageSpeed: nil, peakSpeed: nil, bytesProcessed: nil, totalBytes: nil,
                 perDestinationTotals: lastMediaProgress?.perDestinationTotals,
                 perDestinationCompleted: lastMediaProgress?.perDestinationCompleted,
-                perDestinationProgress: lastMediaProgress?.perDestinationProgress), callbacks: callbacks)
+                perDestinationProgress: lastMediaProgress?.perDestinationProgress,
+                perDestinationVerifiedFiles: lastMediaProgress?.perDestinationVerifiedFiles), callbacks: callbacks)
             reportIssue = try await generateReport(
                 operation: operation,
                 results: allResults,
@@ -614,7 +615,8 @@ final class CopyVerifyExecutor {
             bytesProcessed: update.bytesProcessed, totalBytes: update.totalBytes, stageProgress: fraction,
             perDestinationTotals: mediaProgress?.perDestinationTotals,
             perDestinationCompleted: mediaProgress?.perDestinationCompleted, isASCMHL: true,
-            perDestinationProgress: mediaProgress?.perDestinationProgress)
+            perDestinationProgress: mediaProgress?.perDestinationProgress,
+            perDestinationVerifiedFiles: mediaProgress?.perDestinationVerifiedFiles)
     }
 
     private func handleError(

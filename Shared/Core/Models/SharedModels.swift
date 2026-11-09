@@ -72,7 +72,7 @@ struct FolderInfo: Identifiable, Equatable {
 }
 
 // MARK: - Enhanced Folder Info
-struct EnhancedFolderInfo: Identifiable, Equatable {
+struct EnhancedFolderInfo: Identifiable, Equatable, Sendable {
     let id = UUID()
     let url: URL
     let fileCount: Int

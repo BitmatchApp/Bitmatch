@@ -51,7 +51,7 @@ enum PhotographerEventType: String, Codable, CaseIterable, Sendable {
     case commercial = "Commercial"
 }
 
-enum FolderLayerKind: String, Codable, CaseIterable, Sendable {
+enum FolderLayerKind: String, Codable, CaseIterable, Hashable, Sendable {
     case dateAndJob
     case originals
     case photographer

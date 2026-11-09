@@ -10,6 +10,7 @@ final class TransferWorkMeter: Sendable {
         let completed: Double
         let total: Double
         let perDestination: [Double]
+        let verifiedFiles: [Int]
         var fraction: Double { total > 0 ? min(0.99, completed / total) : 0 }
     }
 
@@ -32,6 +33,7 @@ final class TransferWorkMeter: Sendable {
         var completed = 0.0
         var total = 0.0
         var perDestinationCompleted: [Double]
+        var verifiedFiles: [Int]
         var perDestinationTotal = 0.0
 
         mutating func replace(_ file: FileWork, at path: String, previous: FileWork) {
@@ -101,6 +103,7 @@ final class TransferWorkMeter: Sendable {
         state = Mutex(State(files: plannedFiles,
             total: sharedWork + selectedWork * Double(destinationCount) * (1 + destinationPasses + sourceHashesPerDestination + reuseHashesPerDestination + sourceReuseComparisonsPerDestination + destinationReuseComparisonsPerDestination),
             perDestinationCompleted: Array(repeating: 0, count: destinationCount),
+            verifiedFiles: Array(repeating: 0, count: destinationCount),
             perDestinationTotal: selectedWork * (1 + destinationPasses + sourceHashesPerDestination + reuseHashesPerDestination + sourceReuseComparisonsPerDestination + destinationReuseComparisonsPerDestination)
                 + sharedWork / Double(max(1, destinationCount))))
     }
@@ -180,6 +183,9 @@ final class TransferWorkMeter: Sendable {
             guard var file = state.files[path], file.verified.indices.contains(destination),
                   file.verificationSucceeded.indices.contains(destination) else { return }
             let previous = file
+            if !file.verificationSucceeded[destination] {
+                state.verifiedFiles[destination] += 1
+            }
             file.verified[destination] = file.size * destinationPasses
             file.verificationSucceeded[destination] = true
             // Shared source evidence can avoid a separate read per backup.
@@ -207,7 +213,7 @@ final class TransferWorkMeter: Sendable {
             Snapshot(completed: state.completed, total: state.total,
                 perDestination: state.perDestinationCompleted.map {
                     state.perDestinationTotal > 0 ? min(0.99, $0 / state.perDestinationTotal) : 0
-                })
+                }, verifiedFiles: state.verifiedFiles)
         }
     }
 }

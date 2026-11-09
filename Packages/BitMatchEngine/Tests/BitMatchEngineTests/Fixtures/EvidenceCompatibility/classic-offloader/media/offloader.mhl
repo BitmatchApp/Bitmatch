@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<hashlist version="1.1">
+  <creatorinfo>
+    <name>Synthetic fixture</name>
+    <username>synthetic</username>
+    <hostname>synthetic</hostname>
+    <tool version="0.1.0">Offloader</tool>
+    <startdate>2026-01-01T00:00:00+00:00</startdate>
+    <finishdate>2026-01-01T00:00:00+00:00</finishdate>
+  </creatorinfo>
+  <hash>
+    <file>empty.mov</file>
+    <size>0</size>
+    <lastmodificationdate>2026-01-01T00:00:00+00:00</lastmodificationdate>
+    <md5>d41d8cd98f00b204e9800998ecf8427e</md5>
+    <hashdate>2026-01-01T00:00:00+00:00</hashdate>
+  </hash>
+  <hash>
+    <file>café clip.txt</file>
+    <size>36</size>
+    <lastmodificationdate>2026-01-01T00:00:00+00:00</lastmodificationdate>
+    <md5>6b075c9d9eb4ed5424b4508702f1aab6</md5>
+    <hashdate>2026-01-01T00:00:00+00:00</hashdate>
+  </hash>
+</hashlist>

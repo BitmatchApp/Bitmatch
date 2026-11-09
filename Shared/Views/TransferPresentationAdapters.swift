@@ -83,7 +83,6 @@ extension TransferOutcomePresentation {
                 ? "Could not save transfer results. Keep the source and review History."
                 : record.map { recordedCompletionReason(for: $0) }
                     ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
-            independentDestinationCount: record?.independentDestinationCount,
             selectedFileVerificationQualified: record.map {
                 hasVerifiedSelectedFiles($0)
             } ?? false

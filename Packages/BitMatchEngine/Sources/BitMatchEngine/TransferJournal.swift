@@ -136,7 +136,9 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     /// Final handoffs settled; only reviewed metadata was omitted. This permits
     /// queue advancement, never a whole-card safe-to-erase verdict.
     public var expectedExclusionQueueQualification: ExpectedExclusionQueueQualification? = nil
-    /// Physical drives represented by `destinations`. Nil for older records
+    /// Resolved storage groups at admission. Older records may have counted
+    /// unresolved destinations as separate, so this is not proof of physical
+    /// independence when reading a saved record. Nil for older records
     /// whose disk independence was never assessed.
     public var independentDestinationCount: Int?
 

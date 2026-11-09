@@ -5,7 +5,7 @@ import BitMatchEngine
 /// Names, paths, permissions, identities and transfer evidence never enter it.
 struct PortableTransferSettings: Codable, Equatable, Sendable {
     static let format = "BitMatch transfer settings"
-    static let schemaVersion = 1
+    static let schemaVersion = 2
     static let maximumBytes = 16 * 1_024
 
     let verificationMode: VerificationMode
@@ -13,6 +13,47 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
     let ignoreAppleDouble: Bool
     let reports: Reports
     let naming: Naming
+    /// Recipe layers only. Preset names, IDs and project metadata stay local.
+    let folderRecipes: [Recipe]?
+
+    struct Recipe: Codable, Equatable, Sendable {
+        struct Layer: Codable, Equatable, Sendable {
+            let kind: FolderLayerKind
+            let isEnabled: Bool
+
+            private enum CodingKeys: String, CodingKey, CaseIterable { case kind, isEnabled }
+
+            init(kind: FolderLayerKind, isEnabled: Bool) {
+                self.kind = kind
+                self.isEnabled = isEnabled
+            }
+
+            init(from decoder: Decoder) throws {
+                try rejectUnknownSettingsKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
+                let values = try decoder.container(keyedBy: CodingKeys.self)
+                kind = try values.decode(FolderLayerKind.self, forKey: .kind)
+                isEnabled = try values.decode(Bool.self, forKey: .isEnabled)
+            }
+        }
+
+        let layers: [Layer]
+
+        var isValid: Bool {
+            !layers.isEmpty && layers.count <= FolderLayerKind.allCases.count
+                && Set(layers.map(\.kind)).count == layers.count
+        }
+
+        init(layers: [Layer]) { self.layers = layers }
+
+        private enum CodingKeys: String, CodingKey, CaseIterable { case layers }
+
+        init(from decoder: Decoder) throws {
+            try rejectUnknownSettingsKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            layers = try values.decode([Layer].self, forKey: .layers)
+            guard isValid else { throw TransferSettingsImportError.invalidFile }
+        }
+    }
 
     struct Reports: Codable, Equatable, Sendable {
         let makeReport: Bool
@@ -54,16 +95,17 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
     }
 
     init(verificationMode: VerificationMode, generateASCMHL: Bool, ignoreAppleDouble: Bool,
-         reports: Reports, naming: Naming) {
+         reports: Reports, naming: Naming, folderRecipes: [Recipe]? = nil) {
         self.verificationMode = verificationMode
         self.generateASCMHL = generateASCMHL
         self.ignoreAppleDouble = ignoreAppleDouble
         self.reports = reports
         self.naming = naming
+        self.folderRecipes = folderRecipes
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case format, schemaVersion, verificationMode, generateASCMHL, ignoreAppleDouble, reports, naming
+        case format, schemaVersion, verificationMode, generateASCMHL, ignoreAppleDouble, reports, naming, folderRecipes
     }
 
     init(from decoder: Decoder) throws {
@@ -71,32 +113,48 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
         guard try values.decode(String.self, forKey: .format) == Self.format else {
             throw TransferSettingsImportError.invalidFile
         }
-        guard try values.decode(Int.self, forKey: .schemaVersion) == Self.schemaVersion else {
+        let version = try values.decode(Int.self, forKey: .schemaVersion)
+        guard version == 1 || version == Self.schemaVersion else {
             throw TransferSettingsImportError.unsupportedVersion
         }
         try rejectUnknownSettingsKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
+        if version == 1, values.contains(.folderRecipes) { throw TransferSettingsImportError.invalidFile }
         verificationMode = try values.decode(VerificationMode.self, forKey: .verificationMode)
         generateASCMHL = try values.decode(Bool.self, forKey: .generateASCMHL)
         ignoreAppleDouble = try values.decode(Bool.self, forKey: .ignoreAppleDouble)
         reports = try values.decode(Reports.self, forKey: .reports)
         naming = try values.decode(Naming.self, forKey: .naming)
+        if version == 1 {
+            folderRecipes = nil
+        } else {
+            let recipes = try values.decode([Recipe].self, forKey: .folderRecipes)
+            guard recipes.count <= 32 else { throw TransferSettingsImportError.invalidFile }
+            folderRecipes = recipes
+        }
     }
 
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(Self.format, forKey: .format)
-        try values.encode(Self.schemaVersion, forKey: .schemaVersion)
+        try values.encode(folderRecipes == nil ? 1 : Self.schemaVersion, forKey: .schemaVersion)
         try values.encode(verificationMode, forKey: .verificationMode)
         try values.encode(generateASCMHL, forKey: .generateASCMHL)
         try values.encode(ignoreAppleDouble, forKey: .ignoreAppleDouble)
         try values.encode(reports, forKey: .reports)
         try values.encode(naming, forKey: .naming)
+        try values.encodeIfPresent(folderRecipes, forKey: .folderRecipes)
     }
 
     func encoded() throws -> Data {
+        if let folderRecipes {
+            guard folderRecipes.count <= 32 else { throw TransferSettingsImportError.tooManyRecipes }
+            guard folderRecipes.allSatisfy(\.isValid) else { throw TransferSettingsImportError.invalidRecipe }
+        }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        return try encoder.encode(self)
+        let data = try encoder.encode(self)
+        guard data.count <= Self.maximumBytes else { throw TransferSettingsImportError.tooLarge }
+        return data
     }
 
     static func decode(_ data: Data) throws -> Self {
@@ -128,12 +186,21 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
         add("Separator", current.naming.separator.displayName, naming.separator.displayName)
         add("Auto-number folders", onOff(current.naming.autoNumber), onOff(naming.autoNumber))
         add("Group by camera", onOff(current.naming.groupByCamera), onOff(naming.groupByCamera))
+        if let folderRecipes {
+            let existing = current.folderRecipes ?? []
+            let additions = folderRecipes.reduce(into: [Recipe]()) { result, recipe in
+                if !existing.contains(recipe) && !result.contains(recipe) { result.append(recipe) }
+            }
+            if !additions.isEmpty {
+                add("Folder recipes", "\(existing.count) saved", "\(existing.count + additions.count) saved")
+            }
+        }
         return result
     }
 }
 
 enum TransferSettingsImportError: LocalizedError, Equatable {
-    case invalidFile, unsupportedVersion, tooLarge, busy, settingsChanged
+    case invalidFile, unsupportedVersion, tooLarge, busy, settingsChanged, tooManyRecipes, invalidRecipe
     var errorDescription: String? {
         switch self {
         case .invalidFile: "Choose a transfer settings JSON file exported by BitMatch."
@@ -141,6 +208,8 @@ enum TransferSettingsImportError: LocalizedError, Equatable {
         case .tooLarge: "This file is too large to be a transfer settings file."
         case .busy: "Finish current or queued work before importing settings."
         case .settingsChanged: "Settings changed while this preview was open. Import the file again to review the changes."
+        case .tooManyRecipes: "This settings file supports up to 32 saved folder recipes."
+        case .invalidRecipe: "A saved folder recipe has unsupported or duplicate layers."
         }
     }
 }

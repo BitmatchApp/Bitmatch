@@ -127,6 +127,30 @@ struct ConnectedDrivesPresentationTests {
         #expect(row?.subtitle.contains("Zero KB") == false)
     }
 
+    @Test func unknownCapacityIsDistinctFromAFullDrive() {
+        let unknown = Presentation.Volume(
+            name: "Unknown", url: URL(fileURLWithPath: "/Volumes/Unknown"),
+            totalBytes: nil, freeBytes: nil, isRemovable: true, isInternal: false
+        )
+        let row = Presentation.make(volumes: [unknown], sourceURL: nil, destinationURLs: []).first
+        #expect(row?.subtitle == "Capacity unknown")
+        #expect(SetupConnectedMenuPolicy.hasPotentialCapacity(nil, isSelected: false))
+        #expect(!SetupConnectedMenuPolicy.hasPotentialCapacity(0, isSelected: false))
+        #expect(SetupConnectedMenuPolicy.hasPotentialCapacity(0, isSelected: true))
+        let partial = Presentation.Volume(
+            name: "Partial", url: URL(fileURLWithPath: "/Volumes/Partial"),
+            totalBytes: 128_000_000_000, freeBytes: nil, isRemovable: true, isInternal: false
+        )
+        #expect(Presentation.make(volumes: [partial], sourceURL: nil, destinationURLs: []).first?.subtitle
+            == "Available space unknown · 128 GB total")
+        let card = Presentation.Volume(
+            name: "Card", url: URL(fileURLWithPath: "/Volumes/Card"),
+            totalBytes: nil, freeBytes: nil, isRemovable: true, isInternal: false, cameraName: "Sony"
+        )
+        #expect(Presentation.make(volumes: [card], sourceURL: nil, destinationURLs: []).first?.subtitle
+            == "Sony card · Capacity unknown")
+    }
+
     @Test func unknownAndInternalDrivesRemainVisible() {
         var internalDrive = volume("Work")
         internalDrive = Presentation.Volume(

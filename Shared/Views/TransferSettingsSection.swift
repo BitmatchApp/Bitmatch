@@ -17,7 +17,7 @@ struct TransferSettingsSection: View {
         Section {
             Button("Export settings…") {
                 do {
-                    exportDocument = TransferSettingsDocument(data: try coordinator.portableTransferSettings.encoded())
+                    exportDocument = TransferSettingsDocument(data: try coordinator.portableTransferSettingsForExport().encoded())
                     exporting = true
                 } catch { errorMessage = error.localizedDescription }
             }
@@ -28,7 +28,7 @@ struct TransferSettingsSection: View {
             Text("Transfer settings")
         } footer: {
             Text(coordinator.canImportTransferSettings
-                ? "Move transfer options between devices. Backups and project details stay on this device."
+                ? "Move transfer options and folder recipe structures between devices. Backups and project details stay on this device."
                 : "Finish current or queued work before importing settings.")
         }
         .fileImporter(isPresented: $choosingFile, allowedContentTypes: [.json]) { result in
@@ -189,7 +189,9 @@ struct TransferSettingsReviewView: View {
     }
 
     private var preservationNote: some View {
-        Text("Changes apply to future transfers. Backups, project details and saved transfers stay as they are.")
+        Text(review.proposed.folderRecipes?.isEmpty == false
+            ? "Imported folder recipes are saved with generic names and are not selected automatically. Backups, project details and saved transfers stay as they are."
+            : "Changes apply to future transfers. Backups, project details and saved transfers stay as they are.")
             .font(.footnote).foregroundStyle(.secondary)
     }
 }

@@ -400,7 +400,7 @@ private struct DestinationProgressRowView: View {
     private var statusColor: Color {
         switch row.state {
         case .waiting, .copied: .secondary
-        case .copying, .verifying: tint
+        case .copying: tint
         }
     }
 }

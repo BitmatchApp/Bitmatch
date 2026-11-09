@@ -6,6 +6,7 @@ import BitMatchEngine
 /// Start independently re-proves these paths in the engine before any writes.
 @MainActor
 final class AppleDoubleReviewModel: ObservableObject {
+    private static let reviewWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
     @Published var enabled: Bool {
         didSet {
             if !replaying { defaults.set(enabled, forKey: "BitMatchExcludeAppleDouble") }
@@ -19,6 +20,7 @@ final class AppleDoubleReviewModel: ObservableObject {
     private var source: URL?
     private var generation = 0
     private var task: Task<Void, Never>?
+    private let workerKey = "apple-double-review-\(UUID().uuidString)"
 
     init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -47,16 +49,16 @@ final class AppleDoubleReviewModel: ObservableObject {
         paths = nil
         error = nil
         guard enabled, let source else { return }
+        let workerKey = workerKey
         task = Task { [weak self] in
-            let scanner = Task.detached {
-                let access = source.startAccessingSecurityScopedResource()
-                defer { if access { source.stopAccessingSecurityScopedResource() } }
-                return try AppleDoubleSelection.review(source: source)
-            }
             do {
-                let found = try await withTaskCancellationHandler {
-                    try await scanner.value
-                } onCancel: { scanner.cancel() }
+                let found = try await Self.reviewWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: source)], jobKey: workerKey
+                ) { check in
+                    let access = source.startAccessingSecurityScopedResource()
+                    defer { if access { source.stopAccessingSecurityScopedResource() } }
+                    return try AppleDoubleSelection.review(source: source, checkCancellation: check)
+                }
                 guard !Task.isCancelled, let self, self.generation == token else { return }
                 paths = found
             } catch is CancellationError {

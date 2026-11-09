@@ -802,7 +802,7 @@ struct PhotographerJobViewModelTests {
         let viewModel = PhotographerJobViewModel(
             store: InMemoryPhotographerJobStore(),
             now: { self.now },
-            entryEnumerator: { source in
+            entryEnumerator: { source, _ in
                 [FileEntry(
                     url: source.appendingPathComponent("A.ARW"),
                     relativePath: "A.ARW",
@@ -887,7 +887,7 @@ struct PhotographerJobViewModelTests {
 
     @Test func staleAsyncSetupCompletionAfterSourceChangeIsIgnored() async throws {
         let gate = AsyncSetupGate()
-        let viewModel = PhotographerJobViewModel(store: InMemoryPhotographerJobStore(), now: { self.now }, entryEnumerator: { url in
+        let viewModel = PhotographerJobViewModel(store: InMemoryPhotographerJobStore(), now: { self.now }, entryEnumerator: { url, _ in
             gate.wait()
             return [FileEntry(url: url.appendingPathComponent("A.ARW"), relativePath: "A.ARW", size: 100)]
         }, workflowDefaults: .isolatedWorkflowDefaults(remembering: .photography))
@@ -905,9 +905,9 @@ struct PhotographerJobViewModelTests {
 
     @Test func asyncSetupDoesNotBlockMainActorAndCancellationClearsPreparingState() async {
         let gate = AsyncSetupGate()
-        let viewModel = PhotographerJobViewModel(store: InMemoryPhotographerJobStore(), entryEnumerator: { url in
+        let viewModel = PhotographerJobViewModel(store: InMemoryPhotographerJobStore(), entryEnumerator: { url, check in
             gate.wait()
-            try Task.checkCancellation()
+            try check()
             return [FileEntry(url: url, relativePath: "A.ARW", size: 100)]
         }, workflowDefaults: .isolatedWorkflowDefaults(remembering: .photography))
 
@@ -927,9 +927,9 @@ struct PhotographerJobViewModelTests {
 
     @Test func userCancellationStopsPreparingDraftWithoutCreatingACard() async {
         let gate = AsyncSetupGate()
-        let viewModel = PhotographerJobViewModel(store: InMemoryPhotographerJobStore(), entryEnumerator: { url in
+        let viewModel = PhotographerJobViewModel(store: InMemoryPhotographerJobStore(), entryEnumerator: { url, check in
             gate.wait()
-            try Task.checkCancellation()
+            try check()
             return [FileEntry(url: url, relativePath: "A.ARW", size: 100)]
         }, workflowDefaults: .isolatedWorkflowDefaults(remembering: .photography))
 
@@ -1397,6 +1397,13 @@ final class InMemoryPhotographerJobStore: PhotographerJobStore {
         } else {
             storedPresets.append(preset)
         }
+    }
+
+    func addPresetsAtomically(_ additions: [PhotographerPreset]) throws {
+        if let errorOnSave { throw errorOnSave }
+        let ids = storedPresets.map(\.id) + additions.map(\.id)
+        guard Set(ids).count == ids.count else { throw PortableRecipeImportError.duplicateID }
+        storedPresets.append(contentsOf: additions)
     }
 
     func manifests() throws -> [RemoteManifest] { storedManifests }

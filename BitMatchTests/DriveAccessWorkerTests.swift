@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import BitMatch
 
@@ -37,6 +38,60 @@ struct DriveAccessWorkerTests {
         return true
     }
 
+    @Test func selectedBackupMetadataContinuesPastBlockedMount() async {
+        let gate = DriveWorkerGate()
+        let blocked = URL(fileURLWithPath: "/Volumes/Blocked/Backup")
+        let healthy = (0..<7).map { URL(fileURLWithPath: "/Volumes/Healthy\($0)/Backup") }
+        let service = FolderInfoService { url in
+            if url == blocked { gate.wait() }
+            return Date(timeIntervalSince1970: 1)
+        }
+        let task = Task { await service.updateDestinations([blocked] + healthy) }
+        defer { gate.release(); task.cancel() }
+
+        #expect(await waitUntil { gate.didEnter })
+        #expect(await waitUntil { service.destinationFolderInfos[healthy[6]] != nil })
+        #expect(service.folderInfoLoadingState[blocked] == true)
+    }
+
+    @Test func removedBackupCannotPublishLateMetadata() async {
+        let gate = DriveWorkerGate()
+        let blocked = URL(fileURLWithPath: "/Volumes/Blocked/Backup")
+        let service = FolderInfoService { _ in
+            gate.wait()
+            return Date(timeIntervalSince1970: 1)
+        }
+        let task = Task { await service.updateDestinations([blocked]) }
+        defer { gate.release(); task.cancel() }
+
+        #expect(await waitUntil { gate.didEnter })
+        await service.updateDestinations([])
+        await task.value
+        #expect(service.destinationFolderInfos[blocked] == nil)
+        #expect(service.folderInfoLoadingState[blocked] == nil)
+    }
+
+    @Test func cancelledBlockingWorkObservesExplicitCancellation() async throws {
+        let worker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 1, useBlockingThreads: true)
+        let gate = DriveWorkerGate()
+        let continued = Mutex(false)
+        defer { gate.release() }
+        let task = Task {
+            try await worker.performCancellable(mountKeys: ["/Volumes/A"], jobKey: "test.scan") { check in
+                gate.wait()
+                try check()
+                continued.withLock { $0 = true }
+            }
+        }
+        #expect(await waitUntil { gate.didEnter })
+        task.cancel()
+        await #expect(throws: CancellationError.self) { try await task.value }
+        #expect(worker.runningCount == 1)
+        gate.release()
+        #expect(await waitUntil { worker.runningCount == 0 })
+        #expect(!continued.withLock { $0 })
+    }
+
     @Test func mountKeyGroupsLexicallyWithoutResolvingPaths() {
         #expect(DriveAccessWorker.mountKey(for: URL(fileURLWithPath: "/Volumes/Card/folder/file"))
                 == "/Volumes/Card")
@@ -44,8 +99,9 @@ struct DriveAccessWorkerTests {
         #expect(DriveAccessWorker.mountKey(for: URL(fileURLWithPath: "/tmp/work")) == "/tmp/work")
     }
 
-    @Test func blockedMountDoesNotPreventHealthyMountFromStarting() async throws {
-        let worker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 2)
+    @Test(arguments: [false, true])
+    func blockedMountDoesNotPreventHealthyMountFromStarting(useBlockingThreads: Bool) async throws {
+        let worker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 2, useBlockingThreads: useBlockingThreads)
         let gate = DriveWorkerGate()
         defer { gate.release() }
 
@@ -109,8 +165,9 @@ struct DriveAccessWorkerTests {
         #expect(await waitUntil { worker.runningCount == 0 && worker.queuedCount == 0 })
     }
 
-    @Test func cancellingCallerDoesNotReleaseBlockedSlotOrMountEarly() async throws {
-        let worker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 1)
+    @Test(arguments: [false, true])
+    func cancellingCallerDoesNotReleaseBlockedSlotOrMountEarly(useBlockingThreads: Bool) async throws {
+        let worker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 1, useBlockingThreads: useBlockingThreads)
         let gate = DriveWorkerGate()
         defer { gate.release() }
 

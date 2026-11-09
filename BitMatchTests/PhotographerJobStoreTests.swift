@@ -119,6 +119,22 @@ struct PhotographerJobStoreTests {
     }
 
     @MainActor
+    @Test func importedPresetBatchRollsBackWhenSaveFails() throws {
+        let persistence = BitMatchPersistenceController(inMemory: true)
+        let credentials = InMemoryRemoteCredentialStore()
+        let store = CoreDataPhotographerJobStore(
+            context: persistence.container.viewContext,
+            credentialStore: credentials.store,
+            saveContext: { _ in throw NSError(domain: "PhotographerJobStoreTests", code: 1) }
+        )
+        let first = makePreset(id: uuid(211), name: "First", requiredLocalCopyCount: 2)
+        let second = makePreset(id: uuid(212), name: "Second", requiredLocalCopyCount: 2)
+
+        #expect(throws: (any Error).self) { try store.addPresetsAtomically([first, second]) }
+        #expect(try store.presets().isEmpty)
+    }
+
+    @MainActor
     @Test func presetsAreSortedByName() throws {
         let (_, store) = makeStore()
         let zulu = makePreset(id: uuid(203), name: "Zulu", requiredLocalCopyCount: 1)
