@@ -86,6 +86,63 @@ struct BoundedBlockingExecutorTests {
         #expect(try await second.value == 2)
     }
 
+    @Test func stalledOperationDoesNotBlockSecondSlot() async throws {
+        let executor = BoundedBlockingExecutor(maxConcurrent: 2, maxQueued: 2)
+        let gate = ExecutorGate()
+        defer { gate.release() }
+        let stalled = Task { try await executor.perform { gate.wait(); return "stalled" } }
+        #expect(await waitUntil { gate.didEnter })
+        // A permanently stalled drive (until released) occupies one slot;
+        // unrelated work on the other slot still completes.
+        #expect(try await executor.perform { "healthy" } == "healthy")
+        gate.release()
+        #expect(try await stalled.value == "stalled")
+    }
+
+    @Test func rapidCancelAndResubmitLeavesExecutorUsable() async throws {
+        let executor = BoundedBlockingExecutor(maxConcurrent: 1, maxQueued: 4)
+        let gate = ExecutorGate()
+        let cancelledRan = Mutex(0)
+        defer { gate.release() }
+        let first = Task { try await executor.perform { gate.wait(); return 1 } }
+        #expect(await waitUntil { gate.didEnter })
+        var queued: [Task<Int, Error>] = []
+        for _ in 0..<3 {
+            queued.append(Task {
+                try await executor.perform {
+                    cancelledRan.withLock { $0 += 1 }
+                    return 0
+                }
+            })
+        }
+        queued.forEach { $0.cancel() }
+        for task in queued {
+            await #expect(throws: CancellationError.self) { try await task.value }
+        }
+        gate.release()
+        #expect(try await first.value == 1)
+        // Every cancelled job is purged without running; new work proceeds.
+        #expect(try await executor.perform { 42 } == 42)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(cancelledRan.withLock { $0 } == 0)
+    }
+
+    @Test func repeatedSaturationRejectsThenRecovers() async throws {
+        let executor = BoundedBlockingExecutor(maxConcurrent: 1, maxQueued: 1)
+        for round in 0..<3 {
+            let gate = ExecutorGate()
+            let first = Task { try await executor.perform { gate.wait(); return round } }
+            #expect(await waitUntil { gate.didEnter })
+            let second = Task { try await executor.perform { round } }
+            await #expect(throws: BoundedBlockingExecutor.ExecutorError.self) {
+                try await executor.perform { round }
+            }
+            gate.release()
+            #expect(try await first.value == round)
+            #expect(try await second.value == round)
+        }
+    }
+
     @Test func cancelledQueuedJobIsSkipped() async throws {
         let executor = BoundedBlockingExecutor(maxConcurrent: 1, maxQueued: 2)
         let gate = ExecutorGate()

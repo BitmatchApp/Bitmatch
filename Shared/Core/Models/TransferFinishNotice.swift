@@ -19,7 +19,7 @@ struct TransferFinishNotice: Equatable, Sendable {
     /// Use only a settled journal record. The executor may report success
     /// before the journal has persisted its plan and final verdict.
     static func make(record: LocalTransferRecord, kind: TransferNotificationKind,
-                     priorSourceFault: Bool = false) -> TransferFinishNotice? {
+                     priorSourceFault: Bool = false, lineageIncomplete: Bool = false) -> TransferFinishNotice? {
         guard record.state != .queued, record.state != .running,
               let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
         if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
@@ -36,7 +36,8 @@ struct TransferFinishNotice: Equatable, Sendable {
             destinations: record.destinations.map(\.url),
             issueCount: record.results.filter { !$0.isSuccessStatus }.count,
             kind: kind,
-            priorSourceFault: priorSourceFault
+            priorSourceFault: priorSourceFault,
+            lineageIncomplete: lineageIncomplete
         )
     }
 
@@ -49,13 +50,14 @@ struct TransferFinishNotice: Equatable, Sendable {
         destinations: [URL],
         issueCount: Int,
         kind: TransferNotificationKind,
-        priorSourceFault: Bool = false
+        priorSourceFault: Bool = false,
+        lineageIncomplete: Bool = false
     ) -> TransferFinishNotice? {
         let card = sourceName.isEmpty ? "The card" : sourceName
         let verdict = completionVerdict(state: state, issueCount: issueCount)
         let resolvedSafetyState = CardSafetyState.make(state: state, verdict: verdict)
         // A verified retry does not clear an earlier attempt's source fault.
-        let safetyState = priorSourceFault && resolvedSafetyState == .safeToErase
+        let safetyState = (priorSourceFault || lineageIncomplete) && resolvedSafetyState == .safeToErase
             ? CardSafetyState.needsAttention : resolvedSafetyState
         switch safetyState {
         case .safeToErase:

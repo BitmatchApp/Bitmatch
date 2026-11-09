@@ -346,6 +346,37 @@ struct PortableTransferSettingsTests {
         #expect(fixture.defaults.data(forKey: SharedAppCoordinator.pendingTransferSettingsImportKey) == nil)
     }
 
+    /// Termination partway through the preference updates (not just
+    /// before the import starts) still converges: the pending record
+    /// holds the full proposal, so relaunch applies the remainder.
+    @Test func partiallyAppliedImportRollsForwardOnNextLaunch() throws {
+        let fixture = try Fixture()
+        let proposed = changed(fixture.coordinator.portableTransferSettings)
+        // Simulate a crash after only the first preference was updated.
+        fixture.coordinator.verificationMode = proposed.verificationMode
+        #expect(fixture.coordinator.portableTransferSettings != proposed)
+        fixture.defaults.set(try proposed.encoded(),
+            forKey: SharedAppCoordinator.pendingTransferSettingsImportKey)
+        let relaunched = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: fixture.folders.root.appendingPathComponent("relaunch.json")),
+            projectStore: InMemoryPhotographerJobStore(), defaults: fixture.defaults)
+        #expect(relaunched.portableTransferSettings == proposed)
+        #expect(relaunched.pendingTransferSettingsImportWarning == nil)
+    }
+
+    @Test func unreadablePendingRecordWarnsAndIsDiscarded() throws {
+        let fixture = try Fixture()
+        fixture.defaults.set(Data("not settings".utf8),
+            forKey: SharedAppCoordinator.pendingTransferSettingsImportKey)
+        let relaunched = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: fixture.folders.root.appendingPathComponent("relaunch.json")),
+            projectStore: InMemoryPhotographerJobStore(), defaults: fixture.defaults)
+        #expect(relaunched.pendingTransferSettingsImportWarning != nil)
+        #expect(fixture.defaults.data(forKey: SharedAppCoordinator.pendingTransferSettingsImportKey) == nil)
+    }
+
     @Test func failedImportKeepsPendingRecordForNextLaunch() throws {
         let source = try Fixture()
         let target = try Fixture()

@@ -188,7 +188,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         sourceName: String = "",
         completionReason: String? = nil,
         selectedFileVerificationQualified: Bool = false,
-        priorSourceFault: Bool = false
+        priorSourceFault: Bool = false,
+        lineageIncomplete: Bool = false
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
         // owns the empty-name fallback and its "The card" / "the card"
@@ -212,7 +213,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         // A verified retry does not clear an earlier attempt's source
         // fault: the backup may be verified while the card stays unsafe
         // to erase. Only an otherwise safe verdict is downgraded.
-        let safetyState = priorSourceFault && resolvedSafetyState == .safeToErase
+        let safetyState = (priorSourceFault || lineageIncomplete) && resolvedSafetyState == .safeToErase
             ? CardSafetyState.needsAttention : resolvedSafetyState
         let counts = OutcomeFileCounts.make(rows: rows, verificationMode: verificationMode)
         // The caller supplies the journal's persisted classifier/coverage/handoff
@@ -303,7 +304,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             advisoryLines: [
                 priorSourceFault && resolvedSafetyState == .safeToErase
                     ? "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card."
-                    : nil,
+                    : lineageIncomplete && resolvedSafetyState == .safeToErase
+                        ? "The record of earlier attempts is incomplete, so BitMatch cannot confirm how this card read before. This backup verified, but do not erase the card."
+                        : nil,
                 ResultPresentation.incompleteClipAdvisory(rows)
             ].compactMap { $0 },
             durationLabel: duration.map { makeDurationLabel(safetyState: safetyState, state: state, seconds: $0) },

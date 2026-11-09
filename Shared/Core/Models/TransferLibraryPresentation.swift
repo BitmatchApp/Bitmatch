@@ -294,7 +294,7 @@ enum TransferLibraryPresentation {
     static func safetyState(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> CardSafetyState {
         let base = safetyState(for: record)
         guard base == .safeToErase,
-              SourceFaultLineage.hasPriorSourceFault(for: record, in: records) else { return base }
+              SourceFaultLineage.assess(for: record, in: records).preventsSafeToEraseClaim else { return base }
         return .needsAttention
     }
 

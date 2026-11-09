@@ -64,6 +64,25 @@ struct SourceFaultLineageTests {
         #expect(!SourceFaultLineage.hasPriorSourceFault(for: afterClean, in: [afterClean, clean]))
     }
 
+    @Test func assessmentDistinguishesCompleteFromBrokenChains() throws {
+        // No retry link at all: the chain is trivially complete.
+        let standalone = try record(rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: standalone, in: [standalone]) == .noFaultObserved)
+
+        // A faulted predecessor, fully reachable.
+        let first = try record(rows: [faultRow(.sourceUnstable)])
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first])
+            == .priorFaultFound([.init(attemptID: first.id, reasons: [ResultFailureReason.sourceUnstable.rawValue])]))
+
+        // A retry whose predecessor is gone: unknown, not "no fault".
+        let orphan = try record(retryOf: UUID(), rows: [successRow()])
+        let orphanAssessment = SourceFaultLineage.assess(for: orphan, in: [orphan])
+        #expect(orphanAssessment == .lineageIncomplete([]))
+        #expect(orphanAssessment.preventsSafeToEraseClaim)
+        #expect(orphanAssessment.faults.isEmpty)
+    }
+
     @Test func missingPredecessorAndCyclesStopWithoutClaiming() throws {
         let orphan = try record(retryOf: UUID(), rows: [successRow()])
         #expect(SourceFaultLineage.priorSourceFaults(for: orphan, in: [orphan]).isEmpty)
@@ -84,7 +103,14 @@ struct SourceFaultLineageTests {
             cameraSettings: .init(), reportSettings: ReportPrefs(),
             generateASCMHL: false, retryOf: firstID)
         second.results = [successRow()]
-        // The cycle terminates; the one reachable fault is still reported.
+        // The cycle terminates; the one reachable fault is still reported,
+        // and the assessment says the chain was never fully walked.
         #expect(SourceFaultLineage.priorSourceFaults(for: second, in: [second, first]).count == 1)
+        #expect(SourceFaultLineage.assess(for: second, in: [second, first]).preventSafeToEraseClaim)
+        if case .lineageIncomplete(let faults) = SourceFaultLineage.assess(for: second, in: [second, first]) {
+            #expect(faults.count == 1)
+        } else {
+            Issue.record("Expected lineageIncomplete for a cyclic chain")
+        }
     }
 }

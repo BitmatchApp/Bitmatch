@@ -38,19 +38,47 @@ public enum SourceFaultLineage {
         return reasons.sorted()
     }
 
-    /// Source faults from every reachable predecessor of `record`, oldest
-    /// first. The record's own faults are not included.
-    public static func priorSourceFaults(
+    /// What the reachable lineage establishes about earlier source faults.
+    /// Callers deciding safe-to-erase wording must use this, not a Boolean:
+    /// `lineageIncomplete` means the chain could not be fully walked
+    /// (missing predecessor, cycle, or link limit), so absence of a found
+    /// fault is not evidence the card read reliably before.
+    public enum Assessment: Equatable, Sendable {
+        /// The whole chain was walked and no predecessor faulted.
+        case noFaultObserved
+        /// The whole chain was walked and these predecessors faulted.
+        case priorFaultFound([PriorFault])
+        /// The chain broke before its end. Faults found before the break
+        /// are included; more may exist beyond it.
+        case lineageIncomplete([PriorFault])
+
+        public var faults: [PriorFault] {
+            switch self {
+            case .noFaultObserved: []
+            case .priorFaultFound(let faults), .lineageIncomplete(let faults): faults
+            }
+        }
+
+        /// True unless the lineage was fully walked with no fault found.
+        /// Only `noFaultObserved` may support a safe-to-erase claim.
+        public var preventsSafeToEraseClaim: Bool { self != .noFaultObserved }
+    }
+
+    public static func assess(
         for record: LocalTransferRecord,
         in records: [LocalTransferRecord]
-    ) -> [PriorFault] {
+    ) -> Assessment {
         let byID = Dictionary(records.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var visited: Set<UUID> = [record.id]
         var faults: [PriorFault] = []
         var current = record
-        for _ in 0..<maximumLinks {
-            guard let predecessorID = current.retryOf,
-                  !visited.contains(predecessorID),
+        var chainCompleted = false
+        for _ in 0...maximumLinks {
+            guard let predecessorID = current.retryOf else {
+                chainCompleted = true
+                break
+            }
+            guard !visited.contains(predecessorID),
                   let predecessor = byID[predecessorID] else { break }
             visited.insert(predecessorID)
             let reasons = sourceFaultReasons(in: predecessor)
@@ -59,12 +87,25 @@ public enum SourceFaultLineage {
             }
             current = predecessor
         }
-        return faults.reversed()
+        let ordered = faults.reversed()
+        guard chainCompleted else { return .lineageIncomplete(ordered) }
+        return ordered.isEmpty ? .noFaultObserved : .priorFaultFound(ordered)
     }
 
-    /// Whether any reachable predecessor recorded a source fault. False
-    /// means only that none was found in the reachable chain; a missing or
-    /// broken link must never be presented as proof the card was healthy.
+    /// Source faults from every reachable predecessor of `record`, oldest
+    /// first. The record's own faults are not included. A broken chain
+    /// yields only the faults found before the break; use `assess` where
+    /// the distinction matters.
+    public static func priorSourceFaults(
+        for record: LocalTransferRecord,
+        in records: [LocalTransferRecord]
+    ) -> [PriorFault] {
+        assess(for: record, in: records).faults
+    }
+
+    /// Whether a source fault was actually found in the reachable chain.
+    /// False is not proof of a healthy card when the chain is broken;
+    /// use `assess` for any safe-to-erase decision.
     public static func hasPriorSourceFault(
         for record: LocalTransferRecord,
         in records: [LocalTransferRecord]

@@ -112,6 +112,7 @@ extension SharedAppCoordinator {
         defaults.set(try proposed.encoded(), forKey: Self.pendingTransferSettingsImportKey)
         try commitTransferSettings(proposed)
         defaults.removeObject(forKey: Self.pendingTransferSettingsImportKey)
+        pendingTransferSettingsImportWarning = nil
     }
 
     /// Rolls a recorded but uncommitted import forward. Called once during
@@ -121,14 +122,24 @@ extension SharedAppCoordinator {
     func recoverPendingTransferSettingsImport() {
         guard let data = defaults.data(forKey: Self.pendingTransferSettingsImportKey) else { return }
         guard let proposed = try? PortableTransferSettings.decode(data) else {
+            // Unreadable intent cannot be rolled forward. Discard it, but
+            // say so: the previous import's state is unknown to the user.
             defaults.removeObject(forKey: Self.pendingTransferSettingsImportKey)
+            pendingTransferSettingsImportWarning =
+                "A settings import could not be finished because its saved record was damaged. Review your transfer settings."
+            SharedLogger.error("Discarded an unreadable pending transfer-settings import.", category: .error)
             return
         }
         do {
             try commitTransferSettings(proposed)
             defaults.removeObject(forKey: Self.pendingTransferSettingsImportKey)
+            pendingTransferSettingsImportWarning = nil
         } catch {
-            // Keep the pending record for the next launch.
+            // Keep the pending record for the next launch, and say so
+            // instead of silently retrying on every launch.
+            pendingTransferSettingsImportWarning =
+                "A settings import has not finished yet. BitMatch will try again when it restarts; review your transfer settings."
+            SharedLogger.error("Pending transfer-settings import could not be finished: \(error.localizedDescription)", category: .error)
         }
     }
 

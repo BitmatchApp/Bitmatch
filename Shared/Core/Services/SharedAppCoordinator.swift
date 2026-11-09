@@ -235,6 +235,10 @@ class SharedAppCoordinator: ObservableObject {
     let transferJournal: LocalTransferJournal
     @Published private(set) var queueIsRunning = false
     @Published private(set) var queueMessage: String?
+    /// Set when a portable-settings import could not be finished or its
+    /// pending record could not be read, so the failure is visible in
+    /// Settings instead of silently retrying or discarding on each launch.
+    @Published var pendingTransferSettingsImportWarning: String?
     @Published private(set) var isReplayingQueuedTransfer = false
     @Published private(set) var queueSessionRecordIDs: Set<UUID> = [] {
         didSet { scheduleSourceAvailability() }
@@ -1157,9 +1161,11 @@ class SharedAppCoordinator: ObservableObject {
             notifyFinish: generalSettings.notifyWhenTransferOrQueueFinishes,
             notifyEachQueuedCard: generalSettings.notifyForEachCardInQueue
         ) else { return }
+        let lineageAssessment = SourceFaultLineage.assess(for: record, in: transferJournal.records)
         guard let notice = TransferFinishNotice.make(
             record: record, kind: kind,
-            priorSourceFault: SourceFaultLineage.hasPriorSourceFault(for: record, in: transferJournal.records)
+            priorSourceFault: !lineageAssessment.faults.isEmpty,
+            lineageIncomplete: lineageAssessment.preventsSafeToEraseClaim && lineageAssessment.faults.isEmpty
         ) else { return }
         transferNotifier.post(notice)
     }

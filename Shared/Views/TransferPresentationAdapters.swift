@@ -59,9 +59,11 @@ extension TransferOutcomePresentation {
         let displayedState = journalWriteFailed
             ? OperationState.failed
             : record.flatMap { recordedState(for: $0) } ?? coordinator.operationState
-        let priorSourceFault = record.map {
-            SourceFaultLineage.hasPriorSourceFault(for: $0, in: coordinator.transferJournal.records)
-        } ?? false
+        let lineageAssessment = record.map {
+            SourceFaultLineage.assess(for: $0, in: coordinator.transferJournal.records)
+        } ?? SourceFaultLineage.Assessment.noFaultObserved
+        let priorSourceFault = !lineageAssessment.faults.isEmpty
+        let lineageIncomplete = lineageAssessment.preventsSafeToEraseClaim && !priorSourceFault
         return make(
             // The journal is the durable terminal outcome. An unexpected
             // interruption may leave the live state `.failed`, but its saved
@@ -86,12 +88,15 @@ extension TransferOutcomePresentation {
                 ? "Could not save transfer results. Keep the source and review History."
                 : priorSourceFault
                     ? "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card."
-                    : record.map { recordedCompletionReason(for: $0) }
+                    : lineageIncomplete
+                        ? "The record of earlier attempts is incomplete. This backup verified, but do not erase the card."
+                        : record.map { recordedCompletionReason(for: $0) }
                         ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
             selectedFileVerificationQualified: record.map {
                 hasVerifiedSelectedFiles($0)
             } ?? false,
-            priorSourceFault: priorSourceFault
+            priorSourceFault: priorSourceFault,
+            lineageIncomplete: lineageIncomplete
         )
     }
 

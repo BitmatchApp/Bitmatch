@@ -24,6 +24,10 @@ struct TransferSettingsSection: View {
             .disabled(!coordinator.canImportTransferSettings)
             Button("Import settings…") { choosingFile = true }
                 .disabled(!coordinator.canImportTransferSettings || isReading)
+            if let warning = coordinator.pendingTransferSettingsImportWarning {
+                Label(warning, systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
+            }
         } header: {
             Text("Transfer settings")
         } footer: {
