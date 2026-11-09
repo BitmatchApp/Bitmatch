@@ -106,7 +106,7 @@ struct SourceFaultLineageTests {
         // The cycle terminates; the one reachable fault is still reported,
         // and the assessment says the chain was never fully walked.
         #expect(SourceFaultLineage.priorSourceFaults(for: second, in: [second, first]).count == 1)
-        #expect(SourceFaultLineage.assess(for: second, in: [second, first]).preventSafeToEraseClaim)
+        #expect(SourceFaultLineage.assess(for: second, in: [second, first]).preventsSafeToEraseClaim)
         if case .lineageIncomplete(let faults) = SourceFaultLineage.assess(for: second, in: [second, first]) {
             #expect(faults.count == 1)
         } else {
