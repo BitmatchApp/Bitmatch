@@ -187,7 +187,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         canExport: Bool,
         sourceName: String = "",
         completionReason: String? = nil,
-        selectedFileVerificationQualified: Bool = false
+        selectedFileVerificationQualified: Bool = false,
+        priorSourceFault: Bool = false
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
         // owns the empty-name fallback and its "The card" / "the card"
@@ -207,12 +208,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             cardName: sourceName,
             backupCount: destinations.count
         )
-        let safetyState = CardSafetyState.make(state: state, verdict: resolved)
+        let resolvedSafetyState = CardSafetyState.make(state: state, verdict: resolved)
+        // A verified retry does not clear an earlier attempt's source
+        // fault: the backup may be verified while the card stays unsafe
+        // to erase. Only an otherwise safe verdict is downgraded.
+        let safetyState = priorSourceFault && resolvedSafetyState == .safeToErase
+            ? CardSafetyState.needsAttention : resolvedSafetyState
         let counts = OutcomeFileCounts.make(rows: rows, verificationMode: verificationMode)
         // The caller supplies the journal's persisted classifier/coverage/handoff
         // qualification. Status text alone must never hide a failed transfer.
         let selectedFilesVerified = selectedFileVerificationQualified
-            && safetyState == .needsAttention && verificationMode != nil && verificationMode != .quick
+            && resolvedSafetyState == .needsAttention && verificationMode != nil && verificationMode != .quick
             && counts.excluded > 0 && counts.verified > 0
             && counts.needsAttention == 0 && counts.copiedNotVerified == 0
             && rows.allSatisfy {
@@ -294,7 +300,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 warningCount: warningCount
             ),
             clipFailureLines: ResultPresentation.clipFailureDescriptions(rows),
-            advisoryLines: [ResultPresentation.incompleteClipAdvisory(rows)].compactMap { $0 },
+            advisoryLines: [
+                priorSourceFault && resolvedSafetyState == .safeToErase
+                    ? "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card."
+                    : nil,
+                ResultPresentation.incompleteClipAdvisory(rows)
+            ].compactMap { $0 },
             durationLabel: duration.map { makeDurationLabel(safetyState: safetyState, state: state, seconds: $0) },
             phaseDurationLabel: phaseDurationText(
                 copySeconds: copyDurationSeconds,

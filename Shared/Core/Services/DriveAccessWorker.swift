@@ -4,7 +4,11 @@ import Foundation
 /// bounding both active work and queued requests.
 @MainActor
 final class DriveAccessWorker {
-    static let shared = DriveAccessWorker()
+    /// Production callers run synchronous, potentially blocking filesystem
+    /// work, so the shared worker must isolate it on blocking threads rather
+    /// than Swift's cooperative executor. Cancellation still only settles the
+    /// caller; the slot and mount reservation stay held until the call returns.
+    static let shared = DriveAccessWorker(useBlockingThreads: true)
 
     enum WorkerError: LocalizedError, Sendable {
         case busy

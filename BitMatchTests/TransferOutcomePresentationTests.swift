@@ -84,6 +84,25 @@ struct TransferOutcomePresentationTests {
         )
     }
 
+    /// A verified retry keeps an earlier source fault: the finish screen
+    /// must not call the card safe to erase, while still reporting this
+    /// attempt's rows as verified.
+    @Test func priorSourceFaultDowngradesSafeToErase() {
+        let rows = [row("C0.mov", .verified, backup: backupA), row("C0.mov", .verified, backup: backupB)]
+        let outcome = TransferOutcomePresentation.make(
+            state: .completed(.init(success: true, message: "Verified")),
+            rows: rows, destinations: [backupA, backupB],
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: 5, sourceFileCount: 1, sourceBytes: 100,
+            verificationMode: .standard, canRetry: true, canExport: true,
+            completionReason: "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card.",
+            priorSourceFault: true
+        )
+        #expect(outcome.safetyState == .needsAttention)
+        #expect(outcome.advisoryLines.contains { $0.contains("earlier attempt") })
+        #expect(!outcome.canEject)
+    }
+
     @Test func oneBackupOutOfSpaceIsNamedInTheIssueReason() {
         let mid = URL(fileURLWithPath: "/Volumes/BMMID/Card", isDirectory: true)
         let whee = URL(fileURLWithPath: "/Volumes/WheeDrive/Card", isDirectory: true)

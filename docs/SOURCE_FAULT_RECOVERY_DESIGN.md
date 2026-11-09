@@ -1,6 +1,6 @@
 # Source faults and retry: proposed contract
 
-Status: design only. Source-error classification is in progress; automatic source retry and a cross-attempt card-health verdict are not implemented.
+Status: partially implemented November 9 (unvalidated — no builds or tests run). `SourceFaultLineage` in the engine walks explicit `retryOf` links (bounded, cycle-safe, missing links stop the walk) and reports earlier `sourceUnstable`/`sourceReadFailed` rows. The finish screen, finish notification, queue rows, History detail, and the eject guard downgrade an otherwise safe-to-erase verdict when a prior fault is found, while still reporting the new backup as verified. Automatic source retry and a cross-attempt card-health verdict remain unimplemented, as do project-card retries. Single-record exports (CSV/JSON/PDF regenerated from one record) cannot see lineage yet and still use the record's own verdict.
 
 ## Separate facts
 

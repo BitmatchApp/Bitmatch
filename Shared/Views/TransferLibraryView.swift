@@ -298,7 +298,7 @@ struct TransferLibraryView: View {
 
     @ViewBuilder
     private func detailsView(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
-        let safetyState = TransferLibraryPresentation.safetyState(for: record)
+        let safetyState = TransferLibraryPresentation.safetyState(for: record, in: journal.records)
         let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
             results: record.results, includeModePlan: record.plannedFileCounts != nil)
         VStack(alignment: .leading, spacing: 8) {

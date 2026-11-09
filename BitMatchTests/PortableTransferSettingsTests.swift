@@ -331,6 +331,33 @@ struct PortableTransferSettingsTests {
         #expect(try encoder.encode(jobs.activeJob) == before)
     }
 
+    @Test func interruptedImportRollsForwardOnNextLaunch() throws {
+        let fixture = try Fixture()
+        let proposed = changed(fixture.coordinator.portableTransferSettings)
+        // Simulate termination after the pending record was written but
+        // before the import committed: only the record survives.
+        fixture.defaults.set(try proposed.encoded(),
+            forKey: SharedAppCoordinator.pendingTransferSettingsImportKey)
+        let relaunched = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: fixture.folders.root.appendingPathComponent("relaunch.json")),
+            projectStore: InMemoryPhotographerJobStore(), defaults: fixture.defaults)
+        #expect(relaunched.portableTransferSettings == proposed)
+        #expect(fixture.defaults.data(forKey: SharedAppCoordinator.pendingTransferSettingsImportKey) == nil)
+    }
+
+    @Test func failedImportKeepsPendingRecordForNextLaunch() throws {
+        let source = try Fixture()
+        let target = try Fixture()
+        source.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "Source recipe")
+        let exported = try source.coordinator.portableTransferSettingsForExport().encoded()
+        let model = TransferSettingsImportModel()
+        try model.preview(exported, coordinator: target.coordinator)
+        target.projectStore.errorOnSave = PortableRecipeImportError.unavailable
+        #expect(throws: (any Error).self) { try model.apply(to: target.coordinator) }
+        #expect(target.defaults.data(forKey: SharedAppCoordinator.pendingTransferSettingsImportKey) != nil)
+    }
+
     @Test func selectedSourceIsRetainedAndAppleDoubleReviewStartsAgain() throws {
         let fixture = try Fixture()
         let app = fixture.coordinator

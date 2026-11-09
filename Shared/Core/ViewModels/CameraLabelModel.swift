@@ -41,25 +41,53 @@ final class CameraLabelModel: ObservableObject {
 
     // MARK: - Detection with memory
 
+    /// Detection does filesystem enumeration and metadata reads that can
+    /// block on a stalled card, so it runs on a bounded blocking worker
+    /// rather than a detached task on the cooperative executor. The
+    /// worker's explicit check replaces task cancellation inside the
+    /// synchronous stages; a superseded detection's late result is still
+    /// discarded by generation below.
+    private static let detectionWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
+
+    private struct DetectionOutcome: Sendable {
+        let detectedName: String?
+        let fingerprint: CameraMemoryService.CameraFingerprint?
+        let suggestion: CameraNamingService.CameraNamingResult?
+    }
+
     func detectCameraWithMemory(at url: URL) {
         // Supersede any in-flight detection: only the latest source may
-        // publish. Detection itself honors task cancellation at the
-        // orchestrator's stage boundaries.
+        // publish.
         let generation = supersedeDetection()
-        detectionTask = Task.detached {
-            // Filesystem enumeration, metadata subprocesses, and
-            // fingerprinting run off the main actor.
-            let detectedName = CameraDetectionOrchestrator.shared.detectCamera(at: url)
+        let worker = Self.detectionWorker
+        detectionTask = Task { [weak self] in
+            let outcome: DetectionOutcome
+            do {
+                outcome = try await worker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: url)],
+                    jobKey: "camera-detection.\(generation)"
+                ) { check in
+                    let isCancelled: @Sendable () -> Bool = {
+                        do { try check(); return false } catch { return true }
+                    }
+                    let detectedName = CameraDetectionOrchestrator.shared.detectCamera(at: url, isCancelled: isCancelled)
+                    try check()
+                    // Then try to get the camera's fingerprint
+                    let fingerprint = CameraMemoryService.shared.getCameraFingerprint(at: url)
+                    try check()
+                    // Folder-analysis naming suggestion.
+                    let suggestion = CameraNamingService.getBestCameraSuggestion(for: url)
+                    try check()
+                    return DetectionOutcome(detectedName: detectedName, fingerprint: fingerprint, suggestion: suggestion)
+                }
+            } catch {
+                return
+            }
+            let detectedName = outcome.detectedName
+            let fingerprint = outcome.fingerprint
+            let suggestion = outcome.suggestion
             let cameraType = Self.mapCameraNameToType(detectedName)
             let cleanName = detectedName.map { CleanCameraNameService.shared.getCleanCameraName(from: $0) }
-            // A superseded request must not start further scans.
-            guard !Task.isCancelled else { return }
-
-            // Then try to get the camera's fingerprint
-            let fingerprint = CameraMemoryService.shared.getCameraFingerprint(at: url)
-            guard !Task.isCancelled else { return }
-            // Folder-analysis naming suggestion, also off the main actor.
-            let suggestion = CameraNamingService.getBestCameraSuggestion(for: url)
 
             await MainActor.run { [weak self] in
                 guard let self, generation == self.detectionGeneration else { return }

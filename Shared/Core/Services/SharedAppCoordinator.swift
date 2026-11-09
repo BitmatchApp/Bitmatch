@@ -931,7 +931,7 @@ class SharedAppCoordinator: ObservableObject {
         driveAccessWorker: DriveAccessWorker? = nil
     ) {
         self.platformManager = platformManager
-        let worker = driveAccessWorker ?? DriveAccessWorker()
+        let worker = driveAccessWorker ?? DriveAccessWorker(useBlockingThreads: true)
         self.driveAccessWorker = worker
         self.sourceAvailability = SourceAvailabilityModel(worker: worker, ejectabilityProbe: sourceEjectability)
         self.sourceEjectability = sourceEjectability
@@ -1043,6 +1043,7 @@ class SharedAppCoordinator: ObservableObject {
             .store(in: &cancellables)
         sourceAvailability.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        recoverPendingTransferSettingsImport()
         scheduleSourceAvailability()
         scheduleReadinessAssessment()
         setupProgressPresentation()
@@ -1156,7 +1157,10 @@ class SharedAppCoordinator: ObservableObject {
             notifyFinish: generalSettings.notifyWhenTransferOrQueueFinishes,
             notifyEachQueuedCard: generalSettings.notifyForEachCardInQueue
         ) else { return }
-        guard let notice = TransferFinishNotice.make(record: record, kind: kind) else { return }
+        guard let notice = TransferFinishNotice.make(
+            record: record, kind: kind,
+            priorSourceFault: SourceFaultLineage.hasPriorSourceFault(for: record, in: transferJournal.records)
+        ) else { return }
         transferNotifier.post(notice)
     }
 
@@ -2241,7 +2245,7 @@ class SharedAppCoordinator: ObservableObject {
                 estimatedBytes: sourceBytes,
                 plannedTotalBytes: sourceBytes * Int64(access.destinationURLs.count),
                 sourceIsKnownEmpty: sourceManifest.isEmpty,
-                independentDestinationCount: independence.provenIndependentCopyCount,
+                independentDestinationCount: independence.resolvedIdentityCopyCount,
                 photographerReportFinalizer: nil
             )
             await executeOperation(context, queuedInvocationID: invocationID)
@@ -2368,7 +2372,7 @@ class SharedAppCoordinator: ObservableObject {
             estimatedBytes: sourceInfo?.totalSize ?? 1_000_000_000,
             plannedTotalBytes: sourceInfo.map { $0.totalSize * Int64(destinationURLs.count) },
             sourceIsKnownEmpty: sourceInfo?.fileCount == 0,
-            independentDestinationCount: independence.provenIndependentCopyCount,
+            independentDestinationCount: independence.resolvedIdentityCopyCount,
             photographerReportFinalizer: selectedReportFinalizer
         )
         await executeOperation(context)
@@ -2816,7 +2820,7 @@ class SharedAppCoordinator: ObservableObject {
             operationState = settled
         }
         notifyIfTransferEnded(record: record)
-        let safety = TransferLibraryPresentation.safetyState(for: record)
+        let safety = TransferLibraryPresentation.safetyState(for: record, in: transferJournal.records)
         let belongs = belongsToQueueSession
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
         switch safety {
@@ -2890,7 +2894,7 @@ class SharedAppCoordinator: ObservableObject {
         // clear its ejecting flag early.
         if ejectingQueueSourceIDs.contains(id) { return nil }
         guard let record = transferJournal.records.first(where: { $0.id == id }),
-              TransferLibraryPresentation.safetyState(for: record) == .safeToErase else {
+              TransferLibraryPresentation.safetyState(for: record, in: transferJournal.records) == .safeToErase else {
             return "Only a verified card that is safe to erase can be ejected."
         }
         // Claim the card before the first await so a second call arriving
@@ -2905,7 +2909,7 @@ class SharedAppCoordinator: ObservableObject {
             try Task.checkCancellation()
             guard let current = transferJournal.records.first(where: { $0.id == id }),
                   current.source.bookmark == record.source.bookmark,
-                  TransferLibraryPresentation.safetyState(for: current) == .safeToErase else {
+                  TransferLibraryPresentation.safetyState(for: current, in: transferJournal.records) == .safeToErase else {
                 access.release()
                 return "The saved transfer changed. Review its results before ejecting."
             }
@@ -3010,9 +3014,10 @@ class SharedAppCoordinator: ObservableObject {
         }
 
         let analysis = photographerJobViewModel.preliminaryAnalysis
-        // Safety gates may only count destinations proven to be on distinct
-        // physical storage; unresolved identity must not inflate the count.
-        let independentDestinationCount = destinationIndependence.provenIndependentCopyCount
+        // Safety gates count distinct resolved storage groups only;
+        // unresolved identity must not inflate the count, and a resolved
+        // group is not proof of a physically separate device.
+        let independentDestinationCount = destinationIndependence.resolvedIdentityCopyCount
         photographerReportFinalizer = { [weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results in
             guard let photographerJobViewModel, let analysis,
                   let state = photographerJobViewModel.projectCardState(jobID: jobID, cardID: cardID),

@@ -90,6 +90,12 @@ extension SharedAppCoordinator {
             folderRecipes: recipes.isEmpty ? nil : recipes)
     }
 
+    /// Durable marker for an import that has started but not yet committed.
+    /// Written before any preset or preference changes and cleared only after
+    /// every change has been applied, so a termination mid-import is known
+    /// on the next launch instead of silently leaving a half-import.
+    static var pendingTransferSettingsImportKey: String { "BitMatchPendingTransferSettingsImport.v1" }
+
     func applyTransferSettings(_ review: TransferSettingsReview) throws {
         // A transfer or queue can start while the preview is open. Recheck on
         // the main actor immediately before changing any preference.
@@ -99,6 +105,34 @@ extension SharedAppCoordinator {
         else { current = try portableTransferSettingsForExport() }
         guard current == review.current else { throw TransferSettingsImportError.settingsChanged }
         let proposed = review.proposed
+        // Record the intent before mutating anything. Every step of
+        // `commitTransferSettings` is idempotent (recipe import skips recipes
+        // already saved), so rolling the recorded import forward on the next
+        // launch converges to the same state as an uninterrupted import.
+        defaults.set(try proposed.encoded(), forKey: Self.pendingTransferSettingsImportKey)
+        try commitTransferSettings(proposed)
+        defaults.removeObject(forKey: Self.pendingTransferSettingsImportKey)
+    }
+
+    /// Rolls a recorded but uncommitted import forward. Called once during
+    /// coordinator startup, before readiness is assessed. A record that can
+    /// no longer be decoded is discarded; a commit that still fails keeps
+    /// its record so the next launch retries instead of forgetting it.
+    func recoverPendingTransferSettingsImport() {
+        guard let data = defaults.data(forKey: Self.pendingTransferSettingsImportKey) else { return }
+        guard let proposed = try? PortableTransferSettings.decode(data) else {
+            defaults.removeObject(forKey: Self.pendingTransferSettingsImportKey)
+            return
+        }
+        do {
+            try commitTransferSettings(proposed)
+            defaults.removeObject(forKey: Self.pendingTransferSettingsImportKey)
+        } catch {
+            // Keep the pending record for the next launch.
+        }
+    }
+
+    private func commitTransferSettings(_ proposed: PortableTransferSettings) throws {
         if let recipes = proposed.folderRecipes {
             try photographerJobViewModel.importPortableFolderRecipes(recipes)
         }

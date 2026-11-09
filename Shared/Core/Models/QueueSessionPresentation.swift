@@ -368,6 +368,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             }
             return makeRow(
                 record: record,
+                allRecords: records,
                 progress: record.id == runningID ? progress : nil,
                 isMounted: mountedSourceIDs.contains(record.id),
                 isEjected: ejectedSourceIDs.contains(record.id),
@@ -475,6 +476,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
 
     private static func makeRow(
         record: LocalTransferRecord,
+        allRecords: [LocalTransferRecord] = [],
         progress: OperationProgress?,
         isMounted: Bool,
         isEjected: Bool,
@@ -502,7 +504,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             default: state = .preparing
             }
         } else {
-            state = TransferLibraryPresentation.safetyState(for: record)
+            state = TransferLibraryPresentation.safetyState(for: record, in: allRecords)
         }
         let qualifiedSelection = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
         let countedRows = qualifiedSelection ? record.results.filter {

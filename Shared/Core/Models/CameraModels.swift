@@ -2,7 +2,7 @@
 import Foundation
 
 // MARK: - Camera Type
-enum CameraType: String, CaseIterable, Identifiable, Codable {
+enum CameraType: String, CaseIterable, Identifiable, Codable, Sendable {
     case sony = "Sony"
     case sonyFX6 = "Sony FX6"
     case sonyFX3 = "Sony FX3"

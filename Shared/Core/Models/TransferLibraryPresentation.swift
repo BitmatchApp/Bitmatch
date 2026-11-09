@@ -287,6 +287,17 @@ enum TransferLibraryPresentation {
         }
     }
 
+    /// Whole-history form: a verified retry keeps an earlier attempt's
+    /// source-fault warning, so an otherwise safe verdict is downgraded.
+    /// Callers with only one record cannot see lineage and must not claim
+    /// this check was done.
+    static func safetyState(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> CardSafetyState {
+        let base = safetyState(for: record)
+        guard base == .safeToErase,
+              SourceFaultLineage.hasPriorSourceFault(for: record, in: records) else { return base }
+        return .needsAttention
+    }
+
     static func stateLabel(for record: LocalTransferRecord) -> StateLabel {
         stateLabel(for: record, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
     }

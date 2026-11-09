@@ -59,6 +59,9 @@ extension TransferOutcomePresentation {
         let displayedState = journalWriteFailed
             ? OperationState.failed
             : record.flatMap { recordedState(for: $0) } ?? coordinator.operationState
+        let priorSourceFault = record.map {
+            SourceFaultLineage.hasPriorSourceFault(for: $0, in: coordinator.transferJournal.records)
+        } ?? false
         return make(
             // The journal is the durable terminal outcome. An unexpected
             // interruption may leave the live state `.failed`, but its saved
@@ -81,11 +84,14 @@ extension TransferOutcomePresentation {
             sourceName: record?.title ?? coordinator.sourceURL?.lastPathComponent ?? "",
             completionReason: journalWriteFailed
                 ? "Could not save transfer results. Keep the source and review History."
-                : record.map { recordedCompletionReason(for: $0) }
-                    ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
+                : priorSourceFault
+                    ? "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card."
+                    : record.map { recordedCompletionReason(for: $0) }
+                        ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
             selectedFileVerificationQualified: record.map {
                 hasVerifiedSelectedFiles($0)
-            } ?? false
+            } ?? false,
+            priorSourceFault: priorSourceFault
         )
     }
 

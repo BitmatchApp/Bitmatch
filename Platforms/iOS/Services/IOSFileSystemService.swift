@@ -67,7 +67,11 @@ final class IOSFileSystemService: NSObject, FileSystemService, @unchecked Sendab
         }
         defer { folderURL.stopAccessingSecurityScopedResource() }
 
-        let fileURLs = try CardSource.enumerateRegularFiles(base: folderURL).map(\.url)
+        // Enumeration can block on slow external storage; run it on the
+        // engine's bounded blocking executor, not a cooperative thread.
+        let fileURLs = try await BoundedBlockingExecutor.shared.performCancellable { check in
+            try CardSource.enumerateRegularFiles(base: folderURL, checkCancellation: check)
+        }.map(\.url)
 
         #if DEBUG
         let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)

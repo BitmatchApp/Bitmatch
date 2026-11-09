@@ -18,7 +18,8 @@ struct TransferFinishNotice: Equatable, Sendable {
 
     /// Use only a settled journal record. The executor may report success
     /// before the journal has persisted its plan and final verdict.
-    static func make(record: LocalTransferRecord, kind: TransferNotificationKind) -> TransferFinishNotice? {
+    static func make(record: LocalTransferRecord, kind: TransferNotificationKind,
+                     priorSourceFault: Bool = false) -> TransferFinishNotice? {
         guard record.state != .queued, record.state != .running,
               let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
         if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
@@ -34,7 +35,8 @@ struct TransferFinishNotice: Equatable, Sendable {
             sourceName: record.title,
             destinations: record.destinations.map(\.url),
             issueCount: record.results.filter { !$0.isSuccessStatus }.count,
-            kind: kind
+            kind: kind,
+            priorSourceFault: priorSourceFault
         )
     }
 
@@ -46,11 +48,15 @@ struct TransferFinishNotice: Equatable, Sendable {
         sourceName: String,
         destinations: [URL],
         issueCount: Int,
-        kind: TransferNotificationKind
+        kind: TransferNotificationKind,
+        priorSourceFault: Bool = false
     ) -> TransferFinishNotice? {
         let card = sourceName.isEmpty ? "The card" : sourceName
         let verdict = completionVerdict(state: state, issueCount: issueCount)
-        let safetyState = CardSafetyState.make(state: state, verdict: verdict)
+        let resolvedSafetyState = CardSafetyState.make(state: state, verdict: verdict)
+        // A verified retry does not clear an earlier attempt's source fault.
+        let safetyState = priorSourceFault && resolvedSafetyState == .safeToErase
+            ? CardSafetyState.needsAttention : resolvedSafetyState
         switch safetyState {
         case .safeToErase:
             let count = destinations.count

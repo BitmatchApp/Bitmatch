@@ -18,7 +18,9 @@ public struct LocalFileAccess: FileAccess, Sendable {
     public func stopAccessing(url: URL) {}
 
     public func getFileList(from folderURL: URL) async throws -> [URL] {
-        try CardSource.enumerateRegularFiles(base: folderURL).map(\.url)
+        try await BoundedBlockingExecutor.shared.performCancellable { check in
+            try CardSource.enumerateRegularFiles(base: folderURL, checkCancellation: check)
+        }.map(\.url)
     }
 
     public func getFileSize(for url: URL) throws -> Int64 {
