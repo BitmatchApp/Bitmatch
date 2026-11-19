@@ -1034,8 +1034,7 @@ struct QueueSessionPresentationTests {
         // Fixed birth times inside one second, so a whole-second key cannot pass.
         whole.source = try edited(base.source) { $0["creationDate"] = 700_000_000.0 }
         sibling.source = try edited(base.source) { $0["creationDate"] = 700_000_000.25 }
-        let base = whole
-        #expect(QueueSessionPresentation.attemptKey(for: sibling) != QueueSessionPresentation.attemptKey(for: base),
+        #expect(QueueSessionPresentation.attemptKey(for: sibling) != QueueSessionPresentation.attemptKey(for: whole),
                 "birth times a quarter second apart are different folders")
     }
 
