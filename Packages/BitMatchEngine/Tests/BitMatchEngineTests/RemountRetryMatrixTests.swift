@@ -176,6 +176,45 @@ final class RemountRetryMatrixTests: XCTestCase {
             guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(error)") }
         }
     }
+
+    // MARK: Task 6: records written before fileID existed
+
+    func testLegacyRecordValidatesInSameMountAndIsRefusedAfterRemount() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        try f.stripFileID(recordID: id)
+        let journal = f.reloadJournal()
+        XCTAssertNil(journal.records[0].source.fileID, "precondition: 0.2.11 shape")
+        do {
+            let access = try journal.prepareToRun(id: id)
+            access.release()
+        }
+        try f.remountAll()
+        XCTAssertThrowsError(try journal.prepareToRun(id: id), "exactly as today") { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertThrowsError(try journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder)) { error in
+            guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testLegacyRecordGainsFileIDThroughSameMountReauthorize() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        try f.stripFileID(recordID: id)
+        let journal = f.reloadJournal()
+        XCTAssertNil(journal.records[0].source.fileID, "precondition")
+        XCTAssertNoThrow(try journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder))
+        XCTAssertNoThrow(try journal.reauthorize(id: id, resourceIndex: 1, newURL: f.destinationFolder))
+        XCTAssertNotNil(journal.records[0].source.fileID, "the upgrade path")
+        XCTAssertNotNil(journal.records[0].destinations[0].fileID)
+        try f.remountAll()
+        let access = try journal.prepareToRun(id: id)
+        defer { access.release() }
+        XCTAssertNoThrow(try journal.markRunning(id: id, sourceURL: access.sourceURL, destinationURLs: access.destinationURLs))
+    }
 }
 
 /// Disposable disk images for one test. Images are created and attached with
