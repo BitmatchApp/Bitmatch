@@ -53,6 +53,8 @@ public struct LocalTransferResource: Codable, Sendable {
     /// a recreated folder with a reused identifier, and only when non-zero.
     static func fileIDIfTrusted(fileIdentifier: UInt64?, volumeIsLocal: Bool?, isUbiquitous: Bool?,
                                 creationDate: Date?, path: String) -> UInt64? {
+        // `isUbiquitousItem` reads nil on every ordinary local folder (external
+        // drives included) and true only inside iCloud Drive, so nil is local.
         guard let fileIdentifier, fileIdentifier != 0, volumeIsLocal == true, isUbiquitous != true,
               creationDate != nil, !BackupTargetPolicy.isCloudManagedPath(path) else { return nil }
         return fileIdentifier

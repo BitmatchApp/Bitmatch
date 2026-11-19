@@ -38,6 +38,8 @@ final class ReconnectIdentityTests: XCTestCase {
         XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: nil, isUbiquitous: false, creationDate: now, path: local),
                      "unknown locality is not local")
         XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: true, creationDate: now, path: local))
+        XCTAssertEqual(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: nil, creationDate: now, path: local), 42,
+                       "macOS reports nil, not false, for every non-iCloud folder; nil is local")
         XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: false, creationDate: now,
                                        path: "/Users/x/Library/CloudStorage/Dropbox/Card"))
         XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: false, creationDate: nil, path: local))
