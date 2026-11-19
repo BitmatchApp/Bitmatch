@@ -1030,7 +1030,11 @@ struct QueueSessionPresentationTests {
         defer { fixture.cleanup() }
         let base = try fixture.record(name: "A002APFV", state: .queued)
         var sibling = base
-        sibling.source = try edited(base.source) { $0["creationDate"] = ($0["creationDate"] as! Double) + 0.25 }
+        var whole = base
+        // Fixed birth times inside one second, so a whole-second key cannot pass.
+        whole.source = try edited(base.source) { $0["creationDate"] = 700_000_000.0 }
+        sibling.source = try edited(base.source) { $0["creationDate"] = 700_000_000.25 }
+        let base = whole
         #expect(QueueSessionPresentation.attemptKey(for: sibling) != QueueSessionPresentation.attemptKey(for: base),
                 "birth times a quarter second apart are different folders")
     }

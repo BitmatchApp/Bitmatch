@@ -87,18 +87,36 @@ final class ReconnectIdentityTests: XCTestCase {
         let folder = try scratchFolder()
         let real = try LocalTransferResource(url: folder)
         let fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
-        XCTAssertTrue(real.folderMatches(fresh: fresh))
+        XCTAssertTrue(real.folderMatches(fresh: fresh, at: folder))
         let stored = try edited(real) { $0["fileID"] = try XCTUnwrap(real.fileID) + 1 }
-        XCTAssertFalse(stored.folderMatches(fresh: fresh), "same resourceID, different fileID → not the folder")
+        XCTAssertFalse(stored.folderMatches(fresh: fresh, at: folder), "same resourceID, different fileID → not the folder")
     }
 
     func testStoredFileIDDoesNotFallBackToResourceID() throws {
         let folder = try scratchFolder()
         let real = try LocalTransferResource(url: folder)
-        var fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
-        fresh = try folder.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
+        let fresh = try folder.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
         XCTAssertNil(fresh.fileIdentifier, "precondition: fresh read without a file identifier")
-        XCTAssertFalse(real.folderMatches(fresh: fresh), "a stored fileID never falls back to resourceID")
+        XCTAssertEqual(fresh.fileResourceIdentifier.map { String(describing: $0) }, real.resourceID, "precondition: same resourceID")
+        XCTAssertFalse(real.folderMatches(fresh: fresh, at: folder), "a stored fileID never falls back to resourceID")
+    }
+
+    func testFolderMovedIntoACloudManagedPathIsRefused() throws {
+        // Same volume, same inode, same birth time: only the path changed, into
+        // a location where the file identifier is not trusted. The fresh read
+        // must apply the same eligibility rule as recording does.
+        let folder = try scratchFolder()
+        let stored = try LocalTransferResource(url: folder)
+        XCTAssertNotNil(stored.fileID, "precondition")
+        let cloud = scratch.appendingPathComponent("Library/CloudStorage/Provider", isDirectory: true)
+        try FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+        let moved = cloud.appendingPathComponent("A002APFV", isDirectory: true)
+        try FileManager.default.moveItem(at: folder, to: moved)
+        let fresh = try moved.resourceValues(forKeys: LocalTransferResource.identityKeys)
+        XCTAssertEqual(fresh.fileIdentifier, stored.fileID, "precondition: the move kept the identifier")
+        XCTAssertThrowsError(try stored.validateIdentity(at: moved)) { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(error)") }
+        }
     }
 
     func testLegacyRecordMatchesOnResourceID() throws {
@@ -106,10 +124,10 @@ final class ReconnectIdentityTests: XCTestCase {
         let real = try LocalTransferResource(url: folder)
         let legacy = try edited(real) { $0.removeValue(forKey: "fileID") }
         let fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
-        XCTAssertTrue(legacy.folderMatches(fresh: fresh))
+        XCTAssertTrue(legacy.folderMatches(fresh: fresh, at: folder))
         let other = try scratchFolder("B001OTHER")
         let otherFresh = try other.resourceValues(forKeys: LocalTransferResource.identityKeys)
-        XCTAssertFalse(legacy.folderMatches(fresh: otherFresh))
+        XCTAssertFalse(legacy.folderMatches(fresh: otherFresh, at: other))
     }
 
     func testStoredFileIDWithoutBirthTimeFailsClosed() throws {
@@ -117,7 +135,7 @@ final class ReconnectIdentityTests: XCTestCase {
         let real = try LocalTransferResource(url: folder)
         let malformed = try edited(real) { $0.removeValue(forKey: "creationDate") }
         let fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
-        XCTAssertFalse(malformed.folderMatches(fresh: fresh))
+        XCTAssertFalse(malformed.folderMatches(fresh: fresh, at: folder))
         XCTAssertFalse(malformed.folderMatches(refreshed: real))
     }
 
@@ -147,6 +165,15 @@ final class ReconnectIdentityTests: XCTestCase {
         XCTAssertFalse(new1.namesSameFolder(as: later), "birth time stays strict")
         let otherFile = try edited(new1) { $0["fileID"] = ($0["fileID"] as! UInt64) + 1 }
         XCTAssertFalse(new1.namesSameFolder(as: otherFile))
+    }
+
+    func testTamperedRecordsNeverNameTheSameFolder() throws {
+        let real = try LocalTransferResource(url: try scratchFolder())
+        let zero = try edited(real) { $0["fileID"] = 0 }
+        XCTAssertFalse(zero.namesSameFolder(as: zero), "a zero identifier is no identity")
+        let unborn = try edited(real) { $0.removeValue(forKey: "creationDate") }
+        XCTAssertFalse(unborn.namesSameFolder(as: unborn), "a fileID without a birth time is malformed")
+        XCTAssertTrue(real.namesSameFolder(as: real))
     }
 
     func testIdentityLessRecordStillThrowsUnverifiableIdentity() throws {

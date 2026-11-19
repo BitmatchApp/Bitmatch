@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Fix: Retrying a transfer after unplugging and reconnecting the card or a backup drive works again. The journal now remembers each folder by an identifier that survives remounts, while still refusing a different disk or a recreated folder at the same path. Records from older versions keep their previous rule until they are re-picked once.
+- Fix: Retrying a transfer after unplugging and reconnecting the card or a backup drive works again. The journal now remembers each folder by an identifier that survives remounts, while still refusing a different disk or a recreated folder at the same path. Records from older versions keep their previous rule until they are re-picked once while still connected; re-picking one after a reconnect is still refused, so start a new transfer for it.
 - Fix: Cards on UDF volumes, such as ARRI Codex Compact Drives, could not be added to the queue; every selection failed with "The original identity of … was never recorded". macOS reports no volume UUID for UDF, so the card's identity is now taken from the volume's name, capacity and creation date instead (GitHub issue #91).
 - History, Review and the queue row now say when a backup ran out of space ("BMMID ran out of space · 3 files failed") instead of only counting the failures. The journal summary carries the same reason.
 - When an exFAT or FAT backup keeps its own hidden companion file, so the card's AppleDouble file could not be copied there, the row and the summary say so, and the Ignore AppleDouble metadata files setting explains it while it is off.

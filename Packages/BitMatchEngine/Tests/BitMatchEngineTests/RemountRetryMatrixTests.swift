@@ -11,21 +11,43 @@ final class RemountRetryMatrixTests: XCTestCase {
     static let sourceFilesystems = ["APFS", "ExFAT", "FAT32", "UDF"]
 
     func testRetryAfterRemountOnEveryFilesystem() throws {
-        for fs in Self.sourceFilesystems {
-            let f = try Fixture(sourceFS: fs)
-            defer { f.cleanup() }
-            let id = try f.enqueue()
-            let stored = try XCTUnwrap(f.journal.records.first)
-            XCTAssertNotNil(stored.source.fileID, fs)
-            XCTAssertNotNil(stored.destinations[0].fileID, fs)
-            try f.remountAll()
-            let freshSource = try LocalTransferResource(url: f.sourceFolder)
-            XCTAssertNotEqual(freshSource.resourceID, stored.source.resourceID, "\(fs): precondition, device-bearing ID must change")
-            XCTAssertEqual(freshSource.fileID, stored.source.fileID, fs)
-            let access = try f.journal.prepareToRun(id: id)
-            defer { access.release() }
-            XCTAssertNoThrow(try f.journal.markRunning(id: id, sourceURL: access.sourceURL, destinationURLs: access.destinationURLs), fs)
-            XCTAssertEqual(f.journal.records.first?.state, .running, fs)
+        for fs in Self.sourceFilesystems { try retryAfterRemount(fs) }
+    }
+
+    private func retryAfterRemount(_ fs: String) throws {
+        let f = try Fixture(sourceFS: fs)
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        let stored = try XCTUnwrap(f.journal.records.first)
+        XCTAssertNotNil(stored.source.fileID, fs)
+        XCTAssertNotNil(stored.destinations[0].fileID, fs)
+        try f.remountAll()
+        try f.assertRemountShiftedDeviceNumbers(of: stored, fs)
+        let access = try f.journal.prepareToRun(id: id)
+        defer { access.release() }
+        XCTAssertNoThrow(try f.journal.markRunning(id: id, sourceURL: access.sourceURL, destinationURLs: access.destinationURLs), fs)
+        XCTAssertEqual(f.journal.records.first?.state, .running, fs)
+    }
+
+    func testReauthorizeAfterRemountOnEveryFilesystem() throws {
+        for fs in Self.sourceFilesystems { try reauthorizeAfterRemount(fs) }
+    }
+
+    private func reauthorizeAfterRemount(_ fs: String) throws {
+        let f = try Fixture(sourceFS: fs)
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        let stored = try XCTUnwrap(f.journal.records.first)
+        try f.remountAll()
+        try f.assertRemountShiftedDeviceNumbers(of: stored, fs)
+        XCTAssertNoThrow(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder), fs)
+        XCTAssertNoThrow(try f.journal.reauthorize(id: id, resourceIndex: 1, newURL: f.destinationFolder), fs)
+        if fs != "UDF" {   // read-only: no sibling folder can be made
+            let other = f.sourceFolder.deletingLastPathComponent().appendingPathComponent("B001OTHER", isDirectory: true)
+            try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+            XCTAssertThrowsError(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: other), fs) { error in
+                guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(fs): \(error)") }
+            }
         }
     }
 
@@ -71,7 +93,9 @@ final class RemountRetryMatrixTests: XCTestCase {
         let reloaded = f.reloadJournal()
         XCTAssertNil(reloaded.records.first { $0.id == b }?.source.fileID, "precondition")
         XCTAssertNotNil(reloaded.records.first { $0.id == a }?.source.fileID, "precondition")
-        XCTAssertThrowsError(try reloaded.markRunning(id: b), "a mixed old/new pair never earns the same-card exemption")
+        XCTAssertThrowsError(try reloaded.markRunning(id: b), "a mixed old/new pair never earns the same-card exemption") { error in
+            guard case FileOperationError.unsafeOperation = error else { return XCTFail("expected the output-overlap refusal, got \(error)") }
+        }
     }
 
     func testRetryLineageSurvivesRemountOnlyForMatchingGenerations() throws {
@@ -97,6 +121,49 @@ final class RemountRetryMatrixTests: XCTestCase {
                                       reportSettings: ReportPrefs(), generateASCMHL: true)
             XCTAssertNil(journal.records[0].retryOf, "old/new is not the same folder: lineage cleared")
         }
+        // The prepared-resource overload follows the same rule.
+        try f.editRecord(recordID: id) { $0["retryOf"] = ancestor.uuidString }
+        do {
+            let journal = f.reloadJournal()
+            XCTAssertNotNil(journal.records[0].source.fileID, "precondition: new-shape after the previous replace")
+            try journal.replaceQueued(id: id, source: try LocalTransferResource(url: f.sourceFolder),
+                                      destinations: [try LocalTransferResource(url: f.destinationFolder)],
+                                      verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                      reportSettings: ReportPrefs(), generateASCMHL: true)
+            XCTAssertEqual(journal.records[0].retryOf, ancestor, "prepared overload: new/new keeps the lineage")
+        }
+        try f.editRecord(recordID: id) { $0["retryOf"] = ancestor.uuidString; ($0["source"] as? NSMutableDictionary)?.removeObject(forKey: "fileID") }
+        do {
+            let journal = f.reloadJournal()
+            try journal.replaceQueued(id: id, source: try LocalTransferResource(url: f.sourceFolder),
+                                      destinations: [try LocalTransferResource(url: f.destinationFolder)],
+                                      verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                      reportSettings: ReportPrefs(), generateASCMHL: true)
+            XCTAssertNil(journal.records[0].retryOf, "prepared overload: old/new clears the lineage")
+        }
+    }
+
+    func testStoredFileIDWithNoFreshFileIDIsRefusedByTheJournal() throws {
+        // The card folder moves, on its own volume, into a path where the file
+        // identifier is not trusted. The bookmark follows the move; the fresh
+        // read yields no trusted identifier; the record must be refused and
+        // the journal file left byte-identical.
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        let before = try Data(contentsOf: f.journalURL)
+        let cloud = f.sourceFolder.deletingLastPathComponent().appendingPathComponent("Library/CloudStorage/Provider", isDirectory: true)
+        try FileManager.default.createDirectory(at: cloud, withIntermediateDirectories: true)
+        let moved = cloud.appendingPathComponent("A002APFV", isDirectory: true)
+        try FileManager.default.moveItem(at: f.sourceFolder, to: moved)
+        XCTAssertNil(try LocalTransferResource(url: moved).fileID, "precondition: not trusted there")
+        // An exFAT bookmark does not follow a move, so preparation fails at
+        // resolution; the identity path below is the one under test.
+        XCTAssertThrowsError(try f.journal.prepareToRun(id: id))
+        XCTAssertThrowsError(try f.journal.markRunning(id: id, sourceURL: moved, destinationURLs: [f.destinationFolder])) { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: f.journalURL), before, "a refusal never writes the journal")
     }
 
     func testSnapshotMismatchOnFileIDRejectsPrepareToRun() throws {
@@ -115,22 +182,36 @@ final class RemountRetryMatrixTests: XCTestCase {
     // MARK: Task 5: replacements are refused after a remount
 
     func testRecreatedFolderAtTheSamePathIsRefusedAfterRemount() throws {
-        for fs in ["ExFAT", "FAT32"] {
-            let f = try Fixture(sourceFS: fs)
-            defer { f.cleanup() }
-            let id = try f.enqueue()
-            let before = try Data(contentsOf: f.journalURL)
-            try f.remountAll()
-            try f.recreateSourceFolder()   // same path, same name, born later
-            try f.remountAll()
-            XCTAssertThrowsError(try f.journal.prepareToRun(id: id), fs) { error in
-                guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(fs): \(error)") }
-            }
-            XCTAssertThrowsError(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder), fs) { error in
-                guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(fs): \(error)") }
-            }
-            XCTAssertEqual(try Data(contentsOf: f.journalURL), before, "\(fs): a refusal never writes the journal")
+        for fs in ["ExFAT", "FAT32"] { try recreatedFolderIsRefused(fs) }
+    }
+
+    private func recreatedFolderIsRefused(_ fs: String) throws {
+        let f = try Fixture(sourceFS: fs)
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        let stored = try XCTUnwrap(f.journal.records.first)
+        let before = try Data(contentsOf: f.journalURL)
+        try f.remountAll()
+        try f.recreateSourceFolder()   // same path, same name, born later
+        try f.remountAll()
+        let impostor = try LocalTransferResource(url: f.sourceFolder)
+        XCTAssertNotNil(impostor.fileID, fs)
+        XCTAssertNotEqual(impostor.creationDate, stored.source.creationDate, "\(fs): precondition, born later")
+        if fs == "FAT32" {
+            // FAT reuses the directory slot, so only the birth time tells them apart.
+            XCTAssertEqual(impostor.fileID, stored.source.fileID, "\(fs): precondition, identifier reused")
         }
+        XCTAssertThrowsError(try f.journal.markRunning(id: id, sourceURL: f.sourceFolder, destinationURLs: [f.destinationFolder]), fs) { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(fs): \(error)") }
+        }
+        XCTAssertThrowsError(try f.journal.prepareToRun(id: id), fs) { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(fs): \(error)") }
+        }
+        XCTAssertThrowsError(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder), fs) { error in
+            guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(fs): \(error)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: f.journalURL), before, "\(fs): a refusal never writes the journal")
+        XCTAssertEqual(f.journal.records.first?.state, .queued, fs)
     }
 
     func testDifferentImageWithTheSameVolumeNameIsRefusedAfterRemount() throws {
@@ -170,6 +251,7 @@ final class RemountRetryMatrixTests: XCTestCase {
         try FileManager.default.createDirectory(at: twinFolder, withIntermediateDirectories: true)
         let original = try LocalTransferResource(url: f.sourceFolder)
         let impostor = try LocalTransferResource(url: twinFolder)
+        XCTAssertNotNil(original.fileID, "precondition")
         XCTAssertEqual(original.fileID, impostor.fileID, "precondition: synthesized IDs collide across identically laid-out volumes")
         XCTAssertNotEqual(original.volumeID, impostor.volumeID)
         XCTAssertThrowsError(try original.validateIdentity(at: twinFolder)) { error in
@@ -273,6 +355,19 @@ final class Fixture {
     }
 
     var journalURL: URL { scratch.appendingPathComponent("journal.json") }
+
+    /// Precondition for every remount test: both device-bearing identifiers
+    /// changed and both device-free identifiers did not.
+    func assertRemountShiftedDeviceNumbers(of stored: LocalTransferRecord, _ fs: String,
+                                           file: StaticString = #filePath, line: UInt = #line) throws {
+        let freshSource = try LocalTransferResource(url: sourceFolder)
+        let freshDestination = try LocalTransferResource(url: destinationFolder)
+        XCTAssertNotEqual(freshSource.resourceID, stored.source.resourceID, "\(fs): source device number must shift", file: file, line: line)
+        XCTAssertNotEqual(freshDestination.resourceID, stored.destinations[0].resourceID, "\(fs): destination device number must shift", file: file, line: line)
+        XCTAssertNotNil(freshSource.fileID, fs, file: file, line: line)
+        XCTAssertEqual(freshSource.fileID, stored.source.fileID, fs, file: file, line: line)
+        XCTAssertEqual(freshDestination.fileID, stored.destinations[0].fileID, fs, file: file, line: line)
+    }
 
     @discardableResult
     func reloadJournal() -> TransferJournal {

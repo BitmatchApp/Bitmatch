@@ -101,7 +101,7 @@ public struct LocalTransferResource: Codable, Sendable {
               let resolvedVolumeID = Self.volumeIdentity(values),
               values.isDirectory == true,
               resolvedVolumeID == volumeID,
-              folderMatches(fresh: values),
+              folderMatches(fresh: values, at: resolved),
               creationDate == nil || values.creationDate == creationDate,
               FileManager.default.isReadableFile(atPath: resolved.path) else {
             throw LocalTransferJournalError.unavailable(url.lastPathComponent)
@@ -113,9 +113,19 @@ public struct LocalTransferResource: Codable, Sendable {
     /// birth time to back it); a record without one is matched on the
     /// device-bearing `resourceID`, today's rule, which is why an old record
     /// re-picked after a remount is still refused by design.
-    func folderMatches(fresh values: URLResourceValues) -> Bool {
-        folderMatches(fileID: values.fileIdentifier,
-                      resourceID: values.fileResourceIdentifier.map { String(describing: $0) })
+    /// The fresh identifier passes through the same eligibility rule as
+    /// recording, so a folder moved into an excluded location is not matched
+    /// on an identifier that would not have been recorded there.
+    func folderMatches(fresh values: URLResourceValues, at url: URL) -> Bool {
+        #if os(macOS)
+        let freshFileID = Self.fileIDIfTrusted(fileIdentifier: values.fileIdentifier, volumeIsLocal: values.volumeIsLocal,
+                                               isUbiquitous: values.isUbiquitousItem, creationDate: values.creationDate,
+                                               path: url.resolvingSymlinksInPath().path)
+        #else
+        let freshFileID: UInt64? = nil
+        #endif
+        return folderMatches(fileID: freshFileID,
+                             resourceID: values.fileResourceIdentifier.map { String(describing: $0) })
     }
 
     /// The same stored-governs rule against a freshly built resource.
@@ -140,7 +150,10 @@ public struct LocalTransferResource: Codable, Sendable {
     func namesSameFolder(as other: LocalTransferResource) -> Bool {
         guard let volumeID, volumeID == other.volumeID, creationDate == other.creationDate else { return false }
         switch (fileID, other.fileID) {
-        case let (mine?, theirs?): return mine == theirs
+        case let (mine?, theirs?):
+            // A zero identifier or a missing birth time is a malformed
+            // identity, never a match, as in folderMatches.
+            return mine != 0 && creationDate != nil && mine == theirs
         case (nil, nil):
             guard let resourceID else { return false }
             return resourceID == other.resourceID
