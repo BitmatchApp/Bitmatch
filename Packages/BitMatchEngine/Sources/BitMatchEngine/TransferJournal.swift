@@ -25,10 +25,10 @@ public struct LocalTransferResource: Codable, Sendable {
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         var current = url
         current.removeAllCachedResourceValues()
-        let values = try current.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
+        let values = try current.resourceValues(forKeys: Self.identityKeys)
         guard values.isDirectory == true else { throw LocalTransferJournalError.unavailable(url.lastPathComponent) }
         self.url = url
-        volumeID = values.volumeUUIDString
+        volumeID = Self.volumeIdentity(values)
         resourceID = values.fileResourceIdentifier.map { String(describing: $0) }
         creationDate = values.creationDate
         #if os(macOS)
@@ -66,7 +66,7 @@ public struct LocalTransferResource: Codable, Sendable {
     public func validateIdentity(at resolved: URL) throws {
         var current = resolved
         current.removeAllCachedResourceValues()
-        let values = try current.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
+        let values = try current.resourceValues(forKeys: Self.identityKeys)
         // A bookmark keeps the selected URL reachable, but it is not enough to
         // prove that a path still names the original folder. Require both
         // identity components before using a persisted location. Treating a
@@ -77,7 +77,7 @@ public struct LocalTransferResource: Codable, Sendable {
         }
         guard let volumeID,
               let resourceID,
-              let resolvedVolumeID = values.volumeUUIDString,
+              let resolvedVolumeID = Self.volumeIdentity(values),
               let resolvedResourceID = values.fileResourceIdentifier,
               values.isDirectory == true,
               resolvedVolumeID == volumeID,
@@ -86,6 +86,23 @@ public struct LocalTransferResource: Codable, Sendable {
               FileManager.default.isReadableFile(atPath: resolved.path) else {
             throw LocalTransferJournalError.unavailable(url.lastPathComponent)
         }
+    }
+
+    private static let identityKeys: Set<URLResourceKey> = [
+        .isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey,
+        .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey
+    ]
+
+    /// The volume's UUID when the file system has one. UDF volumes (ARRI Codex
+    /// Compact Drives, for example) report none on macOS, so a card on one is
+    /// identified by the facts its format fixed: the volume name, its total
+    /// capacity and its creation date. All three must be present; a partial
+    /// identity is no identity.
+    static func volumeIdentity(_ values: URLResourceValues) -> String? {
+        if let uuid = values.volumeUUIDString { return uuid }
+        guard let name = values.volumeName, let capacity = values.volumeTotalCapacity,
+              let created = values.volumeCreationDate else { return nil }
+        return "volume:\(name)|\(capacity)|\(created.timeIntervalSince1970)"
     }
 }
 
