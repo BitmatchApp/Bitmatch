@@ -39,7 +39,7 @@ public struct LocalTransferResource: Codable, Sendable {
         #if os(macOS)
         fileID = Self.fileIDIfTrusted(fileIdentifier: values.fileIdentifier, volumeIsLocal: values.volumeIsLocal,
                                       isUbiquitous: values.isUbiquitousItem, creationDate: values.creationDate,
-                                      path: url.path)
+                                      path: url.resolvingSymlinksInPath().path)
         bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
         #else
         fileID = nil
@@ -96,19 +96,41 @@ public struct LocalTransferResource: Codable, Sendable {
             throw LocalTransferJournalError.unverifiableIdentity(name: url.lastPathComponent)
         }
         guard let volumeID,
-              let resourceID,
               let resolvedVolumeID = Self.volumeIdentity(values),
-              let resolvedResourceID = values.fileResourceIdentifier,
               values.isDirectory == true,
               resolvedVolumeID == volumeID,
-              String(describing: resolvedResourceID) == resourceID,
+              folderMatches(fresh: values),
               creationDate == nil || values.creationDate == creationDate,
               FileManager.default.isReadableFile(atPath: resolved.path) else {
             throw LocalTransferJournalError.unavailable(url.lastPathComponent)
         }
     }
 
-    private static let identityKeys: Set<URLResourceKey> = [
+    /// Stored side governs: a record with a `fileID` is matched on it alone
+    /// and fails closed when the fresh read has none (or the record has no
+    /// birth time to back it); a record without one is matched on the
+    /// device-bearing `resourceID`, today's rule, which is why an old record
+    /// re-picked after a remount is still refused by design.
+    func folderMatches(fresh values: URLResourceValues) -> Bool {
+        folderMatches(fileID: values.fileIdentifier,
+                      resourceID: values.fileResourceIdentifier.map { String(describing: $0) })
+    }
+
+    /// The same stored-governs rule against a freshly built resource.
+    func folderMatches(refreshed: LocalTransferResource) -> Bool {
+        folderMatches(fileID: refreshed.fileID, resourceID: refreshed.resourceID)
+    }
+
+    private func folderMatches(fileID freshFileID: UInt64?, resourceID freshResourceID: String?) -> Bool {
+        if let fileID {
+            guard creationDate != nil, let freshFileID, freshFileID != 0 else { return false }
+            return freshFileID == fileID
+        }
+        guard let resourceID, let freshResourceID else { return false }
+        return freshResourceID == resourceID
+    }
+
+    static let identityKeys: Set<URLResourceKey> = [
         .isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey,
         .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey,
         .fileIdentifierKey, .volumeIsLocalKey, .isUbiquitousItemKey
@@ -584,7 +606,7 @@ public final class TransferJournal: Sendable {
             throw LocalTransferJournalError.unverifiableIdentity(name: name)
         }
         let volumeOK = original.volumeID == refreshed.volumeID
-        let resourceOK = original.resourceID == refreshed.resourceID
+        let resourceOK = original.folderMatches(refreshed: refreshed)
         // The folder's birth time is the third identity component, as in
         // validateIdentity: matching identifiers on a folder born at another
         // time name a recreated folder, not the original.

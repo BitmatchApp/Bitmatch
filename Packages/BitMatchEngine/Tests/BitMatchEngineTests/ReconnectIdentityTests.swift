@@ -45,6 +45,16 @@ final class ReconnectIdentityTests: XCTestCase {
         XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: nil, volumeIsLocal: true, isUbiquitous: false, creationDate: now, path: local))
     }
 
+    func testSymlinkIntoACloudManagedPathGetsNoFileID() throws {
+        let provider = scratch.appendingPathComponent("Library/CloudStorage/Provider/Card", isDirectory: true)
+        try FileManager.default.createDirectory(at: provider, withIntermediateDirectories: true)
+        let link = scratch.appendingPathComponent("ProviderLink", isDirectory: true)
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: scratch.appendingPathComponent("Library/CloudStorage/Provider"))
+        let viaLink = link.appendingPathComponent("Card", isDirectory: true)
+        XCTAssertNil(try LocalTransferResource(url: viaLink).fileID, "the exclusion must see through symlinks")
+        XCTAssertNil(try LocalTransferResource(url: provider).fileID)
+    }
+
     func testFileIDRoundTripsThroughCodable() throws {
         let resource = try LocalTransferResource(url: try scratchFolder())
         let data = try JSONEncoder().encode(resource)
@@ -69,7 +79,64 @@ final class ReconnectIdentityTests: XCTestCase {
         XCTAssertEqual(decoded.resourceID, resource.resourceID)
     }
 
+    // MARK: Task 2: stored-vs-fresh match
+
+    func testStoredFileIDRequiresEqualFreshFileID() throws {
+        let folder = try scratchFolder()
+        let real = try LocalTransferResource(url: folder)
+        let fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
+        XCTAssertTrue(real.folderMatches(fresh: fresh))
+        let stored = try edited(real) { $0["fileID"] = try XCTUnwrap(real.fileID) + 1 }
+        XCTAssertFalse(stored.folderMatches(fresh: fresh), "same resourceID, different fileID → not the folder")
+    }
+
+    func testStoredFileIDDoesNotFallBackToResourceID() throws {
+        let folder = try scratchFolder()
+        let real = try LocalTransferResource(url: folder)
+        var fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
+        fresh = try folder.resourceValues(forKeys: [.isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey])
+        XCTAssertNil(fresh.fileIdentifier, "precondition: fresh read without a file identifier")
+        XCTAssertFalse(real.folderMatches(fresh: fresh), "a stored fileID never falls back to resourceID")
+    }
+
+    func testLegacyRecordMatchesOnResourceID() throws {
+        let folder = try scratchFolder()
+        let real = try LocalTransferResource(url: folder)
+        let legacy = try edited(real) { $0.removeValue(forKey: "fileID") }
+        let fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
+        XCTAssertTrue(legacy.folderMatches(fresh: fresh))
+        let other = try scratchFolder("B001OTHER")
+        let otherFresh = try other.resourceValues(forKeys: LocalTransferResource.identityKeys)
+        XCTAssertFalse(legacy.folderMatches(fresh: otherFresh))
+    }
+
+    func testStoredFileIDWithoutBirthTimeFailsClosed() throws {
+        let folder = try scratchFolder()
+        let real = try LocalTransferResource(url: folder)
+        let malformed = try edited(real) { $0.removeValue(forKey: "creationDate") }
+        let fresh = try folder.resourceValues(forKeys: LocalTransferResource.identityKeys)
+        XCTAssertFalse(malformed.folderMatches(fresh: fresh))
+        XCTAssertFalse(malformed.folderMatches(refreshed: real))
+    }
+
+    func testRefreshedResourceMatchRule() throws {
+        let folder = try scratchFolder()
+        let real = try LocalTransferResource(url: folder)
+        XCTAssertTrue(real.folderMatches(refreshed: real))
+        let legacy = try edited(real) { $0.removeValue(forKey: "fileID") }
+        XCTAssertTrue(legacy.folderMatches(refreshed: real), "old record re-picked in the same mount compares on resourceID")
+        XCTAssertFalse(real.folderMatches(refreshed: legacy), "stored fileID requires a refreshed fileID")
+        let moved = try edited(real) { $0["resourceID"] = "elsewhere" }
+        XCTAssertTrue(real.folderMatches(refreshed: moved), "with a stored fileID the device-bearing ID is ignored")
+    }
+
     // MARK: Helpers
+
+    private func edited(_ resource: LocalTransferResource, _ edit: (inout [String: Any]) throws -> Void) throws -> LocalTransferResource {
+        var json = try jsonObject(for: resource)
+        try edit(&json)
+        return try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: json))
+    }
 
     private func scratchFolder(_ name: String = "A002APFV") throws -> URL {
         let folder = scratch.appendingPathComponent(name, isDirectory: true)
