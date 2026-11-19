@@ -130,6 +130,22 @@ public struct LocalTransferResource: Codable, Sendable {
         return freshResourceID == resourceID
     }
 
+    /// Symmetric: do two stored records name one folder? Volume and birth
+    /// time must be equal (strictly, as optionals), and both must carry the
+    /// same kind of folder identity: equal `fileID`s, or, for two records
+    /// without one, equal `resourceID`s. A mixed old/new pair is never the
+    /// same folder, and nil never matches nil. Not for stored-vs-fresh checks.
+    func namesSameFolder(as other: LocalTransferResource) -> Bool {
+        guard let volumeID, volumeID == other.volumeID, creationDate == other.creationDate else { return false }
+        switch (fileID, other.fileID) {
+        case let (mine?, theirs?): return mine == theirs
+        case (nil, nil):
+            guard let resourceID else { return false }
+            return resourceID == other.resourceID
+        default: return false
+        }
+    }
+
     static let identityKeys: Set<URLResourceKey> = [
         .isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey,
         .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey,
@@ -566,6 +582,7 @@ public final class TransferJournal: Sendable {
                 && current.bookmark == expected.bookmark
                 && current.volumeID == expected.volumeID
                 && current.resourceID == expected.resourceID
+                && current.fileID == expected.fileID
                 && current.creationDate == expected.creationDate
         }
     }
@@ -693,10 +710,7 @@ public final class TransferJournal: Sendable {
         for other in records where other.id != record.id && (other.state == .queued || other.state == .running
             || (sessionRecordIDs.contains(other.id) && other.startedAt != nil)) {
             // Rechecking the same original card is an intentional supported operation.
-            if record.source.volumeID != nil, record.source.resourceID != nil,
-               record.source.volumeID == other.source.volumeID,
-               record.source.resourceID == other.source.resourceID,
-               record.source.creationDate == other.source.creationDate { continue }
+            if record.source.namesSameFolder(as: other.source) { continue }
             let resources = [other.source] + other.destinations
             let urls = resources.map { (try? $0.resolve()) ?? $0.url }
             let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
@@ -764,9 +778,7 @@ public final class TransferJournal: Sendable {
                     cameraSettings: cameraSettings,
                     reportSettings: reportSettings,
                     generateASCMHL: generateASCMHL,
-                    retryOf: source.volumeID == record.source.volumeID
-                        && source.resourceID == record.source.resourceID
-                        && source.creationDate == record.source.creationDate ? record.retryOf : nil
+                    retryOf: source.namesSameFolder(as: record.source) ? record.retryOf : nil
                 )
                 record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
             }
@@ -808,9 +820,7 @@ public final class TransferJournal: Sendable {
                     cameraSettings: cameraSettings,
                     reportSettings: reportSettings,
                     generateASCMHL: generateASCMHL,
-                    retryOf: source.volumeID == record.source.volumeID
-                        && source.resourceID == record.source.resourceID
-                        && source.creationDate == record.source.creationDate ? record.retryOf : nil
+                    retryOf: source.namesSameFolder(as: record.source) ? record.retryOf : nil
                 )
                 record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
             }

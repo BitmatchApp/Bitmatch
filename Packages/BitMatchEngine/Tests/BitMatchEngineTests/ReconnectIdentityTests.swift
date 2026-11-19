@@ -130,6 +130,33 @@ final class ReconnectIdentityTests: XCTestCase {
         XCTAssertTrue(real.folderMatches(refreshed: moved), "with a stored fileID the device-bearing ID is ignored")
     }
 
+    // MARK: Task 4: record-vs-record
+
+    func testSameFolderIsSymmetricAndMixedGenerationsDiffer() throws {
+        let folder = try scratchFolder()
+        let new1 = try LocalTransferResource(url: folder)
+        let new2 = try edited(new1) { $0["resourceID"] = "another device number" }
+        let old1 = try edited(new1) { $0.removeValue(forKey: "fileID") }
+        let old2 = try edited(old1) { $0["bookmark"] = $0["bookmark"] }
+        XCTAssertTrue(new1.namesSameFolder(as: new2)); XCTAssertTrue(new2.namesSameFolder(as: new1))
+        XCTAssertTrue(old1.namesSameFolder(as: old2)); XCTAssertTrue(old2.namesSameFolder(as: old1))
+        XCTAssertFalse(new1.namesSameFolder(as: old1)); XCTAssertFalse(old1.namesSameFolder(as: new1))
+        let later = try edited(new1) { $0["creationDate"] = ($0["creationDate"] as! Double) + 1 }
+        XCTAssertFalse(new1.namesSameFolder(as: later), "birth time stays strict")
+        let otherFile = try edited(new1) { $0["fileID"] = ($0["fileID"] as! UInt64) + 1 }
+        XCTAssertFalse(new1.namesSameFolder(as: otherFile))
+    }
+
+    func testIdentityLessRecordStillThrowsUnverifiableIdentity() throws {
+        let folder = try scratchFolder()
+        let real = try LocalTransferResource(url: folder)
+        let blank = try edited(real) { for k in ["volumeID", "resourceID", "fileID"] { $0.removeValue(forKey: k) } }
+        XCTAssertFalse(blank.namesSameFolder(as: blank), "nil == nil is never a match")
+        XCTAssertThrowsError(try blank.validateIdentity(at: folder)) { error in
+            guard case LocalTransferJournalError.unverifiableIdentity = error else { return XCTFail("\(error)") }
+        }
+    }
+
     // MARK: Helpers
 
     private func edited(_ resource: LocalTransferResource, _ edit: (inout [String: Any]) throws -> Void) throws -> LocalTransferResource {

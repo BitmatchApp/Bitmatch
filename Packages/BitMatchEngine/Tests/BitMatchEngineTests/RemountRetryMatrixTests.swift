@@ -49,13 +49,77 @@ final class RemountRetryMatrixTests: XCTestCase {
         XCTAssertTrue(access.sourceURL.path.contains("mount-b"))
         XCTAssertNoThrow(try f.journal.markRunning(id: id, sourceURL: access.sourceURL, destinationURLs: access.destinationURLs))
     }
+
+    // MARK: Task 4: record-vs-record after remount
+
+    func testSameCardRecheckAfterRemountIsStillExempt() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        try f.enqueue()                       // A, queued, same output root
+        try f.remountAll()
+        let b = try f.enqueue()               // B: same card after remount, resourceIDs differ
+        XCTAssertNotEqual(f.journal.records[0].source.resourceID, f.journal.records[1].source.resourceID, "precondition")
+        XCTAssertNoThrow(try f.journal.markRunning(id: b), "rechecking the same card is exempt from the overlap check")
+    }
+
+    func testMixedGenerationPairIsNotTheSameCard() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let a = try f.enqueue()
+        let b = try f.enqueue()
+        try f.stripFileID(recordID: b)        // B is a 0.2.11-shape record for the same card
+        let reloaded = f.reloadJournal()
+        XCTAssertNil(reloaded.records.first { $0.id == b }?.source.fileID, "precondition")
+        XCTAssertNotNil(reloaded.records.first { $0.id == a }?.source.fileID, "precondition")
+        XCTAssertThrowsError(try reloaded.markRunning(id: b), "a mixed old/new pair never earns the same-card exemption")
+    }
+
+    func testRetryLineageSurvivesRemountOnlyForMatchingGenerations() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        let ancestor = UUID()
+        try f.editRecord(recordID: id) { $0["retryOf"] = ancestor.uuidString }
+        try f.remountAll()
+        do {
+            let journal = f.reloadJournal()
+            try journal.replaceQueued(id: id, sourceURL: f.sourceFolder, destinationURLs: [f.destinationFolder],
+                                      verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                      reportSettings: ReportPrefs(), generateASCMHL: true)
+            XCTAssertEqual(journal.records[0].retryOf, ancestor, "new/new across a remount keeps the lineage")
+        }
+        try f.editRecord(recordID: id) { $0["retryOf"] = ancestor.uuidString; ($0["source"] as? NSMutableDictionary)?.removeObject(forKey: "fileID") }
+        do {
+            let journal = f.reloadJournal()
+            XCTAssertNil(journal.records[0].source.fileID, "precondition")
+            try journal.replaceQueued(id: id, sourceURL: f.sourceFolder, destinationURLs: [f.destinationFolder],
+                                      verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                      reportSettings: ReportPrefs(), generateASCMHL: true)
+            XCTAssertNil(journal.records[0].retryOf, "old/new is not the same folder: lineage cleared")
+        }
+    }
+
+    func testSnapshotMismatchOnFileIDRejectsPrepareToRun() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        let record = f.journal.records[0]
+        let json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record.source), options: .mutableContainers) as? NSMutableDictionary)
+        json["fileID"] = (json["fileID"] as! UInt64) + 1
+        let tampered = try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertThrowsError(try f.journal.prepareToRun(id: id, expectedResources: [tampered] + record.destinations)) { error in
+            guard case LocalTransferJournalError.invalidState = error else { return XCTFail("\(error)") }
+        }
+    }
 }
 
 /// Disposable disk images for one test. Images are created and attached with
 /// hdiutil; cleanup detaches whatever is still mounted and removes scratch.
 final class Fixture {
     let scratch: URL
-    let journal: TransferJournal
+    /// Reopen with `reloadJournal()` to observe file edits; the old instance
+    /// must be released first because it holds the journal's file lock.
+    private(set) var journal: TransferJournal!
     private let source: DiskImage
     private let destination: DiskImage
     private let shifter: DiskImage
@@ -101,6 +165,30 @@ final class Fixture {
             sourceFolder = sourceFS == "UDF" ? sourceMountPoint : sourceMountPoint.appendingPathComponent("A002APFV", isDirectory: true)
         } else {
             try source.attach()
+        }
+    }
+
+    var journalURL: URL { scratch.appendingPathComponent("journal.json") }
+
+    @discardableResult
+    func reloadJournal() -> TransferJournal {
+        journal = nil
+        journal = TransferJournal(fileURL: journalURL)
+        return journal
+    }
+
+    /// Rewrites one record in the journal file; reload a journal to observe it.
+    /// The caller's journal instance holds the file lock until it is released.
+    func editRecord(recordID: UUID, _ edit: (NSMutableDictionary) -> Void) throws {
+        let records = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: journalURL), options: .mutableContainers) as? NSMutableArray)
+        for case let record as NSMutableDictionary in records where (record["id"] as? String) == recordID.uuidString { edit(record) }
+        try JSONSerialization.data(withJSONObject: records).write(to: journalURL)
+    }
+
+    func stripFileID(recordID: UUID) throws {
+        try editRecord(recordID: recordID) { record in
+            (record["source"] as? NSMutableDictionary)?.removeObject(forKey: "fileID")
+            for case let d as NSMutableDictionary in (record["destinations"] as? NSArray) ?? [] { d.removeObject(forKey: "fileID") }
         }
     }
 
