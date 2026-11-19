@@ -70,6 +70,14 @@ func testFileIDRoundTripsThroughCodable() throws {
     XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("\"fileID\""))
 }
 
+func testHighBitFileIDSurvivesTheJournalCoder() throws {
+    // JSON number handling must not truncate: edit an encoded resource's fileID to UInt64.max and decode it back.
+    var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(try LocalTransferResource(url: try scratchFolder()))) as? [String: Any])
+    json["fileID"] = UInt64.max
+    let decoded = try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: json))
+    XCTAssertEqual(decoded.fileID, UInt64.max)
+}
+
 func testRecordWithoutFileIDDecodesAsNil() throws {
     let resource = try LocalTransferResource(url: try scratchFolder())
     var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(resource)) as? [String: Any])
@@ -156,6 +164,8 @@ func testRetryAfterRemountOnEveryFilesystem() throws {
         XCTAssertEqual(f.journal.records[0].state, .running, fs)
     }
 }
+
+func testReadAccessAfterRemount() throws   // exFAT destination; after remountAll, records[0].destinations[0].beginReadAccess() succeeds and its url is readable
 
 func testRetryAfterRemountAtADifferentMountPoint() throws   // exFAT source, reattach at <scratch>/mount-b; prepareToRun + markRunning succeed
 ```
