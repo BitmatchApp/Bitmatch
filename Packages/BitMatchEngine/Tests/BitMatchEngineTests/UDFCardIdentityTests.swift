@@ -68,7 +68,57 @@ final class UDFCardIdentityTests: XCTestCase {
         mounted = false
         try attach()
         let after = try LocalTransferResource(url: card)
-        XCTAssertEqual(before.volumeID, after.volumeID, "The same card must keep its volume identity across mounts")
+        let beforeID = try XCTUnwrap(before.volumeID)
+        let afterID = try XCTUnwrap(after.volumeID)
+        XCTAssertEqual(beforeID, afterID, "The same card must keep its volume identity across mounts")
+    }
+
+    func testAnotherUDFCardWithTheSameNameAndSizeIsNotTheOriginal() throws {
+        let original = try LocalTransferResource(url: try cardFolder())
+        try runHdiutil(["detach", mount.path])
+        mounted = false
+        // A second card formatted the same way, by a camera that reuses the
+        // reel name: only its format time differs.
+        let twin = scratch.appendingPathComponent("twin.dmg")
+        sleep(2)
+        try runHdiutil(["create", "-quiet", "-size", "8m", "-fs", "UDF", "-volname", "A002APFV", "-o", twin.path])
+        try runHdiutil(["attach", "-quiet", "-nobrowse", "-mountpoint", mount.path, twin.path])
+        mounted = true
+        let replacement = try LocalTransferResource(url: mount)
+        XCTAssertNotEqual(original.volumeID, replacement.volumeID)
+        XCTAssertThrowsError(try original.validateIdentity(at: mount))
+    }
+
+    func testReauthorizationRejectsAFolderWhoseCreationDateChanged() throws {
+        // Same volume and file identifiers, different folder birth time: a
+        // recreated folder, not the original. Build that record by shifting the
+        // stored creation date in the journal file, as a stale record would be.
+        let card = try cardFolder()
+        let backup = scratch.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journalURL = scratch.appendingPathComponent("journal.json")
+        let id: UUID
+        do {
+            let journal = TransferJournal(fileURL: journalURL)
+            id = try journal.enqueue(source: try LocalTransferResource(url: card),
+                                     destinations: [try LocalTransferResource(url: backup)],
+                                     verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                     reportSettings: ReportPrefs())
+        }
+        var records = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: journalURL)) as? [[String: Any]])
+        var source = try XCTUnwrap(records[0]["source"] as? [String: Any])
+        let stored = try XCTUnwrap(source["creationDate"] as? Double)
+        source["creationDate"] = stored - 3600
+        records[0]["source"] = source
+        try JSONSerialization.data(withJSONObject: records).write(to: journalURL)
+
+        let reloaded = TransferJournal(fileURL: journalURL)
+        XCTAssertNil(reloaded.persistenceError)
+        XCTAssertThrowsError(try reloaded.reauthorize(id: id, resourceIndex: 0, newURL: card)) { error in
+            guard case LocalTransferJournalError.identityMismatch = error else {
+                return XCTFail("Expected identityMismatch, got \(error)")
+            }
+        }
     }
 
     private func cardFolder() throws -> URL {

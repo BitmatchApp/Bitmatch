@@ -564,7 +564,11 @@ public final class TransferJournal: Sendable {
         }
         let volumeOK = original.volumeID == refreshed.volumeID
         let resourceOK = original.resourceID == refreshed.resourceID
-        guard volumeOK && resourceOK else {
+        // The folder's birth time is the third identity component, as in
+        // validateIdentity: matching identifiers on a folder born at another
+        // time name a recreated folder, not the original.
+        let creationOK = original.creationDate == nil || original.creationDate == refreshed.creationDate
+        guard volumeOK && resourceOK && creationOK else {
             throw LocalTransferJournalError.identityMismatch(name: name)
         }
         // Keep a readable, directory-only replacement in the journal. Without
