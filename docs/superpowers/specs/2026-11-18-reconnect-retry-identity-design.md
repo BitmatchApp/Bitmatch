@@ -75,7 +75,7 @@ Source and destination each sit on their own image; both are detached and reatta
 - Remount, then `prepareToRun` and `markRunning` succeed (bookmark resolution included).
 - Remount, then `reauthorize` with the same folder succeeds for the source index and a destination index; with a different folder on the same volume it throws `identityMismatch`.
 - Folder deleted and recreated at the same path, then remount: refused by `markRunning` and by `reauthorize` (exFAT and FAT32).
-- A different image with the same volume name at the same mount point after remount: refused.
+- A different image with the same volume name at the same mount point after remount: refused by `prepareToRun` and by `reauthorize`.
 - A 0.2.11-shape record (the `fileID` key stripped from the journal file) loads, validates in the same mount, is refused after remount exactly as today, and gains a `fileID` through a same-mount `reauthorize`.
 - A folder with the same `fileID` on a different volume is refused.
 - A stored record with a `fileID` against a fresh read that yields none is refused, and the journal file is byte-identical afterwards.
@@ -88,4 +88,4 @@ Source and destination each sit on their own image; both are detached and reatta
 
 ## Left to the builder
 
-Helper naming, whether `resourceID` keeps being written for new records (yes, for `identityCanBeConfirmed` and diagnostics), and the exact test fixtures.
+The exact test fixtures. `resourceID` keeps being written for every new record; that is a requirement, not a choice.

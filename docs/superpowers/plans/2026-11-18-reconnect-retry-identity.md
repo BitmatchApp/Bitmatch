@@ -227,7 +227,7 @@ func testRecreatedFolderAtTheSamePathIsRefusedAfterRemount()
    // enqueue; detach; reattach; rmdir + mkdir A002APFV (sleep 3 s first so FAT's 2 s birth time differs); detach; reattach;
    // prepareToRun throws unavailable; reauthorize(id, 0, folder) throws identityMismatch; journal file bytes unchanged
 func testDifferentImageWithTheSameVolumeNameIsRefusedAfterRemount()
-   // second exFAT image, same volname, attached at the same mount point → prepareToRun throws unavailable
+   // second exFAT image, same volname, attached at the same mount point → prepareToRun throws unavailable; reauthorize(id, 0, folder) throws identityMismatch
 func testDifferentFolderOnTheSameVolumeIsRefusedOnReauthorize()
    // after remount, reauthorize(id, 0, <mount>/B001OTHER) throws identityMismatch; reauthorize(id, 1, <sameDestinationFolder>) succeeds
 func testSameFileIDOnAnotherVolumeIsRefused()
