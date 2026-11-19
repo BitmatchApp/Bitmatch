@@ -111,6 +111,71 @@ final class RemountRetryMatrixTests: XCTestCase {
             guard case LocalTransferJournalError.invalidState = error else { return XCTFail("\(error)") }
         }
     }
+
+    // MARK: Task 5: replacements are refused after a remount
+
+    func testRecreatedFolderAtTheSamePathIsRefusedAfterRemount() throws {
+        for fs in ["ExFAT", "FAT32"] {
+            let f = try Fixture(sourceFS: fs)
+            defer { f.cleanup() }
+            let id = try f.enqueue()
+            let before = try Data(contentsOf: f.journalURL)
+            try f.remountAll()
+            try f.recreateSourceFolder()   // same path, same name, born later
+            try f.remountAll()
+            XCTAssertThrowsError(try f.journal.prepareToRun(id: id), fs) { error in
+                guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(fs): \(error)") }
+            }
+            XCTAssertThrowsError(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder), fs) { error in
+                guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(fs): \(error)") }
+            }
+            XCTAssertEqual(try Data(contentsOf: f.journalURL), before, "\(fs): a refusal never writes the journal")
+        }
+    }
+
+    func testDifferentImageWithTheSameVolumeNameIsRefusedAfterRemount() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        try f.swapSourceImage()        // another exFAT image, same volume name, same folder, same mount point
+        XCTAssertThrowsError(try f.journal.prepareToRun(id: id)) { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertThrowsError(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder)) { error in
+            guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(error)") }
+        }
+    }
+
+    func testDifferentFolderOnTheSameVolumeIsRefusedOnReauthorize() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let id = try f.enqueue()
+        try f.remountAll()
+        let other = f.sourceFolder.deletingLastPathComponent().appendingPathComponent("B001OTHER", isDirectory: true)
+        try FileManager.default.createDirectory(at: other, withIntermediateDirectories: true)
+        XCTAssertThrowsError(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: other)) { error in
+            guard case LocalTransferJournalError.identityMismatch = error else { return XCTFail("\(error)") }
+        }
+        XCTAssertNoThrow(try f.journal.reauthorize(id: id, resourceIndex: 0, newURL: f.sourceFolder))
+        XCTAssertNoThrow(try f.journal.reauthorize(id: id, resourceIndex: 1, newURL: f.destinationFolder))
+    }
+
+    func testSameFileIDOnAnotherVolumeIsRefused() throws {
+        let f = try Fixture(sourceFS: "ExFAT")
+        defer { f.cleanup() }
+        let twin = try DiskImage(scratch: f.scratch, name: "twin", fs: "ExFAT", volname: "A002APFV", size: "16m")
+        try twin.attach()
+        defer { try? twin.detach() }
+        let twinFolder = twin.mount.appendingPathComponent("A002APFV", isDirectory: true)
+        try FileManager.default.createDirectory(at: twinFolder, withIntermediateDirectories: true)
+        let original = try LocalTransferResource(url: f.sourceFolder)
+        let impostor = try LocalTransferResource(url: twinFolder)
+        XCTAssertEqual(original.fileID, impostor.fileID, "precondition: synthesized IDs collide across identically laid-out volumes")
+        XCTAssertNotEqual(original.volumeID, impostor.volumeID)
+        XCTAssertThrowsError(try original.validateIdentity(at: twinFolder)) { error in
+            guard case LocalTransferJournalError.unavailable = error else { return XCTFail("\(error)") }
+        }
+    }
 }
 
 /// Disposable disk images for one test. Images are created and attached with
@@ -120,7 +185,7 @@ final class Fixture {
     /// Reopen with `reloadJournal()` to observe file edits; the old instance
     /// must be released first because it holds the journal's file lock.
     private(set) var journal: TransferJournal!
-    private let source: DiskImage
+    private var source: DiskImage
     private let destination: DiskImage
     private let shifter: DiskImage
     private(set) var sourceFolder: URL
@@ -190,6 +255,24 @@ final class Fixture {
             (record["source"] as? NSMutableDictionary)?.removeObject(forKey: "fileID")
             for case let d as NSMutableDictionary in (record["destinations"] as? NSArray) ?? [] { d.removeObject(forKey: "fileID") }
         }
+    }
+
+    /// Delete the card folder and make a new one at the same path, born later.
+    func recreateSourceFolder() throws {
+        try FileManager.default.removeItem(at: sourceFolder)
+        sleep(3)   // FAT stores birth times at 2 s resolution
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try Data("clip".utf8).write(to: sourceFolder.appendingPathComponent("A002C001.mxf"))
+    }
+
+    /// Replace the card with a different image of the same name and layout at the same mount point.
+    func swapSourceImage() throws {
+        try source.detach()
+        let replacement = try DiskImage(scratch: scratch, name: "card-replacement", fs: sourceFS, volname: "A002APFV", size: "16m")
+        try replacement.attach(at: source.mount)
+        source = replacement
+        try FileManager.default.createDirectory(at: sourceFolder, withIntermediateDirectories: true)
+        try Data("clip".utf8).write(to: sourceFolder.appendingPathComponent("A002C001.mxf"))
     }
 
     func detachSource() throws { try source.detach() }
