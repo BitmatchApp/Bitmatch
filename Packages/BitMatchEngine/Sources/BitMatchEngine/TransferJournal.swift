@@ -19,6 +19,11 @@ public struct LocalTransferResource: Codable, Sendable {
     public let volumeID: String?
     public let resourceID: String?
     public let creationDate: Date?
+    /// Device-free file identifier (the inode or synthesized file ID without
+    /// the mount's device number), which survives a remount where
+    /// `resourceID` does not. Recorded only on macOS for local, non-cloud
+    /// folders with a birth time; nil otherwise and in older records.
+    public let fileID: UInt64?
 
     public init(url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -32,10 +37,27 @@ public struct LocalTransferResource: Codable, Sendable {
         resourceID = values.fileResourceIdentifier.map { String(describing: $0) }
         creationDate = values.creationDate
         #if os(macOS)
+        fileID = Self.fileIDIfTrusted(fileIdentifier: values.fileIdentifier, volumeIsLocal: values.volumeIsLocal,
+                                      isUbiquitous: values.isUbiquitousItem, creationDate: values.creationDate,
+                                      path: url.resolvingSymlinksInPath().path)
         bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
         #else
+        fileID = nil
         bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         #endif
+    }
+
+    /// A file identifier is trusted as durable folder identity only on a
+    /// local, non-cloud volume (network shares and File Provider domains may
+    /// synthesize it), only when the folder has a birth time to discriminate
+    /// a recreated folder with a reused identifier, and only when non-zero.
+    static func fileIDIfTrusted(fileIdentifier: UInt64?, volumeIsLocal: Bool?, isUbiquitous: Bool?,
+                                creationDate: Date?, path: String) -> UInt64? {
+        // `isUbiquitousItem` reads nil on every ordinary local folder (external
+        // drives included) and true only inside iCloud Drive, so nil is local.
+        guard let fileIdentifier, fileIdentifier != 0, volumeIsLocal == true, isUbiquitous != true,
+              creationDate != nil, !BackupTargetPolicy.isCloudManagedPath(path) else { return nil }
+        return fileIdentifier
     }
 
     /// Read access for optional history previews; requires the original destination identity.
@@ -76,21 +98,73 @@ public struct LocalTransferResource: Codable, Sendable {
             throw LocalTransferJournalError.unverifiableIdentity(name: url.lastPathComponent)
         }
         guard let volumeID,
-              let resourceID,
               let resolvedVolumeID = Self.volumeIdentity(values),
-              let resolvedResourceID = values.fileResourceIdentifier,
               values.isDirectory == true,
               resolvedVolumeID == volumeID,
-              String(describing: resolvedResourceID) == resourceID,
+              folderMatches(fresh: values, at: resolved),
               creationDate == nil || values.creationDate == creationDate,
               FileManager.default.isReadableFile(atPath: resolved.path) else {
             throw LocalTransferJournalError.unavailable(url.lastPathComponent)
         }
     }
 
-    private static let identityKeys: Set<URLResourceKey> = [
+    /// Stored side governs: a record with a `fileID` is matched on it alone
+    /// and fails closed when the fresh read has none (or the record has no
+    /// birth time to back it); a record without one is matched on the
+    /// device-bearing `resourceID`, today's rule, which is why an old record
+    /// re-picked after a remount is still refused by design.
+    /// The fresh identifier passes through the same eligibility rule as
+    /// recording, so a folder moved into an excluded location is not matched
+    /// on an identifier that would not have been recorded there.
+    func folderMatches(fresh values: URLResourceValues, at url: URL) -> Bool {
+        #if os(macOS)
+        let freshFileID = Self.fileIDIfTrusted(fileIdentifier: values.fileIdentifier, volumeIsLocal: values.volumeIsLocal,
+                                               isUbiquitous: values.isUbiquitousItem, creationDate: values.creationDate,
+                                               path: url.resolvingSymlinksInPath().path)
+        #else
+        let freshFileID: UInt64? = nil
+        #endif
+        return folderMatches(fileID: freshFileID,
+                             resourceID: values.fileResourceIdentifier.map { String(describing: $0) })
+    }
+
+    /// The same stored-governs rule against a freshly built resource.
+    func folderMatches(refreshed: LocalTransferResource) -> Bool {
+        folderMatches(fileID: refreshed.fileID, resourceID: refreshed.resourceID)
+    }
+
+    private func folderMatches(fileID freshFileID: UInt64?, resourceID freshResourceID: String?) -> Bool {
+        if let fileID {
+            guard creationDate != nil, let freshFileID, freshFileID != 0 else { return false }
+            return freshFileID == fileID
+        }
+        guard let resourceID, let freshResourceID else { return false }
+        return freshResourceID == resourceID
+    }
+
+    /// Symmetric: do two stored records name one folder? Volume and birth
+    /// time must be equal (strictly, as optionals), and both must carry the
+    /// same kind of folder identity: equal `fileID`s, or, for two records
+    /// without one, equal `resourceID`s. A mixed old/new pair is never the
+    /// same folder, and nil never matches nil. Not for stored-vs-fresh checks.
+    func namesSameFolder(as other: LocalTransferResource) -> Bool {
+        guard let volumeID, volumeID == other.volumeID, creationDate == other.creationDate else { return false }
+        switch (fileID, other.fileID) {
+        case let (mine?, theirs?):
+            // A zero identifier or a missing birth time is a malformed
+            // identity, never a match, as in folderMatches.
+            return mine != 0 && creationDate != nil && mine == theirs
+        case (nil, nil):
+            guard let resourceID else { return false }
+            return resourceID == other.resourceID
+        default: return false
+        }
+    }
+
+    static let identityKeys: Set<URLResourceKey> = [
         .isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey,
-        .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey
+        .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey,
+        .fileIdentifierKey, .volumeIsLocalKey, .isUbiquitousItemKey
     ]
 
     /// The volume's UUID when the file system has one. UDF volumes (ARRI Codex
@@ -523,6 +597,7 @@ public final class TransferJournal: Sendable {
                 && current.bookmark == expected.bookmark
                 && current.volumeID == expected.volumeID
                 && current.resourceID == expected.resourceID
+                && current.fileID == expected.fileID
                 && current.creationDate == expected.creationDate
         }
     }
@@ -563,7 +638,7 @@ public final class TransferJournal: Sendable {
             throw LocalTransferJournalError.unverifiableIdentity(name: name)
         }
         let volumeOK = original.volumeID == refreshed.volumeID
-        let resourceOK = original.resourceID == refreshed.resourceID
+        let resourceOK = original.folderMatches(refreshed: refreshed)
         // The folder's birth time is the third identity component, as in
         // validateIdentity: matching identifiers on a folder born at another
         // time name a recreated folder, not the original.
@@ -650,10 +725,7 @@ public final class TransferJournal: Sendable {
         for other in records where other.id != record.id && (other.state == .queued || other.state == .running
             || (sessionRecordIDs.contains(other.id) && other.startedAt != nil)) {
             // Rechecking the same original card is an intentional supported operation.
-            if record.source.volumeID != nil, record.source.resourceID != nil,
-               record.source.volumeID == other.source.volumeID,
-               record.source.resourceID == other.source.resourceID,
-               record.source.creationDate == other.source.creationDate { continue }
+            if record.source.namesSameFolder(as: other.source) { continue }
             let resources = [other.source] + other.destinations
             let urls = resources.map { (try? $0.resolve()) ?? $0.url }
             let scoped = urls.filter { $0.startAccessingSecurityScopedResource() }
@@ -721,9 +793,7 @@ public final class TransferJournal: Sendable {
                     cameraSettings: cameraSettings,
                     reportSettings: reportSettings,
                     generateASCMHL: generateASCMHL,
-                    retryOf: source.volumeID == record.source.volumeID
-                        && source.resourceID == record.source.resourceID
-                        && source.creationDate == record.source.creationDate ? record.retryOf : nil
+                    retryOf: source.namesSameFolder(as: record.source) ? record.retryOf : nil
                 )
                 record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
             }
@@ -765,9 +835,7 @@ public final class TransferJournal: Sendable {
                     cameraSettings: cameraSettings,
                     reportSettings: reportSettings,
                     generateASCMHL: generateASCMHL,
-                    retryOf: source.volumeID == record.source.volumeID
-                        && source.resourceID == record.source.resourceID
-                        && source.creationDate == record.source.creationDate ? record.retryOf : nil
+                    retryOf: source.namesSameFolder(as: record.source) ? record.retryOf : nil
                 )
                 record.estimatedSourceBytes = estimatedSourceBytes.flatMap { $0 >= 0 ? $0 : nil }
             }

@@ -1000,6 +1000,50 @@ struct QueueSessionPresentationTests {
         try #require(safeRow.safetyState.isSafe)
         #expect(QueueSessionPresentation.removeConfirmation(for: safeRow) == nil)
     }
+
+    // MARK: Attempt key: one row per card across remounts
+
+    @Test func attemptKeyUsesFileIDWithBirthTimeAndKeepsLegacyForm() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let base = try fixture.record(name: "A002APFV", state: .queued)
+        let source = base.source
+        let fileID = try #require(source.fileID)
+        let volumeID = try #require(source.volumeID)
+        let born = try #require(source.creationDate)
+        #expect(QueueSessionPresentation.attemptKey(for: base) == "\(volumeID)/file:\(fileID)/\(born.timeIntervalSinceReferenceDate)")
+
+        var remounted = base
+        remounted.source = try edited(source) { $0["resourceID"] = "another device number" }
+        #expect(QueueSessionPresentation.attemptKey(for: remounted) == QueueSessionPresentation.attemptKey(for: base),
+                "the same card after a remount collapses into one row")
+
+        var legacy = base
+        legacy.source = try edited(source) { $0.removeValue(forKey: "fileID") }
+        let resourceID = try #require(source.resourceID)
+        #expect(QueueSessionPresentation.attemptKey(for: legacy) == "\(volumeID)/\(resourceID)")
+        #expect(QueueSessionPresentation.attemptKey(for: legacy) != QueueSessionPresentation.attemptKey(for: base))
+    }
+
+    @Test func attemptKeyDistinguishesReusedFileIDWithDifferentBirthTime() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        let base = try fixture.record(name: "A002APFV", state: .queued)
+        var sibling = base
+        var whole = base
+        // Fixed birth times inside one second, so a whole-second key cannot pass.
+        whole.source = try edited(base.source) { $0["creationDate"] = 700_000_000.0 }
+        sibling.source = try edited(base.source) { $0["creationDate"] = 700_000_000.25 }
+        #expect(QueueSessionPresentation.attemptKey(for: sibling) != QueueSessionPresentation.attemptKey(for: whole),
+                "birth times a quarter second apart are different folders")
+    }
+
+    private func edited(_ resource: LocalTransferResource, _ edit: (inout [String: Any]) throws -> Void) throws -> LocalTransferResource {
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(resource)) as? [String: Any])
+        try edit(&json)
+        return try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: json))
+    }
+
 }
 
 private final class QueuePresentationFixture {

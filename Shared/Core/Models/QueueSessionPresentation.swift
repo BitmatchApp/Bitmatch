@@ -442,10 +442,17 @@ struct QueueSessionPresentation: Equatable, Sendable {
 
     /// The card a record belongs to: its volume and folder identity when known,
     /// else its source path. A volume ID alone would merge two folders of one disk.
+    /// A record with a device-free file identifier keys on it plus the folder's
+    /// birth time (full precision, so a reused identifier on a folder born in
+    /// the same second never merges two cards), which is why repeated attempts
+    /// at one card survive a remount as one row. Older records keep the
+    /// device-bearing form; the two forms can never alias.
     static func attemptKey(for record: LocalTransferRecord) -> String {
-        guard let volumeID = record.source.volumeID, let resourceID = record.source.resourceID else {
-            return record.source.url.path
+        guard let volumeID = record.source.volumeID else { return record.source.url.path }
+        if let fileID = record.source.fileID, let born = record.source.creationDate {
+            return "\(volumeID)/file:\(fileID)/\(born.timeIntervalSinceReferenceDate)"
         }
+        guard let resourceID = record.source.resourceID else { return record.source.url.path }
         return "\(volumeID)/\(resourceID)"
     }
 

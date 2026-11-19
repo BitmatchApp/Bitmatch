@@ -15,6 +15,7 @@ final class SourceAvailabilityModel: ObservableObject {
         let bookmark: Data
         let volumeID: String?
         let resourceID: String?
+        let fileID: UInt64?
         let creationDate: Date?
 
         init(_ resource: LocalTransferResource) {
@@ -22,6 +23,7 @@ final class SourceAvailabilityModel: ObservableObject {
             bookmark = resource.bookmark
             volumeID = resource.volumeID
             resourceID = resource.resourceID
+            fileID = resource.fileID
             creationDate = resource.creationDate
         }
     }
