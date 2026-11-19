@@ -19,6 +19,11 @@ public struct LocalTransferResource: Codable, Sendable {
     public let volumeID: String?
     public let resourceID: String?
     public let creationDate: Date?
+    /// Device-free file identifier (the inode or synthesized file ID without
+    /// the mount's device number), which survives a remount where
+    /// `resourceID` does not. Recorded only on macOS for local, non-cloud
+    /// folders with a birth time; nil otherwise and in older records.
+    public let fileID: UInt64?
 
     public init(url: URL) throws {
         let scoped = url.startAccessingSecurityScopedResource()
@@ -32,10 +37,25 @@ public struct LocalTransferResource: Codable, Sendable {
         resourceID = values.fileResourceIdentifier.map { String(describing: $0) }
         creationDate = values.creationDate
         #if os(macOS)
+        fileID = Self.fileIDIfTrusted(fileIdentifier: values.fileIdentifier, volumeIsLocal: values.volumeIsLocal,
+                                      isUbiquitous: values.isUbiquitousItem, creationDate: values.creationDate,
+                                      path: url.path)
         bookmark = try url.bookmarkData(options: [.withSecurityScope], includingResourceValuesForKeys: nil, relativeTo: nil)
         #else
+        fileID = nil
         bookmark = try url.bookmarkData(options: [], includingResourceValuesForKeys: nil, relativeTo: nil)
         #endif
+    }
+
+    /// A file identifier is trusted as durable folder identity only on a
+    /// local, non-cloud volume (network shares and File Provider domains may
+    /// synthesize it), only when the folder has a birth time to discriminate
+    /// a recreated folder with a reused identifier, and only when non-zero.
+    static func fileIDIfTrusted(fileIdentifier: UInt64?, volumeIsLocal: Bool?, isUbiquitous: Bool?,
+                                creationDate: Date?, path: String) -> UInt64? {
+        guard let fileIdentifier, fileIdentifier != 0, volumeIsLocal == true, isUbiquitous != true,
+              creationDate != nil, !BackupTargetPolicy.isCloudManagedPath(path) else { return nil }
+        return fileIdentifier
     }
 
     /// Read access for optional history previews; requires the original destination identity.
@@ -90,7 +110,8 @@ public struct LocalTransferResource: Codable, Sendable {
 
     private static let identityKeys: Set<URLResourceKey> = [
         .isDirectoryKey, .volumeUUIDStringKey, .fileResourceIdentifierKey, .creationDateKey,
-        .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey
+        .volumeNameKey, .volumeTotalCapacityKey, .volumeCreationDateKey,
+        .fileIdentifierKey, .volumeIsLocalKey, .isUbiquitousItemKey
     ]
 
     /// The volume's UUID when the file system has one. UDF volumes (ARRI Codex
