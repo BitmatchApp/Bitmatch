@@ -42,7 +42,7 @@ A queued, interrupted or failed transfer can be retried after the card or backup
 - the creation date matches when the stored record has one;
 - it is a readable directory.
 
-**Stored-vs-stored match** (same-card exemption in `validateQueueOutputs`, both `retryOf` comparisons in the two `replaceQueued` overloads). Two records name the same folder only when their volume IDs are equal and: both have a `fileID` and they are equal, or neither has one and their `resourceID`s are equal. A mixed pair (one old, one new) is never the same folder; that fails closed into the output-overlap check and into "not a retry".
+**Stored-vs-stored match** (same-card exemption in `validateQueueOutputs`, both `retryOf` comparisons in the two `replaceQueued` overloads). Two records name the same folder only when their volume IDs are equal, their creation dates are exactly equal as optionals (today's strict rule at these sites, kept; no wildcard), and: both have a `fileID` and they are equal, or neither has one and their `resourceID`s are equal. The comparison is symmetric. A mixed pair (one old, one new) is never the same folder; that fails closed into the output-overlap check and into "not a retry".
 
 `matchesResourceSnapshot` (the stale-snapshot guard behind `prepareToRun` and `reauthorize`) compares `fileID` as one more field. `SourceAvailabilityModel.ResourceKey` adds `fileID` to its key fields.
 
@@ -52,13 +52,17 @@ This rule lives in one helper on `LocalTransferResource` and replaces the inline
 
 An old record (no `fileID`) that is re-picked after the update produces a refreshed resource that does have a `fileID`, but the stored side governs, so the comparison stays on `resourceID` and still fails after a remount, exactly as today. That is intentional and gets a comment, because it reads like a bug.
 
-Stale bookmarks: `resolve()` keeps throwing `unavailable` when the bookmark reports stale. Measured not to happen on a remount; if it does on real media the record stays unavailable as today, which is the same outcome as before this change, never a substitution. `QueueSessionPresentation.attemptKey` uses `"\(volumeID)/file:\(fileID)"` when present and today's `"\(volumeID)/\(resourceID)"` otherwise, so repeated attempts at one card after a remount collapse to one row and the two key forms can never alias. A pre-update attempt and a post-update retry of the same card will not collapse; accepted. `TransferLibraryView.identityCanBeConfirmed` keeps its meaning (volume and `resourceID` present).
+Stale bookmarks: `resolve()` keeps throwing `unavailable` when the bookmark reports stale. Measured not to happen on a remount; if it does on real media the record stays unavailable as today, which is the same outcome as before this change, never a substitution. `QueueSessionPresentation.attemptKey` uses `"\(volumeID)/file:\(fileID)/\(creationDate)"` when a `fileID` is present (birth time included so a reused file ID on a different folder never collapses two cards) and today's `"\(volumeID)/\(resourceID)"` otherwise, so repeated attempts at one card after a remount collapse to one row and the two key forms can never alias. A pre-update attempt and a post-update retry of the same card will not collapse; accepted. `TransferLibraryView.identityCanBeConfirmed` keeps its meaning (volume and `resourceID` present).
 
 ## Recreated folders
 
 The one substitution that must never pass is a folder deleted and recreated at the same path. Across a remount this is new ground, because today everything is refused. On FAT and exFAT macOS synthesizes the file ID from the directory entry position, so a recreated folder can present the same `fileID`. The creation date is the discriminator, as it already is for a same-mount recreate today (where `resourceID` is also reused). Measured on disk images: APFS, exFAT, FAT32 and UDF all return a non-nil creation date for folders. FAT stores it at 2 s granularity, in local time, so a folder recreated inside the same 2 s window, or a timezone change between mounts, are known limits; both are pre-existing for same-mount checks. The recreated-folder refusal is a required test on exFAT and FAT32, through `markRunning` and through `reauthorize`.
 
 Twin UDF volumes formatted within one volume-creation tick remain indistinguishable at the root; inherited from the #91 fallback and accepted.
+
+**Accepted limit.** A volume whose complete tuple matches (same volume UUID or fallback, same folder file ID, same birth time), such as a block-level clone, is indistinguishable from the original by any metadata this app can read, before and after this change. The journal's job is to refuse a *different* disk or folder, which such a clone is not in any way the filesystem can show.
+
+Every refusal leaves the journal unchanged; a rejected validation never writes.
 
 `validateReauthorization` keeps requiring both volume and folder identity on both sides; for an old record without `fileID` the refreshed `resourceID` is compared as today.
 
@@ -72,6 +76,8 @@ Source and destination each sit on their own image; both are detached and reatta
 - A different image with the same volume name at the same mount point after remount: refused.
 - A 0.2.11-shape record (the `fileID` key stripped from the journal file) loads, validates in the same mount, is refused after remount exactly as today, and gains a `fileID` through a same-mount `reauthorize`.
 - A folder with the same `fileID` on a different volume is refused.
+- A stored record with a `fileID` against a fresh read that yields none is refused, and the journal file is byte-identical afterwards.
+- Remount at a different mount point (hdiutil `-mountpoint`): the bookmark resolves there and the retry succeeds.
 - Encoding round trip includes `fileID`; a zero `fileID` is stored as nil.
 - `attemptKey` collapses a remounted retry with its earlier attempt and keeps old and new key forms distinct (Mac app suite).
 - Mac app suite for `attemptKey` collapsing across remount is covered by existing presentation tests plus one new case if the fixture allows.
