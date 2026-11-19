@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- `fileID` is recorded only when `volumeIsLocal == true` and the value is non-zero; otherwise nil.
+- `fileID` is recorded only on macOS, when `volumeIsLocal == true`, `isUbiquitousItem != true`, `creationDate != nil` and the value is non-zero; otherwise nil. A stored `fileID` with nil `creationDate` fails closed.
 - Fresh selection still requires `volumeID` and `resourceID`; `fileID` never substitutes.
 - Stored `fileID` present → fresh `fileID` must be non-nil and equal; never fall back to `resourceID`.
 - Record-vs-record comparison is symmetric, keeps strict optional equality of `creationDate`, and treats a mixed old/new pair as different.
@@ -37,7 +37,7 @@
 - Test: `Packages/BitMatchEngine/Tests/BitMatchEngineTests/ReconnectIdentityTests.swift` (new)
 
 **Interfaces:**
-- Produces: `public let fileID: UInt64?` on `LocalTransferResource`; `static func fileIDIfTrusted(_ values: URLResourceValues) -> UInt64?` (internal, `@testable`); `identityKeys` gains `.fileIdentifierKey` and `.volumeIsLocalKey`.
+- Produces: `public let fileID: UInt64?` on `LocalTransferResource`; `static func fileIDIfTrusted(fileIdentifier: UInt64?, volumeIsLocal: Bool?, isUbiquitous: Bool?, creationDate: Date?) -> UInt64?` (internal, `@testable`); `identityKeys` gains `.fileIdentifierKey`, `.volumeIsLocalKey`, `.isUbiquitousItemKey`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -50,16 +50,16 @@ func testLocalFolderRecordsFileID() throws {
     XCTAssertNotNil(resource.resourceID, "resourceID is still recorded")
 }
 
-func testFileIDIsNotTrustedOffLocalVolumesOrWhenZero() {
-    var values = URLResourceValues()
-    values.fileIdentifier = 42; values.volumeIsLocal = false
-    XCTAssertNil(LocalTransferResource.fileIDIfTrusted(values))
-    values.volumeIsLocal = true; values.fileIdentifier = 0
-    XCTAssertNil(LocalTransferResource.fileIDIfTrusted(values))
-    values.fileIdentifier = 42
-    XCTAssertEqual(LocalTransferResource.fileIDIfTrusted(values), 42)
-    values.volumeIsLocal = nil
-    XCTAssertNil(LocalTransferResource.fileIDIfTrusted(values), "unknown locality is not local")
+func testFileIDEligibility() {
+    typealias R = LocalTransferResource
+    let now = Date()
+    XCTAssertEqual(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: false, creationDate: now), 42)
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: false, isUbiquitous: false, creationDate: now))
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: nil, isUbiquitous: false, creationDate: now), "unknown locality is not local")
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: true, creationDate: now))
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: false, creationDate: nil))
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 0, volumeIsLocal: true, isUbiquitous: false, creationDate: now))
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: nil, volumeIsLocal: true, isUbiquitous: false, creationDate: now))
 }
 
 func testFileIDRoundTripsThroughCodable() throws {
@@ -88,7 +88,7 @@ func testRecordWithoutFileIDDecodesAsNil() throws {
 }
 ```
 
-Note: `URLResourceValues` setters for `fileIdentifier` / `volumeIsLocal` are read-only in Foundation; if they cannot be assigned, give `fileIDIfTrusted` the signature `(fileIdentifier: UInt64?, volumeIsLocal: Bool?) -> UInt64?` and test that.
+`fileIDIfTrusted(fileIdentifier:volumeIsLocal:isUbiquitous:creationDate:) -> UInt64?` is a pure static function; `init(url:)` feeds it from `values` and, on non-macOS builds, assigns nil without calling it (`#if os(macOS)`). `identityKeys` also gains `.isUbiquitousItemKey`.
 
 - [ ] **Step 2: Run to verify failure**
 
@@ -112,7 +112,7 @@ Add `public let fileID: UInt64?` after `resourceID`. In `init(url:)`, `fileID = 
 - Test: `ReconnectIdentityTests.swift`
 
 **Interfaces:**
-- Produces: `func folderMatches(fresh: URLResourceValues) -> Bool` on `LocalTransferResource` (internal): stored `fileID` present → `fresh.fileIdentifier` non-nil, non-zero and equal; else `String(describing: fresh.fileResourceIdentifier) == resourceID`. `func folderMatches(refreshed: LocalTransferResource) -> Bool`: same rule against another resource's `fileID`/`resourceID`.
+- Produces: `func folderMatches(fresh: URLResourceValues) -> Bool` on `LocalTransferResource` (internal): stored `fileID` present → stored `creationDate` must be non-nil (else false) and `fresh.fileIdentifier` non-nil, non-zero and equal; else `String(describing: fresh.fileResourceIdentifier) == resourceID`. `func folderMatches(refreshed: LocalTransferResource) -> Bool`: same rule against another resource's `fileID`/`resourceID`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -120,6 +120,7 @@ Add `public let fileID: UInt64?` after `resourceID`. In `init(url:)`, `fileID = 
 func testStoredFileIDRequiresEqualFreshFileID() throws   // stored fileID 7, fresh fileID 8, same resourceID → false
 func testStoredFileIDDoesNotFallBackToResourceID() throws // stored fileID 7, fresh fileID nil, same resourceID → false
 func testLegacyRecordMatchesOnResourceID() throws         // stored fileID nil, resourceID equal → true; resourceID differs → false
+func testStoredFileIDWithoutBirthTimeFailsClosed() throws  // stored fileID 7, creationDate nil (JSON-edited), fresh fileID 7 → false
 ```
 
 Build the stored side by decoding a JSON-edited `LocalTransferResource` (pattern from `UDFCardIdentityTests.testReauthorizationRejectsAFolderWhoseCreationDateChanged`); the fresh side comes from a real folder's `resourceValues`.
@@ -268,7 +269,7 @@ func testLegacyRecordGainsFileIDThroughSameMountReauthorize()
 func testAttemptKeyUsesFileIDWithBirthTimeAndKeepsLegacyForm()
    // record with fileID 9, volumeID "V", creationDate D → "V/file:9/<D.timeIntervalSinceReferenceDate>"
    // record without fileID → "V/<resourceID>"; the two never equal for the same folder
-func testAttemptKeyDistinguishesReusedFileIDWithDifferentBirthTime()
+func testAttemptKeyDistinguishesReusedFileIDWithDifferentBirthTime()   // birth times 0.25 s apart within one second → different keys
 ```
 
 Build records via `JSONDecoder` from a JSON literal (see how `QueueSessionPresentationTests` builds records today; reuse its helper).

@@ -33,7 +33,7 @@ A queued, interrupted or failed transfer can be retried after the card or backup
 
 ## Design (approach 2)
 
-`LocalTransferResource` gains `public let fileID: UInt64?`, read from `.fileIdentifierKey` in `init(url:)`. It is recorded only when the volume is local (`volumeIsLocalKey` is true) and the value is non-zero; on a network share or an unknown volume it stays nil, so those keep today's behavior exactly. Codable synthesis decodes a missing key as nil, so old journal files load unchanged. Fresh selection still requires `volumeID` and `resourceID` as today; `fileID` is additional, never a substitute, so nothing that is refused today becomes accepted on first pick.
+`LocalTransferResource` gains `public let fileID: UInt64?`, read from `.fileIdentifierKey` in `init(url:)`. It is recorded only when all of these hold: the build is macOS (`#if os(macOS)`; iOS and File Provider locations are the stated non-goal and keep today's behavior), the volume is local (`volumeIsLocalKey` is true), the item is not ubiquitous (`isUbiquitousItemKey` is false, as `BackupTargetPolicy` already reads it), the folder has a creation date, and the value is non-zero. Otherwise it stays nil, so network shares, cloud locations, unknown volumes and folders without a birth time keep today's behavior exactly. A stored identity with a `fileID` but no `creationDate` is malformed and fails closed (refused). Codable synthesis decodes a missing key as nil, so old journal files load unchanged. Fresh selection still requires `volumeID` and `resourceID` as today; `fileID` is additional, never a substitute, so nothing that is refused today becomes accepted on first pick.
 
 **Stored-vs-fresh match** (`validateIdentity`, `validateReauthorization` against the refreshed read). A folder matches a stored identity when all of these hold:
 
@@ -48,11 +48,11 @@ A queued, interrupted or failed transfer can be retried after the card or backup
 
 A record without `fileID` that is reauthorized in the same mount (where `resourceID` still matches) is replaced by the refreshed resource and so gains a `fileID`: the upgrade path for old queued records, stated and tested.
 
-This rule lives in one helper on `LocalTransferResource` and replaces the inline comparisons at exactly these call sites: `validateIdentity`, `validateReauthorization`, the "same card rechecked" test in `validateQueueOutputs`, and both `retryOf` comparisons in `requeue`/`retry`. All switch together.
+This rule lives in one helper on `LocalTransferResource` and replaces the inline comparisons at exactly these call sites: `validateIdentity`, `validateReauthorization`, the "same card rechecked" test in `validateQueueOutputs`, and both `retryOf` comparisons in the two `replaceQueued` overloads. All switch together.
 
 An old record (no `fileID`) that is re-picked after the update produces a refreshed resource that does have a `fileID`, but the stored side governs, so the comparison stays on `resourceID` and still fails after a remount, exactly as today. That is intentional and gets a comment, because it reads like a bug.
 
-Stale bookmarks: `resolve()` keeps throwing `unavailable` when the bookmark reports stale. Measured not to happen on a remount; if it does on real media the record stays unavailable as today, which is the same outcome as before this change, never a substitution. `QueueSessionPresentation.attemptKey` uses `"\(volumeID)/file:\(fileID)/\(creationDate)"` when a `fileID` is present (birth time included so a reused file ID on a different folder never collapses two cards) and today's `"\(volumeID)/\(resourceID)"` otherwise, so repeated attempts at one card after a remount collapse to one row and the two key forms can never alias. A pre-update attempt and a post-update retry of the same card will not collapse; accepted. `TransferLibraryView.identityCanBeConfirmed` keeps its meaning (volume and `resourceID` present).
+Stale bookmarks: `resolve()` keeps throwing `unavailable` when the bookmark reports stale. Measured not to happen on a remount; if it does on real media the record stays unavailable as today, which is the same outcome as before this change, never a substitution. `QueueSessionPresentation.attemptKey` uses `"\(volumeID)/file:\(fileID)/\(creationDate.timeIntervalSinceReferenceDate)"` when a `fileID` is present (the birth time as its full-precision `Double`, never `Date`'s whole-second description, so a reused file ID on a folder born in the same second still never collapses two cards) and today's `"\(volumeID)/\(resourceID)"` otherwise, so repeated attempts at one card after a remount collapse to one row and the two key forms can never alias. A pre-update attempt and a post-update retry of the same card will not collapse; accepted. `TransferLibraryView.identityCanBeConfirmed` keeps its meaning (volume and `resourceID` present).
 
 ## Recreated folders
 
@@ -79,7 +79,8 @@ Source and destination each sit on their own image; both are detached and reatta
 - A stored record with a `fileID` against a fresh read that yields none is refused, and the journal file is byte-identical afterwards.
 - Remount at a different mount point (hdiutil `-mountpoint`): the bookmark resolves there and the retry succeeds.
 - Encoding round trip includes `fileID`; a zero `fileID` is stored as nil.
-- `attemptKey` collapses a remounted retry with its earlier attempt and keeps old and new key forms distinct (Mac app suite).
+- `attemptKey` collapses a remounted retry with its earlier attempt, keeps old and new key forms distinct, and separates two records with the same file ID whose birth times differ by less than a second (Mac app suite, unconditional).
+- `fileID` is nil for a ubiquitous item, a non-local volume, a zero identifier and a folder without a creation date (unit test on the eligibility rule).
 - Mac app suite for `attemptKey` collapsing across remount is covered by existing presentation tests plus one new case if the fixture allows.
 
 ## Left to the builder
