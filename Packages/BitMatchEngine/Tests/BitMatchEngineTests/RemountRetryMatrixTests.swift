@@ -145,9 +145,9 @@ final class RemountRetryMatrixTests: XCTestCase {
 
     func testStoredFileIDWithNoFreshFileIDIsRefusedByTheJournal() throws {
         // The card folder moves, on its own volume, into a path where the file
-        // identifier is not trusted. The bookmark follows the move; the fresh
-        // read yields no trusted identifier; the record must be refused and
-        // the journal file left byte-identical.
+        // identifier is not trusted. The fresh read at the new path yields no
+        // trusted identifier; the record must be refused and the journal file
+        // left byte-identical.
         let f = try Fixture(sourceFS: "ExFAT")
         defer { f.cleanup() }
         let id = try f.enqueue()
@@ -343,7 +343,7 @@ final class Fixture {
     /// Detach source and destination, attach the shifter, reattach both.
     func remountAll(sourceMountPoint: URL? = nil) throws {
         try source.detach(); try destination.detach()
-        try shifter.attach()
+        if !shifter.mounted { try shifter.attach() }
         try destination.attach()
         if let sourceMountPoint {
             try FileManager.default.createDirectory(at: sourceMountPoint, withIntermediateDirectories: true)
