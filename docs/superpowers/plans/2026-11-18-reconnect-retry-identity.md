@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- `fileID` is recorded only on macOS, when `volumeIsLocal == true`, `isUbiquitousItem != true`, `creationDate != nil` and the value is non-zero; otherwise nil. A stored `fileID` with nil `creationDate` fails closed.
+- `fileID` is recorded only on macOS, when `volumeIsLocal == true`, `isUbiquitousItem != true`, `!BackupTargetPolicy.isCloudManagedPath(url.path)`, `creationDate != nil` and the value is non-zero; otherwise nil. A stored `fileID` with nil `creationDate` fails closed.
 - Fresh selection still requires `volumeID` and `resourceID`; `fileID` never substitutes.
 - Stored `fileID` present → fresh `fileID` must be non-nil and equal; never fall back to `resourceID`.
 - Record-vs-record comparison is symmetric, keeps strict optional equality of `creationDate`, and treats a mixed old/new pair as different.
@@ -37,7 +37,7 @@
 - Test: `Packages/BitMatchEngine/Tests/BitMatchEngineTests/ReconnectIdentityTests.swift` (new)
 
 **Interfaces:**
-- Produces: `public let fileID: UInt64?` on `LocalTransferResource`; `static func fileIDIfTrusted(fileIdentifier: UInt64?, volumeIsLocal: Bool?, isUbiquitous: Bool?, creationDate: Date?) -> UInt64?` (internal, `@testable`); `identityKeys` gains `.fileIdentifierKey`, `.volumeIsLocalKey`, `.isUbiquitousItemKey`.
+- Produces: `public let fileID: UInt64?` on `LocalTransferResource`; `static func fileIDIfTrusted(fileIdentifier: UInt64?, volumeIsLocal: Bool?, isUbiquitous: Bool?, creationDate: Date?, path: String) -> UInt64?` (internal, `@testable`; path is checked with `BackupTargetPolicy.isCloudManagedPath`); `identityKeys` gains `.fileIdentifierKey`, `.volumeIsLocalKey`, `.isUbiquitousItemKey`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -57,6 +57,7 @@ func testFileIDEligibility() {
     XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: false, isUbiquitous: false, creationDate: now))
     XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: nil, isUbiquitous: false, creationDate: now), "unknown locality is not local")
     XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: true, creationDate: now))
+    XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: false, creationDate: now, path: "/Users/x/Library/CloudStorage/Dropbox/Card"))
     XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 42, volumeIsLocal: true, isUbiquitous: false, creationDate: nil))
     XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: 0, volumeIsLocal: true, isUbiquitous: false, creationDate: now))
     XCTAssertNil(R.fileIDIfTrusted(fileIdentifier: nil, volumeIsLocal: true, isUbiquitous: false, creationDate: now))
@@ -88,7 +89,7 @@ func testRecordWithoutFileIDDecodesAsNil() throws {
 }
 ```
 
-`fileIDIfTrusted(fileIdentifier:volumeIsLocal:isUbiquitous:creationDate:) -> UInt64?` is a pure static function; `init(url:)` feeds it from `values` and, on non-macOS builds, assigns nil without calling it (`#if os(macOS)`). `identityKeys` also gains `.isUbiquitousItemKey`.
+`fileIDIfTrusted(fileIdentifier:volumeIsLocal:isUbiquitous:creationDate:path:) -> UInt64?` is a pure static function; `init(url:)` feeds it from `values` and, on non-macOS builds, assigns nil without calling it (`#if os(macOS)`). `identityKeys` also gains `.isUbiquitousItemKey`.
 
 - [ ] **Step 2: Run to verify failure**
 
