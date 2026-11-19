@@ -44,6 +44,8 @@ A queued, interrupted or failed transfer can be retried after the card or backup
 
 **Stored-vs-stored match** (same-card exemption in `validateQueueOutputs`, both `retryOf` comparisons in the two `replaceQueued` overloads). Two records name the same folder only when their volume IDs are equal, their creation dates are exactly equal as optionals (today's strict rule at these sites, kept; no wildcard), and: both have a `fileID` and they are equal, or neither has one and their `resourceID`s are equal. The comparison is symmetric. A mixed pair (one old, one new) is never the same folder; that fails closed into the output-overlap check and into "not a retry".
 
+Two distinct predicates implement these: `folderMatches(fresh:)` / `folderMatches(refreshed:)` (stored side governs, asymmetric) and `namesSameFolder(as:)` (symmetric). One must never stand in for the other. Today's non-nil guards survive ahead of every comparison: a record with nil `volumeID` or nil folder identity never matches anything, so `nil == nil` is never a match and an identity-less record still throws `unverifiableIdentity`. `validateReauthorization` keeps its other defenses unchanged: `refreshed.validateIdentity(at:)` and the `birthtime > recordCreatedAt` rejection.
+
 `matchesResourceSnapshot` (the stale-snapshot guard behind `prepareToRun` and `reauthorize`) compares `fileID` as one more field. `SourceAvailabilityModel.ResourceKey` adds `fileID` to its key fields.
 
 A record without `fileID` that is reauthorized in the same mount (where `resourceID` still matches) is replaced by the refreshed resource and so gains a `fileID`: the upgrade path for old queued records, stated and tested.
@@ -80,6 +82,7 @@ Source and destination each sit on their own image; both are detached and reatta
 - Remount at a different mount point (hdiutil `-mountpoint`): the bookmark resolves there and the retry succeeds.
 - Encoding round trip includes `fileID`; a zero `fileID` is stored as nil.
 - `attemptKey` collapses a remounted retry with its earlier attempt, keeps old and new key forms distinct, and separates two records with the same file ID whose birth times differ by less than a second (Mac app suite, unconditional).
+- A mixed old/new pair for one card: the same-card exemption does not fire and both `replaceQueued` overloads clear `retryOf`; an identity-less record (nil volume or folder identity) still throws `unverifiableIdentity`.
 - `fileID` is nil for a ubiquitous item, a non-local volume, a zero identifier and a folder without a creation date (unit test on the eligibility rule).
 - Mac app suite for `attemptKey` collapsing across remount is covered by existing presentation tests plus one new case if the fixture allows.
 

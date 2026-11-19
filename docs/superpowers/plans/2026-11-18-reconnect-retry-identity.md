@@ -186,7 +186,7 @@ func testRetryAfterRemountAtADifferentMountPoint() throws   // exFAT source, rea
 - Test: `ReconnectIdentityTests.swift`
 
 **Interfaces:**
-- Produces: `func namesSameFolder(as other: LocalTransferResource) -> Bool` on `LocalTransferResource` (internal): `volumeID != nil && volumeID == other.volumeID && creationDate == other.creationDate` and (both `fileID` non-nil and equal, or both nil and `resourceID` non-nil and equal).
+- Produces: `func namesSameFolder(as other: LocalTransferResource) -> Bool` on `LocalTransferResource` (internal, symmetric; never reuse `folderMatches`): `volumeID != nil && volumeID == other.volumeID && creationDate == other.creationDate` and (both `fileID` non-nil and equal, or both nil and `resourceID` non-nil and equal).
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -196,6 +196,11 @@ func testSameFolderIsSymmetricAndMixedGenerationsDiffer() throws
 func testSameCardRecheckAfterRemountIsStillExempt() throws
    // enqueue record A on exFAT image; remount; enqueue record B for the same card and same destination root;
    // markRunning(B) succeeds (exemption fires on fileID although resourceIDs differ)
+func testMixedGenerationPairIsNotTheSameCard() throws
+   // record A new-shape, record B with fileID stripped (JSON), same folder, same destination root: markRunning(B) throws (overlap check fires);
+   // replaceQueued for B with the new-shape source yields retryOf == nil
+func testIdentityLessRecordStillThrowsUnverifiableIdentity() throws
+   // JSON-strip volumeID and resourceID and fileID: validateIdentity throws unverifiableIdentity; namesSameFolder(as: itself) is false
 func testSnapshotMismatchOnFileIDRejectsPrepareToRun() throws
    // prepareToRun(id:expectedResources:) with a snapshot whose source fileID is JSON-edited → throws invalidState
 ```
