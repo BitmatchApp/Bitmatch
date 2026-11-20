@@ -16,7 +16,7 @@
 - `UInt64` offsets and lengths, overflow-checked; any overflow, past-EOF, indefinite BER (`0x80`), or BER length field over 8 bytes → nil. Zero-length non-picture packets are skipped.
 - Decoder rejects before any session: `count < 32`, frame size > count or < 32, tag ≠ `icpf`, header size < 20 or `8 + headerSize > frameSize`, width or height outside 16…8192, width × height > 40_000_000, chroma not 4:2:2/4:4:4.
 - Decoder asks for the fitted output size (≤ 256×144, aspect preserved, never upscaled) via pixel buffer attributes; session invalidated in `defer`; `autoreleasepool`.
-- One shared serial queue for all MXF work; the per-clip deadline is passed to the locator as `shouldContinue`.
+- One shared serial queue for all MXF work with bounded admission (busy flag: a request while busy returns nil, nothing pending); the worker takes its own security-scoped access; `fstat` size must equal the row's size; deadline checked before open, between read retries, before decode; decode flags empty.
 - Fixtures: `tiny-orange-64x64-lt.mxf`, `tiny-orange-64x48-lt.mxf`, `tiny-orange-64x64-hq.mxf` (7737 bytes each, frame at offset 6164, lengths 236 / 218 / 240) from the scratchpad `repro/fixtures`, copied into `Packages/BitMatchEngine/Tests/BitMatchEngineTests/Fixtures/` and embedded as base64 constants in `BitMatchTests`. Nothing from ARRI enters the repo.
 - Tests run under the shared lock: `until mkdir /tmp/bitmatch-test-lock; do sleep 5; done`, `rmdir` on exit.
 
@@ -50,7 +50,7 @@
           frameLimit: UInt64 = defaultFrameLimit, shouldContinue: () -> Bool = { true }) -> MXFFrame?
       public static func firstPictureFrame(at url: URL, shouldContinue: () -> Bool = { true }) -> MXFFrame?
       // opens O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC, fstat regular file, calls the descriptor form, closes.
-      public static func readFrame(descriptor: Int32, frame: MXFFrame) -> Data?   // pread loop, EINTR retry, short reads; nil on failure
+      public static func readFrame(descriptor: Int32, frame: MXFFrame, shouldContinue: () -> Bool = { true }) -> Data?   // pread loop, EINTR retry, short reads, deadline between retries; nil on failure
       static func pictureKeyPrefix: [UInt8]   // 13 bytes
       static func partitionPackKeyPrefix: [UInt8]   // 13 bytes
   }
@@ -122,7 +122,7 @@ func testOverflowingLengthsAreNil()                           // length field 0x
 
 **Interfaces:**
 - Consumes: `MXFFrameLocator.firstPictureFrame(at:shouldContinue:)`, `MXFFrameLocator.readFrame`, `ProResFrameDecoder.image(frame:maximumSize:)`.
-- Produces: `ReportThumbnailService.frame` unchanged signature; `static let mxfQueue = DispatchQueue(label: "BitMatch.report-preview.mxf")`; `static func mxfFrame(_ url: URL, timeout: TimeInterval) async throws -> Data?`; JPEG encoding factored into `static func jpeg(_ image: CGImage) -> Data?` reused by both paths.
+- Produces: `extract` closure type becomes `(URL, TimeInterval, Int64) async throws -> Data?` (existing tests updated to three parameters); `ReportThumbnailService.frame(_:timeout:expectedSize:)`; `static let mxfQueue = DispatchQueue(label: "BitMatch.report-preview.mxf")`; `static func mxfFrame(_ url: URL, timeout: TimeInterval, expectedSize: Int64) async throws -> Data?`; `static var mxfWorkerHook: (@Sendable () -> Void)?` (test seam, run on the worker before open); `private static let mxfBusy = Mutex(false)`; JPEG encoding factored into `static func jpeg(_ image: CGImage) -> Data?` reused by both paths.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -131,6 +131,9 @@ func testOverflowingLengthsAreNil()                           // length field 0x
 @Test func uppercaseMXFIsDispatchedTheSameWay()               // ".MXF" path and file → preview present
 @Test func nonProResMXFGetsNoPreviewAndNoError()              // hand-built MXF: partition pack + picture KLV whose value is 300 zero bytes → images empty, no throw
 @Test func zeroTimeoutReturnsNilWithoutDecoding()             // ReportThumbnailService.frame(url, timeout: 0) on fixture → nil
+@Test func busyWorkerRefusesPromptlyAndNeverPublishesLate()  // block the worker via mxfWorkerHook on a semaphore; request A (timeout 0.3) and request B (timeout 0.3) concurrently: B returns nil within 50 ms, A returns nil at ~0.3 s; signal the semaphore; wait 0.5 s; a third request succeeds with a JPEG; A's late result is not observable (no second resume, no crash)
+@Test func sizeMismatchAndFIFOAreRefusedBeforeReading()       // expectedSize = file size + 1 → nil; mkfifo path → nil within 50 ms
+@Test func mxfPreviewLeavesEvidenceUntouched()               // results array equal before and after collect; requestedCount == 1
 @Test func stalledMXFReadDoesNotBlockTheNextClip()            // a FIFO (mkfifo) as the backup path: O_NONBLOCK open + fstat not regular → nil immediately; and a locator shouldContinue that is false at deadline (inject via timeout 0.05 and a 10 MiB-of-fill fixture built in the test) returns nil within 0.5 s
 @Test func cancelledCollectionDoesNotStartAnotherMXFClip()    // mirror of cancellationDuringCollectionDoesNotStartAnotherClip with .mxf rows
 @Test(.enabled(if: ProcessInfo.processInfo.environment["BITMATCH_ARRI_SAMPLE"] != nil)) func arriSampleProducesAPreviewWithinBudget()   // full collect on the ARRI path → JPEG, decode measured < 2 s, image 256×144
