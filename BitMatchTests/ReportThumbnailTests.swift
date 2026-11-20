@@ -1,7 +1,9 @@
 import Foundation
 import PDFKit
+import ImageIO
 import CryptoKit
 import Testing
+import Synchronization
 @testable import BitMatch
 import BitMatchEngine
 
@@ -9,6 +11,7 @@ import BitMatchEngine
 private let previewFixture = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAN2bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAqF0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAQAAAACQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAQAAABAAAAAAIZbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABxG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAYRzdGJsAAAAwHN0c2QAAAAAAAAAAQAAALBhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAQAAkABIAAAASAAAAAAAAAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAANmF2Y0MBZAAL/+EAGWdkAAus2UEBOwEQAAADABAAAAMAoPFCmWABAAZo6+PLIsD9+PgAAAAAEHBhc3AAAAABAAAAAQAAABRidHJ0AAAAAAAAGTgAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAUAAAgAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAA4Y3R0cwAAAAAAAAAFAAAAAQAAEAAAAAABAAAoAAAAAAEAABAAAAAAAQAAAAAAAAABAAAIAAAAABxzdHNjAAAAAAAAAAEAAAABAAAABQAAAAEAAAAoc3RzegAAAAAAAAAAAAAABQAAAvAAAAAQAAAADQAAAA0AAAANAAAAFHN0Y28AAAAAAAAAAQAAA6YAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYzLjEuMTAxAAAACGZyZWUAAAMvbWRhdAAAAq0GBf//qdxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjUgcjMyMjIgYjM1NjA1YSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjUgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0xIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDM6MHgxMTMgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTEgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz00IGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MyBiX3B5cmFtaWQ9MiBiX2FkYXB0PTEgYl9iaWFzPTAgZGlyZWN0PTEgd2VpZ2h0Yj0xIG9wZW5fZ29wPTAgd2VpZ2h0cD0yIGtleWludD0yNTAga2V5aW50X21pbj01IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAO2WIhAAS//7oyfzLJ6E/UMDDl9+ZWnHMI9HTDq9Ryj5DaMReURFNVE3hEI18BtiMaDgAAAfoCMQSrO8PAAAADEGaJGxD//6plgAYMAAAAAlBnkJ4gh8AA9MAAAAJAZ5hdEP/AAh4AAAACQGeY2pD/wAIeQ=="
 
 @MainActor
+@Suite(.serialized)   // The MXF worker tests use a process-wide hook and short timing thresholds.
 struct ReportThumbnailTests {
     private func seed() throws -> (URL, URL, ResultRow) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-preview-\(UUID())")
@@ -35,23 +38,208 @@ struct ReportThumbnailTests {
             checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
         let hidden = ResultRow(path: "/card/.hidden.mov", status: row.status, size: row.size,
             checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
-        let frames = try await ReportThumbnailService.collect(results: [row, metadata, hidden], enabled: true) { _, _ in Data([1]) }
+        let frames = try await ReportThumbnailService.collect(results: [row, metadata, hidden], enabled: true) { _, _, _ in Data([1]) }
         #expect(frames.requestedCount == 2)
         #expect(frames.images.count == 2)
         #expect(frames.images[metadata.path] == nil)
         #expect(frames.images[hidden.path] != nil)
     }
 
+    @Test func mxfClipsAreEligibleForPreviewsWithoutWideningTheIntegrityParser() async throws {
+        // ARRI and Sony cards record MXF. Preview eligibility is the report's
+        // own rule; the clip integrity parser (QuickTime atoms) stays as it is.
+        let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
+        let mxf = ResultRow(path: "/card/A003C001_251118_APFV.mxf", status: row.status, size: row.size,
+            checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
+        let companion = ResultRow(path: "/card/._A003C001_251118_APFV.mxf", status: row.status, size: row.size,
+            checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
+        let extracted = Mutex(0)
+        let frames = try await ReportThumbnailService.collect(results: [mxf, companion], enabled: true) { _, _, _ in
+            extracted.withLock { $0 += 1 }; return Data([1])
+        }
+        #expect(frames.requestedCount == 1)
+        #expect(frames.images[mxf.path] != nil)
+        #expect(frames.images[companion.path] == nil)
+        #expect(extracted.withLock { $0 } == 1)
+        #expect(!ClipIntegrityCheck.supports(URL(fileURLWithPath: "/card/clip.mxf")), "the atom parser is untouched")
+        #expect(ClipIntegrityCheck.supports(URL(fileURLWithPath: "/card/clip.mov")))
+    }
+
+    // MARK: MXF (ProRes in an MXF wrapper)
+
+    /// Polls a condition for up to two seconds; async tests cannot block on a semaphore.
+    private func settles(_ condition: @Sendable () -> Bool) async throws -> Bool {
+        for _ in 0 ..< 200 {
+            if condition() { return true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
+    private func mxfSeed(_ base64: String = MXFFixtures.orange64By64lt, name: String = "A003C001.mxf") throws -> (URL, ResultRow) {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-mxf-preview-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let file = try MXFFixtures.write(base64, name: name, in: root)
+        let size = Int64(try Data(contentsOf: file).count)
+        return (root, ResultRow(path: "/original-card/\(name)", status: ResultOutcome.verified.statusText,
+                                size: size, checksum: "fixture", destination: root.path, destinationPath: file.path))
+    }
+
+    @Test func mxfBackupProducesAJPEGPreview() async throws {
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let frames = try await ReportThumbnailService.collect(results: [row], enabled: true)
+        #expect(frames.requestedCount == 1)
+        let data = try #require(frames.images[row.path])
+        #expect(data.starts(with: [0xff, 0xd8]))
+        #expect(data.count <= 64 * 1024)
+    }
+
+    @Test func uppercaseMXFIsDispatchedTheSameWay() async throws {
+        let (root, row) = try mxfSeed(name: "A003C002.MXF"); defer { try? FileManager.default.removeItem(at: root) }
+        let frames = try await ReportThumbnailService.collect(results: [row], enabled: true)
+        #expect(frames.images[row.path] != nil)
+    }
+
+    @Test func nonProResMXFGetsNoPreviewAndNoError() async throws {
+        // A hand-built MXF: partition pack, then a picture element whose value is not a ProRes frame.
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-mxf-nonprores-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let partition: [UInt8] = [0x06,0x0E,0x2B,0x34,0x02,0x05,0x01,0x01,0x0D,0x01,0x02,0x01,0x01,0x02,0x04,0x00, 0x58] + [UInt8](repeating: 0, count: 88)
+        let picture: [UInt8] = [0x06,0x0E,0x2B,0x34,0x01,0x02,0x01,0x01,0x0D,0x01,0x03,0x01,0x15,0x01,0x17,0x00, 0x82, 0x01, 0x2C] + [UInt8](repeating: 0, count: 300)
+        let file = root.appendingPathComponent("other.mxf")
+        try Data(partition + picture).write(to: file)
+        let row = ResultRow(path: "/card/other.mxf", status: ResultOutcome.verified.statusText, size: Int64(partition.count + picture.count),
+                            checksum: "x", destination: root.path, destinationPath: file.path)
+        let frames = try await ReportThumbnailService.collect(results: [row], enabled: true)
+        #expect(frames.requestedCount == 1)
+        #expect(frames.images.isEmpty)
+    }
+
+    @Test func zeroTimeoutReturnsNilWithoutDecoding() async throws {
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let result = try await ReportThumbnailService.frame(URL(fileURLWithPath: row.destinationPath!), timeout: 0, expectedSize: row.size)
+        #expect(result == nil)
+    }
+
+    @Test func busyWorkerRefusesPromptlyAndNeverPublishesLate() async throws {
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = URL(fileURLWithPath: row.destinationPath!)
+        let entered = Mutex(false)                  // worker → test: it is now blocked
+        let gate = DispatchSemaphore(value: 0)      // test → worker: continue
+        ReportThumbnailService.mxfWorkerHook = { entered.withLock { $0 = true }; gate.wait() }
+        defer {
+            ReportThumbnailService.mxfWorkerHook = nil
+            gate.signal()   // Never leave the shared worker wedged if an expectation fails early.
+        }
+        // Cancel-before-timer path: a request cancelled at once must not trap or wedge the worker.
+        let cancelled = Task { try await ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size) }
+        cancelled.cancel()
+        _ = try? await cancelled.value
+        let clock = ContinuousClock()
+        let firstStart = clock.now
+        async let blocked = ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size)
+        #expect(try await settles { entered.withLock { $0 } }, "the worker entered and is blocked")
+        let start = clock.now
+        let refused = try await ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size)
+        #expect(refused == nil, "a second request while the worker is busy is refused")
+        #expect(clock.now - start < .milliseconds(100))
+        let first = try await blocked
+        let firstElapsed = clock.now - firstStart
+        #expect(first == nil, "the blocked request returns nil at its deadline")
+        #expect(firstElapsed >= .milliseconds(250) && firstElapsed < .seconds(1.5), "returned at the deadline, not later")
+        gate.signal()
+        try await Task.sleep(for: .milliseconds(200))
+        ReportThumbnailService.mxfWorkerHook = nil
+        let recovered = try await ReportThumbnailService.frame(url, timeout: 2, expectedSize: row.size)
+        #expect(recovered != nil, "the worker is usable again after the block clears")
+    }
+
+    @Test func lateDecodeResultIsDroppedNotPublished() async throws {
+        // Block after extraction, so a real decoded result arrives after the caller's deadline.
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = URL(fileURLWithPath: row.destinationPath!)
+        let decoded = Mutex(false)
+        let gate = DispatchSemaphore(value: 0)
+        ReportThumbnailService.mxfWorkerCompletionHook = { produced in decoded.withLock { $0 = produced }; gate.wait() }
+        defer { ReportThumbnailService.mxfWorkerCompletionHook = nil; gate.signal() }
+        let late = try await ReportThumbnailService.frame(url, timeout: 0.2, expectedSize: row.size)
+        #expect(late == nil, "the caller got nil at its deadline")
+        #expect(try await settles { decoded.withLock { $0 } }, "the worker really decoded a frame (non-nil result reached finish)")
+        gate.signal()   // The late result reaches finish() and is dropped: no second resume, no crash.
+        try await Task.sleep(for: .milliseconds(200))
+        ReportThumbnailService.mxfWorkerCompletionHook = nil
+        let next = try await ReportThumbnailService.frame(url, timeout: 2, expectedSize: row.size)
+        #expect(next != nil)
+    }
+
+    @Test func sizeMismatchAndFIFOAreRefusedBeforeReading() async throws {
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = URL(fileURLWithPath: row.destinationPath!)
+        #expect(try await ReportThumbnailService.frame(url, timeout: 2, expectedSize: row.size + 1) == nil)
+        let fifo = root.appendingPathComponent("pipe.mxf")
+        #expect(mkfifo(fifo.path, 0o600) == 0)
+        let clock = ContinuousClock()
+        let start = clock.now
+        #expect(try await ReportThumbnailService.frame(fifo, timeout: 2, expectedSize: 0) == nil)
+        #expect(clock.now - start < .milliseconds(200))
+    }
+
+    @Test func mxfPreviewLeavesEvidenceUntouched() async throws {
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let before = [row]
+        let frames = try await ReportThumbnailService.collect(results: before, enabled: true)
+        #expect(frames.requestedCount == 1)
+        #expect(before.map(\.status) == [ResultOutcome.verified.statusText])
+        #expect(before[0].checksum == "fixture" && before[0].size == row.size)
+    }
+
+    @Test func cancelledCollectionDoesNotStartAnotherMXFClip() async throws {
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let second = ResultRow(path: "/card/second.mxf", status: row.status, size: row.size, checksum: row.checksum,
+                               destination: row.destination, destinationPath: row.destinationPath)
+        let started = Mutex(0)
+        let task = Task {
+            try await ReportThumbnailService.collect(results: [row, second], enabled: true) { _, _, _ in
+                started.withLock { $0 += 1 }
+                try await Task.sleep(for: .seconds(5))
+                return Data([1])
+            }
+        }
+        try await Task.sleep(for: .milliseconds(100))
+        task.cancel()
+        _ = try? await task.value
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(started.withLock { $0 } == 1)
+    }
+
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["BITMATCH_ARRI_SAMPLE"] != nil))
+    func arriSampleProducesAPreviewWithinBudget() async throws {
+        let path = ProcessInfo.processInfo.environment["BITMATCH_ARRI_SAMPLE"]!
+        let size = Int64(try #require(FileManager.default.attributesOfItem(atPath: path)[.size] as? NSNumber).int64Value)
+        let row = ResultRow(path: "/card/\(URL(fileURLWithPath: path).lastPathComponent)", status: ResultOutcome.verified.statusText,
+                            size: size, checksum: "real", destination: URL(fileURLWithPath: path).deletingLastPathComponent().path, destinationPath: path)
+        let clock = ContinuousClock()
+        let start = clock.now
+        let frames = try await ReportThumbnailService.collect(results: [row], enabled: true)
+        let elapsed = clock.now - start
+        let data = try #require(frames.images[row.path])
+        #expect(data.starts(with: [0xff, 0xd8]))
+        #expect(elapsed < .seconds(2))
+        let image = try #require(CGImageSourceCreateImageAtIndex(CGImageSourceCreateWithData(data as CFData, nil)!, 0, nil))
+        #expect(image.width == 256 && image.height == 144)
+    }
+
     @Test func disabledAndQuickNeverStartExtraction() async throws {
         let (_, _, row) = try seed()
         defer { if let path = row.destinationPath { try? FileManager.default.removeItem(at: URL(fileURLWithPath: path).deletingLastPathComponent()) } }
-        let no = try await ReportThumbnailService.collect(results: [row], enabled: false) { _, _ in
+        let no = try await ReportThumbnailService.collect(results: [row], enabled: false) { _, _, _ in
             Issue.record("Disabled preference read media"); return nil
         }
         #expect(no.images.isEmpty)
         let quick = ResultRow(path: row.path, status: ResultOutcome.copiedUnverified.statusText, size: row.size,
             checksum: nil, destination: row.destination, destinationPath: row.destinationPath)
-        let result = try await ReportThumbnailService.collect(results: [quick], enabled: true) { _, _ in
+        let result = try await ReportThumbnailService.collect(results: [quick], enabled: true) { _, _, _ in
             Issue.record("Quick copy used as verified preview"); return nil
         }
         #expect(result.requestedCount == 0)
@@ -62,7 +250,7 @@ struct ReportThumbnailTests {
         for path in [nil, row.destinationPath] {
             let unsafe = ResultRow(path: row.path, status: row.status, size: row.size + 1, checksum: row.checksum,
                 destination: row.destination, destinationPath: path)
-            let result = try await ReportThumbnailService.collect(results: [unsafe], enabled: true) { _, _ in
+            let result = try await ReportThumbnailService.collect(results: [unsafe], enabled: true) { _, _, _ in
                 Issue.record("Missing or changed backup read"); return nil
             }
             #expect(result.images.isEmpty)
@@ -73,10 +261,10 @@ struct ReportThumbnailTests {
         let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
         let rows = (0..<50).map { index in ResultRow(path: "/card/\(index).mp4", status: row.status,
             size: row.size, checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath) }
-        let capped = try await ReportThumbnailService.collect(results: rows, enabled: true, maximumPreviews: 2) { _, _ in Data([1]) }
+        let capped = try await ReportThumbnailService.collect(results: rows, enabled: true, maximumPreviews: 2) { _, _, _ in Data([1]) }
         #expect(capped.images.count == 2)
         #expect(capped.requestedCount == 50)
-        let noTime = try await ReportThumbnailService.collect(results: rows, enabled: true, budget: 0) { _, _ in
+        let noTime = try await ReportThumbnailService.collect(results: rows, enabled: true, budget: 0) { _, _, _ in
             Issue.record("Zero budget started extraction"); return nil
         }
         #expect(noTime.images.isEmpty)
@@ -124,7 +312,7 @@ struct ReportThumbnailTests {
             destination: row.destination, destinationPath: link.path)
         let result = try await ReportThumbnailService.collect(results: [redirected, row], enabled: true)
         #expect(result.images.count == 1)
-        let rejected = try await ReportThumbnailService.collect(results: [redirected], enabled: true) { _, _ in
+        let rejected = try await ReportThumbnailService.collect(results: [redirected], enabled: true) { _, _, _ in
             Issue.record("Symlinked backup was read"); return nil
         }
         #expect(rejected.images.isEmpty)
@@ -343,7 +531,7 @@ struct ReportThumbnailTests {
         let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
         let (started, signal) = AsyncStream<Void>.makeStream()
         let task = Task {
-            try await ReportThumbnailService.collect(results: [row], enabled: true) { _, _ in
+            try await ReportThumbnailService.collect(results: [row], enabled: true) { _, _, _ in
                 signal.yield(())
                 try await Task.sleep(for: .seconds(30))
                 Issue.record("Cancelled extraction continued"); return nil

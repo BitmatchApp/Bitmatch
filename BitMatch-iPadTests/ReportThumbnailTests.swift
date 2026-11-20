@@ -31,13 +31,13 @@ struct ReportThumbnailTests {
     @Test func disabledAndQuickNeverStartExtraction() async throws {
         let (_, _, row) = try seed()
         defer { if let path = row.destinationPath { try? FileManager.default.removeItem(at: URL(fileURLWithPath: path).deletingLastPathComponent()) } }
-        let no = try await ReportThumbnailService.collect(results: [row], enabled: false) { _, _ in
+        let no = try await ReportThumbnailService.collect(results: [row], enabled: false) { _, _, _ in
             Issue.record("Disabled preference read media"); return nil
         }
         #expect(no.images.isEmpty)
         let quick = ResultRow(path: row.path, status: ResultOutcome.copiedUnverified.statusText, size: row.size,
             checksum: nil, destination: row.destination, destinationPath: row.destinationPath)
-        let result = try await ReportThumbnailService.collect(results: [quick], enabled: true) { _, _ in
+        let result = try await ReportThumbnailService.collect(results: [quick], enabled: true) { _, _, _ in
             Issue.record("Quick copy used as verified preview"); return nil
         }
         #expect(result.requestedCount == 0)
@@ -48,7 +48,7 @@ struct ReportThumbnailTests {
         for path in [nil, row.destinationPath] {
             let unsafe = ResultRow(path: row.path, status: row.status, size: row.size + 1, checksum: row.checksum,
                 destination: row.destination, destinationPath: path)
-            let result = try await ReportThumbnailService.collect(results: [unsafe], enabled: true) { _, _ in
+            let result = try await ReportThumbnailService.collect(results: [unsafe], enabled: true) { _, _, _ in
                 Issue.record("Missing or changed backup read"); return nil
             }
             #expect(result.images.isEmpty)
@@ -59,10 +59,10 @@ struct ReportThumbnailTests {
         let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
         let rows = (0..<50).map { index in ResultRow(path: "/card/\(index).mp4", status: row.status,
             size: row.size, checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath) }
-        let capped = try await ReportThumbnailService.collect(results: rows, enabled: true, maximumPreviews: 2) { _, _ in Data([1]) }
+        let capped = try await ReportThumbnailService.collect(results: rows, enabled: true, maximumPreviews: 2) { _, _, _ in Data([1]) }
         #expect(capped.images.count == 2)
         #expect(capped.requestedCount == 50)
-        let noTime = try await ReportThumbnailService.collect(results: rows, enabled: true, budget: 0) { _, _ in
+        let noTime = try await ReportThumbnailService.collect(results: rows, enabled: true, budget: 0) { _, _, _ in
             Issue.record("Zero budget started extraction"); return nil
         }
         #expect(noTime.images.isEmpty)
@@ -110,7 +110,7 @@ struct ReportThumbnailTests {
             destination: row.destination, destinationPath: link.path)
         let result = try await ReportThumbnailService.collect(results: [redirected, row], enabled: true)
         #expect(result.images.count == 1)
-        let rejected = try await ReportThumbnailService.collect(results: [redirected], enabled: true) { _, _ in
+        let rejected = try await ReportThumbnailService.collect(results: [redirected], enabled: true) { _, _, _ in
             Issue.record("Symlinked backup was read"); return nil
         }
         #expect(rejected.images.isEmpty)
@@ -205,7 +205,7 @@ struct ReportThumbnailTests {
         let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
         let (started, signal) = AsyncStream<Void>.makeStream()
         let task = Task {
-            try await ReportThumbnailService.collect(results: [row], enabled: true) { _, _ in
+            try await ReportThumbnailService.collect(results: [row], enabled: true) { _, _, _ in
                 signal.yield(())
                 try await Task.sleep(for: .seconds(30))
                 Issue.record("Cancelled extraction continued"); return nil
