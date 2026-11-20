@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Locator never reads value bytes except the first 4 of the picture value; headers only; `scanLimit` 64 MiB, `packetLimit` 4096, `frameLimit` 64 MiB applied to the ProRes frame size.
+- Locator never reads value bytes except the first 8 of the picture value (frame size + `icpf`, both verified there); headers only; `scanLimit` 64 MiB, `packetLimit` 4096, `frameLimit` 64 MiB applied to the ProRes frame size.
 - `UInt64` offsets and lengths, overflow-checked; any overflow, past-EOF, indefinite BER (`0x80`), or BER length field over 8 bytes → nil. Zero-length non-picture packets are skipped.
 - Decoder rejects before any session: `count < 32`, frame size > count or < 32, tag ≠ `icpf`, header size < 20 or `8 + headerSize > frameSize`, width or height outside 16…8192, width × height > 40_000_000, chroma not 4:2:2/4:4:4.
 - Decoder asks for the fitted output size (≤ 256×144, aspect preserved, never upscaled) via pixel buffer attributes; session invalidated in `defer`; `autoreleasepool`.
@@ -64,7 +64,8 @@ func testFrameBytesStartWithTheProResHeader()                 // readFrame → b
 func testNilForNonMXFTruncatedAndEmptyFiles()                 // "hello", first 100 bytes of fixture, empty file → nil
 func testPartitionPackMayFollowRunIn()                        // 1 KiB of zeros + fixture → found at 1024 + 6164; 70 KiB of zeros + fixture → nil
 func testZeroLengthFillPacketsAreSkipped()                    // partition pack, fill packet (key 06 0E 2B 34 01 01 01 02 03 01 02 10 01 00 00 00, length 0), picture packet → found
-func testBERForms()                                           // short form (<128), long form 2-byte, long form with leading zero byte accepted; 0x80 indefinite → nil; 9-byte length field → nil; FF×8 → nil (past EOF)
+func testBERForms()                                           // short form (<128), long form 2-byte, long form with leading zero byte accepted; 0x80 indefinite → nil; 9-byte length field (0x89) → nil; length field cut off by EOF → nil; FF×8 → nil (past EOF)
+func testPictureValueMustLookLikeProRes()                     // picture value with frame size 0 → nil; tag "icpg" → nil; frame size > KLV length with more file after → nil
 func testFrameLimitAppliesToTheProResFrameNotTheKLVValue()    // clip-wrapped: one KLV holding frameA(236)+frameB(236) → length 236; frame size field > KLV length → nil; sparse file: KLV value 100 MiB (ftruncate) with frame-size field 5000 → MXFFrame(length 5000); with frame-size field 70 MiB → nil
 func testLimitsStopTheScan()                                  // 5000 fill packets then picture → nil (packetLimit); picture placed after scanLimit bytes of fill (use small scanLimit arg) → nil; shouldContinue false after 3 calls → nil and no more than 4 header reads
 func testHeadersOnlyAreRead()                                 // descriptor wrapped in a pipe? No: use a counting approach: place a picture frame after N packets whose values are in a sparse hole; a successful locate proves values were not read (reading a hole is fine) — instead assert via DTrace-free method: value regions filled with 0xFF and total `read` calls counted by an injected reader is not available; so assert by time: locate on a 2 GiB sparse file with 10 packets completes under 50 ms.
@@ -72,7 +73,7 @@ func testOverflowingLengthsAreNil()                           // length field 0x
 ```
 
 - [ ] **Step 2: Verify failure** — `cd Packages/BitMatchEngine && swift test --filter MXFFrameLocatorTests` → compile error, types undefined.
-- [ ] **Step 3: Implement** per the spec's locator section. BER: first byte `< 0x80` short form; `== 0x80` nil; else `n = b & 0x7F`, `n ≤ 8`, big-endian accumulate into `UInt64`. Run-in: read the first `min(65536, fileSize)` bytes once, find the partition-pack prefix, start there. Picture value: `pread` 4 bytes at the value offset for the frame size.
+- [ ] **Step 3: Implement** per the spec's locator section. BER: first byte `< 0x80` short form; `== 0x80` nil; else `n = b & 0x7F`, `n ≤ 8`, big-endian accumulate into `UInt64`. Run-in: read the first `min(65536, fileSize)` bytes once, find the partition-pack prefix, start there. Picture value: `pread` 8 bytes at the value offset; require `icpf` and frame size ≥ 32, else nil.
 - [ ] **Step 4: Verify pass**, then `swift test` (whole engine) green under the lock.
 - [ ] **Step 5: Commit** `feat(engine): bounded MXF first-frame locator`
 
@@ -136,7 +137,7 @@ func testOverflowingLengthsAreNil()                           // length field 0x
 ```
 
 - [ ] **Step 2: Verify failure** — the first three fail (AVFoundation path returns nil for MXF).
-- [ ] **Step 3: Implement**: in `frame`, `if url.pathExtension.lowercased() == "mxf" { return try await mxfFrame(url, timeout:) }`. `mxfFrame`: same continuation + timer pattern as `ThumbnailRequest` but the work block is `mxfQueue.async`: open/locate (with `shouldContinue: { Date() < deadline }`)/read/decode/JPEG; resume once under the lock. Refactor the existing JPEG encoding into `jpeg(_:)`.
+- [ ] **Step 3: Implement**: in `frame`, `if url.pathExtension.lowercased() == "mxf" { return try await mxfFrame(url, timeout:) }`. `mxfFrame`: same continuation + timer pattern as `ThumbnailRequest` but the work block is `mxfQueue.async`: check deadline, open/locate (with `shouldContinue: { Date() < deadline }`), read, check deadline, decode, JPEG; resume once under the lock. Refactor the existing JPEG encoding into `jpeg(_:)`.
 - [ ] **Step 4: Verify pass**; `./test.sh mac-test` green under the lock; `BITMATCH_ARRI_SAMPLE=/Users/mike/Downloads/F003C002_190925_MN99.mxf` filtered run green.
 - [ ] **Step 5: Commit** `feat(reports): MXF ProRes clip previews`
 
