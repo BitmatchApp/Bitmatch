@@ -46,7 +46,7 @@ MXF is a flat sequence of KLV packets (16-byte SMPTE key, BER length, value). Th
 
 **Shared, VideoToolbox:** `ProResFrameDecoder` next to `ReportThumbnailService`.
 
-- `static func image(frame: Data, maximumSize: CGSize) throws -> CGImage?`
+- `static func image(frame: Data, maximumSize: CGSize) -> CGImage?`
 - Validates the header: `frame.count` is at least 32; the frame size at bytes 0–3 is at most `frame.count` (the decoder is given exactly that many bytes, so KLV padding is dropped) and at least 32; bytes 4–7 are `icpf`; the header size at bytes 8–9 is at least 20 and `8 + headerSize` is at most the frame size; width and height at 16–19 are 16 to 8192 each and width × height at most 40 megapixels (ALEXA 65 is 20 MP, 8K is 33 MP); the chroma format (byte 20, bits 7–6: `10` is 4:2:2, `11` is 4:4:4) is one of those two. Anything else: nil (no decode attempted). The decoded buffer is the real memory cost, not the compressed frame, so this cap is checked before any session exists.
 - Asks the decoder for the preview-sized output buffer directly (`kCVPixelBufferWidthKey`/`HeightKey` at the fitted size under 256×144) so the full-size BGRA frame is never materialized in this process; measured on the ARRI frame. If a decoder ignores the request, the frame is still under the pixel cap and is downscaled after.
 - Codec type `ap4h` for 4:4:4, `apch` for 4:2:2 (the decoder accepts any ProRes 4:2:2 profile under that type; measured with an LT-profile frame). A frame with alpha still decodes; the preview drops alpha.

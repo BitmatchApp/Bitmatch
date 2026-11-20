@@ -109,9 +109,17 @@ enum ReportThumbnailService {
     static let mxfQueue = DispatchQueue(label: "BitMatch.report-preview.mxf", qos: .utility)
     private static let mxfBusy = Mutex(false)
     /// Test seams: run on the worker before the file is opened, and after the
-    /// frame is extracted but before the result is published.
-    nonisolated(unsafe) static var mxfWorkerHook: (@Sendable () -> Void)?
-    nonisolated(unsafe) static var mxfWorkerCompletionHook: (@Sendable () -> Void)?
+    /// frame is extracted (told whether a frame was produced) but before the
+    /// result is published.
+    private static let hooks = Mutex<(before: (@Sendable () -> Void)?, after: (@Sendable (Bool) -> Void)?)>((nil, nil))
+    static var mxfWorkerHook: (@Sendable () -> Void)? {
+        get { hooks.withLock { $0.before } }
+        set { hooks.withLock { $0.before = newValue } }
+    }
+    static var mxfWorkerCompletionHook: (@Sendable (Bool) -> Void)? {
+        get { hooks.withLock { $0.after } }
+        set { hooks.withLock { $0.after = newValue } }
+    }
 
     static func mxfFrame(_ url: URL, timeout: TimeInterval, expectedSize: Int64) async throws -> Data? {
         try Task.checkCancellation()
@@ -189,7 +197,9 @@ private final class MXFPreviewRequest: @unchecked Sendable {
         if !alreadyFinished { self.timer = timer }
         lock.unlock()
         guard !alreadyFinished else {
-            timer.setEventHandler {}; timer.cancel()
+            // A dispatch source must not be released while suspended: cancel,
+            // then resume, then let it go.
+            timer.setEventHandler {}; timer.cancel(); timer.resume()
             ReportThumbnailService.releaseMXFWork()
             return
         }
@@ -203,7 +213,7 @@ private final class MXFPreviewRequest: @unchecked Sendable {
             // predicate also ends the work once this request has finished.
             let data = ReportThumbnailService.extractMXFPreview(url: url, expectedSize: expectedSize,
                                                                  shouldContinue: { [self] in !isFinished && DispatchTime.now() < deadline })
-            ReportThumbnailService.mxfWorkerCompletionHook?()
+            ReportThumbnailService.mxfWorkerCompletionHook?(data != nil)
             finish(.success(data))   // Dropped by the lock if the deadline already resumed the caller.
         }
     }

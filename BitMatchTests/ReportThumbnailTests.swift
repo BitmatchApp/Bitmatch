@@ -132,6 +132,10 @@ struct ReportThumbnailTests {
             ReportThumbnailService.mxfWorkerHook = nil
             gate.signal()   // Never leave the shared worker wedged if an expectation fails early.
         }
+        // Cancel-before-timer path: a request cancelled at once must not trap or wedge the worker.
+        let cancelled = Task { try await ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size) }
+        cancelled.cancel()
+        _ = try? await cancelled.value
         let clock = ContinuousClock()
         let firstStart = clock.now
         async let blocked = ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size)
@@ -157,11 +161,11 @@ struct ReportThumbnailTests {
         let url = URL(fileURLWithPath: row.destinationPath!)
         let decoded = Mutex(false)
         let gate = DispatchSemaphore(value: 0)
-        ReportThumbnailService.mxfWorkerCompletionHook = { decoded.withLock { $0 = true }; gate.wait() }
+        ReportThumbnailService.mxfWorkerCompletionHook = { produced in decoded.withLock { $0 = produced }; gate.wait() }
         defer { ReportThumbnailService.mxfWorkerCompletionHook = nil; gate.signal() }
         let late = try await ReportThumbnailService.frame(url, timeout: 0.2, expectedSize: row.size)
         #expect(late == nil, "the caller got nil at its deadline")
-        #expect(try await settles { decoded.withLock { $0 } }, "the worker really decoded a frame")
+        #expect(try await settles { decoded.withLock { $0 } }, "the worker really decoded a frame (non-nil result reached finish)")
         gate.signal()   // The late result reaches finish() and is dropped: no second resume, no crash.
         try await Task.sleep(for: .milliseconds(200))
         ReportThumbnailService.mxfWorkerCompletionHook = nil
