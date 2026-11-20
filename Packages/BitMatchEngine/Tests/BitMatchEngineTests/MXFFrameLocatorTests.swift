@@ -111,7 +111,7 @@ final class MXFFrameLocatorTests: XCTestCase {
 
     func testZeroLengthFillPacketsAreSkipped() throws {
         let bytes = partition() + klv(Self.fillKey, []) + klv(Self.fillKey, [0, 0, 0]) + klv(Self.pictureKey, proResFrame())
-        let expectedOffset = UInt64(partition().count + 17 + 20 + 17)
+        let expectedOffset = UInt64(partition().count + 17 + 20 + 16 + ber(236).count)
         XCTAssertEqual(try locate(bytes), MXFFrame(offset: expectedOffset, length: 236))
     }
 
@@ -148,7 +148,7 @@ final class MXFFrameLocatorTests: XCTestCase {
         let header = partition()
         // Clip-wrapped: one KLV holding two frames yields the first frame's size.
         let clipWrapped = header + klv(Self.pictureKey, proResFrame() + proResFrame(), longForm: true)
-        XCTAssertEqual(try locate(clipWrapped), MXFFrame(offset: UInt64(header.count + 16 + 3), length: 236))
+        XCTAssertEqual(try locate(clipWrapped), MXFFrame(offset: UInt64(header.count + 16 + ber(472, longForm: true).count), length: 236))
         // A sparse file: the KLV value is 100 MiB but the frame-size field says 5000.
         let url = scratch.appendingPathComponent("sparse.mxf")
         let valueLength = 100 << 20
@@ -193,7 +193,7 @@ final class MXFFrameLocatorTests: XCTestCase {
         XCTAssertEqual(pwrite(fd, tail, tail.count, off_t(tailOffset)), tail.count)
         let start = Date()
         let frame = MXFFrameLocator.firstPictureFrame(descriptor: fd, fileSize: UInt64(tailOffset + tail.count), scanLimit: 3 << 30)
-        XCTAssertEqual(frame, MXFFrame(offset: UInt64(tailOffset + 16 + 3), length: 236))
+        XCTAssertEqual(frame, MXFFrame(offset: UInt64(tailOffset + 16 + ber(236).count), length: 236))
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
     }
 
