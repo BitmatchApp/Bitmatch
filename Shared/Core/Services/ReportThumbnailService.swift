@@ -18,7 +18,17 @@ enum ReportThumbnailService {
     static let maximumPreviews = 200
     static let maximumSeconds: TimeInterval = 30
     static let perClipSeconds: TimeInterval = 2
-    static let videoExtensions: Set<String> = ["mov", "mp4", "m4v"]
+    /// Clip types a report may show a frame from. MXF is here for ARRI and
+    /// Sony cards; macOS decodes their ProRes MXF through its Pro Video
+    /// Formats, and a clip it cannot open simply gets no preview. This is the
+    /// report's own rule, separate from the QuickTime atom integrity parser.
+    static let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "mxf"]
+
+    /// Preview eligibility by name only: a verified clip whose extension is
+    /// listed and which is not an AppleDouble companion (`._name`).
+    static func isPreviewCandidate(_ url: URL) -> Bool {
+        !url.lastPathComponent.hasPrefix("._") && videoExtensions.contains(url.pathExtension.lowercased())
+    }
 
     static func collect(results: [ResultRow], enabled: Bool,
                         maximumPreviews: Int = maximumPreviews,
@@ -30,9 +40,9 @@ enum ReportThumbnailService {
         let deadline = clock.now.advanced(by: .seconds(max(0, budget)))
         let eligible = results.filter {
             let url = URL(fileURLWithPath: $0.path)
-            // Reuse clip-only presentation rules. This does not exclude any
-            // file from copying, verification or the recorded transfer results.
-            return $0.isVerifiedStatus && videoExtensions.contains(url.pathExtension.lowercased()) && ClipIntegrityCheck.supports(url)
+            // Presentation only. This does not exclude any file from copying,
+            // verification or the recorded transfer results.
+            return $0.isVerifiedStatus && isPreviewCandidate(url)
         }
         output.requestedCount = Set(eligible.map(\.path)).count
         var seen: Set<String> = []

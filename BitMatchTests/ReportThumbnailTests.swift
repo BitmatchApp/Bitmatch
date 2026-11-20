@@ -2,6 +2,7 @@ import Foundation
 import PDFKit
 import CryptoKit
 import Testing
+import Synchronization
 @testable import BitMatch
 import BitMatchEngine
 
@@ -40,6 +41,26 @@ struct ReportThumbnailTests {
         #expect(frames.images.count == 2)
         #expect(frames.images[metadata.path] == nil)
         #expect(frames.images[hidden.path] != nil)
+    }
+
+    @Test func mxfClipsAreEligibleForPreviewsWithoutWideningTheIntegrityParser() async throws {
+        // ARRI and Sony cards record MXF. Preview eligibility is the report's
+        // own rule; the clip integrity parser (QuickTime atoms) stays as it is.
+        let (root, _, row) = try seed(); defer { try? FileManager.default.removeItem(at: root) }
+        let mxf = ResultRow(path: "/card/A003C001_251118_APFV.mxf", status: row.status, size: row.size,
+            checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
+        let companion = ResultRow(path: "/card/._A003C001_251118_APFV.mxf", status: row.status, size: row.size,
+            checksum: row.checksum, destination: row.destination, destinationPath: row.destinationPath)
+        let extracted = Mutex(0)
+        let frames = try await ReportThumbnailService.collect(results: [mxf, companion], enabled: true) { _, _ in
+            extracted.withLock { $0 += 1 }; return Data([1])
+        }
+        #expect(frames.requestedCount == 1)
+        #expect(frames.images[mxf.path] != nil)
+        #expect(frames.images[companion.path] == nil)
+        #expect(extracted.withLock { $0 } == 1)
+        #expect(!ClipIntegrityCheck.supports(URL(fileURLWithPath: "/card/clip.mxf")), "the atom parser is untouched")
+        #expect(ClipIntegrityCheck.supports(URL(fileURLWithPath: "/card/clip.mov")))
     }
 
     @Test func disabledAndQuickNeverStartExtraction() async throws {
