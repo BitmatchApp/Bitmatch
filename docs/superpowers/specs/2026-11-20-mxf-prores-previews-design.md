@@ -24,7 +24,7 @@ MXF is a flat sequence of KLV packets (16-byte SMPTE key, BER length, value). Th
 
 - Not a general MXF demuxer: no index tables, partitions, descriptors, audio, timecode or metadata. First picture frame only.
 - Not Sony XAVC (H.264/HEVC in MXF), ARRIRAW, DNxHD, or clip-wrapped essence with no ProRes header at the start. Those stay without previews (ARRIRAW is not a ProRes bitstream; XAVC is a follow-up on the same shape).
-- Never read more than a bounded prefix of a file; never decode more than the pixel cap (40 MP: one BGRA buffer of ~160 MB if a decoder ignores the output-size request, plus the copied compressed frame of at most the 64 MiB cap and the decoder's own working set) and never hold more than the frame cap of compressed bytes; never let a preview failure touch transfer evidence, as today.
+- Never read more than a bounded prefix of a file; never decode more than the pixel cap (40 MP: one BGRA buffer of ~160 MB if a decoder ignores the output-size request, plus the compressed frame, which exists twice for the duration of the decode (the read bytes and the owned copy inside the block buffer), so up to 128 MiB at the 64 MiB cap, and the decoder's own working set; the fallback path for a decoder that ignores the size request also holds one full-size CGImage while it shrinks it) and never hold more than the frame cap of compressed bytes; never let a preview failure touch transfer evidence, as today.
 
 ## Approaches
 

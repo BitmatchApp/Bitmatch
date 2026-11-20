@@ -20,6 +20,7 @@ final class MXFFrameLocatorTests: XCTestCase {
 
     private static let fixtures: [(name: String, length: UInt64)] = [
         ("tiny-orange-64x64-lt.mxf", 236), ("tiny-orange-64x48-lt.mxf", 218), ("tiny-orange-64x64-hq.mxf", 240),
+        ("tiny-orange-64x64-4444.mxf", 248),
     ]
 
     private func fixtureURL(_ name: String) throws -> URL {
@@ -195,6 +196,36 @@ final class MXFFrameLocatorTests: XCTestCase {
         let frame = MXFFrameLocator.firstPictureFrame(descriptor: fd, fileSize: UInt64(tailOffset + tail.count), scanLimit: 3 << 30)
         XCTAssertEqual(frame, MXFFrame(offset: UInt64(tailOffset + 16 + ber(236).count), length: 236))
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5)
+    }
+
+    func testTinyPictureValuesAreNil() throws {
+        let header = partition()
+        for count in 1 ... 3 {
+            XCTAssertNil(try locate(header + klv(Self.pictureKey, [UInt8](repeating: 0x69, count: count))), "\(count)-byte picture value")
+        }
+    }
+
+    func testReadFrameStopsAtTheDeadline() throws {
+        let url = try fixtureURL("tiny-orange-64x64-lt.mxf")
+        let fd = open(url.path, O_RDONLY); defer { close(fd) }
+        let frame = try XCTUnwrap(MXFFrameLocator.firstPictureFrame(at: url))
+        XCTAssertNil(MXFFrameLocator.readFrame(descriptor: fd, frame: frame, shouldContinue: { false }))
+        XCTAssertNotNil(MXFFrameLocator.readFrame(descriptor: fd, frame: frame, shouldContinue: { true }))
+    }
+
+    func testScanLimitBoundsEveryRead() throws {
+        // The fixture's picture key starts at 6144 and its frame prefix ends at 6172.
+        let bytes = try fixtureBytes("tiny-orange-64x64-lt.mxf")
+        XCTAssertNil(try locate(bytes, scanLimit: 6145), "a limit inside the picture header forbids reading it")
+        XCTAssertNil(try locate(bytes, scanLimit: 6171), "a limit inside the frame prefix forbids reading it")
+        XCTAssertEqual(try locate(bytes, scanLimit: 6172), MXFFrame(offset: 6164, length: 236))
+        XCTAssertNil(try locate(bytes, scanLimit: 0))
+        XCTAssertNil(try locate([UInt8](repeating: 0, count: 2048) + bytes, scanLimit: 1024), "the run-in read respects the limit too")
+    }
+
+    func testDeadlineIsCheckedBeforeTheFirstRead() throws {
+        let bytes = try fixtureBytes("tiny-orange-64x64-lt.mxf")
+        XCTAssertNil(try locate(bytes, shouldContinue: { false }))
     }
 
     func testOverflowingLengthsAreNil() throws {

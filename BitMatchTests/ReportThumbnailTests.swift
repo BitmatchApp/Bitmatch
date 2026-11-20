@@ -11,6 +11,7 @@ import BitMatchEngine
 private let previewFixture = "AAAAIGZ0eXBpc29tAAACAGlzb21pc28yYXZjMW1wNDEAAAN2bW9vdgAAAGxtdmhkAAAAAAAAAAAAAAAAAAAD6AAAA+gAAQAAAQAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgAAAqF0cmFrAAAAXHRraGQAAAADAAAAAAAAAAAAAAABAAAAAAAAA+gAAAAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAABAAAAAAAAAAAAAAAAAABAAAAAAQAAAACQAAAAAAAkZWR0cwAAABxlbHN0AAAAAAAAAAEAAAPoAAAQAAABAAAAAAIZbWRpYQAAACBtZGhkAAAAAAAAAAAAAAAAAAAoAAAAKABVxAAAAAAALWhkbHIAAAAAAAAAAHZpZGUAAAAAAAAAAAAAAABWaWRlb0hhbmRsZXIAAAABxG1pbmYAAAAUdm1oZAAAAAEAAAAAAAAAAAAAACRkaW5mAAAAHGRyZWYAAAAAAAAAAQAAAAx1cmwgAAAAAQAAAYRzdGJsAAAAwHN0c2QAAAAAAAAAAQAAALBhdmMxAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAQAAkABIAAAASAAAAAAAAAABFExhdmM2My4xLjEwMSBsaWJ4MjY0AAAAAAAAAAAAAAAAGP//AAAANmF2Y0MBZAAL/+EAGWdkAAus2UEBOwEQAAADABAAAAMAoPFCmWABAAZo6+PLIsD9+PgAAAAAEHBhc3AAAAABAAAAAQAAABRidHJ0AAAAAAAAGTgAAAAAAAAAGHN0dHMAAAAAAAAAAQAAAAUAAAgAAAAAFHN0c3MAAAAAAAAAAQAAAAEAAAA4Y3R0cwAAAAAAAAAFAAAAAQAAEAAAAAABAAAoAAAAAAEAABAAAAAAAQAAAAAAAAABAAAIAAAAABxzdHNjAAAAAAAAAAEAAAABAAAABQAAAAEAAAAoc3RzegAAAAAAAAAAAAAABQAAAvAAAAAQAAAADQAAAA0AAAANAAAAFHN0Y28AAAAAAAAAAQAAA6YAAABhdWR0YQAAAFltZXRhAAAAAAAAACFoZGxyAAAAAAAAAABtZGlyYXBwbAAAAAAAAAAAAAAAACxpbHN0AAAAJKl0b28AAAAcZGF0YQAAAAEAAAAATGF2ZjYzLjEuMTAxAAAACGZyZWUAAAMvbWRhdAAAAq0GBf//qdxF6b3m2Ui3lizYINkj7u94MjY0IC0gY29yZSAxNjUgcjMyMjIgYjM1NjA1YSAtIEguMjY0L01QRUctNCBBVkMgY29kZWMgLSBDb3B5bGVmdCAyMDAzLTIwMjUgLSBodHRwOi8vd3d3LnZpZGVvbGFuLm9yZy94MjY0Lmh0bWwgLSBvcHRpb25zOiBjYWJhYz0xIHJlZj0zIGRlYmxvY2s9MTowOjAgYW5hbHlzZT0weDM6MHgxMTMgbWU9aGV4IHN1Ym1lPTcgcHN5PTEgcHN5X3JkPTEuMDA6MC4wMCBtaXhlZF9yZWY9MSBtZV9yYW5nZT0xNiBjaHJvbWFfbWU9MSB0cmVsbGlzPTEgOHg4ZGN0PTEgY3FtPTAgZGVhZHpvbmU9MjEsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz00IGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MyBiX3B5cmFtaWQ9MiBiX2FkYXB0PTEgYl9iaWFzPTAgZGlyZWN0PTEgd2VpZ2h0Yj0xIG9wZW5fZ29wPTAgd2VpZ2h0cD0yIGtleWludD0yNTAga2V5aW50X21pbj01IHNjZW5lY3V0PTQwIGludHJhX3JlZnJlc2g9MCByY19sb29rYWhlYWQ9NDAgcmM9Y3JmIG1idHJlZT0xIGNyZj0yMy4wIHFjb21wPTAuNjAgcXBtaW49MCBxcG1heD02OSBxcHN0ZXA9NCBpcF9yYXRpbz0xLjQwIGFxPTE6MS4wMACAAAAAO2WIhAAS//7oyfzLJ6E/UMDDl9+ZWnHMI9HTDq9Ryj5DaMReURFNVE3hEI18BtiMaDgAAAfoCMQSrO8PAAAADEGaJGxD//6plgAYMAAAAAlBnkJ4gh8AA9MAAAAJAZ5hdEP/AAh4AAAACQGeY2pD/wAIeQ=="
 
 @MainActor
+@Suite(.serialized)   // The MXF worker tests use a process-wide hook and short timing thresholds.
 struct ReportThumbnailTests {
     private func seed() throws -> (URL, URL, ResultRow) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-preview-\(UUID())")
@@ -66,6 +67,15 @@ struct ReportThumbnailTests {
 
     // MARK: MXF (ProRes in an MXF wrapper)
 
+    /// Polls a condition for up to two seconds; async tests cannot block on a semaphore.
+    private func settles(_ condition: @Sendable () -> Bool) async throws -> Bool {
+        for _ in 0 ..< 200 {
+            if condition() { return true }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        return condition()
+    }
+
     private func mxfSeed(_ base64: String = MXFFixtures.orange64By64lt, name: String = "A003C001.mxf") throws -> (URL, ResultRow) {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-mxf-preview-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -115,23 +125,48 @@ struct ReportThumbnailTests {
     @Test func busyWorkerRefusesPromptlyAndNeverPublishesLate() async throws {
         let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
         let url = URL(fileURLWithPath: row.destinationPath!)
-        let gate = DispatchSemaphore(value: 0)
-        ReportThumbnailService.mxfWorkerHook = { gate.wait() }
-        defer { ReportThumbnailService.mxfWorkerHook = nil }
+        let entered = Mutex(false)                  // worker → test: it is now blocked
+        let gate = DispatchSemaphore(value: 0)      // test → worker: continue
+        ReportThumbnailService.mxfWorkerHook = { entered.withLock { $0 = true }; gate.wait() }
+        defer {
+            ReportThumbnailService.mxfWorkerHook = nil
+            gate.signal()   // Never leave the shared worker wedged if an expectation fails early.
+        }
         let clock = ContinuousClock()
+        let firstStart = clock.now
         async let blocked = ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size)
-        try await Task.sleep(for: .milliseconds(50))
+        #expect(try await settles { entered.withLock { $0 } }, "the worker entered and is blocked")
         let start = clock.now
         let refused = try await ReportThumbnailService.frame(url, timeout: 0.3, expectedSize: row.size)
         #expect(refused == nil, "a second request while the worker is busy is refused")
         #expect(clock.now - start < .milliseconds(100))
         let first = try await blocked
+        let firstElapsed = clock.now - firstStart
         #expect(first == nil, "the blocked request returns nil at its deadline")
+        #expect(firstElapsed >= .milliseconds(250) && firstElapsed < .seconds(1.5), "returned at the deadline, not later")
         gate.signal()
-        try await Task.sleep(for: .milliseconds(300))
+        try await Task.sleep(for: .milliseconds(200))
         ReportThumbnailService.mxfWorkerHook = nil
         let recovered = try await ReportThumbnailService.frame(url, timeout: 2, expectedSize: row.size)
         #expect(recovered != nil, "the worker is usable again after the block clears")
+    }
+
+    @Test func lateDecodeResultIsDroppedNotPublished() async throws {
+        // Block after extraction, so a real decoded result arrives after the caller's deadline.
+        let (root, row) = try mxfSeed(); defer { try? FileManager.default.removeItem(at: root) }
+        let url = URL(fileURLWithPath: row.destinationPath!)
+        let decoded = Mutex(false)
+        let gate = DispatchSemaphore(value: 0)
+        ReportThumbnailService.mxfWorkerCompletionHook = { decoded.withLock { $0 = true }; gate.wait() }
+        defer { ReportThumbnailService.mxfWorkerCompletionHook = nil; gate.signal() }
+        let late = try await ReportThumbnailService.frame(url, timeout: 0.2, expectedSize: row.size)
+        #expect(late == nil, "the caller got nil at its deadline")
+        #expect(try await settles { decoded.withLock { $0 } }, "the worker really decoded a frame")
+        gate.signal()   // The late result reaches finish() and is dropped: no second resume, no crash.
+        try await Task.sleep(for: .milliseconds(200))
+        ReportThumbnailService.mxfWorkerCompletionHook = nil
+        let next = try await ReportThumbnailService.frame(url, timeout: 2, expectedSize: row.size)
+        #expect(next != nil)
     }
 
     @Test func sizeMismatchAndFIFOAreRefusedBeforeReading() async throws {

@@ -108,8 +108,10 @@ enum ReportThumbnailService {
     /// MXF previews, never a thread per clip.
     static let mxfQueue = DispatchQueue(label: "BitMatch.report-preview.mxf", qos: .utility)
     private static let mxfBusy = Mutex(false)
-    /// Test seam: runs on the worker before the file is opened.
+    /// Test seams: run on the worker before the file is opened, and after the
+    /// frame is extracted but before the result is published.
     nonisolated(unsafe) static var mxfWorkerHook: (@Sendable () -> Void)?
+    nonisolated(unsafe) static var mxfWorkerCompletionHook: (@Sendable () -> Void)?
 
     static func mxfFrame(_ url: URL, timeout: TimeInterval, expectedSize: Int64) async throws -> Data? {
         try Task.checkCancellation()
@@ -123,8 +125,7 @@ enum ReportThumbnailService {
 
     /// Runs on the MXF worker. Every failure is nil; the deadline is checked
     /// before opening, between read retries and before decoding.
-    static func extractMXFPreview(url: URL, expectedSize: Int64, deadline: Date) -> Data? {
-        let alive: () -> Bool = { Date() < deadline }
+    static func extractMXFPreview(url: URL, expectedSize: Int64, shouldContinue alive: () -> Bool) -> Data? {
         guard alive() else { return nil }
         let fd = Darwin.open(url.path, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
         guard fd >= 0 else { return nil }
@@ -181,15 +182,29 @@ private final class MXFPreviewRequest: @unchecked Sendable {
         let timer = DispatchSource.makeTimerSource(queue: .global(qos: .utility))
         timer.schedule(deadline: .now() + timeout)
         timer.setEventHandler { [weak self] in self?.finish(.success(nil)) }
-        lock.lock(); self.timer = timer; lock.unlock()
+        // Install the timer under the lock so a cancel() that already ran
+        // cannot leave it uncancelled; if that happened, drop it here.
+        lock.lock()
+        let alreadyFinished = finished
+        if !alreadyFinished { self.timer = timer }
+        lock.unlock()
+        guard !alreadyFinished else {
+            timer.setEventHandler {}; timer.cancel()
+            ReportThumbnailService.releaseMXFWork()
+            return
+        }
         timer.resume()
-        let deadline = Date().addingTimeInterval(timeout)
+        let deadline = DispatchTime.now() + timeout
         ReportThumbnailService.mxfQueue.async { [self] in
             defer { ReportThumbnailService.releaseMXFWork() }
             ReportThumbnailService.mxfWorkerHook?()
             guard !isFinished else { return }
-            let data = ReportThumbnailService.extractMXFPreview(url: url, expectedSize: expectedSize, deadline: deadline)
-            finish(.success(data))
+            // A cancelled or timed-out caller releases the worker promptly: the
+            // predicate also ends the work once this request has finished.
+            let data = ReportThumbnailService.extractMXFPreview(url: url, expectedSize: expectedSize,
+                                                                 shouldContinue: { [self] in !isFinished && DispatchTime.now() < deadline })
+            ReportThumbnailService.mxfWorkerCompletionHook?()
+            finish(.success(data))   // Dropped by the lock if the deadline already resumed the caller.
         }
     }
 

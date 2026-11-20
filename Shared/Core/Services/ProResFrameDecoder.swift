@@ -23,6 +23,20 @@ enum ProResFrameDecoder {
         let is444: Bool
     }
 
+    /// Whether this process has a ProRes decoder at all. The iOS simulator
+    /// has none, so tests there skip with a reason instead of failing.
+    static var decoderAvailable: (available: Bool, status: OSStatus) {
+        var format: CMVideoFormatDescription?
+        let created = CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: kCMVideoCodecType_AppleProRes422HQ,
+                                                     width: 64, height: 64, extensions: nil, formatDescriptionOut: &format)
+        guard created == noErr, let format else { return (false, created) }
+        var session: VTDecompressionSession?
+        let status = VTDecompressionSessionCreate(allocator: kCFAllocatorDefault, formatDescription: format, decoderSpecification: nil,
+                                                  imageBufferAttributes: nil, outputCallback: nil, decompressionSessionOut: &session)
+        if let session { VTDecompressionSessionInvalidate(session) }
+        return (status == noErr, status)
+    }
+
     /// The frame's own header, validated before any decoder exists. The
     /// pixel cap is what bounds memory: the compressed frame is small, the
     /// decoded one is not.
@@ -47,7 +61,8 @@ enum ProResFrameDecoder {
     /// upscaled. The decoder is asked for that output size directly so the
     /// full-size frame is not materialized here.
     static func image(frame: Data, maximumSize: CGSize) -> CGImage? {
-        guard let header = header(of: frame) else { return nil }
+        guard let header = header(of: frame),
+              maximumSize.width.isFinite, maximumSize.height.isFinite, maximumSize.width >= 1, maximumSize.height >= 1 else { return nil }
         let scale = min(1, min(maximumSize.width / CGFloat(header.width), maximumSize.height / CGFloat(header.height)))
         let outputWidth = max(1, Int((CGFloat(header.width) * scale).rounded()))
         let outputHeight = max(1, Int((CGFloat(header.height) * scale).rounded()))
@@ -57,13 +72,14 @@ enum ProResFrameDecoder {
             guard CMVideoFormatDescriptionCreate(allocator: kCFAllocatorDefault, codecType: codec, width: Int32(header.width),
                                                  height: Int32(header.height), extensions: nil, formatDescriptionOut: &format) == noErr,
                   let format else { return nil }
-            // The block buffer owns a copy of the frame bytes for the sample's lifetime.
+            // The block buffer owns a malloc'd copy of the frame bytes for the
+            // sample's lifetime and frees it with the malloc allocator.
             let length = header.frameSize
             guard let memory = malloc(length) else { return nil }
             frame.copyBytes(to: memory.assumingMemoryBound(to: UInt8.self), count: length)
             var block: CMBlockBuffer?
             guard CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault, memoryBlock: memory, blockLength: length,
-                                                     blockAllocator: kCFAllocatorDefault, customBlockSource: nil, offsetToData: 0,
+                                                     blockAllocator: kCFAllocatorMalloc, customBlockSource: nil, offsetToData: 0,
                                                      dataLength: length, flags: 0, blockBufferOut: &block) == noErr, let block else {
                 free(memory)
                 return nil

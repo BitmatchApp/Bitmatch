@@ -5,6 +5,11 @@ import Testing
 
 /// One ProRes frame to one fitted image via VideoToolbox. Design:
 /// docs/superpowers/specs/2026-11-20-mxf-prores-previews-design.md
+/// Decoding tests need a ProRes decoder in the process; the iOS simulator has
+/// none (VideoToolbox reports no decoder), so they skip there with the status.
+/// Header validation runs everywhere.
+@Suite(.enabled(if: ProResFrameDecoder.decoderAvailable.available,
+                "No ProRes decoder in this process (VideoToolbox status \(ProResFrameDecoder.decoderAvailable.status)); run on a Mac or a physical iPad"))
 struct ProResFrameDecoderTests {
     private let lt = MXFFixtures.frame(MXFFixtures.orange64By64lt, length: MXFFixtures.orange64By64ltLength)
     private let hq = MXFFixtures.frame(MXFFixtures.orange64By64hq, length: MXFFixtures.orange64By64hqLength)
@@ -23,6 +28,14 @@ struct ProResFrameDecoderTests {
         #expect(fitted.width == 64 && fitted.height == 48, "a 64×48 frame is not upscaled")
         let small = try #require(ProResFrameDecoder.image(frame: tall, maximumSize: CGSize(width: 32, height: 32)))
         #expect(small.width == 32 && small.height == 24)
+    }
+
+    @Test func decodes4444UnderTheFourFourFourFormat() throws {
+        let frame = MXFFixtures.frame(MXFFixtures.orange64By644444, length: MXFFixtures.orange64By644444Length)
+        #expect(try #require(ProResFrameDecoder.header(of: frame)).is444 == true)
+        let image = try #require(ProResFrameDecoder.image(frame: frame, maximumSize: CGSize(width: 256, height: 144)))
+        let (r, g, b) = try centerPixel(image)
+        #expect(r > 200); #expect(g >= 80 && g <= 200); #expect(b < 80)
     }
 
     @Test func decodesHQAndLTUnderTheSameFormat() throws {
