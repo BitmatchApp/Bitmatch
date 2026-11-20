@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Reports now show clip previews for ProRes clips inside MXF files (ARRI ALEXA family). macOS does not open MXF for third-party apps, so BitMatch finds the first frame itself with a bounded scan and decodes it with the system ProRes decoder. Other MXF content (ARRIRAW, Sony XAVC) still has no preview.
 ## [0.2.12] - 2026-11-18
 
 - Fix: Retrying a transfer after unplugging and reconnecting the card or a backup drive works again. The journal now remembers each folder by an identifier that survives remounts, while still refusing a different disk or a recreated folder at the same path. Records from older versions keep their previous rule until they are re-picked once while still connected; re-picking one after a reconnect is still refused, so start a new transfer for it.
