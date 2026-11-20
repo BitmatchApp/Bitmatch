@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-11-20
+
 - Reports now show clip previews for ProRes clips inside MXF files (ARRI ALEXA family). macOS does not open MXF for third-party apps, so BitMatch finds the first frame itself with a bounded scan and decodes it with the system ProRes decoder. Other MXF content (ARRIRAW, Sony XAVC) still has no preview.
 ## [0.2.12] - 2026-11-18
 
