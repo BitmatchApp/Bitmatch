@@ -18,10 +18,11 @@ enum ReportThumbnailService {
     static let maximumPreviews = 200
     static let maximumSeconds: TimeInterval = 30
     static let perClipSeconds: TimeInterval = 2
-    /// Clip types a report may show a frame from. MXF is here for ARRI and
-    /// Sony cards; macOS decodes their ProRes MXF through its Pro Video
-    /// Formats, and a clip it cannot open simply gets no preview. This is the
-    /// report's own rule, separate from the QuickTime atom integrity parser.
+    /// Clip types a report may show a frame from. MXF is here for ProRes in
+    /// an MXF wrapper (ARRI ALEXA family and others): AVFoundation cannot open
+    /// MXF for third-party apps, so those frames come from the in-house
+    /// locator and VideoToolbox; any other MXF content gets no preview. This
+    /// is the report's own rule, separate from the QuickTime atom parser.
     static let videoExtensions: Set<String> = ["mov", "mp4", "m4v", "mxf"]
 
     /// Preview eligibility by name only: a verified clip whose extension is
