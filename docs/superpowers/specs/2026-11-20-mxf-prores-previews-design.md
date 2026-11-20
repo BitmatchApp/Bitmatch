@@ -4,7 +4,7 @@ Date: 2026-11-20. Branch: fix/mxf-report-previews. Follow-up to #91 (reporter: C
 
 ## Intent
 
-Reports with "Clip previews" on show a frame for ProRes clips in an MXF wrapper (ARRI ALEXA family, also Panasonic and Canon ProRes MXF), the way they do for `.mov` and `.mp4` today.
+Reports with "Clip previews" on show a frame for ProRes clips in an MXF wrapper (ARRI ALEXA family; Panasonic and Canon ProRes MXF expected but unmeasured), the way they do for `.mov` and `.mp4` today.
 
 ## Why it does not work today, and cannot via AVFoundation
 
@@ -36,32 +36,42 @@ MXF is a flat sequence of KLV packets (16-byte SMPTE key, BER length, value). Th
 
 **Engine, pure Swift, no media frameworks:** `MXFFrameLocator` in `BitMatchEngine`.
 
-- `static func firstPictureFrame(in url: URL, scanLimit: Int = 64 MiB, packetLimit: Int = 4096, frameLimit: Int = 64 MiB) throws -> MXFFrame?` where `MXFFrame` is `(offset: Int64, length: Int)`.
-- Reads with a file handle using `pread`-style offset reads of headers only (16-byte key + up to 9-byte BER length) and skips values; it never reads a value except the picture frame it returns the location of. Stops at the first picture element, at `packetLimit` packets, at `scanLimit` bytes, at end of file, or at the first malformed packet (key not starting `06 0E 2B 34`, BER length longer than 8 bytes, zero or negative length, length past end of file), returning nil.
-- A value longer than `frameLimit` is not a frame: nil.
-- Clip-wrapped essence (one value holding every frame): the picture value's first 4 bytes are the ProRes frame size; when that is smaller than the KLV length, the locator returns that size. When it is larger than the KLV length, or runs past end of file, nil. (ARRI and ffmpeg both write frame-wrapped essence; measured: the ffmpeg fixture's first picture value is exactly one frame.)
-- Only the first file in a multi-file (OP-Atom) set is ever looked at; if the picture element is not in this file, nil.
+- `static func firstPictureFrame(descriptor: Int32, fileSize: UInt64, scanLimit: UInt64 = 64 MiB, packetLimit: Int = 4096, frameLimit: UInt64 = 64 MiB, shouldContinue: () -> Bool) -> MXFFrame?` where `MXFFrame` is `(offset: UInt64, length: UInt64)`. The caller opens the file once, takes `fstat` size from that descriptor, locates the frame, and reads the frame bytes with `pread` from the same descriptor, so the path is never reopened (the same shape as `ClipIntegrityCheck`, which closes the symlink and size window `collect` checks by path). A URL convenience wraps open/fstat/close for tests.
+- All offsets and lengths are `UInt64` with overflow-checked arithmetic (`addingReportingOverflow`); any overflow, any offset or end past `fileSize`, any length of zero, and any BER length field longer than 8 bytes is malformed: nil. A BER length of `FF FF FF FF FF FF FF FF` is simply "past end of file".
+- Reads headers only (16-byte key + up to 9-byte BER length) with `pread`, and skips values; it never reads value bytes except the first four of the picture value (the ProRes frame size) and never the frame itself. Stops at the first picture element, at `packetLimit` packets, at `scanLimit` bytes, at end of file, at the first malformed packet, or when `shouldContinue()` is false (checked before every packet; the caller passes the per-clip deadline), returning nil.
+- Run-in: MXF allows up to 64 KiB of run-in before the header partition pack. The scan begins at the first occurrence of the partition pack key prefix `06 0E 2B 34 02 05 01 01 0D 01 02 01 01` within the first 64 KiB; if absent, nil.
+- Picture element match: the first 13 key bytes equal `06 0E 2B 34 01 02 01 01 0D 01 03 01 15`; bytes 14–16 (count, element type, element number) are not compared.
+- Frame length: the picture value's first 4 bytes are the ProRes frame size (big-endian). The frame length is that size when it is at most the KLV value length (frame-wrapped: equal; clip-wrapped: smaller, so the first frame of the clip); when it is larger than the KLV length, nil. `frameLimit` applies to this frame length, not to the KLV value length, so a clip-wrapped value of any size still yields its first frame. (ARRI and ffmpeg both write frame-wrapped essence; measured: the ffmpeg fixture's first picture value is exactly one frame.)
+- Only the file given is ever looked at; if the picture element is not in this file (OP-Atom audio or index file), nil.
 
 **Shared, VideoToolbox:** `ProResFrameDecoder` next to `ReportThumbnailService`.
 
 - `static func image(frame: Data, maximumSize: CGSize) throws -> CGImage?`
-- Validates the header: bytes 4–7 are `icpf`; width and height at 16–19 are 16 to 8192 each and width × height at most 40 megapixels (ALEXA 65 is 20 MP, 8K is 33 MP); chroma format bits are 4:2:2 or 4:4:4. Anything else: nil (no decode attempted). The decoded buffer is the real memory cost, not the compressed frame, so this cap is checked before any session exists.
+- Validates the header: `frame.count` is at least 32; the frame size at bytes 0–3 is at most `frame.count` (the decoder is given exactly that many bytes, so KLV padding is dropped) and at least 32; bytes 4–7 are `icpf`; width and height at 16–19 are 16 to 8192 each and width × height at most 40 megapixels (ALEXA 65 is 20 MP, 8K is 33 MP); the chroma format (byte 20, bits 7–6: `10` is 4:2:2, `11` is 4:4:4) is one of those two. Anything else: nil (no decode attempted). The decoded buffer is the real memory cost, not the compressed frame, so this cap is checked before any session exists.
 - Asks the decoder for the preview-sized output buffer directly (`kCVPixelBufferWidthKey`/`HeightKey` at the fitted size under 256×144) so the full-size BGRA frame is never materialized in this process; measured on the ARRI frame. If a decoder ignores the request, the frame is still under the pixel cap and is downscaled after.
 - Codec type `ap4h` for 4:4:4, `apch` for 4:2:2 (the decoder accepts any ProRes 4:2:2 profile under that type; measured with an LT-profile frame). A frame with alpha still decodes; the preview drops alpha.
 - Builds a `CMVideoFormatDescription`, a `CMSampleBuffer` over the frame bytes, and a `VTDecompressionSession` with BGRA output; decodes synchronously; downscales to `maximumSize` and returns the `CGImage`. The session is created per call and invalidated after; no caching.
 
-**Wiring:** `ReportThumbnailService.frame(_:timeout:)` dispatches by extension: `mxf` goes to a new `mxfFrame(url, timeout)` that runs the locator, reads only the frame bytes, decodes, and JPEG-encodes through the same path as today (`maximumSize` 256×144, 64 KB cap). Everything else keeps the AVFoundation path. The timeout keeps its meaning: the work runs on the existing serial queue with the existing timer, so a stalled read or decode still returns nil at the deadline and cancellation still stops the next clip. Failures are swallowed exactly as today.
+**Wiring:** `ReportThumbnailService.frame(_:timeout:)` dispatches by lower-cased extension: `mxf` goes to a new `mxfFrame(url, timeout)`; everything else keeps the AVFoundation path. Failures are swallowed exactly as today.
+
+MXF work is synchronous (`pread` and a VideoToolbox decode that takes milliseconds), so it cannot be abandoned mid-call the way an AVFoundation request can. It therefore runs on one shared serial queue for all MXF previews, not a per-request queue: at most one MXF extraction is ever in flight, so a stalled read cannot pile up a thread per clip. The caller awaits with the existing timer and continuation pattern: at the deadline it resumes with nil and moves on; the orphaned work finishes on its own and its result is dropped. The locator's `shouldContinue` is the deadline, checked between packets, and the frame read is bounded by `frameLimit`, so an orphan is bounded in both time and memory. Cancellation of the whole collection stops the next clip as today.
 
 **iOS:** VideoToolbox exists on iOS; the same code compiles there. No iOS-specific behavior.
 
 ## Fixtures and tests
 
 - `tiny-prores.mxf` (7.7 KB, ffmpeg, 64×64, one orange ProRes LT frame) as a base64 constant in the engine tests and the Shared tests, the way `previewFixture` is today. Nothing from ARRI enters the repo.
-- Engine: locator finds the frame in the fixture at the known offset and length; returns nil for a non-MXF file, a truncated file, a file whose first packet claims a 2 GB value, a frame whose length runs past end of file, a file with 5000 non-picture packets, an empty file; never reads past `scanLimit` and reads no value bytes other than the returned frame (a counting reader asserts bytes read ≤ headers + frame). BER coverage: a hand-built packet with a short-form length (under 128) and one with a long-form length; a hand-built clip-wrapped value (two frames in one KLV) returns the first frame's size.
-- Shared: decoder returns a 64×64 image for the fixture frame; nil for a frame whose tag is not `icpf`, for a header claiming 16384×16384 (rejected before any session, no allocation), for an empty `Data`.
-- Shared: `ReportThumbnailService.collect` with a verified `.mxf` row whose backup is the fixture produces a JPEG under 64 KB; a `.mxf` row pointing at a non-ProRes MXF (the DNxHD ffmpeg file, generated in the test) produces no image and no error.
+- Engine: locator finds the frame in the fixture at the known offset and length, through the descriptor API; returns nil for a non-MXF file, a truncated file, a file whose first packet claims a 2 GB value, a frame whose length runs past end of file, a file with 5000 non-picture packets, an empty file; never reads past `scanLimit` and reads no value bytes other than the returned frame (a counting reader asserts bytes read ≤ headers + frame). BER coverage: a hand-built packet with a short-form length (under 128), one with a long-form length, and one with the 8-byte all-`FF` length; a sparse file whose picture value is in-file but larger than `frameLimit` with a frame-size field also over the limit (nil) and one whose frame-size field is under the limit (first frame returned); a hand-built clip-wrapped value (two frames in one KLV) returns the first frame's size; a file with 70 KiB of run-in before the partition pack (nil) and one with 1 KiB (found); `shouldContinue` returning false after N packets stops the scan with nil.
+- Shared: decoder returns a 64×64 image for the fixture frame whose center pixel is orange (R > 200, G between 80 and 200, B < 80); a 64×48 ffmpeg fixture returns an image with a 4:3 aspect; an HQ-profile (4:2:2) frame and the LT frame both decode under `apch`; nil for a frame whose tag is not `icpf`, for every truncated prefix of the fixture frame from 1 to 31 bytes, for a frame-size field larger than the data, for a header claiming 16384×16384 (rejected before any session), for an empty `Data`.
+- Shared: `ReportThumbnailService.collect` with a verified `.mxf` row whose backup is the fixture produces a JPEG under 64 KB, and so does a `.MXF` row; a `.mxf` row pointing at a non-ProRes MXF (a hand-built MXF whose picture value is not a ProRes frame) produces no image and no error; a zero-timeout MXF request returns nil without decoding; a cancelled collection does not start the next MXF clip.
 - Opt-in real media: `BITMATCH_ARRI_SAMPLE=/path/to/F003C002_190925_MN99.mxf` runs the full path on the ARRI clip and asserts a 256×144 JPEG within the 2 s per-clip budget.
-- Mac suite and engine suite green; iPad build green.
+- Mac suite and engine suite green; `./test.sh ipad-test` runs the decoder tests on the iPad simulator, not only the build.
+
+## Accepted limits
+
+- Anamorphic or non-square-pixel clips preview at the stored pixel aspect (squeezed); the descriptor is not read.
+- No color metadata is set on the format description; a preview may differ slightly in tone from a graded view. Previews are decoration.
+- Panasonic and Canon ProRes MXF are expected to share the generic-container picture key, but only ARRI and ffmpeg output were measured.
 
 ## Left to the builder
 
