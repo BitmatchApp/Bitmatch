@@ -324,7 +324,7 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
         XCTAssertEqual(record.results.count, original.count * 2)
         XCTAssertEqual(record.results.filter(\.isVerifiedStatus).count, selected.count * 2)
         XCTAssertEqual(record.results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count, excluded.count * 2)
-        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record) == .safeToErase, excluded.isEmpty)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .safeToErase, excluded.isEmpty)
         guard record.results.filter(\.isVerifiedStatus).count == selected.count * 2 else { throw PhysicalAppError.workflowFailed }
         let pipelineSamples = samples.state.withLock { $0 }
         XCTAssertNotNil(pipelineSamples.pipelineReturnedUptime)
@@ -380,13 +380,13 @@ final class PhysicalWorkflowEvidenceTests: XCTestCase {
             } else { XCTAssertTrue(String(decoding: data, as: UTF8.self).contains("BitMatch validation")) }
             try data.write(to: evidence.appendingPathComponent("\(prefix)-automatic.\(ext)"))
         }
-        let historyPDF = try await ReportExporter.historyPDF(record: record, includeThumbnails: true)
+        let historyPDF = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: true)
         XCTAssertTrue(try Self.pdfText(historyPDF).contains("Regenerated from saved history"))
         XCTAssertTrue(try Self.pdfText(historyPDF).contains("Clip previews: 1/1"))
         XCTAssertFalse(try Self.previewJPEGs(historyPDF).isEmpty)
         try historyPDF.write(to: evidence.appendingPathComponent("\(prefix)-saved-history.pdf"))
         for csv in [false, true] {
-            let data = try TransferHistoryDocument(record: record, asCSV: csv).data
+            let data = try TransferHistoryDocument(record: record, history: [record], asCSV: csv).data
             if !csv {
                 let object = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
                 XCTAssertEqual(object["savedSafeToErase"] as? Bool, excluded.isEmpty)

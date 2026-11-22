@@ -1064,7 +1064,7 @@ private final class SnapshotFixture {
         let record = try XCTUnwrap(coordinator.outcomeRecord, file: file, line: line)
         XCTAssertEqual(record.plannedFileCounts, [1, 1], file: file, line: line)
         XCTAssertEqual(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record), true, file: file, line: line)
-        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase, file: file, line: line)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase, file: file, line: line)
         XCTAssertTrue(coordinator.showsOutcomeSummary, file: file, line: line)
         XCTAssertEqual(coordinator.queuePresentation.rows.first?.outcome?.safetyState, .safeToErase, file: file, line: line)
     }

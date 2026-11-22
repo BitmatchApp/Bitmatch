@@ -53,7 +53,7 @@ struct TransferRecoverySummaryTests {
         let session = QueueSessionPresentation.make(records: [record], sessionIDs: [record.id],
             progress: nil, mountedSourceIDs: [])
         let replay = try #require(session.rows.first?.outcome)
-        #expect(replay.safetyState == TransferLibraryPresentation.safetyState(for: record))
+        #expect(replay.safetyState == TransferLibraryPresentation.safetyState(for: record, in: [record]))
         #expect(replay.safetyState != .safeToErase)
         #expect(!replay.canEject)
         if mode == .quick {

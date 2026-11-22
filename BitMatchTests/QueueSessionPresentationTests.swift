@@ -241,7 +241,7 @@ struct QueueSessionPresentationTests {
             rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [UUID()]) == 1)
         #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Selected files verified")),
             record: record, fraction: 1) == .appIcon)
-        #expect(DockTileState.makeTransfer(state: .copying, record: record, fraction: 0.4) == .running(percent: 40))
+        #expect(DockTileState.makeTransfer(state: .copying, record: record, history: [record].compactMap { $0 }, fraction: 0.4) == .running(percent: 40))
         #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
             record: nil, fraction: 1) == .needsReview)
         #expect(outcome.destinations.count == 1)
@@ -259,11 +259,11 @@ struct QueueSessionPresentationTests {
         #expect(record.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })
         #expect(record.cameraSettings.excludedAppleDoublePaths == ["._clip.mov"])
         #expect(outcome.guidance.contains("whole card is not backed up"))
-        let historyLabel = TransferLibraryPresentation.stateLabel(for: record)
+        let historyLabel = TransferLibraryPresentation.stateLabel(for: record, in: [record])
         #expect(historyLabel.title == "Selected files verified" && historyLabel.tint == .gray)
         #expect(TransferLibraryPresentation.fileCount(for: record) == 1)
-        #expect(MenuBarRecentTransfer.status(for: record)?.text == "Selected files verified")
-        #expect(MenuBarRecentTransfer.status(for: record)?.needsAttention == false)
+        #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.text == "Selected files verified")
+        #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.needsAttention == false)
     }
 
     @Test func missingProofOrIncompleteEvidenceCannotQuietACompletedCard() throws {
@@ -308,16 +308,16 @@ struct QueueSessionPresentationTests {
         for record in [missingProof, missingPlan, missingFingerprint, mismatchedProject, missingRow, duplicate, failed, unverified,
                        noDigest, emptyDigest, cancelled, interrupted, handoffFailure, quick] {
             #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
-            let row = try #require(QueueSessionPresentation.completedRow(for: record))
+            let row = try #require(QueueSessionPresentation.completedRow(for: record, in: [record]))
             #expect(!row.selectedFilesVerified)
             #expect(row.statusTint != .gray)
             #expect(row.action == .review)
             #expect(row.outcome?.canEject == false)
-            #expect(TransferLibraryPresentation.stateLabel(for: record).title != "Selected files verified")
-            #expect(MenuBarRecentTransfer.status(for: record)?.needsAttention == true)
+            #expect(TransferLibraryPresentation.stateLabel(for: record, in: [record]).title != "Selected files verified")
+            #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.needsAttention == true)
         }
         for record in [missingProof, failed, handoffFailure, noDigest, emptyDigest] {
-            let row = try #require(QueueSessionPresentation.completedRow(for: record))
+            let row = try #require(QueueSessionPresentation.completedRow(for: record, in: [record]))
             #expect(row.safetyState == .needsAttention)
             #expect(QueueDockBadgePolicy.unresolvedCount(rows: [row], reviewedIDs: []) == 1)
             #expect(QueueDockBadgePolicy.totalUnresolvedCount(
@@ -933,7 +933,7 @@ struct QueueSessionPresentationTests {
         let first = try fixture.record(name: "A7IV_CARD1", state: .completed, outcome: .failed, at: 1)
         let second = try fixture.record(name: "A7IV_CARD1", state: .completed, outcome: .failed, at: 2)
         let third = try fixture.record(name: "A7IV_CARD1", state: .completed, outcome: .failed, at: 3)
-        #expect(TransferLibraryPresentation.safetyState(for: first) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: first, in: [first]) == .needsAttention)
         let queue = QueueSessionPresentation.make(
             records: [third, second, first], sessionIDs: [first.id, second.id, third.id],
             sessionRecordIDsInOrder: [first.id, second.id, third.id],

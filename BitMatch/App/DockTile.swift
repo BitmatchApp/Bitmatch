@@ -45,12 +45,13 @@ enum DockTileState: Equatable {
     static func makeTransfer(
         state: OperationState,
         record: LocalTransferRecord?,
+        history: [LocalTransferRecord],
         fraction: Double?
     ) -> DockTileState {
         guard case .completed = state else { return make(state: state, fraction: fraction) }
         guard let record else { return .needsReview }
         if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) { return .appIcon }
-        switch TransferLibraryPresentation.safetyState(for: record) {
+        switch TransferLibraryPresentation.safetyState(for: record, in: history) {
         case .safeToErase: return .verified
         case .failed: return .failed
         case .waiting, .preparing, .copying, .verifying, .finishing:
@@ -66,6 +67,7 @@ enum DockTileState: Equatable {
         makeTransfer(
             state: coordinator.operationState,
             record: coordinator.outcomeRecord,
+            history: coordinator.transferJournal.records,
             fraction: coordinator.liveProgress.progress?.overallProgress
         )
     }

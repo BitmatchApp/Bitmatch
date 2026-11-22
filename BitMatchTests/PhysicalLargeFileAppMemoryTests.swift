@@ -233,7 +233,7 @@ final class PhysicalLargeFileAppMemoryTests: XCTestCase {
             XCTAssertEqual(record.generateASCMHL, true)
             XCTAssertEqual(record.independentDestinationCount, 1)
             XCTAssertEqual(TransferJournal.permitsExpectedExclusionQueueContinuation(record), !excludedPaths.isEmpty)
-            XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record) == .safeToErase, excludedPaths.isEmpty)
+            XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .safeToErase, excludedPaths.isEmpty)
             XCTAssertEqual(coordinator.transferJournal.records.count, 1)
             XCTAssertEqual(durableRecords.count, 1)
             XCTAssertEqual(record.results.reduce(Int64(0)) { $0 + $1.size }, receipt.sourceBytes)

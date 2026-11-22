@@ -107,7 +107,7 @@ final class LocalTransferJournal: ObservableObject {
                 completedQueueRows.removeValue(forKey: id)
             }
             for record in admitted where completedQueueRows[record.id] == nil {
-                completedQueueRows[record.id] = QueueSessionPresentation.completedRow(for: record)
+                completedQueueRows[record.id] = QueueSessionPresentation.completedRow(for: record, in: records)
                 completedQueueRowBuildCount += 1
             }
         }

@@ -265,16 +265,16 @@ struct MenuBarRecentTransfer: Equatable {
             .max(by: { ($0.endedAt ?? $0.createdAt) < ($1.endedAt ?? $1.createdAt) }) else {
             return nil
         }
-        guard let result = status(for: record) else { return nil }
+        guard let result = status(for: record, history: records) else { return nil }
         return Self(cardName: record.title, status: result.text, needsAttention: result.needsAttention)
     }
 
-    static func status(for record: LocalTransferRecord) -> (text: String, needsAttention: Bool)? {
+    static func status(for record: LocalTransferRecord, history: [LocalTransferRecord]) -> (text: String, needsAttention: Bool)? {
         guard record.state != .queued, record.state != .running else { return nil }
         if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
             return ("Selected files verified", false)
         }
-        return switch TransferLibraryPresentation.safetyState(for: record) {
+        return switch TransferLibraryPresentation.safetyState(for: record, in: history) {
         case .safeToErase: ("Completed · review results in BitMatch", false)
         case .copiedNotVerified: ("Copied, not verified", true)
         case .needsAttention: ("Needs review", true)

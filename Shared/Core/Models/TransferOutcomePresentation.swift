@@ -187,6 +187,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         canExport: Bool,
         sourceName: String = "",
         completionReason: String? = nil,
+        independentDestinationCount: Int? = nil,
         selectedFileVerificationQualified: Bool = false,
         priorSourceFault: Bool = false,
         lineageIncomplete: Bool = false
@@ -201,13 +202,18 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors
         )
+        // Two folders on one drive are one backup in the wording, never two.
+        let claimedDestinationCount = min(
+            destinations.count,
+            max(0, independentDestinationCount ?? destinations.count)
+        )
         let baseVerdict = CompletionVerdictPresentation.make(
             state: state,
             rows: rows,
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors,
             cardName: sourceName,
-            backupCount: destinations.count
+            backupCount: claimedDestinationCount
         )
         let resolvedSafetyState = CardSafetyState.make(state: state, verdict: resolved)
         // A verified retry does not clear an earlier attempt's source
@@ -286,7 +292,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 rows: rows,
                 hasErrors: hasErrors,
                 hasCriticalErrors: hasCriticalErrors,
-                backupCount: destinations.count
+                backupCount: claimedDestinationCount
             ).sourceGuidance
         )
 

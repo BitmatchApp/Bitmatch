@@ -13,10 +13,12 @@ struct TransferHistoryDocument: FileDocument {
     init(configuration: ReadConfiguration) throws { data = configuration.file.regularFileContents ?? Data() }
     func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper { FileWrapper(regularFileWithContents: data) }
 
-    init(record: LocalTransferRecord, asCSV: Bool) throws {
+    /// `history` is the whole journal: an exported verdict must see the
+    /// record's lineage, like every other surface.
+    init(record: LocalTransferRecord, history: [LocalTransferRecord], asCSV: Bool) throws {
         let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
             results: record.results, includeModePlan: record.plannedFileCounts != nil)
-        let savedVerdict = TransferLibraryPresentation.safetyState(for: record)
+        let savedVerdict = TransferLibraryPresentation.safetyState(for: record, in: history)
         if asCSV {
             func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
             let header = "source,destination,status,bytes,checksum,verification,transfer_state,transfer_summary,project,asc_mhl,client,reused,recorded_status,saved_verdict,saved_safe_to_erase\n"
