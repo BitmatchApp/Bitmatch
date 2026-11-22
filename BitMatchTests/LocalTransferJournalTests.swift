@@ -377,6 +377,34 @@ struct LocalTransferJournalTests {
         #expect(decoded.performanceTelemetry == nil)
     }
 
+    /// Journals written before the record-level failure reason existed have
+    /// no such key; they decode with the reason unknown.
+    @Test func recordsWithoutAFailureReasonKeyStillDecode() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        // The journal holds a file lock while it lives; release it before
+        // the file is rewritten and reopened.
+        var journal: LocalTransferJournal? = LocalTransferJournal(fileURL: f.journal)
+        let id = try #require(journal).enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                                               cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        try #require(journal).fail(id: id, summary: "Try again", reason: .sourceNotConnected)
+        journal = nil
+        let encoded = try #require(try? Data(contentsOf: f.journal))
+        // The journal file is a JSON array of records.
+        var records = try #require(try JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        #expect(records[0]["failureReason"] as? String == ResultFailureReason.sourceNotConnected.rawValue)
+        records[0].removeValue(forKey: "failureReason")
+        let rewritten = try JSONSerialization.data(withJSONObject: records)
+        try rewritten.write(to: f.journal)
+        // Decode directly first so a decoding error is reported as such.
+        let decoded = try JSONDecoder().decode([LocalTransferRecord].self, from: rewritten)
+        #expect(decoded.first { $0.id == id }?.failureReason == nil)
+        let reloaded = LocalTransferJournal(fileURL: f.journal)
+        let record = try #require(reloaded.records.first { $0.id == id })
+        #expect(record.state == .failed)
+        #expect(record.failureReason == nil)
+    }
+
     @Test func legacyPhaseDurationsDecodeIntoTelemetry() throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
