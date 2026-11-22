@@ -7,8 +7,12 @@ import SwiftUI
 /// The window is an `NSPanel` on purpose: the app delegate finds the main
 /// content window by "not a panel, can become main", so a panel never steals
 /// Dock or menu-bar focusing from the transfer window.
+///
+/// Hold it with `@StateObject` (or from an object AppKit retains): SwiftUI
+/// does not promise to keep a plain stored reference on the `App` struct
+/// alive, and if the controller goes, the panel vanishes with it, unseen.
 @MainActor
-final class WelcomeWindowController: NSObject, NSWindowDelegate {
+final class WelcomeWindowController: NSObject, ObservableObject, NSWindowDelegate {
     private let greeting: WelcomeGreeting
     private let openURL: (URL) -> Void
     private(set) var panel: NSPanel?
