@@ -99,13 +99,9 @@ struct MacSetupLocations: View {
 
     private var connectedDestinationChoices: [SetupConnectedVolume] {
         let usableURLs = Set(volumeMonitor.connectedVolumes.filter { volume in
-            let volumePath = volume.url.standardizedFileURL.path
-            return volume.cameraName == nil && SetupConnectedMenuPolicy.hasPotentialCapacity(
+            volume.cameraName == nil && SetupConnectedMenuPolicy.hasPotentialCapacity(
                 volume.freeBytes,
-                isSelected: coordinator.destinationURLs.contains {
-                    let path = $0.standardizedFileURL.path
-                    return path == volumePath || path.hasPrefix(volumePath + "/")
-                }
+                isSelected: SetupConnectedMenuPolicy.isSelected(volume: volume.url, destinationURLs: coordinator.destinationURLs)
             )
         }.map(\.url))
         return SetupConnectedMenuPolicy.destinationRows(

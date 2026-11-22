@@ -99,6 +99,16 @@ nonisolated enum ConnectedDrivesPresentation {
 }
 
 enum SetupConnectedMenuPolicy {
+    /// A chosen destination is on the volume when it is the volume's root or
+    /// any folder beneath it.
+    static func isSelected(volume: URL, destinationURLs: [URL]) -> Bool {
+        let volumePath = volume.standardizedFileURL.path
+        return destinationURLs.contains {
+            let path = $0.standardizedFileURL.path
+            return path == volumePath || path.hasPrefix(volumePath + "/")
+        }
+    }
+
     static func hasPotentialCapacity(_ availableBytes: Int64?, isSelected: Bool) -> Bool {
         guard !isSelected else { return true }
         guard let availableBytes, availableBytes >= 0 else { return true }

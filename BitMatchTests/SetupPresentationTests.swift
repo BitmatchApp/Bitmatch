@@ -257,7 +257,7 @@ struct SetupPresentationTests {
             URL(fileURLWithPath: "/Volumes/SHUTTLE A"),
             URL(fileURLWithPath: "/Volumes/SHUTTLE B"),
         ]
-        let expectedWarning = "SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"
+        let expectedWarning = "SHUTTLE A and SHUTTLE B appear to be on the same drive — they count as one backup"
         let settled = await waitUntil(timeout: .seconds(5)) {
             coordinator.destinationIndependence.independentCopyCount == 1
                 && coordinator.transferReadiness.warnings == [expectedWarning]

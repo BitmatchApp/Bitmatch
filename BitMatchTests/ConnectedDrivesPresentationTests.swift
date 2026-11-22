@@ -151,6 +151,15 @@ struct ConnectedDrivesPresentationTests {
             == "Sony card · Capacity unknown")
     }
 
+    @Test func selectedFolderBeneathAFullVolumeKeepsItInThePicker() {
+        let volume = URL(fileURLWithPath: "/Volumes/FULL")
+        let chosen = [URL(fileURLWithPath: "/Volumes/FULL/Backups/Day 1")]
+        #expect(SetupConnectedMenuPolicy.isSelected(volume: volume, destinationURLs: chosen))
+        #expect(!SetupConnectedMenuPolicy.isSelected(volume: volume, destinationURLs: [URL(fileURLWithPath: "/Volumes/FULLER/x")]))
+        #expect(SetupConnectedMenuPolicy.hasPotentialCapacity(
+            0, isSelected: SetupConnectedMenuPolicy.isSelected(volume: volume, destinationURLs: chosen)))
+    }
+
     @Test func unknownAndInternalDrivesRemainVisible() {
         var internalDrive = volume("Work")
         internalDrive = Presentation.Volume(

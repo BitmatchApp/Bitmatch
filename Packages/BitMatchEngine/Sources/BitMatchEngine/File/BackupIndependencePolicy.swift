@@ -10,7 +10,16 @@ public protocol PhysicalDiskIdentityProviding: Sendable {
 }
 
 public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding {
-    public init() {}
+    private let volumeIsLocal: @Sendable (URL) -> Bool?
+
+    /// `volumeIsLocal` answers whether the volume is local storage; nil means
+    /// the system could not say. Injectable so the gate is testable without
+    /// a network mount.
+    public init(volumeIsLocal: @escaping @Sendable (URL) -> Bool? = { url in
+        try? url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal
+    }) {
+        self.volumeIsLocal = volumeIsLocal
+    }
 
     public func physicalDiskIdentity(for url: URL) -> String? {
 #if os(macOS)
@@ -19,8 +28,7 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
         // A mount or BSD name does not identify the physical stores behind a
         // network share. Missing locality is also insufficient evidence.
-        let locality = try? url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal
-        guard locality == true else { return nil }
+        guard volumeIsLocal(url) == true else { return nil }
         guard let session = DASessionCreate(kCFAllocatorDefault),
               let disk = SelectedVolumeDiskResolver.disk(
                 for: url,
@@ -132,7 +140,9 @@ public enum BackupIndependencePolicy: Sendable {
             .filter { $0.count > 1 }
             .map { indexes in
                 let groupNames = indexes.map { labels[$0] }
-                return "\(joined(groupNames)) are on the same physical drive — they count as one backup"
+                // "Appear to be": a resolved identifier can still name composite or
+                // RAID storage, so this is what BitMatch can tell, not a proof.
+                return "\(joined(groupNames)) appear to be on the same drive — they count as one backup"
             }
             .sorted()
         return BackupIndependenceAssessment(

@@ -25,7 +25,7 @@ struct BackupIndependencePolicyTests {
         #expect(result.resolvedIdentityGroupCount == 1)
         #expect(result.unresolvedDestinationCount == 0)
         #expect(result.physicalSeparationNote == nil)
-        #expect(result.warnings == ["SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"])
+        #expect(result.warnings == ["SHUTTLE A and SHUTTLE B appear to be on the same drive — they count as one backup"])
     }
 
     @Test func distinctOrUnknownPhysicalDrivesDoNotCollapse() {
@@ -97,5 +97,18 @@ struct BackupIndependencePolicyTests {
         #expect(SystemPhysicalDiskIdentityProvider.wholeDiskName("disk12s2s1") == "disk12")
         #expect(SystemPhysicalDiskIdentityProvider.wholeDiskName("disk7") == "disk7")
         #expect(SystemPhysicalDiskIdentityProvider.wholeDiskName("network-share") == "network-share")
+    }
+
+    /// A mount or BSD name says nothing about the stores behind a network
+    /// share, and missing locality is not evidence either.
+    @Test(arguments: [false, nil] as [Bool?])
+    func nonLocalOrUnknownLocalityNeverResolves(locality: Bool?) {
+        let provider = SystemPhysicalDiskIdentityProvider(volumeIsLocal: { _ in locality })
+        #expect(provider.physicalDiskIdentity(for: FileManager.default.temporaryDirectory) == nil)
+    }
+
+    @Test func localVolumeStillResolves() {
+        let provider = SystemPhysicalDiskIdentityProvider(volumeIsLocal: { _ in true })
+        #expect(provider.physicalDiskIdentity(for: FileManager.default.temporaryDirectory) != nil)
     }
 }
