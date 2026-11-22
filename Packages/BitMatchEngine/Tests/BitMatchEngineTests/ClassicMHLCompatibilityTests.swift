@@ -92,6 +92,28 @@ struct ClassicMHLCompatibilityTests {
         #expect(try snapshot(fixture.root) == before)
     }
 
+    /// Derived from the independent writer's inventory by adding only a UTF-8
+    /// byte-order mark. The writer itself does not emit this encoding variant.
+    @Test func utf8BOMOnWriterInventoryPreservesChecksAndDetectsCorruption() async throws {
+        let fixture = try copyVariant("md5-only")
+        defer { try? FileManager.default.removeItem(at: fixture.root) }
+        let manifest = fixture.media.appendingPathComponent("md5-only.mhl")
+        let bytes = try Data(contentsOf: manifest)
+        try (Data([0xef, 0xbb, 0xbf]) + bytes).write(to: manifest)
+        let before = try snapshot(fixture.root)
+        let discovery = try await checker.discover(under: fixture.media)
+        let intact = try await checker.check(discovery) { _ in }
+        #expect(intact.isIntact)
+        #expect(try snapshot(fixture.root) == before)
+
+        try Data("changed".utf8).write(to: fixture.media.appendingPathComponent("clip one.mov"))
+        let corruptedSnapshot = try snapshot(fixture.root)
+        let changed = try await checker.discover(under: fixture.media)
+        let result = try await checker.check(changed) { _ in }
+        #expect(!result.isIntact)
+        #expect(try snapshot(fixture.root) == corruptedSnapshot)
+    }
+
     /// A valid ASC neighbour must never conceal unsupported classic evidence
     /// inside the ASC evidence tree. Mutants are disposable test data only.
     @Test(arguments: ["original", "sha1-only", "size-only", "future-version", "truncated", "traversal"])
@@ -153,6 +175,28 @@ struct ClassicMHLCompatibilityTests {
         let media = root.appendingPathComponent(variant)
         try FileManager.default.copyItem(at: bundled, to: media)
         return (root, media)
+    }
+
+    @Test func offloaderInventoryIncludesEmptyAndUnicodeFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-offloader-corpus-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let bundled = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/EvidenceCompatibility/classic-offloader/media")
+        let media = root.appendingPathComponent("media")
+        try FileManager.default.copyItem(at: bundled, to: media)
+        let before = try snapshot(root)
+        let discovery = try await checker.discover(under: media)
+        #expect(discovery.expectedFiles.count == 2)
+        let intact = try await checker.check(discovery) { _ in }
+        #expect(intact.isIntact)
+        #expect(Set(intact.matchingPaths) == ["empty.mov", "café clip.txt"])
+        #expect(try snapshot(root) == before)
+
+        try Data("changed".utf8).write(to: media.appendingPathComponent("empty.mov"))
+        let changed = try await checker.discover(under: media)
+        let result = try await checker.check(changed) { _ in }
+        #expect(!result.isIntact)
     }
 
     private func singleAlgorithmDigests(variant: String) -> (algorithm: SavedChecksumCheck.Algorithm, values: [String: String]) {
