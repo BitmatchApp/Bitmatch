@@ -17,6 +17,10 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
         guard url.isFileURL, !Task.isCancelled else { return nil }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        // A mount or BSD name does not identify the physical stores behind a
+        // network share. Missing locality is also insufficient evidence.
+        let locality = try? url.resourceValues(forKeys: [.volumeIsLocalKey]).volumeIsLocal
+        guard locality == true else { return nil }
         guard let session = DASessionCreate(kCFAllocatorDefault),
               let disk = SelectedVolumeDiskResolver.disk(
                 for: url,
@@ -30,6 +34,9 @@ public struct SystemPhysicalDiskIdentityProvider: PhysicalDiskIdentityProviding 
               let bsdName = description[kDADiskDescriptionMediaBSDNameKey as String] as? String else {
             return nil
         }
+        // Fallback is the whole-disk BSD name only. It groups volumes that
+        // share a resolved disk, but it does not prove that disk is a single
+        // physical device (composite/RAID storage can present as one disk).
         return physicalStoreIdentity(startingAt: bsdName) ?? Self.wholeDiskName(bsdName)
 #else
         return nil
@@ -81,10 +88,16 @@ public struct BackupIndependenceAssessment: Equatable, Sendable {
     /// Current product-policy count. Unresolved destinations each count once;
     /// this is not proof that they live on separate physical devices.
     public let independentCopyCount: Int
-    /// Proven-independent count for safety gates: only destinations whose
-    /// physical identity resolved into distinct groups. Unresolved identity
-    /// is an evidence gap and must never satisfy a required copy count.
-    public var provenIndependentCopyCount: Int { resolvedIdentityGroupCount }
+    /// Distinct resolved identity groups, used by current safety gates.
+    /// Unresolved identity must not satisfy a required copy count. This is
+    /// a count of resolved groups, not proof of physical independence: a
+    /// resolved whole-disk identifier can name composite or RAID storage
+    /// hiding several physical devices, so no caller may present this
+    /// number as a count of physically independent backups.
+    public var resolvedIdentityCopyCount: Int { resolvedIdentityGroupCount }
+    @available(*, deprecated, renamed: "resolvedIdentityCopyCount",
+               message: "Resolved identity groups are not proven physical independence.")
+    public var provenIndependentCopyCount: Int { resolvedIdentityCopyCount }
     public let warnings: [String]
 
     /// A quiet setup note, separate from warnings and the safety verdict.

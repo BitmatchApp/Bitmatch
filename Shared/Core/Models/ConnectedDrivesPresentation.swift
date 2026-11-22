@@ -7,8 +7,8 @@ nonisolated enum ConnectedDrivesPresentation {
     struct Volume: Equatable, Sendable {
         let name: String
         let url: URL
-        let totalBytes: Int64
-        let freeBytes: Int64
+        let totalBytes: Int64?
+        let freeBytes: Int64?
         var isRemovable: Bool
         var isInternal: Bool
         var volumeID: String? = nil
@@ -53,12 +53,19 @@ nonisolated enum ConnectedDrivesPresentation {
             let state: State = contains(sourceURL, in: volume.url) ? .isSource
                 : destinationURLs.contains(where: { contains($0, in: volume.url) }) ? .isBackup : .none
             let role: Role = cameraName != nil ? .card : volume.isInternal ? .other : .backup
-            let total = ByteCountPresentation.capacity(max(0, volume.totalBytes))
-            let free = ByteCountPresentation.capacity(max(0, volume.freeBytes))
+            let total = volume.totalBytes.flatMap { $0 >= 0 ? ByteCountPresentation.capacity($0) : nil }
+            let free = volume.freeBytes.flatMap { $0 >= 0 ? ByteCountPresentation.capacity($0) : nil }
+            let capacity: String
+            switch (free, total) {
+            case let (free?, total?): capacity = "\(free) free of \(total)"
+            case let (free?, nil): capacity = "\(free) free"
+            case let (nil, total?): capacity = "Available space unknown · \(total) total"
+            case (nil, nil): capacity = "Capacity unknown"
+            }
             return Row(
                 url: volume.url,
                 displayName: nameCounts[volume.name, default: 0] > 1 ? volume.url.lastPathComponent : volume.name,
-                subtitle: cameraName.map { "\($0) card · \(total)" } ?? "\(free) free of \(total)",
+                subtitle: cameraName.map { "\($0) card · \(total ?? "Capacity unknown")" } ?? capacity,
                 role: role,
                 state: state,
                 volumeID: volume.volumeID
@@ -92,6 +99,12 @@ nonisolated enum ConnectedDrivesPresentation {
 }
 
 enum SetupConnectedMenuPolicy {
+    static func hasPotentialCapacity(_ availableBytes: Int64?, isSelected: Bool) -> Bool {
+        guard !isSelected else { return true }
+        guard let availableBytes, availableBytes >= 0 else { return true }
+        return availableBytes > 0
+    }
+
     static func destinationRows(
         _ rows: [ConnectedDrivesPresentation.Row],
         sourceURL: URL?,
