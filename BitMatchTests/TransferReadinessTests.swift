@@ -38,7 +38,7 @@ struct TransferReadinessTests {
     }
 
     @Test func cloudSourceIssueBlocksAndDiskWarningRemainsVisible() {
-        let warning = "SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"
+        let warning = "SHUTTLE A and SHUTTLE B appear to be on the same drive — they count as one backup"
         let result = assess(
             sourceIssue: "2 files on this source are stored in the cloud, not on this disk. Download them first.",
             destinationWarnings: [warning]

@@ -1071,8 +1071,8 @@ nonisolated enum VolumeAnalysis {
             && FileManager.default.fileExists(atPath: url.appendingPathComponent("BitMatch.app").path)
         var volume = ConnectedDrivesPresentation.Volume(
             name: name, url: canonical,
-            totalBytes: Int64(values.volumeTotalCapacity ?? 0),
-            freeBytes: Int64(values.volumeAvailableCapacity ?? 0),
+            totalBytes: values.volumeTotalCapacity.flatMap { $0 >= 0 ? Int64($0) : nil },
+            freeBytes: values.volumeAvailableCapacity.flatMap { $0 >= 0 ? Int64($0) : nil },
             isRemovable: facts?.isRemovable ?? values.volumeIsRemovable ?? false,
             isInternal: facts?.isInternal ?? values.volumeIsInternal ?? false,
             volumeID: values.volumeUUIDString,

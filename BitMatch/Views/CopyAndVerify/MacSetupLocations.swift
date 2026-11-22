@@ -99,9 +99,10 @@ struct MacSetupLocations: View {
 
     private var connectedDestinationChoices: [SetupConnectedVolume] {
         let usableURLs = Set(volumeMonitor.connectedVolumes.filter { volume in
-            volume.cameraName == nil && (volume.freeBytes > 0 || coordinator.destinationURLs.contains {
-                $0.standardizedFileURL.path == volume.url.standardizedFileURL.path
-            })
+            volume.cameraName == nil && SetupConnectedMenuPolicy.hasPotentialCapacity(
+                volume.freeBytes,
+                isSelected: SetupConnectedMenuPolicy.isSelected(volume: volume.url, destinationURLs: coordinator.destinationURLs)
+            )
         }.map(\.url))
         return SetupConnectedMenuPolicy.destinationRows(
             connectedRows,

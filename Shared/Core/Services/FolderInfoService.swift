@@ -38,6 +38,14 @@ final class FolderInfoService: ObservableObject {
     private let scanNamespace = UUID().uuidString
     private let destinationModificationDate: @Sendable (URL) -> Date?
 
+    /// A blocking job keeps its own security scope until it returns: the
+    /// caller's scope can end as soon as the caller is cancelled.
+    nonisolated private static func withScope<T>(_ url: URL, _ body: () throws -> T) rethrows -> T {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return try body()
+    }
+
     init(destinationModificationDate: @escaping @Sendable (URL) -> Date? = {
         try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate
     }) {
@@ -77,7 +85,7 @@ final class FolderInfoService: ObservableObject {
                 let result = try await self.scanWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".source"
                 ) { check in
-                    try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check)
+                    try Self.withScope(url) { try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check) }
                 }
                 fullResult = .success(result)
             } catch {
@@ -117,12 +125,12 @@ final class FolderInfoService: ObservableObject {
             do {
                 let fastInfo = try await self.scanWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".left"
-                ) { check in try Self.scanFastFolderInfo(for: url, checkCancellation: check) }
+                ) { check in try Self.withScope(url) { try Self.scanFastFolderInfo(for: url, checkCancellation: check) } }
                 guard generation == self.leftGeneration, self.leftURL == url, !Task.isCancelled else { return }
                 self.leftFolderInfo = fastInfo
                 let fullInfo = try await self.scanWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".left"
-                ) { check in try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check).0 }
+                ) { check in try Self.withScope(url) { try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check).0 } }
                 guard generation == self.leftGeneration, self.leftURL == url, !Task.isCancelled else { return }
                 self.leftFolderInfo = fullInfo
             } catch {
@@ -152,12 +160,12 @@ final class FolderInfoService: ObservableObject {
             do {
                 let fastInfo = try await self.scanWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".right"
-                ) { check in try Self.scanFastFolderInfo(for: url, checkCancellation: check) }
+                ) { check in try Self.withScope(url) { try Self.scanFastFolderInfo(for: url, checkCancellation: check) } }
                 guard generation == self.rightGeneration, self.rightURL == url, !Task.isCancelled else { return }
                 self.rightFolderInfo = fastInfo
                 let fullInfo = try await self.scanWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: url)], jobKey: self.scanNamespace + ".right"
-                ) { check in try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check).0 }
+                ) { check in try Self.withScope(url) { try Self.scanEnhancedFolderInfo(for: url, checkCancellation: check).0 } }
                 guard generation == self.rightGeneration, self.rightURL == url, !Task.isCancelled else { return }
                 self.rightFolderInfo = fullInfo
             } catch {

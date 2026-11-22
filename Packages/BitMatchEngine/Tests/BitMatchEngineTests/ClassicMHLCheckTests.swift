@@ -249,7 +249,7 @@ struct ClassicMHLCheckTests {
         let detachedDirectory = fixture.root.appendingPathComponent("detached-camera")
         let reads = ClassicReadLog()
         let replacementChecker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
-            classicChunkRead: { _, count in
+            inventoryChunkRead: { _, count in
                 if await reads.append(count) {
                     try FileManager.default.moveItem(at: originalDirectory, to: detachedDirectory)
                     try FileManager.default.createDirectory(at: originalDirectory, withIntermediateDirectories: false)
@@ -274,7 +274,7 @@ struct ClassicMHLCheckTests {
         try bytes.write(to: replacement)
         let reads = ClassicReadLog()
         let replacementChecker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
-            classicChunkRead: { url, count in
+            inventoryChunkRead: { url, count in
                 if await reads.append(count) {
                     try FileManager.default.removeItem(at: url)
                     try FileManager.default.moveItem(at: replacement, to: url)
@@ -296,7 +296,7 @@ struct ClassicMHLCheckTests {
         let before = try fixture.snapshot()
         let reads = ClassicReadLog()
         let cancelling = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
-            classicChunkRead: { _, count in
+            inventoryChunkRead: { _, count in
                 if await reads.append(count) { withUnsafeCurrentTask { $0?.cancel() } }
             })
         let discovery = try await cancelling.discover(under: fixture.media)
@@ -318,7 +318,7 @@ struct ClassicMHLCheckTests {
         defer { fixture.remove() }
         let reads = ClassicReadLog()
         let cancellationChecker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
-            classicChunkRead: { _, count in _ = await reads.append(count) })
+            inventoryChunkRead: { _, count in _ = await reads.append(count) })
         let discovery = try await cancellationChecker.discover(under: fixture.media)
         let before = try fixture.snapshot()
         let worker = Task {
@@ -343,7 +343,7 @@ struct ClassicMHLCheckTests {
         try bytes.write(to: outside)
         let reads = ClassicReadLog()
         let checked = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
-            classicChunkRead: { _, count in _ = await reads.append(count) })
+            inventoryChunkRead: { _, count in _ = await reads.append(count) })
         let discovery = try await checked.discover(under: fixture.media)
         await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
             _ = try await checked.check(discovery) { progress in
