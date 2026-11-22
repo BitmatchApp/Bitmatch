@@ -28,6 +28,13 @@ final class UserDefaultsPhotographerJobStore: PhotographerJobStore {
 
     func save(_ job: PhotographerJob) throws { try upsert(job, key: Key.jobs, values: jobs()) }
     func save(_ preset: PhotographerPreset) throws { try upsert(preset, key: Key.presets, values: presets()) }
+
+    func addPresetsAtomically(_ additions: [PhotographerPreset]) throws {
+        let existing = try presets()
+        let ids = existing.map(\.id) + additions.map(\.id)
+        guard Set(ids).count == ids.count else { throw PortableRecipeImportError.duplicateID }
+        try write(existing + additions, key: Key.presets)
+    }
     func save(_ profile: RemoteDestinationProfile) throws { try upsert(profile, key: Key.profiles, values: profiles()) }
     func save(_ manifest: RemoteManifest) throws { try upsert(manifest, key: Key.manifests, values: manifests()) }
     func save(_ item: RemoteQueueItem) throws { try upsert(item, key: Key.queueItems, values: queueItems()) }

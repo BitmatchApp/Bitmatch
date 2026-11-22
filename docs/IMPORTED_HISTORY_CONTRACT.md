@@ -1,0 +1,13 @@
+# Imported History: proposed contract
+
+Status: design only. Opening History does not currently import connected-drive reports.
+
+The operator explicitly selects an authorized destination and starts a bounded search. Reuse the existing report reader only after auditing its traversal, file-size, cancellation, and parser limits for this use. A large or stalled drive must not block History, monopolize Swift's cooperative executor, or trigger an unrestricted scan of a network share. Record limits and offer a narrower selected folder when a bound is reached; do not silently present partial coverage as a complete catalog.
+
+Read candidates through pinned descriptors without following unsafe links, enforce byte and record limits before decoding, and detect replacement or mutation during the read. Malformed, incomplete, unsupported, or contradictory evidence stays untrusted. Retain enough provenance to identify the selected destination, source report, content digest, format version, and import time without granting the report authority to access its recorded paths.
+
+Keep imported records separate from locally executed attempts. Deduplicate only when the attempt identity and compatible evidence agree; the same ID with different content is a conflict to surface, not a reason to overwrite either record. Importing a copy of an existing record must be idempotent. Never create a new live-verification result, automatically restore permissions or destinations, or use imported status alone to establish current availability, physical independence, or a safe-to-erase verdict. Present recorded status and time as historical evidence, with a separate Check action for fresh verification.
+
+Persist imports transactionally and in bounded pages or an archive that preserves IDs, source provenance, conflicts, and original evidence. On disconnect or cancellation, retain only fully committed imports; a restart must not expose partially decoded or duplicate attempts as complete. Reconnect uses fresh permissions and identities. Search and UI loading must remain bounded and responsive for many reports and result rows.
+
+Before enabling the feature, cover large trees, symlink escapes, malformed and oversized files, changed files, duplicate and conflicting IDs, concurrent writers, selected-folder replacement, disconnect/reconnect, cancellation, failed persistence, and restart at each commit boundary. Exercise network and file-provider behavior, narrow screens, and real device permissions separately from synthetic tests. Preserve local History and avoid background scanning whenever the view opens.

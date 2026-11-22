@@ -9,6 +9,36 @@ import BitMatchEngine
 
 @MainActor
 struct PortableTransferSettingsIOSTests {
+    @Test func mobileImportsRecipeWithoutPrivatePresetNameOrSelectingIt() throws {
+        let sourceName = "BitMatch-iPadTests.Recipes.Source.\(UUID())"
+        let targetName = "BitMatch-iPadTests.Recipes.Target.\(UUID())"
+        let sourceDefaults = try #require(UserDefaults(suiteName: sourceName))
+        let targetDefaults = try #require(UserDefaults(suiteName: targetName))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("mobile-recipes-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer {
+            sourceDefaults.removePersistentDomain(forName: sourceName)
+            targetDefaults.removePersistentDomain(forName: targetName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        func coordinator(_ defaults: UserDefaults) -> SharedAppCoordinator {
+            SharedAppCoordinator(platformManager: IOSPlatformManager.shared,
+                transferJournal: LocalTransferJournal(fileURL: root.appendingPathComponent("journal-\(UUID()).json")),
+                projectStore: UserDefaultsPhotographerJobStore(defaults: defaults), defaults: defaults)
+        }
+        let source = coordinator(sourceDefaults)
+        let target = coordinator(targetDefaults)
+        source.photographerJobViewModel.saveDraftAsPreset(name: "PRIVATE_PROJECT_NAME")
+        let bytes = try source.portableTransferSettingsForExport().encoded()
+        #expect(!String(decoding: bytes, as: UTF8.self).contains("PRIVATE_PROJECT_NAME"))
+        let draft = target.photographerJobViewModel.draftRecipe
+        let importer = TransferSettingsImportModel()
+        try importer.preview(bytes, coordinator: target)
+        try importer.apply(to: target)
+        #expect(target.photographerJobViewModel.draftRecipe == draft)
+        #expect(coordinator(targetDefaults).photographerJobViewModel.presets.map(\.name) == ["Imported recipe 1"])
+    }
+
     @Test func mobileSettingsRoundTripPreviewCancelApplyAndPersistence() throws {
         let name = "BitMatch-iPadTests.PortableSettings.\(UUID())"
         let defaults = try #require(UserDefaults(suiteName: name))
@@ -49,7 +79,7 @@ struct PortableTransferSettingsIOSTests {
     @Test func mobileDecoderRejectsUnsupportedAndOversizedFiles() throws {
         let valid = try mobileSettingsProposal().encoded()
         var object = try #require(JSONSerialization.jsonObject(with: valid) as? [String: Any])
-        object["schemaVersion"] = 2
+        object["schemaVersion"] = 3
         #expect(throws: TransferSettingsImportError.unsupportedVersion) {
             _ = try PortableTransferSettings.decode(JSONSerialization.data(withJSONObject: object))
         }

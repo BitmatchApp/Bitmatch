@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Check reads ASC MHL evidence more strictly: every supported digest a record supplies is required, a recorded size is checked, and conflicting values for one file across generations or nested histories are refused as conflicting evidence instead of "latest wins". Unknown structure in a manifest is unsupported evidence, never skipped. Classic MHL from Offloader reads.
+- A verified retry no longer clears an earlier attempt's card fault. Every place that can say "safe to erase" (History rows, CSV, JSON and regenerated PDF exports, the Dock tile, the menu bar, the queue, the eject guard, the finish screen and notifications) sees the whole history. An earlier attempt that failed without a recorded reason counts as unknown, not clean. Rows and reports say when the card changed or could not be read.
+- Filesystem work that can stall on a bad card runs on bounded blocking threads; a stalled card no longer ties up the app, and a transfer's final safety check never waits on an advisory scan.
+- The backup picker keeps drives with unknown capacity; a drive shared by two backups is described as "appear to be on the same drive".
+- Settings can carry folder recipes between Macs; imports add unselected presets and never names or paths. An import interrupted by a quit is finished on the next launch only while every current setting still matches one side of that import; otherwise it is dropped with a visible warning.
+
 - A one-time welcome from the maintainer on first launch, reopenable from Help → Welcome to BitMatch. Help also gains BitMatch on GitHub.
 
 ## [0.2.13] - 2026-11-20

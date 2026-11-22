@@ -1005,6 +1005,68 @@ final class PhotographerJobViewModel: ObservableObject {
         }
     }
 
+    var portableFolderRecipes: [PortableTransferSettings.Recipe] {
+        presets.map { preset in
+            PortableTransferSettings.Recipe(layers: preset.recipe.layers.map {
+                .init(kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+        }
+    }
+
+    func validatedPortableFolderRecipes() throws -> [PortableTransferSettings.Recipe] {
+        let stored = try store.presets().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let recipes = stored.map { preset in
+            PortableTransferSettings.Recipe(layers: preset.recipe.layers.map {
+                .init(kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+        }
+        guard samePortableRecipes(recipes, portableFolderRecipes) else { throw TransferSettingsImportError.settingsChanged }
+        return portableFolderRecipes
+    }
+
+    func importPortableFolderRecipes(_ recipes: [PortableTransferSettings.Recipe]) throws {
+        guard recipes.count <= 32, recipes.allSatisfy(\.isValid) else { throw TransferSettingsImportError.invalidFile }
+        let stored = try store.presets().sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+        let storedRecipes = stored.map { preset in
+            PortableTransferSettings.Recipe(layers: preset.recipe.layers.map {
+                .init(kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+        }
+        guard samePortableRecipes(storedRecipes, portableFolderRecipes) else { throw TransferSettingsImportError.settingsChanged }
+        var knownRecipes = storedRecipes
+        var names = Set(stored.map { $0.name.lowercased() })
+        var additions: [PhotographerPreset] = []
+        var ordinal = 1
+        for recipe in recipes where !knownRecipes.contains(recipe) {
+            var name = "Imported recipe \(ordinal)"
+            while names.contains(name.lowercased()) {
+                ordinal += 1
+                name = "Imported recipe \(ordinal)"
+            }
+            ordinal += 1
+            names.insert(name.lowercased())
+            knownRecipes.append(recipe)
+            let id = UUID()
+            let folderRecipe = FolderRecipe(id: id, name: name, layers: recipe.layers.map {
+                FolderLayer(id: UUID(), kind: $0.kind, isEnabled: $0.isEnabled)
+            })
+            additions.append(PhotographerPreset(id: id, name: name, eventType: .wedding,
+                recipe: folderRecipe, requiredLocalCopyCount: 2))
+        }
+        guard !additions.isEmpty else { return }
+        try store.addPresetsAtomically(additions)
+        presets = (stored + additions).sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
+    }
+
+    private func samePortableRecipes(_ lhs: [PortableTransferSettings.Recipe], _ rhs: [PortableTransferSettings.Recipe]) -> Bool {
+        var remaining = rhs
+        for recipe in lhs {
+            guard let index = remaining.firstIndex(of: recipe) else { return false }
+            remaining.remove(at: index)
+        }
+        return remaining.isEmpty
+    }
+
     func selectPreset(id: UUID) {
         if let builtInRecipe = FolderRecipe.builtInRecipe(id: id) {
             draftRecipe = builtInRecipe

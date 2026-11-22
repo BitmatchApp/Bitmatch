@@ -235,6 +235,10 @@ class SharedAppCoordinator: ObservableObject {
     let transferJournal: LocalTransferJournal
     @Published private(set) var queueIsRunning = false
     @Published private(set) var queueMessage: String?
+    /// Set when a portable-settings import could not be finished or its
+    /// pending record could not be read, so the failure is visible in
+    /// Settings instead of silently retrying or discarding on each launch.
+    @Published var pendingTransferSettingsImportWarning: String?
     @Published private(set) var isReplayingQueuedTransfer = false
     @Published private(set) var queueSessionRecordIDs: Set<UUID> = [] {
         didSet { scheduleSourceAvailability() }
@@ -1045,6 +1049,7 @@ class SharedAppCoordinator: ObservableObject {
             .store(in: &cancellables)
         sourceAvailability.objectWillChange.sink { [weak self] _ in self?.objectWillChange.send() }
             .store(in: &cancellables)
+        recoverPendingTransferSettingsImport()
         scheduleSourceAvailability()
         scheduleReadinessAssessment()
         setupProgressPresentation()
