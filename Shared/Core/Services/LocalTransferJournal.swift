@@ -368,9 +368,9 @@ final class LocalTransferJournal: ObservableObject {
         try store.recordPlan(id: id, fileCounts: fileCounts, selectedSourceBytes: selectedSourceBytes)
     }
 
-    func fail(id: UUID, summary: String) throws {
+    func fail(id: UUID, summary: String, reason: ResultFailureReason? = nil) throws {
         defer { refresh() }
-        try store.fail(id: id, summary: summary)
+        try store.fail(id: id, summary: summary, reason: reason)
     }
 
     func removeQueued(id: UUID) throws {

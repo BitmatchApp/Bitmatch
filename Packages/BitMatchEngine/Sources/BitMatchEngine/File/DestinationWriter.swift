@@ -1103,7 +1103,15 @@ public final class DestinationWriter {
         spaceExhausted: SpacePauseTracker
     ) async throws {
         let fm = FileManager.default
-        let sourceAttributes = try fm.attributesOfItem(atPath: source.path)
+        let sourceAttributes: [FileAttributeKey: Any]
+        do {
+            sourceAttributes = try fm.attributesOfItem(atPath: source.path)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // The card could not even describe the file: a source read failure.
+            throw sourceReadError(error)
+        }
         let sourceSize = (sourceAttributes[.size] as? NSNumber)?.int64Value ?? 0
         let sourceModificationDate = sourceAttributes[.modificationDate] as? Date
         let sourceIdentity = fileIdentity(from: sourceAttributes)
@@ -1288,13 +1296,13 @@ public final class DestinationWriter {
                 do {
                     finalSourceAttributes = try fm.attributesOfItem(atPath: source.path)
                 } catch {
-                    if !(error is CancellationError) {
-                        recordSourceStabilityFailure(.copyPathChanged,
-                                                     sourceIdentityPresent: true,
-                                                     currentSourceIdentityPresent: false,
-                                                     lookupError: error)
-                    }
-                    throw error
+                    if error is CancellationError { throw CancellationError() }
+                    recordSourceStabilityFailure(.copyPathChanged,
+                                                 sourceIdentityPresent: true,
+                                                 currentSourceIdentityPresent: false,
+                                                 lookupError: error)
+                    // The source vanished or changed under the copy.
+                    throw sourceInstabilityError(error)
                 }
                 var finalSourceStat = stat()
                 guard bytesRead == sourceSize else {

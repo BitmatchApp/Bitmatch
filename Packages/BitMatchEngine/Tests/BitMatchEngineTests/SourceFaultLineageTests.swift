@@ -154,4 +154,38 @@ struct SourceFaultLineageTests {
         records.append(try record(retryOf: records.last!.id, rows: [successRow()]))
         #expect(SourceFaultLineage.assess(for: records.last!, in: records) == .lineageIncomplete([]))
     }
+
+    /// The card failed during the final check, after every file had been
+    /// published as verified. The interrupted record carries only
+    /// successful rows and no reason, so it must read as unknown.
+    @Test(arguments: [LocalTransferState.interrupted, .failed])
+    func unfinishedPredecessorWithOnlySuccessfulRowsIsIncomplete(state: LocalTransferState) throws {
+        let first = try record(rows: [successRow()], state: state)
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .lineageIncomplete([]))
+    }
+
+    /// A failed attempt that explains itself with a non-source reason is
+    /// classified: the card read fine, the backup did not.
+    @Test func failedPredecessorWithClassifiedNonSourceReasonIsWalked() throws {
+        let first = try record(rows: [successRow(), faultRow(.outOfSpace)], state: .failed)
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .noFaultObserved)
+    }
+
+    /// A failure explained on the record itself: "not connected" never read
+    /// the card and counts as walked; a record-level source read failure is
+    /// a prior fault.
+    @Test func recordLevelReasonsClassifyRowlessFailures() throws {
+        var notConnected = try record(rows: [], state: .failed)
+        notConnected.failureReason = ResultFailureReason.sourceNotConnected.rawValue
+        let afterNotConnected = try record(retryOf: notConnected.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: afterNotConnected, in: [afterNotConnected, notConnected]) == .noFaultObserved)
+
+        var unreadable = try record(rows: [], state: .failed)
+        unreadable.failureReason = ResultFailureReason.sourceReadFailed.rawValue
+        let afterUnreadable = try record(retryOf: unreadable.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: afterUnreadable, in: [afterUnreadable, unreadable])
+            == .priorFaultFound([.init(attemptID: unreadable.id, reasons: [ResultFailureReason.sourceReadFailed.rawValue])]))
+    }
 }

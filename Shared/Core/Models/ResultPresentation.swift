@@ -405,6 +405,8 @@ extension ResultFailureReason {
         case .companionConflict: return "\(name) keeps its own hidden companion files"
         case .sourceUnstable: return "The card changed or could not be read consistently"
         case .sourceReadFailed: return "The card could not be read"
+        case .sourceNotConnected: return "The card was not connected"
+        case .backupRefused: return "A backup was refused before copying started"
         }
     }
 }
