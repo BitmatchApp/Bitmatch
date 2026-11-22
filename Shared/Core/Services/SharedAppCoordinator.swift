@@ -384,6 +384,7 @@ class SharedAppCoordinator: ObservableObject {
     private var selectedSourceIdentity: LocalTransferResource?
     private var selectedDestinationIdentities: [URL: LocalTransferResource] = [:]
     private let driveAccessWorker: DriveAccessWorker
+    private let queuedSourceScanWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 2, useBlockingThreads: true)
     private let driveJobNamespace = UUID().uuidString
     private let sourceAvailability: SourceAvailabilityModel
     private var selectionGeneration = 0
@@ -836,6 +837,8 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Camera Detection State
     @Published var detectedCamera: CameraCard?
     @Published var cameraDetectionInProgress = false
+    private var cameraDetectionTask: Task<Void, Never>?
+    private var cameraDetectionGeneration = 0
     
     // MARK: - Folder Info State (delegated to FolderInfoService)
     // One per coordinator (the app has one); a shared singleton let parallel
@@ -930,7 +933,7 @@ class SharedAppCoordinator: ObservableObject {
         driveAccessWorker: DriveAccessWorker? = nil
     ) {
         self.platformManager = platformManager
-        let worker = driveAccessWorker ?? DriveAccessWorker()
+        let worker = driveAccessWorker ?? DriveAccessWorker(useBlockingThreads: true)
         self.driveAccessWorker = worker
         self.sourceAvailability = SourceAvailabilityModel(worker: worker, ejectabilityProbe: sourceEjectability)
         self.sourceEjectability = sourceEjectability
@@ -1093,9 +1096,7 @@ class SharedAppCoordinator: ObservableObject {
                 Task { @MainActor [weak self] in
                     await self?.folderInfoService.updateSource(url)
                 }
-                Task { @MainActor [weak self] in
-                    await self?.detectCameraFromSource(url)
-                }
+                self?.startCameraDetection(for: url)
             }
             .store(in: &cancellables)
 
@@ -2199,8 +2200,18 @@ class SharedAppCoordinator: ObservableObject {
             activeProjectCardID = nil
             projectRunCameraSettings = nil
             let queuedSourceURL = access.sourceURL
-            let sourceScan = Task.detached(priority: .userInitiated) {
-                try CardSource.enumerateRegularFiles(base: queuedSourceURL)
+            let scanWorker = queuedSourceScanWorker
+            let scanKey = driveJobNamespace + ".source-scan.\(invocationID)"
+            let sourceScan = Task {
+                try await scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: queuedSourceURL)], jobKey: scanKey
+                ) { check in
+                    // Keep access for as long as the enumeration actually
+                    // runs; the caller's lease can end before it returns.
+                    let scoped = queuedSourceURL.startAccessingSecurityScopedResource()
+                    defer { if scoped { queuedSourceURL.stopAccessingSecurityScopedResource() } }
+                    return try CardSource.enumerateRegularFiles(base: queuedSourceURL, checkCancellation: check)
+                }
             }
             queuedSourceScanTask = sourceScan
             let sourceManifest = try await sourceScan.value
@@ -3225,7 +3236,19 @@ class SharedAppCoordinator: ObservableObject {
     
     /// The camera card iPad shows next to the source. The label itself comes
     /// from `cameraLabels`, the same memory-aware path as the Mac.
-    private func detectCameraFromSource(_ url: URL?) async {
+    /// Only the newest detection may publish. Comparing the URL alone is
+    /// not enough: choosing A, then B, then A again would let the first A
+    /// scan publish over the later one and clear the in-progress flag early.
+    private func startCameraDetection(for url: URL?) {
+        cameraDetectionTask?.cancel()
+        cameraDetectionGeneration += 1
+        let generation = cameraDetectionGeneration
+        cameraDetectionTask = Task { @MainActor [weak self] in
+            await self?.detectCameraFromSource(url, generation: generation)
+        }
+    }
+
+    private func detectCameraFromSource(_ url: URL?, generation: Int) async {
         guard let url else {
             detectedCamera = nil
             cameraDetectionInProgress = false
@@ -3236,8 +3259,7 @@ class SharedAppCoordinator: ObservableObject {
 
         let result = await platformManager.cameraDetection.detectCamera(from: url)
 
-        // A newer source may have been chosen while detection ran.
-        guard sourceURL == url else { return }
+        guard generation == cameraDetectionGeneration, sourceURL == url else { return }
         detectedCamera = result.cameraCard
         cameraDetectionInProgress = false
     }

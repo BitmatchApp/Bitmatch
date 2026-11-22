@@ -632,7 +632,19 @@ public final class TransferPipeline: FileOperationsService, Sendable {
 
         // Step 2: Build one fail-closed source manifest before safety validation.
         SharedLogger.debug("Prep: enumerating source manifest at \(operation.sourceURL.path)", category: .transfer)
-        let completeSourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
+        // Enumeration can block on a stalled card, so it runs on the
+        // engine's transfer executor, not a cooperative thread. Cancelling
+        // this task settles the caller only; the executor keeps its slot
+        // until the enumeration actually returns.
+        // The job takes its own security scope: a cancelled caller runs the
+        // outer defer at once, while this enumeration may still be running.
+        let sourceURL = operation.sourceURL
+        let fileSystem = self.fileSystem
+        let completeSourceManifest = try await BoundedBlockingExecutor.transfer.performCancellable { check in
+            let scoped = fileSystem.startAccessing(url: sourceURL)
+            defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+            return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+        }
         // Validate these captured paths before exclusions or String-keyed maps.
         // A later live scan cannot prove this manifest has unambiguous names.
         try SafetyValidator.validatePortableRelativePaths(completeSourceManifest.map(\.relativePath))
@@ -1269,7 +1281,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Re-read only source metadata. Any path, size, or modification-time
         // change invalidates the whole run, including a file added after the
         // initial manifest was captured.
-        let finalSourceManifest = try CardSource.enumerateRegularFiles(base: operation.sourceURL)
+        let finalSourceManifest = try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
+            let sourceURL = operation.sourceURL
+            let scoped = fileSystem.startAccessing(url: sourceURL)
+            defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+            return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+        }
         if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceManifest) {
             let error = completionGateError(reason)
             for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {

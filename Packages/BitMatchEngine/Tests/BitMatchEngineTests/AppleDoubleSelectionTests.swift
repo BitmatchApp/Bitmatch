@@ -27,6 +27,30 @@ final class AppleDoubleSelectionTests: XCTestCase {
         try container().write(to: root.appendingPathComponent("._clip.bin"))
     }
 
+    func testExplicitCancellationStopsCompanionReview() throws {
+        try seed()
+        let manifest = try CardSource.enumerateRegularFiles(base: root)
+        XCTAssertThrowsError(try AppleDoubleSelection.companions(in: manifest, checkCancellation: {
+            throw CancellationError()
+        })) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+    }
+
+    func testExplicitCancellationStopsMetadataReads() throws {
+        try seed()
+        let handle = try FileHandle(forReadingFrom: root.appendingPathComponent("._clip.bin"))
+        defer { try? handle.close() }
+        let checks = Mutex(0)
+        XCTAssertThrowsError(try AppleDoubleSelection.isMetadataOnlyCompanion(fd: handle.fileDescriptor, size: 42, checkCancellation: {
+            let count = checks.withLock { $0 += 1; return $0 }
+            if count == 2 { throw CancellationError() }
+        })) { error in
+            XCTAssertTrue(error is CancellationError)
+        }
+        XCTAssertEqual(checks.withLock { $0 }, 2)
+    }
+
     // Plant: classify every ._* filename as metadata; the legitimate-file assertions fail.
     func testOnlyRecognizedPairedMetadataIsEligible() throws {
         try seed()
