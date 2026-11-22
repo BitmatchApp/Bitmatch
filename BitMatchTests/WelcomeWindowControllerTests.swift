@@ -18,9 +18,13 @@ struct WelcomeWindowControllerTests {
         }
     }
 
+    /// Each test gets its own center so a simulated quit never reaches the
+    /// app delegate or other observers in the shared test host.
+    private let center = NotificationCenter()
+
     private func makeController(defaults: UserDefaults, openURL: @escaping (URL) -> Void = { _ in }) -> (WelcomeGreeting, WelcomeWindowController) {
         let greeting = WelcomeGreeting(defaults: defaults)
-        return (greeting, WelcomeWindowController(greeting: greeting, openURL: openURL))
+        return (greeting, WelcomeWindowController(greeting: greeting, notificationCenter: center, openURL: openURL))
     }
 
     @Test func showCreatesAPanelThatCannotBecomeMain() throws {
@@ -71,16 +75,29 @@ struct WelcomeWindowControllerTests {
         let box = try DefaultsBox()
         let (greeting, controller) = makeController(defaults: box.defaults)
         controller.show()
-        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        center.post(name: NSApplication.willTerminateNotification, object: NSApp)
         #expect(greeting.hasBeenShown)
         #expect(box.defaults.bool(forKey: WelcomeGreeting.shownKey))
         controller.panel?.close()
     }
 
+    @Test func quittingWithThePanelHiddenStillMarksGreetingShown() throws {
+        // Cmd-H hides every window; the panel is still open, so quitting counts.
+        let box = try DefaultsBox()
+        let (greeting, controller) = makeController(defaults: box.defaults)
+        controller.show()
+        controller.panel?.orderOut(nil)
+        center.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        #expect(greeting.hasBeenShown)
+        controller.panel?.close()
+    }
+
     @Test func quittingWithoutThePanelLeavesGreetingUnseen() throws {
         let box = try DefaultsBox()
-        let (greeting, _) = makeController(defaults: box.defaults)
-        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        let (greeting, controller) = makeController(defaults: box.defaults)
+        withExtendedLifetime(controller) {
+            center.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        }
         #expect(greeting.hasBeenShown == false)
     }
 
