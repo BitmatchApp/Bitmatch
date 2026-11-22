@@ -5,7 +5,7 @@ import BitMatchEngine
 struct CameraNamingService {
     
     // MARK: - Camera Naming Result
-    struct CameraNamingResult {
+    struct CameraNamingResult: Sendable {
         let suggestedName: String
         let cameraDesignation: String
         let confidence: Float // 0.0 - 1.0

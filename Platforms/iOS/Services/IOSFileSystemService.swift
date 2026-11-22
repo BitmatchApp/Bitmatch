@@ -59,15 +59,20 @@ final class IOSFileSystemService: NSObject, FileSystemService, @unchecked Sendab
         let start = CFAbsoluteTimeGetCurrent()
         #endif
 
-        // Acquire a single folder-level security scope
-        guard folderURL.startAccessingSecurityScopedResource() else {
-            throw NSError(domain: "IOSFileSystemService", code: -1, userInfo: [
-                NSLocalizedDescriptionKey: "Cannot access security-scoped folder"
-            ])
-        }
-        defer { folderURL.stopAccessingSecurityScopedResource() }
-
-        let fileURLs = try CardSource.enumerateRegularFiles(base: folderURL).map(\.url)
+        // Enumeration can block on slow external storage; run it on the
+        // engine's bounded blocking executor, not a cooperative thread. The
+        // security scope is taken and released inside the job: a cancelled
+        // caller returns at once while the enumeration may still be running,
+        // and it must keep its access until it actually finishes.
+        let fileURLs = try await BoundedBlockingExecutor.transfer.performCancellable { check in
+            guard folderURL.startAccessingSecurityScopedResource() else {
+                throw NSError(domain: "IOSFileSystemService", code: -1, userInfo: [
+                    NSLocalizedDescriptionKey: "Cannot access security-scoped folder"
+                ])
+            }
+            defer { folderURL.stopAccessingSecurityScopedResource() }
+            return try CardSource.enumerateRegularFiles(base: folderURL, checkCancellation: check)
+        }.map(\.url)
 
         #if DEBUG
         let elapsedMs = Int((CFAbsoluteTimeGetCurrent() - start) * 1000)

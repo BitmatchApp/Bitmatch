@@ -21,7 +21,12 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             }
             // The card layout decides the brand, through the same classifier
             // the Mac auto-detect and the orchestrator use (Promise 5).
-            let layout = CardLayoutClassifier.classify(at: folderURL)
+            // Layout classification and the orchestrator's heuristics do
+            // synchronous filesystem work; keep them off the cooperative
+            // executor on the engine's bounded blocking executor.
+            let layout = try await BoundedBlockingExecutor.shared.perform {
+                CardLayoutClassifier.classify(at: folderURL)
+            }
             let layoutType = layout?.brand != nil ? layout?.cameraType : nil
             // Set when the orchestrator names a known brand. The folder-name
             // and file-extension guesses below may then raise confidence but
@@ -29,7 +34,10 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             // "Professional Camera").
             var brandLocked = false
             // Fast path: use orchestrator’s folder/name heuristics on every platform.
-            if let orchestrated = CameraDetectionOrchestrator.shared.detectCamera(at: folderURL, layout: layout) {
+            let orchestrated = try await BoundedBlockingExecutor.shared.perform {
+                CameraDetectionOrchestrator.shared.detectCamera(at: folderURL, layout: layout)
+            }
+            if let orchestrated {
                 metadata["orchestrator_hint"] = orchestrated
                 // Parse manufacturer/model from the returned string
                 let parts = orchestrated.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
@@ -309,19 +317,19 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
     // MARK: - Private Helper Methods
     
     private func getFileList(from folderURL: URL) async throws -> [URL] {
-        let enumerator = FileManager.default.enumerator(at: folderURL, includingPropertiesForKeys: [.isRegularFileKey])
-        var fileURLs: [URL] = []
-        
-        while let url = enumerator?.nextObject() as? URL {
-            let resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey])
-            if resourceValues.isRegularFile == true {
-                fileURLs.append(url)
+        try await BoundedBlockingExecutor.shared.perform {
+            let enumerator = FileManager.default.enumerator(at: folderURL, includingPropertiesForKeys: [.isRegularFileKey])
+            var fileURLs: [URL] = []
+            while let url = enumerator?.nextObject() as? URL {
+                let resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey])
+                if resourceValues.isRegularFile == true {
+                    fileURLs.append(url)
+                }
             }
+            return fileURLs
         }
-        
-        return fileURLs
     }
-    
+
     private func detectFromFolderName(_ folderName: String) -> (manufacturer: String?, model: String?, confidence: Double) {
         // First, check for common model codes in folder or volume names
         let modelPatterns: [(String, String, Double)] = [

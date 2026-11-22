@@ -19,9 +19,10 @@ enum FolderLayerMoveDirection: Sendable {
 
 @MainActor
 final class PhotographerJobViewModel: ObservableObject {
+    private static let preparationWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
     typealias PreliminaryAnalyzer = @Sendable ([FileEntry]) throws -> CardAnalysis
     typealias ConfirmedAnalyzer = @Sendable ([ResultRow]) throws -> String
-    typealias EntryEnumerator = @Sendable (URL) throws -> [FileEntry]
+    typealias EntryEnumerator = @Sendable (URL, @Sendable () throws -> Void) throws -> [FileEntry]
 
     @Published private(set) var jobs: [PhotographerJob] = []
     @Published private(set) var presets: [PhotographerPreset] = []
@@ -83,13 +84,14 @@ final class PhotographerJobViewModel: ObservableObject {
     private var setupPreparationInvalidated = false
     private var setupTask: Task<Void, Never>?
     private var setupGeneration = UUID()
+    private let preparationWorkerKey = "project-preparation-\(UUID().uuidString)"
 
     init(
         store: any PhotographerJobStore,
         now: @escaping () -> Date = Date.init,
         preliminaryAnalyzer: @escaping PreliminaryAnalyzer = { try PhotographerCardAnalyzer.preliminaryAnalysis(entries: $0) },
         confirmedAnalyzer: @escaping ConfirmedAnalyzer = { try PhotographerCardAnalyzer.confirmedFingerprint(results: $0) },
-        entryEnumerator: @escaping EntryEnumerator = { try CardSource.enumerateRegularFiles(base: $0) },
+        entryEnumerator: @escaping EntryEnumerator = { url, check in try CardSource.enumerateRegularFiles(base: url, checkCancellation: check) },
         remoteBackupCoordinator: (any ProjectRemoteCoordinator)? = nil,
         workflowDefaults: UserDefaults = .standard
     ) {
@@ -328,22 +330,24 @@ final class PhotographerJobViewModel: ObservableObject {
         currentSetupSignature = setupSignature
         let enumerator = entryEnumerator
         let analyzer = preliminaryAnalyzer
+        let workerKey = preparationWorkerKey
         let standardizedSource = sourceURL.standardizedFileURL
         currentSourcePath = standardizedPath(standardizedSource)
         setupTask = Task { [weak self] in
-            let worker = Task.detached(priority: .userInitiated) {
-                do {
-                    let entries = try enumerator(standardizedSource)
-                    try Task.checkCancellation()
-                    return Result<CardAnalysis, Error>.success(try analyzer(entries))
-                } catch {
-                    return .failure(error)
+            let result: Result<CardAnalysis, Error>
+            do {
+                let analysis = try await Self.preparationWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: standardizedSource)], jobKey: workerKey
+                ) { check in
+                    let entries = try enumerator(standardizedSource, check)
+                    try check()
+                    let analysis = try analyzer(entries)
+                    try check()
+                    return analysis
                 }
-            }
-            let result = await withTaskCancellationHandler {
-                await worker.value
-            } onCancel: {
-                worker.cancel()
+                result = .success(analysis)
+            } catch {
+                result = .failure(error)
             }
             guard let self, self.setupGeneration == generation else { return }
             self.isPreparing = false

@@ -13,7 +13,7 @@ final class CameraMemoryService: @unchecked Sendable {
     private let memoryKey = "CameraMemory"
     
     // MARK: - Camera Fingerprint Model
-    struct CameraFingerprint: Codable, Equatable {
+    struct CameraFingerprint: Codable, Equatable, Sendable {
         let manufacturer: String
         let model: String
         let serialNumber: String

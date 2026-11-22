@@ -384,6 +384,7 @@ class SharedAppCoordinator: ObservableObject {
     private var selectedSourceIdentity: LocalTransferResource?
     private var selectedDestinationIdentities: [URL: LocalTransferResource] = [:]
     private let driveAccessWorker: DriveAccessWorker
+    private let queuedSourceScanWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 2, useBlockingThreads: true)
     private let driveJobNamespace = UUID().uuidString
     private let sourceAvailability: SourceAvailabilityModel
     private var selectionGeneration = 0
@@ -930,7 +931,7 @@ class SharedAppCoordinator: ObservableObject {
         driveAccessWorker: DriveAccessWorker? = nil
     ) {
         self.platformManager = platformManager
-        let worker = driveAccessWorker ?? DriveAccessWorker()
+        let worker = driveAccessWorker ?? DriveAccessWorker(useBlockingThreads: true)
         self.driveAccessWorker = worker
         self.sourceAvailability = SourceAvailabilityModel(worker: worker, ejectabilityProbe: sourceEjectability)
         self.sourceEjectability = sourceEjectability
@@ -2199,8 +2200,14 @@ class SharedAppCoordinator: ObservableObject {
             activeProjectCardID = nil
             projectRunCameraSettings = nil
             let queuedSourceURL = access.sourceURL
-            let sourceScan = Task.detached(priority: .userInitiated) {
-                try CardSource.enumerateRegularFiles(base: queuedSourceURL)
+            let scanWorker = queuedSourceScanWorker
+            let scanKey = driveJobNamespace + ".source-scan.\(invocationID)"
+            let sourceScan = Task {
+                try await scanWorker.performCancellable(
+                    mountKeys: [DriveAccessWorker.mountKey(for: queuedSourceURL)], jobKey: scanKey
+                ) { check in
+                    try CardSource.enumerateRegularFiles(base: queuedSourceURL, checkCancellation: check)
+                }
             }
             queuedSourceScanTask = sourceScan
             let sourceManifest = try await sourceScan.value

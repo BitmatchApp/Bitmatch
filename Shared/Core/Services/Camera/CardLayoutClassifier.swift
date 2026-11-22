@@ -117,7 +117,7 @@ struct CardListing {
 }
 
 /// What a card's layout says about the camera that wrote it.
-struct CardLayoutMatch: Equatable {
+struct CardLayoutMatch: Equatable, Sendable {
     let cameraType: CameraType
     let confidence: DetectionConfidence
     /// The marker that decided it, for logs.
