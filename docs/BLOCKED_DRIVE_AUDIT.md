@@ -1,6 +1,6 @@
 # Blocked-drive audit: current work
 
-Status: incomplete and unvalidated. A filesystem call may remain blocked after its caller cancels. A worker slot and its mount reservation must remain occupied until that call actually returns.
+Status: landed 2026-11-22 with synthetic coverage (held-call executor tests, engine and Mac suites); not measured on real stalled hardware. A filesystem call may remain blocked after its caller cancels. A worker slot and its mount reservation remain occupied until that call actually returns; there is no timeout.
 
 ## Changed paths
 
