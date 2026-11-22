@@ -25,7 +25,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             // synchronous filesystem work; keep them off the cooperative
             // executor on the engine's bounded blocking executor.
             let layout = try await BoundedBlockingExecutor.shared.perform {
-                CardLayoutClassifier.classify(at: folderURL)
+                Self.withScope(folderURL) { CardLayoutClassifier.classify(at: folderURL) }
             }
             let layoutType = layout?.brand != nil ? layout?.cameraType : nil
             // Set when the orchestrator names a known brand. The folder-name
@@ -35,7 +35,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             var brandLocked = false
             // Fast path: use orchestrator’s folder/name heuristics on every platform.
             let orchestrated = try await BoundedBlockingExecutor.shared.perform {
-                CameraDetectionOrchestrator.shared.detectCamera(at: folderURL, layout: layout)
+                Self.withScope(folderURL) { CameraDetectionOrchestrator.shared.detectCamera(at: folderURL, layout: layout) }
             }
             if let orchestrated {
                 metadata["orchestrator_hint"] = orchestrated
@@ -233,7 +233,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
         // Whole-tree walk on a card: blocking work, cancellable between entries.
         let counted: (files: Int, folders: Int, extensions: Set<String>) =
             try await BoundedBlockingExecutor.shared.performCancellable { check in
-                try Self.countTree(at: url, checkCancellation: check)
+                try Self.withScope(url) { try Self.countTree(at: url, checkCancellation: check) }
             }
         var structure: [String: Any] = [:]
         structure["total_files"] = counted.files
@@ -329,6 +329,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
     
     private func getFileList(from folderURL: URL) async throws -> [URL] {
         try await BoundedBlockingExecutor.shared.performCancellable { check in
+            try Self.withScope(folderURL) {
             let enumerator = FileManager.default.enumerator(at: folderURL, includingPropertiesForKeys: [.isRegularFileKey])
             var fileURLs: [URL] = []
             while let url = enumerator?.nextObject() as? URL {
@@ -339,7 +340,17 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                 }
             }
             return fileURLs
+            }
         }
+    }
+
+    /// Every executor job keeps its own security scope on the source until
+    /// it returns: nothing else holds one for a document-picker URL, and the
+    /// caller may have been cancelled long before the job finishes.
+    nonisolated private static func withScope<T>(_ url: URL, _ body: () throws -> T) rethrows -> T {
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        return try body()
     }
 
     private func detectFromFolderName(_ folderName: String) -> (manufacturer: String?, model: String?, confidence: Double) {
@@ -441,7 +452,9 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             var total: Int64 = 0
             for url in fileURLs {
                 try check()
-                total += (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+                total += Self.withScope(url) {
+                    (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+                }
             }
             return total
         }
