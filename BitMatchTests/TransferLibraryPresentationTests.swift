@@ -58,7 +58,7 @@ struct TransferLibraryPresentationTests {
     /// Plant: in `TransferLibraryPresentation.stateLabel`, change the
     /// `.interrupted` label's `tone: .warning` to `tone: .verified`.
     @Test func interruptedIsNotGreen() {
-        let label = TransferLibraryPresentation.stateLabel(for: PresentationTestSupport.record(state: .interrupted))
+        let label = TransferLibraryPresentation.stateLabel(for: PresentationTestSupport.record(state: .interrupted), in: [PresentationTestSupport.record(state: .interrupted)])
         #expect(label.tint != .green)
         #expect(label.tint == .amber)
     }

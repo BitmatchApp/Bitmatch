@@ -240,10 +240,10 @@ struct QueueSessionPresentationTests {
         #expect(QueueDockBadgePolicy.totalUnresolvedCount(
             rows: queue.rows, reviewedIDs: [], standaloneAttentionIDs: [UUID()]) == 1)
         #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Selected files verified")),
-            record: record, fraction: 1) == .appIcon)
+            record: record, history: [record].compactMap { $0 }, fraction: 1) == .appIcon)
         #expect(DockTileState.makeTransfer(state: .copying, record: record, history: [record].compactMap { $0 }, fraction: 0.4) == .running(percent: 40))
         #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
-            record: nil, fraction: 1) == .needsReview)
+            record: nil, history: [nil].compactMap { $0 }, fraction: 1) == .needsReview)
         #expect(outcome.destinations.count == 1)
         #expect(outcome.destinations.first?.needsAttention == false)
         #expect(outcome.destinations.first?.detail == "Checksums matched for 1 of 1 files")
@@ -304,7 +304,7 @@ struct QueueSessionPresentationTests {
         handoffFailure.summary = "ASC MHL could not be saved"
         let quick = try fixture.metadataExclusionRecord(mode: .quick)
         #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Copied")),
-            record: quick, fraction: 1) == .needsReview)
+            record: quick, history: [quick].compactMap { $0 }, fraction: 1) == .needsReview)
         for record in [missingProof, missingPlan, missingFingerprint, mismatchedProject, missingRow, duplicate, failed, unverified,
                        noDigest, emptyDigest, cancelled, interrupted, handoffFailure, quick] {
             #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
@@ -323,7 +323,7 @@ struct QueueSessionPresentationTests {
             #expect(QueueDockBadgePolicy.totalUnresolvedCount(
                 rows: [row], reviewedIDs: [], standaloneAttentionIDs: []) == 1)
             #expect(DockTileState.makeTransfer(state: .completed(.init(success: false, message: "Review")),
-                record: record, fraction: 1) == .needsReview)
+                record: record, history: [record].compactMap { $0 }, fraction: 1) == .needsReview)
         }
         for state in [LocalTransferState.queued, .running, .failed] {
             var record = original
