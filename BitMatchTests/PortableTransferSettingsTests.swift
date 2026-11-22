@@ -394,6 +394,35 @@ struct PortableTransferSettingsTests {
         #expect(fixture.defaults.data(forKey: SharedAppCoordinator.pendingTransferSettingsImportKey) == nil)
     }
 
+    /// Termination after the recipe presets were saved but before any
+    /// preference changed: the next launch finishes the preferences and
+    /// does not add the presets a second time.
+    @Test func recoveryAfterPersistedRecipesAppliesPreferencesWithoutDuplicatingPresets() throws {
+        let source = try Fixture()
+        let target = try Fixture()
+        source.coordinator.photographerJobViewModel.saveDraftAsPreset(name: "Source recipe")
+        var proposed = try source.coordinator.portableTransferSettingsForExport()
+        proposed = PortableTransferSettings(verificationMode: .quick, generateASCMHL: proposed.generateASCMHL,
+            ignoreAppleDouble: proposed.ignoreAppleDouble, reports: proposed.reports, naming: proposed.naming,
+            folderRecipes: proposed.folderRecipes)
+        let original = try target.coordinator.portableTransferSettingsForExport()
+        #expect(original.verificationMode != .quick)
+        // The record was written, the presets were committed, then the app died.
+        target.defaults.set(try SharedAppCoordinator.pendingTransferSettingsImportRecord(
+            current: original, proposed: proposed, recordedAt: Date()),
+            forKey: SharedAppCoordinator.pendingTransferSettingsImportKey)
+        try target.coordinator.photographerJobViewModel.importPortableFolderRecipes(try #require(proposed.folderRecipes))
+        #expect(target.projectStore.storedPresets.count == 1)
+        let relaunched = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: RecordingFileOperations()),
+            transferJournal: LocalTransferJournal(fileURL: target.folders.root.appendingPathComponent("relaunch.json")),
+            projectStore: target.projectStore, defaults: target.defaults)
+        #expect(relaunched.verificationMode == .quick)
+        #expect(relaunched.pendingTransferSettingsImportWarning == nil)
+        #expect(target.projectStore.storedPresets.count == 1)
+        #expect(target.defaults.data(forKey: SharedAppCoordinator.pendingTransferSettingsImportKey) == nil)
+    }
+
     @Test func expiredPendingRecordIsDiscardedWithWarning() throws {
         let fixture = try Fixture()
         let original = fixture.coordinator.portableTransferSettings

@@ -8,9 +8,11 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
     static let schemaVersion = 2
 
     /// True when every preference equals either the value an interrupted
-    /// import started from or the value it meant to set: the settings may
-    /// be partly applied, but nothing was changed by hand since. Folder
-    /// recipes are not compared; an import only ever adds presets.
+    /// import started from or the value it meant to set. This compares
+    /// states, not history: a preference changed away and back cannot be
+    /// told from one never touched, but the value is then still one the
+    /// person approved. Folder recipes are not compared; an import only
+    /// ever adds presets.
     func liesBetween(_ from: PortableTransferSettings, and to: PortableTransferSettings) -> Bool {
         func between<T: Equatable>(_ value: T, _ a: T, _ b: T) -> Bool { value == a || value == b }
         return between(verificationMode, from.verificationMode, to.verificationMode)
