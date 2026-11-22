@@ -178,6 +178,45 @@ struct ASCMHLCompatibilityMatrixTests {
         }
     }
 
+    @Test func unknownLeavesUnderDirectoryHashContentAreUnsupported() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        let odd = manifest().replacingOccurrences(
+            of: "</hashes>",
+            with: "<directoryhash><path>.</path><content><unknown/></content></directoryhash></hashes>")
+        try write(Data(odd.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
+    @Test func wrongNamespaceDigestLeafUnderDirectoryHashIsUnsupported() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        let odd = manifest().replacingOccurrences(
+            of: "</hashes>",
+            with: "<directoryhash><path>.</path><structure><md5 xmlns=\"urn:other\">\(md5("A"))</md5></structure></directoryhash></hashes>")
+        try write(Data(odd.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
+    /// The official shape of a directory record must keep reading.
+    @Test func wellFormedDirectoryHashIsAccepted() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        let withDirectory = manifest().replacingOccurrences(
+            of: "</hashes>",
+            with: "<directoryhash><path>.</path><content><md5 hashdate=\"2026-10-01T00:00:00Z\">\(md5("A"))</md5></content>"
+                + "<structure><xxh64 hashdate=\"2026-10-01T00:00:00Z\">0000000000000000</xxh64></structure></directoryhash></hashes>")
+        try write(Data(withDirectory.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        #expect(try await run(root).isIntact)
+    }
+
     /// The depth guard itself, exercised inside a subtree the parser
     /// otherwise accepts (file metadata may nest).
     @Test func deepNestingInsideMetadataIsRejected() async throws {

@@ -812,6 +812,10 @@ public struct SavedChecksumCheck: Sendable {
             parser.abortParsing()
         }
 
+        private static let directoryDigestNames: Set<String> = [
+            "md5", "sha1", "sha256", "sha-256", "xxh64", "xxhash64", "xxh128", "xxh3", "c4",
+        ]
+
         /// Set by structure the parser does not understand. Parsing continues
         /// so well-formedness errors still take precedence as "damaged".
         private(set) var unsupportedStructure = false
@@ -851,7 +855,12 @@ public struct SavedChecksumCheck: Sendable {
                 let allowed: Bool
                 switch stack.count {
                 case 4: allowed = ["path", "content", "structure"].contains(name)
-                case 5: allowed = ["content", "structure"].contains(stack[3])
+                case 5:
+                    // Only digest leaves, in the ASC namespace, live under
+                    // content and structure.
+                    allowed = ["content", "structure"].contains(stack[3])
+                        && Self.directoryDigestNames.contains(name)
+                        && namespaceURI == namespace
                 default: allowed = false
                 }
                 if !allowed { unsupportedStructure = true; return }
