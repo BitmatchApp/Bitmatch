@@ -763,6 +763,9 @@ public struct SavedChecksumCheck: Sendable {
         try Task.checkCancellation()
         if let failure = delegate.failure { throw failure }
         guard parsed else { throw CheckError.unreadableEvidence }
+        // Unknown structure is noted without stopping the parse, so a file
+        // that is also damaged still reports as damaged.
+        if delegate.unsupportedStructure { throw CheckError.unsupportedEvidence }
         let fallbackDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
         let record = Record(url: url, date: delegate.creationDate ?? fallbackDate, kind: .ascMHL, generation: generation)
         // ASC paths belong to the folder containing ascmhl/, not whichever
@@ -809,6 +812,10 @@ public struct SavedChecksumCheck: Sendable {
             parser.abortParsing()
         }
 
+        /// Set by structure the parser does not understand. Parsing continues
+        /// so well-formedness errors still take precedence as "damaged".
+        private(set) var unsupportedStructure = false
+
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
             if Task.isCancelled { parser.abortParsing(); return }
             let name = elementName.lowercased()
@@ -830,10 +837,24 @@ public struct SavedChecksumCheck: Sendable {
             // Nothing legitimate nests this deep; a crafted file must not
             // make the parser walk thousands of levels.
             guard stack.count <= 16 else { reject(parser, .unreadableEvidence); return }
-            // The spec puts file records and directory records here; anything
-            // else is a format BitMatch does not know how to check.
+            // Every structural context has an allowlist. Unknown structure is
+            // unsupported evidence, never skipped: a record hidden inside an
+            // element the parser does not understand must not leave the rest
+            // of the manifest looking intact.
+            if stack.count == 2, !["creatorinfo", "processinfo", "hashes"].contains(name) {
+                unsupportedStructure = true; return
+            }
             if stack.count == 3, stack[1] == "hashes", name != "hash", name != "directoryhash" {
-                reject(parser, .unsupportedEvidence); return
+                unsupportedStructure = true; return
+            }
+            if stack.count >= 4, stack[2] == "directoryhash" {
+                let allowed: Bool
+                switch stack.count {
+                case 4: allowed = ["path", "content", "structure"].contains(name)
+                case 5: allowed = ["content", "structure"].contains(stack[3])
+                default: allowed = false
+                }
+                if !allowed { unsupportedStructure = true; return }
             }
             if stack == ["hashlist", "hashes", "hash"] {
                 guard namespaceURI == namespace else { reject(parser, .unsupportedEvidence); return }
@@ -921,21 +942,7 @@ public struct SavedChecksumCheck: Sendable {
             }
             var latest: [String: ExpectedFile] = [:]
             for entry in sorted {
-                if entry.record.kind == .ascMHL,
-                   let previous = latest[entry.relativePath], previous.record.kind == .ascMHL {
-                    // The discovery pass already rejects conflicts within a
-                    // history. Keep algorithms supplied by earlier generations
-                    // so selecting a later record cannot silently drop one.
-                    var digests = entry.requiredDigests
-                    for digest in previous.requiredDigests where !digests.contains(where: { $0.algorithm == digest.algorithm }) {
-                        digests.append(digest)
-                    }
-                    latest[entry.relativePath] = ExpectedFile(relativePath: entry.relativePath,
-                        checksum: entry.checksum, algorithm: entry.algorithm, record: entry.record,
-                        requiredDigests: digests, expectedSize: entry.expectedSize ?? previous.expectedSize)
-                } else {
-                    latest[entry.relativePath] = entry
-                }
+                latest[entry.relativePath] = mergedASCEvidence(entry, over: latest[entry.relativePath])
             }
             selected.append(contentsOf: latest.values)
         }
@@ -944,7 +951,7 @@ public struct SavedChecksumCheck: Sendable {
             return $0.record.url.path < $1.record.url.path
         }
         var expected: [String: ExpectedFile] = [:]
-        for entry in sorted { expected[entry.relativePath] = entry }
+        for entry in sorted { expected[entry.relativePath] = mergedASCEvidence(entry, over: expected[entry.relativePath]) }
         // Every file in a report/history shares its record URL. Collect each
         // contributing record once, after choosing the newest evidence per file.
         var recordsByURL: [URL: Record] = [:]
@@ -954,6 +961,21 @@ public struct SavedChecksumCheck: Sendable {
             return $0.url.path < $1.url.path
         }
         return Discovery(root: root, expectedFiles: expected, records: records, publicationStatuses: publicationStatuses)
+    }
+
+    /// Later ASC evidence for a path keeps every digest and size earlier
+    /// generations or other histories supplied. Discovery already rejected
+    /// conflicting values, so an algorithm the later record lacks is still
+    /// required: date order must never discard a recorded digest.
+    private static func mergedASCEvidence(_ entry: ExpectedFile, over previous: ExpectedFile?) -> ExpectedFile {
+        guard entry.record.kind == .ascMHL, let previous, previous.record.kind == .ascMHL else { return entry }
+        var digests = entry.requiredDigests
+        for digest in previous.requiredDigests where !digests.contains(where: { $0.algorithm == digest.algorithm }) {
+            digests.append(digest)
+        }
+        return ExpectedFile(relativePath: entry.relativePath,
+            checksum: entry.checksum, algorithm: entry.algorithm, record: entry.record,
+            requiredDigests: digests, expectedSize: entry.expectedSize ?? previous.expectedSize)
     }
 
     private static func progress(processed: Int, total: Int, path: String?) -> OperationProgress {

@@ -124,6 +124,76 @@ struct ASCMHLCompatibilityMatrixTests {
         }
     }
 
+    /// A parent history and a nested history may each know a different
+    /// algorithm for the same file. Both digests must be checked; date order
+    /// must never discard one, or a wrong digest can be skipped.
+    @Test func complementaryDigestsAcrossHistoriesAreAllChecked() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "sub/a.txt", root: root)
+        let parent = """
+        <hashlist xmlns="urn:ASC:MHL:v2.0" version="2.0">
+        <creatorinfo><creationdate>2026-10-02T00:00:00Z</creationdate></creatorinfo>
+        <hashes><hash><path>sub/a.txt</path><md5>\(md5("A"))</md5></hash></hashes></hashlist>
+        """
+        let nestedWrong = """
+        <hashlist xmlns="urn:ASC:MHL:v2.0" version="2.0">
+        <creatorinfo><creationdate>2026-10-01T00:00:00Z</creationdate></creatorinfo>
+        <hashes><hash><path>a.txt</path><sha256>\(sha256("B"))</sha256></hash></hashes></hashlist>
+        """
+        try write(Data(parent.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        try write(Data(nestedWrong.utf8), path: "sub/ascmhl/0001_test.mhl", root: root)
+        let result = try await run(root)
+        #expect(!result.isIntact)
+        #expect(result.changedPaths == ["sub/a.txt"])
+    }
+
+    /// Unknown structure anywhere in the document is unsupported evidence.
+    /// A record hidden inside an unknown element must not be skipped while
+    /// the rest of the manifest passes.
+    @Test func unknownRootElementsAreUnsupportedNotIgnored() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        try write(Data("wrong".utf8), path: "b.txt", root: root)
+        let smuggled = manifest().replacingOccurrences(
+            of: "</hashes>",
+            with: "</hashes><extra><hash><path>b.txt</path><md5>\(md5("B"))</md5></hash></extra>")
+        try write(Data(smuggled.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
+    @Test func unknownDirectoryHashChildrenAreUnsupported() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        let odd = manifest().replacingOccurrences(
+            of: "</hashes>",
+            with: "<directoryhash><path>.</path><extra/></directoryhash></hashes>")
+        try write(Data(odd.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unsupportedEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
+    /// The depth guard itself, exercised inside a subtree the parser
+    /// otherwise accepts (file metadata may nest).
+    @Test func deepNestingInsideMetadataIsRejected() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        let depth = 20
+        let nested = "<metadata>" + String(repeating: "<x>", count: depth)
+            + String(repeating: "</x>", count: depth) + "</metadata>"
+        let malformed = manifest().replacingOccurrences(of: "</hash>", with: "\(nested)</hash>")
+        try write(Data(malformed.utf8), path: "ascmhl/0001_test.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.discover(under: root)
+        }
+    }
+
     /// Two histories under one root that disagree about the same file are
     /// conflicting evidence, not "latest wins".
     @Test func conflictingDigestsAcrossHistoriesAreRejected() async throws {
