@@ -206,7 +206,7 @@ struct TransferFinishNoticeTests {
         let (root, record) = try selectedFileRecord()
         defer { try? FileManager.default.removeItem(at: root) }
         #expect(TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
         #expect(notificationKind(record, attention: false) == .standaloneFinish)
         #expect(notificationKind(record, finish: false) == nil)
         #expect(notificationKind(record, queue: true, eachCard: false) == nil)
@@ -216,7 +216,7 @@ struct TransferFinishNoticeTests {
         #expect(notice.title == "A001: selected files verified")
         #expect(!notice.body.localizedCaseInsensitiveContains("excluded"))
         #expect(!notice.title.localizedCaseInsensitiveContains("safe to erase"))
-        #expect(!TransferLibraryPresentation.safetyState(for: record).canEject)
+        #expect(!TransferLibraryPresentation.safetyState(for: record, in: [record]).canEject)
         #expect(record.state == .issues)
         #expect(record.results.count == 2)
     }

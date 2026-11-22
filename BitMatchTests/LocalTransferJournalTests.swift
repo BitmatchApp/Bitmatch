@@ -188,12 +188,12 @@ struct LocalTransferJournalTests {
             let saved = try #require(journal.records.first)
             #expect(saved.state == .issues)
             #expect(saved.quickOnlyUnverified == false)
-            #expect(TransferLibraryPresentation.safetyState(for: saved) == .needsAttention)
+            #expect(TransferLibraryPresentation.safetyState(for: saved, in: [saved]) == .needsAttention)
         }
 
         let restored = try #require(LocalTransferJournal(fileURL: f.journal).records.first)
         #expect(restored.quickOnlyUnverified == false)
-        #expect(TransferLibraryPresentation.safetyState(for: restored) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: restored, in: [restored]) == .needsAttention)
     }
 
     @Test func oldHistoryJSONDecodesWithoutNewSourceAndDiskFields() throws {
@@ -234,12 +234,12 @@ struct LocalTransferJournalTests {
         record.plannedFileCounts = [2]
         record.results = [ResultRow(path: "a.mov", status: ResultOutcome.verified.statusText, size: 1,
                                    checksum: "abc", destination: "Backup", wasReused: true)]
-        let json = try TransferHistoryDocument(record: record, asCSV: false)
+        let json = try TransferHistoryDocument(record: record, history: [record], asCSV: false)
         let payload = try #require(JSONSerialization.jsonObject(with: json.data) as? [String: Any])
         #expect(payload["retryOf"] as? String == record.retryOf?.uuidString)
         #expect(payload["plannedFileCounts"] as? [Int] == [2])
         #expect(!String(decoding: json.data, as: UTF8.self).contains(record.source.bookmark.base64EncodedString()))
-        let csv = String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self)
+        let csv = String(decoding: try TransferHistoryDocument(record: record, history: [record], asCSV: true).data, as: UTF8.self)
         #expect(csv.contains("client,reused"))
         #expect(csv.contains("\"retryOf\",\"\(try #require(record.retryOf).uuidString)\""))
         #expect(csv.contains("\"plannedFileCounts\",\"2\""))
@@ -375,6 +375,34 @@ struct LocalTransferJournalTests {
         #expect(decoded.copyDurationSeconds == nil)
         #expect(decoded.verifyDurationSeconds == nil)
         #expect(decoded.performanceTelemetry == nil)
+    }
+
+    /// Journals written before the record-level failure reason existed have
+    /// no such key; they decode with the reason unknown.
+    @Test func recordsWithoutAFailureReasonKeyStillDecode() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        // The journal holds a file lock while it lives; release it before
+        // the file is rewritten and reopened.
+        var journal: LocalTransferJournal? = LocalTransferJournal(fileURL: f.journal)
+        let id = try #require(journal).enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                                               cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        try #require(journal).fail(id: id, summary: "Try again", reason: .sourceNotConnected)
+        journal = nil
+        let encoded = try #require(try? Data(contentsOf: f.journal))
+        // The journal file is a JSON array of records.
+        var records = try #require(try JSONSerialization.jsonObject(with: encoded) as? [[String: Any]])
+        #expect(records[0]["failureReason"] as? String == ResultFailureReason.sourceNotConnected.rawValue)
+        records[0].removeValue(forKey: "failureReason")
+        let rewritten = try JSONSerialization.data(withJSONObject: records)
+        try rewritten.write(to: f.journal)
+        // Decode directly first so a decoding error is reported as such.
+        let decoded = try JSONDecoder().decode([LocalTransferRecord].self, from: rewritten)
+        #expect(decoded.first { $0.id == id }?.failureReason == nil)
+        let reloaded = LocalTransferJournal(fileURL: f.journal)
+        let record = try #require(reloaded.records.first { $0.id == id })
+        #expect(record.state == .failed)
+        #expect(record.failureReason == nil)
     }
 
     @Test func legacyPhaseDurationsDecodeIntoTelemetry() throws {
@@ -667,7 +695,7 @@ struct LocalTransferJournalTests {
                            summary: "Done", hadIssues: false)
         let record = try #require(journal.records.first)
         #expect(record.results.first?.status == "✅ Match")
-        let csv = try TransferHistoryDocument(record: record, asCSV: true)
+        let csv = try TransferHistoryDocument(record: record, history: [record], asCSV: true)
         let csvText = String(decoding: csv.data, as: UTF8.self)
         #expect(csvText.contains("verification,transfer_state,transfer_summary"))
         #expect(csvText.contains("\"Quick\",\"issues\""))
@@ -675,7 +703,7 @@ struct LocalTransferJournalTests {
         #expect(csvText.contains("reused,recorded_status"))
         #expect(csvText.contains("\"Copied · contents not verified\""))
         #expect(csvText.contains("\"✅ Match\""))
-        let json = try TransferHistoryDocument(record: record, asCSV: false)
+        let json = try TransferHistoryDocument(record: record, history: [record], asCSV: false)
         let payload = try #require(JSONSerialization.jsonObject(with: json.data) as? [String: Any])
         #expect(payload["state"] as? String == "issues")
         let exportedRow = try #require((payload["results"] as? [[String: Any]])?.first)
@@ -702,7 +730,7 @@ struct LocalTransferJournalTests {
                            summary: "Done", hadIssues: false)
         let record = try #require(journal.records.first)
 
-        let json = try TransferHistoryDocument(record: record, asCSV: false)
+        let json = try TransferHistoryDocument(record: record, history: [record], asCSV: false)
         let payload = try #require(JSONSerialization.jsonObject(with: json.data) as? [String: Any])
         #expect(payload["projectName"] as? String == "Venice Shoot")
         #expect(payload["clientName"] as? String == "Studio")
@@ -710,7 +738,7 @@ struct LocalTransferJournalTests {
         #expect((payload["results"] as? [[String: Any]])?.count == 1)
         #expect((payload["results"] as? [[String: Any]])?.first?["recordedStatus"] == nil)
 
-        let csv = try TransferHistoryDocument(record: record, asCSV: true)
+        let csv = try TransferHistoryDocument(record: record, history: [record], asCSV: true)
         let csvText = String(decoding: csv.data, as: UTF8.self)
         #expect(csvText.contains("transfer_summary,project,asc_mhl"))
         #expect(csvText.contains("\"Done\",\"Venice Shoot\",\"requested\""))

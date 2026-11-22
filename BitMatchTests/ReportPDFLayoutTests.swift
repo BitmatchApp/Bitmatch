@@ -311,7 +311,7 @@ struct ReportPDFLayoutTests {
                 size: 10, checksum: "fixture", destination: backup.lastPathComponent,
                 destinationPath: backup.appendingPathComponent(name).path)
         }
-        let pdf = try await ReportExporter.historyPDF(record: record, includeThumbnails: false)
+        let pdf = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)
         let document = try #require(PDFDocument(data: pdf))
         if let directory = ProcessInfo.processInfo.environment["BITMATCH_PREVIEW_PDF_OUTPUT"] {
             let folder = URL(fileURLWithPath: directory)

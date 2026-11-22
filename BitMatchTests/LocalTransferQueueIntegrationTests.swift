@@ -82,7 +82,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(record.results.count, 1)
         XCTAssertEqual(coordinator.operationState, .failed)
         XCTAssertFalse(FileManager.default.fileExists(atPath: f.destination.appendingPathComponent("Reports").path))
-        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase)
     }
 
     func testLateJournalFinishFailureNeverEmitsASafeLiveVerdict() async throws {
@@ -114,7 +114,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(record.results.count, 1)
         XCTAssertEqual(coordinator.operationState, .failed)
         XCTAssertEqual(safeSignals, 0)
-        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase)
     }
 
     func testUnexpectedCancellationErrorPersistsInterruptedRatherThanCancelled() async throws {
@@ -254,7 +254,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(finished)
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertNotEqual(record.state, .completed)
-        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record), .safeToErase)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase)
         XCTAssertTrue(record.summary.contains("Source folder is empty"))
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: f.destination.path).isEmpty)
     }
@@ -361,7 +361,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
 
         let directRecord = try XCTUnwrap(journal.records.first { $0.id == directID })
         XCTAssertEqual(directRecord.state, .completed, directRecord.summary)
-        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: directRecord), .safeToErase)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: directRecord, in: [directRecord]), .safeToErase)
         XCTAssertTrue(directRecord.reportSettings.makeReport)
         XCTAssertFalse(directRecord.generateASCMHL)
         XCTAssertEqual(
@@ -423,7 +423,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let queuedRecord = try XCTUnwrap(journal.records.first { $0.id == queuedID })
         XCTAssertEqual(queuedRecord.verificationMode, .quick)
         XCTAssertEqual(queuedRecord.state, .issues)
-        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: queuedRecord), .copiedNotVerified)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: queuedRecord, in: [queuedRecord]), .copiedNotVerified)
         XCTAssertEqual(coordinator.sourceURL, composerSource)
         XCTAssertEqual(coordinator.destinationURLs, [composerDestination])
         XCTAssertEqual(coordinator.verificationMode, .paranoid)
@@ -1433,7 +1433,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(starts.isEmpty)
     }
 
-    func testRetryReplacesVisibleCardAndSingleSuccessUsesNormalFinish() async throws {
+    /// An unexplained first failure is unknown territory: the retry's own
+    /// backup verifies, but nothing may call the card safe to erase.
+    func testRetryAfterUnexplainedFailureNeverCallsTheCardSafe() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
@@ -1451,6 +1453,80 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             defaults: f.defaults
         )
         try journal.fail(id: originalID, summary: "Try again")
+        coordinator.retryTransfer(originalID)
+        let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+                && journal.records.contains(where: { $0.id != originalID && $0.state == .completed })
+        }
+        XCTAssertTrue(finished)
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+        XCTAssertEqual(coordinator.queuePresentation.tally.needsAttention, 1)
+    }
+
+    /// The queued card could not be enumerated at all. That is a source
+    /// read failure the record keeps, so a later verified retry still warns.
+    func testRetryAfterFailedSourceScanKeepsTheCardUnsafe() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        var reports = ReportPrefs()
+        reports.makeReport = false
+        let originalID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared
+            )),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        // The card itself is connected and opens, but a folder on it cannot
+        // be read: enumeration fails after admission, which is a card read
+        // failure, not "not connected".
+        let locked = f.source.appendingPathComponent("LOCKED")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        coordinator.startQueue()
+        let failed = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            journal.records.first(where: { $0.id == originalID })?.state == .failed
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        try FileManager.default.removeItem(at: locked)
+        XCTAssertTrue(failed)
+        XCTAssertEqual(journal.records.first(where: { $0.id == originalID })?.failureReason,
+                       ResultFailureReason.sourceReadFailed.rawValue)
+        coordinator.retryTransfer(originalID)
+        let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+                && journal.records.contains(where: { $0.id != originalID && $0.state == .completed })
+        }
+        XCTAssertTrue(finished)
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+        XCTAssertEqual(coordinator.queuePresentation.tally.needsAttention, 1)
+    }
+
+    func testRetryReplacesVisibleCardAndSingleSuccessUsesNormalFinish() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        var reports = ReportPrefs()
+        reports.makeReport = false
+        let originalID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared
+            )),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        // The first attempt never read the card: a classified, non-source
+        // failure. The verified retry may then call the card safe.
+        try journal.fail(id: originalID, summary: "Card not connected", reason: .sourceNotConnected)
         coordinator.retryTransfer(originalID)
         let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
             !coordinator.queueIsRunning && !coordinator.isOperationInProgress
@@ -1827,8 +1903,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(record.state, .issues)
         XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("clip.mov")), original)
         XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("._clip.mov")), metadata)
-        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record), .needsAttention)
-        XCTAssertFalse(TransferLibraryPresentation.safetyState(for: record).canEject)
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .needsAttention)
+        XCTAssertFalse(TransferLibraryPresentation.safetyState(for: record, in: [record]).canEject)
         XCTAssertFalse(signals.contains(.safeToErase))
         XCTAssertTrue(record.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })
         if reportFails {
@@ -1935,7 +2011,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let next = try XCTUnwrap(journal.records.first { $0.id == nextID })
         XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("clip.mov")), original)
         XCTAssertEqual(try Data(contentsOf: f.source.appendingPathComponent("._clip.mov")), metadata)
-        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: first), .safeToErase)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: first, in: [first]), .safeToErase)
         XCTAssertFalse(coordinator.queuePresentation.ejectableCardIDs.contains(first.id))
         if failure == nil {
             XCTAssertEqual(first.state, .issues)
@@ -1943,7 +2019,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             XCTAssertEqual(next.state, .completed)
             XCTAssertNil(coordinator.queuePausedRecordID)
             XCTAssertTrue(first.results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.allSatisfy(\.isVerifiedStatus))
-            let exported = try TransferHistoryDocument(record: first, asCSV: false)
+            let exported = try TransferHistoryDocument(record: first, history: [first], asCSV: false)
             let object = try XCTUnwrap(JSONSerialization.jsonObject(with: exported.data) as? [String: Any])
             XCTAssertEqual(object["savedSafeToErase"] as? Bool, false)
             XCTAssertTrue(first.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })

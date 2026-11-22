@@ -18,6 +18,7 @@ final class ResultPresentationTests: XCTestCase {
         XCTAssertNil(summary([row("a", .failed, "somethingNew")]).sharedFailureReason)
         XCTAssertEqual(ResultFailureReason.outOfSpace.backupLead("BMMID"), "BMMID ran out of space")
         XCTAssertEqual(ResultFailureReason.companionConflict.backupLead("T9"), "T9 keeps its own hidden companion files")
+        XCTAssertEqual(ResultFailureReason.sourceUnstable.rowNote, "the card changed or could not be read consistently")
     }
 
     func testSameDiskDestinationsNeverProduceATwoDestinationCompletionClaim() {

@@ -84,6 +84,25 @@ struct TransferOutcomePresentationTests {
         )
     }
 
+    /// A verified retry keeps an earlier source fault: the finish screen
+    /// must not call the card safe to erase, while still reporting this
+    /// attempt's rows as verified.
+    @Test func priorSourceFaultDowngradesSafeToErase() {
+        let rows = [row("C0.mov", .verified, backup: backupA), row("C0.mov", .verified, backup: backupB)]
+        let outcome = TransferOutcomePresentation.make(
+            state: .completed(.init(success: true, message: "Verified")),
+            rows: rows, destinations: [backupA, backupB],
+            hasErrors: false, hasCriticalErrors: false, errorCount: 0, warningCount: 0,
+            duration: 5, sourceFileCount: 1, sourceBytes: 100,
+            verificationMode: .standard, canRetry: true, canExport: true,
+            completionReason: "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card.",
+            priorSourceFault: true
+        )
+        #expect(outcome.safetyState == .needsAttention)
+        #expect(outcome.advisoryLines.contains { $0.contains("earlier attempt") })
+        #expect(!outcome.canEject)
+    }
+
     @Test func oneBackupOutOfSpaceIsNamedInTheIssueReason() {
         let mid = URL(fileURLWithPath: "/Volumes/BMMID/Card", isDirectory: true)
         let whee = URL(fileURLWithPath: "/Volumes/WheeDrive/Card", isDirectory: true)
@@ -105,6 +124,22 @@ struct TransferOutcomePresentationTests {
     }
 
     private var done: OperationState { .completed(.init(success: true, message: "Verified")) }
+
+    @Test func unstableSourceIsIdentifiedAcrossBackups() {
+        let rows = [row("A.mov", .failed, backup: backupA, failureReason: "sourceUnstable"),
+                    row("A.mov", .failed, backup: backupB, failureReason: "sourceUnstable")]
+        let outcome = make(state: done, rows: rows, hasErrors: true)
+        #expect(outcome.verdict.detail.contains("card changed or could not be read consistently"))
+        #expect(outcome.safetyState != .safeToErase)
+    }
+
+    @Test func sourceReadFailureIsNotDescribedAsABackupFailure() {
+        let rows = [row("A.mov", .failed, backup: backupA, failureReason: "sourceReadFailed"),
+                    row("A.mov", .failed, backup: backupB, failureReason: "sourceReadFailed")]
+        let outcome = make(state: done, rows: rows, hasErrors: true)
+        #expect(outcome.verdict.detail.contains("card could not be read"))
+        #expect(outcome.safetyState != .safeToErase)
+    }
 
     @Test func heroSubtitleIsExactForStandardVerify() {
         let outcome = make(state: done, mode: .standard, files: 486, destinations: 2, seconds: 95)

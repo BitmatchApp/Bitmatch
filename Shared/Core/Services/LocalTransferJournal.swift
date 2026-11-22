@@ -107,7 +107,7 @@ final class LocalTransferJournal: ObservableObject {
                 completedQueueRows.removeValue(forKey: id)
             }
             for record in admitted where completedQueueRows[record.id] == nil {
-                completedQueueRows[record.id] = QueueSessionPresentation.completedRow(for: record)
+                completedQueueRows[record.id] = QueueSessionPresentation.completedRow(for: record, in: records)
                 completedQueueRowBuildCount += 1
             }
         }
@@ -368,9 +368,9 @@ final class LocalTransferJournal: ObservableObject {
         try store.recordPlan(id: id, fileCounts: fileCounts, selectedSourceBytes: selectedSourceBytes)
     }
 
-    func fail(id: UUID, summary: String) throws {
+    func fail(id: UUID, summary: String, reason: ResultFailureReason? = nil) throws {
         defer { refresh() }
-        try store.fail(id: id, summary: summary)
+        try store.fail(id: id, summary: summary, reason: reason)
     }
 
     func removeQueued(id: UUID) throws {

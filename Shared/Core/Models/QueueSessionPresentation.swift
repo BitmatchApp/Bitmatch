@@ -338,7 +338,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         var lastAttempt: [String: Int] = [:]
         for record in session {
             let key = attemptKey(for: record)
-            if let index = lastAttempt[key], collapsesIntoLaterAttempt(attempts[index].record) {
+            if let index = lastAttempt[key], collapsesIntoLaterAttempt(attempts[index].record, in: records) {
                 attempts[index] = (record, attempts[index].earlier + [attempts[index].record.id])
             } else {
                 attempts.append((record, []))
@@ -361,6 +361,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             }
             return makeRow(
                 record: record,
+                history: records,
                 progress: record.id == runningID ? progress : nil,
                 isMounted: mountedSourceIDs.contains(record.id),
                 isEjected: ejectedSourceIDs.contains(record.id),
@@ -458,9 +459,9 @@ struct QueueSessionPresentation: Equatable, Sendable {
 
     /// Judged by what the user sees, not the journal state: a completed run
     /// that still needs attention is as unsettled as a failed one.
-    private static func collapsesIntoLaterAttempt(_ record: LocalTransferRecord) -> Bool {
+    private static func collapsesIntoLaterAttempt(_ record: LocalTransferRecord, in records: [LocalTransferRecord]) -> Bool {
         guard record.state != .queued, record.state != .running else { return false }
-        switch TransferLibraryPresentation.safetyState(for: record) {
+        switch TransferLibraryPresentation.safetyState(for: record, in: records) {
         case .needsAttention, .failed, .interrupted, .copiedNotVerified: return true
         default: return false
         }
@@ -468,13 +469,14 @@ struct QueueSessionPresentation: Equatable, Sendable {
 
     /// The cached value contains only presentation fields, not the source
     /// record or its potentially large result array.
-    static func completedRow(for record: LocalTransferRecord) -> QueueSessionRow? {
+    static func completedRow(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> QueueSessionRow? {
         guard record.state != .queued, record.state != .running else { return nil }
-        return makeRow(record: record, progress: nil, isMounted: false, isEjected: false)
+        return makeRow(record: record, history: records, progress: nil, isMounted: false, isEjected: false)
     }
 
     private static func makeRow(
         record: LocalTransferRecord,
+        history: [LocalTransferRecord],
         progress: OperationProgress?,
         isMounted: Bool,
         isEjected: Bool,
@@ -502,7 +504,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             default: state = .preparing
             }
         } else {
-            state = TransferLibraryPresentation.safetyState(for: record)
+            state = TransferLibraryPresentation.safetyState(for: record, in: history)
         }
         let qualifiedSelection = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
         let countedRows = qualifiedSelection ? record.results.filter {
@@ -625,6 +627,12 @@ struct QueueSessionPresentation: Equatable, Sendable {
     private static func cause(for record: LocalTransferRecord, state: CardSafetyState) -> String? {
         guard state == .needsAttention || state == .failed || state == .interrupted else { return nil }
         if state == .needsAttention {
+            if record.results.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceUnstable.rawValue }) {
+                return "The card changed or could not be read consistently · Review all backups"
+            }
+            if record.results.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceReadFailed.rawValue }) {
+                return "The card could not be read · Review all backups"
+            }
             let issues = DestinationResultSummary.make(
                 rows: record.results,
                 destinations: record.destinations.map(\.url)

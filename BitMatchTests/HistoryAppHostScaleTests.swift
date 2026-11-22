@@ -188,8 +188,8 @@ final class HistoryAppHostScaleTests: XCTestCase {
 
         responsiveness.beginPhase("exportAndRetry")
         let exportedRecord = try XCTUnwrap(reloadedJournal.records.first { $0.id == retryRecordID })
-        let jsonExport = try TransferHistoryDocument(record: exportedRecord, asCSV: false).data
-        let csvExport = try TransferHistoryDocument(record: exportedRecord, asCSV: true).data
+        let jsonExport = try TransferHistoryDocument(record: exportedRecord, history: [exportedRecord], asCSV: false).data
+        let csvExport = try TransferHistoryDocument(record: exportedRecord, history: [exportedRecord], asCSV: true).data
         let jsonObject = try XCTUnwrap(JSONSerialization.jsonObject(with: jsonExport) as? [String: Any])
         let jsonRows = try XCTUnwrap(jsonObject["results"] as? [[String: Any]])
         XCTAssertEqual(jsonRows.count, 100)
@@ -225,7 +225,7 @@ final class HistoryAppHostScaleTests: XCTestCase {
         XCTAssertGreaterThan(prepVisibleCount, 0)
         metrics.mark("historyVisibleListFinished")
         let prepExpanded = try XCTUnwrap(prepRecords.first { $0.id == expandedRecordID })
-        _ = TransferLibraryPresentation.safetyState(for: prepExpanded)
+        _ = TransferLibraryPresentation.safetyState(for: prepExpanded, in: [prepExpanded])
         let prepScope = VerificationScopeEvidence(selectedMode: prepExpanded.verificationMode,
             results: prepExpanded.results, includeModePlan: prepExpanded.plannedFileCounts != nil)
         _ = prepScope.selectedModeLine

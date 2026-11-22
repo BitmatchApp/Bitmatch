@@ -211,6 +211,11 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public var verifyDurationSeconds: TimeInterval? = nil
     public var performanceTelemetry: TransferPerformanceTelemetry? = nil
     public var summary: String = "Ready to copy"
+    /// Why the attempt failed when it has no rows to say so (not connected,
+    /// refused by policy, a card read failure before any file). A
+    /// `ResultFailureReason` raw value; nil for an unexplained failure and
+    /// for records written before this field existed.
+    public var failureReason: String? = nil
     public var results: [ResultRow] = []
     /// Added after launch; nil decodes records written by older versions.
     public var sourceFingerprint: String?
@@ -256,7 +261,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case id, createdAt, source, destinations, verificationMode, cameraSettings, reportSettings
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
-        case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, estimatedSourceBytes
+        case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, failureReason, estimatedSourceBytes
         case expectedExclusionQueueQualification
     }
 
@@ -292,6 +297,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         plannedFileCounts = try c.decodeIfPresent([Int].self, forKey: .plannedFileCounts)
         estimatedSourceBytes = try c.decodeIfPresent(Int64.self, forKey: .estimatedSourceBytes)
         quickOnlyUnverified = try c.decodeIfPresent(Bool.self, forKey: .quickOnlyUnverified)
+        failureReason = try c.decodeIfPresent(String.self, forKey: .failureReason)
         // Unknown future qualifications are not permission to advance.
         expectedExclusionQueueQualification = try? c.decodeIfPresent(
             ExpectedExclusionQueueQualification.self, forKey: .expectedExclusionQueueQualification
@@ -743,13 +749,14 @@ public final class TransferJournal: Sendable {
 
     /// A queued card whose original source cannot be opened never ran. Keep
     /// that distinction durable instead of turning it into an interruption.
-    public func fail(id: UUID, summary: String) throws {
+    public func fail(id: UUID, summary: String, reason: ResultFailureReason? = nil) throws {
         try update(id: id) { record in
             guard record.state == .queued || record.state == .running else {
                 throw LocalTransferJournalError.invalidState
             }
             record.state = .failed
             record.summary = summary
+            record.failureReason = reason?.rawValue
             record.endedAt = Date()
         }
     }

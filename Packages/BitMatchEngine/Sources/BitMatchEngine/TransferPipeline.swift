@@ -284,11 +284,31 @@ private func sourceChangeReason(initial: [FileEntry], current: [FileEntry]) -> S
     return "The card changed during the copy: " + changes.joined(separator: "; ") + ". Run it again."
 }
 
-private func completionGateError(_ message: String) -> NSError {
-    NSError(
+/// A source enumeration that fails (the card went away, a folder could not
+/// be read) is a source read failure. Tag it so the saved attempt and its
+/// lineage carry the reason; a cancellation stays a cancellation.
+private func taggingSourceReadFailure<T>(_ body: () async throws -> T) async throws -> T {
+    do {
+        return try await body()
+    } catch is CancellationError {
+        throw CancellationError()
+    } catch {
+        let original = error as NSError
+        var info = original.userInfo
+        if info[ResultFailureReason.userInfoKey] == nil {
+            info[ResultFailureReason.userInfoKey] = ResultFailureReason.sourceReadFailed.rawValue
+        }
+        throw NSError(domain: original.domain, code: original.code, userInfo: info)
+    }
+}
+
+private func completionGateError(_ message: String, reason: ResultFailureReason? = nil) -> NSError {
+    var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
+    if let reason { userInfo[ResultFailureReason.userInfoKey] = reason.rawValue }
+    return NSError(
         domain: "TransferPipeline",
         code: NSFileReadUnknownError,
-        userInfo: [NSLocalizedDescriptionKey: message]
+        userInfo: userInfo
     )
 }
 
@@ -533,9 +553,17 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 processingTime: Date().timeIntervalSince(started),
                 failedOutputMarking: marking, recopyOutcome: "stillFailed")
         }
+        func sourceFailure(_ error: Error) -> FileOperationResult {
+            FileOperationResult(
+                sourceURL: source, destinationURL: destination, success: false, error: error,
+                fileSize: fileSize, verificationResult: nil,
+                processingTime: Date().timeIntervalSince(started),
+                failedOutputMarking: initialMarking, recopyOutcome: "stillFailed")
+        }
         do {
             try Task.checkCancellation()
             let copyError = Mutex(false)
+            let sourceError = Mutex<NSError?>(nil)
             try await DestinationWriter.copyAllSafelyFanOut(
                 from: source.deletingLastPathComponent(),
                 toPinnedRoots: [DestinationWriter.FanOutDestination(index: destinationIndex, root: pinnedRoot)],
@@ -545,8 +573,16 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 hooks: hooks, onIOBytes: onIOBytes,
                 onSourceReadEvidence: { _, _ in },
                 onProgress: { _, _, _, _ in },
-                onError: { _, _, _ in copyError.withLock { $0 = true } }
+                onError: { _, _, error in
+                    copyError.withLock { $0 = true }
+                    let nsError = error as NSError
+                    let reason = nsError.userInfo[ResultFailureReason.userInfoKey] as? String
+                    if reason == ResultFailureReason.sourceUnstable.rawValue || reason == ResultFailureReason.sourceReadFailed.rawValue {
+                        sourceError.withLock { $0 = nsError }
+                    }
+                }
             )
+            if let error = sourceError.withLock({ $0 }) { return sourceFailure(error) }
             if copyError.withLock({ $0 }) {
                 return stillFailed(marking: initialMarking, verification: initialVerification)
             }
@@ -579,6 +615,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            let reason = (error as NSError).userInfo[ResultFailureReason.userInfoKey] as? String
+            if reason == ResultFailureReason.sourceUnstable.rawValue || reason == ResultFailureReason.sourceReadFailed.rawValue {
+                return sourceFailure(error)
+            }
             return stillFailed(marking: initialMarking, verification: initialVerification)
         }
     }
@@ -640,10 +680,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // outer defer at once, while this enumeration may still be running.
         let sourceURL = operation.sourceURL
         let fileSystem = self.fileSystem
-        let completeSourceManifest = try await BoundedBlockingExecutor.transfer.performCancellable { check in
-            let scoped = fileSystem.startAccessing(url: sourceURL)
-            defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
-            return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+        let completeSourceManifest = try await taggingSourceReadFailure {
+            try await BoundedBlockingExecutor.transfer.performCancellable { check in
+                let scoped = fileSystem.startAccessing(url: sourceURL)
+                defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+                return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+            }
         }
         // Validate these captured paths before exclusions or String-keyed maps.
         // A later live scan cannot prove this manifest has unambiguous names.
@@ -1281,14 +1323,16 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Re-read only source metadata. Any path, size, or modification-time
         // change invalidates the whole run, including a file added after the
         // initial manifest was captured.
-        let finalSourceManifest = try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
-            let sourceURL = operation.sourceURL
-            let scoped = fileSystem.startAccessing(url: sourceURL)
-            defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
-            return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+        let finalSourceManifest = try await taggingSourceReadFailure {
+            try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
+                let sourceURL = operation.sourceURL
+                let scoped = fileSystem.startAccessing(url: sourceURL)
+                defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+                return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+            }
         }
         if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceManifest) {
-            let error = completionGateError(reason)
+            let error = completionGateError(reason, reason: .sourceUnstable)
             for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
                 let root = pinnedDestinations[destIndex]?.logicalRootURL
                     ?? SafetyValidator.resolvedDestinationRoot(

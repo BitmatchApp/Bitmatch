@@ -242,7 +242,7 @@ private struct RecentTransfersSection: View {
                         .accessibilityLabel("Show all transfers")
                 }
                 ForEach(records) { record in
-                    TransferRecordRow(record: record) { EmptyView() }
+                    TransferRecordRow(record: record, history: journal.records) { EmptyView() }
                 }
             }
             .padding(12)

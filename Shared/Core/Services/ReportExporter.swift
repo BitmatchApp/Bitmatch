@@ -140,7 +140,7 @@ enum ReportExporter {
     }
 
     /// Re-renders saved evidence without touching the source or changing the journal verdict.
-    static func historyPDF(record: LocalTransferRecord, includeThumbnails: Bool) async throws -> Data {
+    static func historyPDF(record: LocalTransferRecord, history: [LocalTransferRecord], includeThumbnails: Bool) async throws -> Data {
         try Task.checkCancellation()
         var accesses: [(LocalTransferResource, LocalTransferReadAccess)] = []
         if includeThumbnails {
@@ -171,7 +171,7 @@ enum ReportExporter {
         let files = Set(record.results.map(\.path)).count
         let start = record.startedAt ?? record.createdAt
         let finish = record.endedAt ?? start
-        let safetyState = TransferLibraryPresentation.safetyState(for: record)
+        let safetyState = TransferLibraryPresentation.safetyState(for: record, in: history)
         // The saved summary may say "verified" even when the saved rows or
         // selected-file plan do not support that verdict. Keep it in the
         // History record/CSV/JSON, but omit it from unsafe regenerated PDFs.

@@ -188,7 +188,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         sourceName: String = "",
         completionReason: String? = nil,
         independentDestinationCount: Int? = nil,
-        selectedFileVerificationQualified: Bool = false
+        selectedFileVerificationQualified: Bool = false,
+        priorSourceFault: Bool = false,
+        lineageIncomplete: Bool = false
     ) -> Self {
         // `sourceName` passes through raw: `CompletionVerdictPresentation`
         // owns the empty-name fallback and its "The card" / "the card"
@@ -200,6 +202,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors
         )
+        // Two folders on one drive are one backup in the wording, never two.
         let claimedDestinationCount = min(
             destinations.count,
             max(0, independentDestinationCount ?? destinations.count)
@@ -212,12 +215,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             cardName: sourceName,
             backupCount: claimedDestinationCount
         )
-        let safetyState = CardSafetyState.make(state: state, verdict: resolved)
+        let resolvedSafetyState = CardSafetyState.make(state: state, verdict: resolved)
+        // A verified retry does not clear an earlier attempt's source
+        // fault: the backup may be verified while the card stays unsafe
+        // to erase. Only an otherwise safe verdict is downgraded.
+        let safetyState = (priorSourceFault || lineageIncomplete) && resolvedSafetyState == .safeToErase
+            ? CardSafetyState.needsAttention : resolvedSafetyState
         let counts = OutcomeFileCounts.make(rows: rows, verificationMode: verificationMode)
         // The caller supplies the journal's persisted classifier/coverage/handoff
         // qualification. Status text alone must never hide a failed transfer.
         let selectedFilesVerified = selectedFileVerificationQualified
-            && safetyState == .needsAttention && verificationMode != nil && verificationMode != .quick
+            && resolvedSafetyState == .needsAttention && verificationMode != nil && verificationMode != .quick
             && counts.excluded > 0 && counts.verified > 0
             && counts.needsAttention == 0 && counts.copiedNotVerified == 0
             && rows.allSatisfy {
@@ -299,7 +307,14 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 warningCount: warningCount
             ),
             clipFailureLines: ResultPresentation.clipFailureDescriptions(rows),
-            advisoryLines: [ResultPresentation.incompleteClipAdvisory(rows)].compactMap { $0 },
+            advisoryLines: [
+                priorSourceFault && resolvedSafetyState == .safeToErase
+                    ? "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card."
+                    : lineageIncomplete && resolvedSafetyState == .safeToErase
+                        ? "The record of earlier attempts is incomplete, so BitMatch cannot confirm how this card read before. This backup verified, but do not erase the card."
+                        : nil,
+                ResultPresentation.incompleteClipAdvisory(rows)
+            ].compactMap { $0 },
             durationLabel: duration.map { makeDurationLabel(safetyState: safetyState, state: state, seconds: $0) },
             phaseDurationLabel: phaseDurationText(
                 copySeconds: copyDurationSeconds,
@@ -591,6 +606,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         switch safetyState {
         case .needsAttention:
             if counts.needsAttention > 0 {
+                if rows.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceUnstable.rawValue }) {
+                    return "The card changed or could not be read consistently · Review all backups"
+                }
+                if rows.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceReadFailed.rawValue }) {
+                    return "The card could not be read · Review all backups"
+                }
                 let summaries = DestinationResultSummary.make(rows: rows, destinations: destinations)
                     .filter { $0.issueCount > 0 }
                 if summaries.count == 1, let summary = summaries.first {

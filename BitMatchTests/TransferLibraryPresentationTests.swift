@@ -58,7 +58,7 @@ struct TransferLibraryPresentationTests {
     /// Plant: in `TransferLibraryPresentation.stateLabel`, change the
     /// `.interrupted` label's `tone: .warning` to `tone: .verified`.
     @Test func interruptedIsNotGreen() {
-        let label = TransferLibraryPresentation.stateLabel(for: PresentationTestSupport.record(state: .interrupted))
+        let label = TransferLibraryPresentation.stateLabel(for: PresentationTestSupport.record(state: .interrupted), in: [PresentationTestSupport.record(state: .interrupted)])
         #expect(label.tint != .green)
         #expect(label.tint == .amber)
     }
@@ -67,7 +67,7 @@ struct TransferLibraryPresentationTests {
         var record = PresentationTestSupport.record(state: .completed, verificationMode: .quick)
         record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
         record.quickOnlyUnverified = true
-        let label = TransferLibraryPresentation.stateLabel(for: record)
+        let label = TransferLibraryPresentation.stateLabel(for: record, in: [record])
         #expect(label.tint != .green)
         #expect(label.title == "Copied, not verified")
     }
@@ -113,7 +113,7 @@ struct TransferLibraryPresentationTests {
         record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
         record.quickOnlyUnverified = true
 
-        let label = TransferLibraryPresentation.stateLabel(for: record)
+        let label = TransferLibraryPresentation.stateLabel(for: record, in: [record])
         #expect(label.title == "Copied, not verified")
         #expect(label.tint != .green)
         #expect(label.accessibilityLabel == "Copied, not verified: size check only")
@@ -125,32 +125,32 @@ struct TransferLibraryPresentationTests {
         record.summary = "The report could not be saved."
         record.quickOnlyUnverified = false
 
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
-        #expect(TransferLibraryPresentation.stateLabel(for: record).title == "Needs attention")
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record, in: [record]).title == "Needs attention")
 
         // A pre-upgrade Quick record has no reliable distinction between a
         // clean size-only copy and another failed step, so remain conservative.
         record.quickOnlyUnverified = nil
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
     }
 
     @Test func quickRecordCannotBeSafeEvenWhenRowsClaimVerified() {
         var record = PresentationTestSupport.record(state: .completed, verificationMode: .quick)
         record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
 
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
-        #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record, in: [record]).tint != .green)
     }
 
     @Test @MainActor func quickCopiedOnlyHistoryNeedsItsOriginalSelectedPlan() {
         var record = PresentationTestSupport.record(state: .issues, verificationMode: .quick)
         record.results = [PresentationTestSupport.row(.copiedUnverified, destination: record.destinations[0].url)]
         record.quickOnlyUnverified = true
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .copiedNotVerified)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .copiedNotVerified)
 
         record.plannedFileCounts = nil
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
-        #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record, in: [record]).tint != .green)
         #expect(TransferOutcomePresentation.recordedCompletionReason(for: record).contains("selected-file plan was not saved"))
         #expect(record.results.count == 1)
     }
@@ -164,7 +164,7 @@ struct TransferLibraryPresentationTests {
             if state == .completed {
                 record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
             }
-            let label = TransferLibraryPresentation.stateLabel(for: record)
+            let label = TransferLibraryPresentation.stateLabel(for: record, in: [record])
             #expect((label.tint == .green) == (state == .completed), "\(state)")
         }
     }
@@ -172,7 +172,7 @@ struct TransferLibraryPresentationTests {
     @Test func completedWithoutVerifiedEvidenceIsNotGreen() {
         var record = PresentationTestSupport.record(state: .completed)
         record.results = [PresentationTestSupport.row(.copiedUnverified)]
-        let label = TransferLibraryPresentation.stateLabel(for: record)
+        let label = TransferLibraryPresentation.stateLabel(for: record, in: [record])
         #expect(label.title == "Needs attention")
         #expect(label.tint != .green)
     }
@@ -182,13 +182,13 @@ struct TransferLibraryPresentationTests {
         record.plannedFileCounts = [2]
         record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
 
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
-        #expect(TransferLibraryPresentation.stateLabel(for: record).tint != .green)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+        #expect(TransferLibraryPresentation.stateLabel(for: record, in: [record]).tint != .green)
 
         // An older journal can show verified rows without proving that they
         // covered the selected source set.
         record.plannedFileCounts = nil
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
     }
 
     @Test func duplicateVerifiedPathCannotHideMissingPlannedFile() {
@@ -197,7 +197,7 @@ struct TransferLibraryPresentationTests {
         let row = PresentationTestSupport.row(.verified, destination: record.destinations[0].url)
         record.results = [row, row]
 
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
     }
 
     @Test @MainActor func savedInterruptionKeepsItsHistoryWordingOnFinish() throws {
@@ -212,7 +212,7 @@ struct TransferLibraryPresentationTests {
             completionReason: record.summary
         )
 
-        #expect(finish.safetyState == TransferLibraryPresentation.safetyState(for: record))
+        #expect(finish.safetyState == TransferLibraryPresentation.safetyState(for: record, in: [record]))
         #expect(finish.finishTitle.contains("Transfer interrupted"))
         #expect(finish.visibleVerdictText.contains("interrupted unexpectedly"))
         #expect(finish.visibleVerdictText.contains("Do not erase"))
@@ -277,20 +277,20 @@ struct TransferLibraryPresentationTests {
         record.plannedFileCounts = [2]
         record.results = [first]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
         record.results = [first, duplicate]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
         record.results = [first, second]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == true)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .safeToErase)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .safeToErase)
         record.plannedFileCounts = [2, 2]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
         record.plannedFileCounts = nil
         record.results = [first]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == nil)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
     }
 
     @Test func plannedSelectedCountDoesNotIncludeAppleDoubleExclusions() {
@@ -302,7 +302,7 @@ struct TransferLibraryPresentationTests {
                                     size: 2, checksum: nil, destination: "Backup",
                                     destinationPath: destination.appendingPathComponent("._A001.mov").path)]
         #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == true)
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
     }
 
     /// Every pill supplies words and a symbol, so color is never the only cue.
@@ -312,7 +312,7 @@ struct TransferLibraryPresentationTests {
             if state == .completed {
                 record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
             }
-            return TransferLibraryPresentation.stateLabel(for: record)
+            return TransferLibraryPresentation.stateLabel(for: record, in: [record])
         }
         #expect(labels.allSatisfy { !$0.title.isEmpty && !$0.systemImage.isEmpty })
         #expect(labels.allSatisfy { $0.rowDetail == nil })
@@ -603,8 +603,8 @@ struct TransferLibraryPresentationTests {
                 PresentationTestSupport.row(.verified, destination: destination),
                 PresentationTestSupport.row(.excludedAppleDouble, destination: destination)
             ]
-            let combined = TransferLibraryPresentation.rowPresentation(for: record)
-            #expect(combined.stateLabel == TransferLibraryPresentation.stateLabel(for: record))
+            let combined = TransferLibraryPresentation.rowPresentation(for: record, in: [record])
+            #expect(combined.stateLabel == TransferLibraryPresentation.stateLabel(for: record, in: [record]))
             #expect(combined.detailLine == TransferLibraryPresentation.detailLine(
                 destinationCount: record.destinations.count,
                 fileCount: TransferLibraryPresentation.fileCount(for: record)))

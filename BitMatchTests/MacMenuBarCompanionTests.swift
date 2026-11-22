@@ -135,7 +135,7 @@ struct MacMenuBarCompanionTests {
             source: try LocalTransferResource(url: source),
             destinations: [try LocalTransferResource(url: destination)],
             verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
-        #expect(MenuBarRecentTransfer.status(for: record)?.text == nil)
+        #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.text == nil)
         record.state = .completed
         record.results = [ResultRow(path: source.appendingPathComponent("clip.mov").path,
             status: ResultOutcome.verified.statusText, size: 1, checksum: "abc", destination: "Backup",
@@ -145,8 +145,8 @@ struct MacMenuBarCompanionTests {
         record.plannedFileCounts = [1]
         #expect(MenuBarRecentTransfer.latest(in: [record])?.status == "Completed · review results in BitMatch")
         record.state = .cancelled
-        #expect(MenuBarRecentTransfer.status(for: record)?.text == "Transfer cancelled")
+        #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.text == "Transfer cancelled")
         record.state = .interrupted
-        #expect(MenuBarRecentTransfer.status(for: record)?.text == "Transfer interrupted")
+        #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.text == "Transfer interrupted")
     }
 }

@@ -257,7 +257,10 @@ enum TransferLibraryPresentation {
         let rowDetail: String?
     }
 
-    static func safetyState(for record: LocalTransferRecord) -> CardSafetyState {
+    /// What this record alone says. Private on purpose: a verified retry
+    /// can look safe here while an earlier attempt could not read the card,
+    /// so every verdict surface goes through the history-aware form.
+    private static func recordedSafetyState(for record: LocalTransferRecord) -> CardSafetyState {
         switch record.state {
         case .queued: return .waiting
         case .running: return .copying(progress: nil)
@@ -287,16 +290,27 @@ enum TransferLibraryPresentation {
         }
     }
 
-    static func stateLabel(for record: LocalTransferRecord) -> StateLabel {
-        stateLabel(for: record, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+    /// Whole-history form: a verified retry keeps an earlier attempt's
+    /// source-fault warning, so an otherwise safe verdict is downgraded.
+    /// Callers with only one record cannot see lineage and must not claim
+    /// this check was done.
+    static func safetyState(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> CardSafetyState {
+        let base = recordedSafetyState(for: record)
+        guard base == .safeToErase,
+              SourceFaultLineage.assess(for: record, in: records).preventsSafeToEraseClaim else { return base }
+        return .needsAttention
     }
 
-    private static func stateLabel(for record: LocalTransferRecord, hasVerifiedSelectedFiles: Bool) -> StateLabel {
+    static func stateLabel(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> StateLabel {
+        stateLabel(for: record, in: records, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+    }
+
+    private static func stateLabel(for record: LocalTransferRecord, in records: [LocalTransferRecord], hasVerifiedSelectedFiles: Bool) -> StateLabel {
         if hasVerifiedSelectedFiles {
             return StateLabel(title: "Selected files verified", accessibilityLabel: "Selected files verified",
                 systemImage: "checkmark.circle", tint: .gray, rowDetail: nil)
         }
-        return stateLabel(safetyState(for: record))
+        return stateLabel(safetyState(for: record, in: records))
     }
 
     /// A collapsed row's label and detail line from one evidence scan set.
@@ -307,10 +321,10 @@ enum TransferLibraryPresentation {
         let detailLine: String
     }
 
-    static func rowPresentation(for record: LocalTransferRecord) -> RowPresentation {
+    static func rowPresentation(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> RowPresentation {
         let verified = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
         return RowPresentation(
-            stateLabel: stateLabel(for: record, hasVerifiedSelectedFiles: verified),
+            stateLabel: stateLabel(for: record, in: records, hasVerifiedSelectedFiles: verified),
             detailLine: detailLine(
                 destinationCount: record.destinations.count,
                 fileCount: fileCount(for: record, hasVerifiedSelectedFiles: verified)

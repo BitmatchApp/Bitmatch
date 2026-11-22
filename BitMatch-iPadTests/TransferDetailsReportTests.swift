@@ -17,7 +17,7 @@ struct TransferDetailsReportTests {
         record.summary = "Transfer incomplete"
         record.results = [ResultRow(path: "/card/clip.mov", status: ResultOutcome.failed.statusText, size: 5,
                                    checksum: nil, destination: "Backup")]
-        let json = try TransferHistoryDocument(record: record, asCSV: false).data
+        let json = try TransferHistoryDocument(record: record, history: [record], asCSV: false).data
         let object = try #require(JSONSerialization.jsonObject(with: json) as? [String: Any])
         #expect(object["operatorName"] as? String == record.reportSettings.operatorName)
         #expect(object["notes"] as? String == record.reportSettings.notes)
@@ -30,12 +30,12 @@ struct TransferDetailsReportTests {
         #expect(object["selectedFilePlanRecorded"] as? Bool == false)
         #expect(object["savedVerdict"] as? String == "Needs attention")
         #expect(object["savedSafeToErase"] as? Bool == false)
-        let csv = String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self)
+        let csv = String(decoding: try TransferHistoryDocument(record: record, history: [record], asCSV: true).data, as: UTF8.self)
         #expect(csv.contains("\"operatorName\",\"Alex, \"\"DIT\"\"\""))
         #expect(csv.contains(record.reportSettings.notes))
         #expect(csv.contains("Original selected-file plan was not saved; export describes recorded results only"))
         #expect(csv.contains("\"savedSafeToErase\",\"false\""))
-        let pdfData = try await ReportExporter.historyPDF(record: record, includeThumbnails: false)
+        let pdfData = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)
         let pdf = try #require(PDFDocument(data: pdfData))
         if let path = ProcessInfo.processInfo.environment["BITMATCH_WORKFLOW_SNAPSHOT_OUTPUT_DIR"]
             ?? ProcessInfo.processInfo.environment["TEST_RUNNER_BITMATCH_WORKFLOW_SNAPSHOT_OUTPUT_DIR"] {
@@ -68,7 +68,7 @@ struct TransferDetailsReportTests {
                                    size: 5, checksum: "fixture", destination: "Backup"),
                           ResultRow(path: "/card/._clip.mov", status: ResultOutcome.excludedAppleDouble.statusText,
                                    size: 42, checksum: nil, destination: "Backup")]
-        let document = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, includeThumbnails: false)))
+        let document = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)))
         let text = try #require(document.string)
         #expect(text.contains("0 issues"))
         #expect(!text.contains("Issues Detail"))
@@ -94,8 +94,8 @@ struct TransferDetailsReportTests {
         record.results = [ResultRow(path: "/card/clip.mov", status: ResultOutcome.verified.statusText,
                                     size: 5, checksum: "fixture", destination: "Backup",
                                     destinationPath: root.appendingPathComponent("clip.mov").path)]
-        #expect(TransferLibraryPresentation.safetyState(for: record) == .needsAttention)
-        let pdf = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, includeThumbnails: false)))
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+        let pdf = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)))
         let text = try #require(pdf.string)
         #expect(text.contains("Saved results do not cover the selected-file plan"))
         #expect(text.contains("NOT SAFE TO ERASE"))
@@ -108,10 +108,10 @@ struct TransferDetailsReportTests {
         let record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: root),
             destinations: [], verificationMode: .standard, cameraSettings: CameraLabelSettings(),
             reportSettings: ReportPrefs(notes: "  =1+1", operatorName: "@SUM(1,2)"))
-        let csv = String(decoding: try TransferHistoryDocument(record: record, asCSV: true).data, as: UTF8.self)
+        let csv = String(decoding: try TransferHistoryDocument(record: record, history: [record], asCSV: true).data, as: UTF8.self)
         #expect(csv.contains("'@SUM(1,2)"))
         #expect(csv.contains("'  =1+1"))
-        let json = try #require(JSONSerialization.jsonObject(with: TransferHistoryDocument(record: record, asCSV: false).data) as? [String: Any])
+        let json = try #require(JSONSerialization.jsonObject(with: TransferHistoryDocument(record: record, history: [record], asCSV: false).data) as? [String: Any])
         #expect(json["operatorName"] as? String == "@SUM(1,2)")
     }
 

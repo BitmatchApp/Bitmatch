@@ -212,7 +212,7 @@ struct TransferLibraryView: View {
                 detailsView(record, actions: actions)
             }
         } label: {
-            TransferRecordRow(record: record, clipMatchLine: clipLine) {
+            TransferRecordRow(record: record, history: journal.records, clipMatchLine: clipLine) {
                 Menu {
                     menuItems(record, actions: actions)
                 } label: {
@@ -286,7 +286,7 @@ struct TransferLibraryView: View {
 
     @ViewBuilder
     private func detailsView(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
-        let safetyState = TransferLibraryPresentation.safetyState(for: record)
+        let safetyState = TransferLibraryPresentation.safetyState(for: record, in: journal.records)
         let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
             results: record.results, includeModePlan: record.plannedFileCounts != nil)
         VStack(alignment: .leading, spacing: 8) {
@@ -365,7 +365,8 @@ struct TransferLibraryView: View {
         pdfTask = Task {
             defer { preparingPDF = false }
             do {
-                let work = Task.detached { try await ReportExporter.historyPDF(record: record, includeThumbnails: previews) }
+                let history = journal.records
+                let work = Task.detached { try await ReportExporter.historyPDF(record: record, history: history, includeThumbnails: previews) }
                 let data = try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
                 try Task.checkCancellation()
                 exportDocument = TransferHistoryDocument(data: data)
@@ -378,7 +379,7 @@ struct TransferLibraryView: View {
 
     private func export(_ record: LocalTransferRecord, asCSV: Bool) {
         do {
-            exportDocument = try TransferHistoryDocument(record: record, asCSV: asCSV)
+            exportDocument = try TransferHistoryDocument(record: record, history: journal.records, asCSV: asCSV)
             exportType = asCSV ? .commaSeparatedText : .json
             showExport = true
         } catch { errorMessage = error.localizedDescription }

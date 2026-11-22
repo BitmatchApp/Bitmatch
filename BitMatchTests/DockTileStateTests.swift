@@ -39,10 +39,10 @@ struct DockTileStateTests {
         let engineSuccess = OperationState.completed(.init(success: true, message: "Selected files verified"))
 
         record.state = .running
-        #expect(DockTileState.makeTransfer(state: engineSuccess, record: record, fraction: 1) != .verified)
+        #expect(DockTileState.makeTransfer(state: engineSuccess, record: record, history: [record].compactMap { $0 }, fraction: 1) != .verified)
         record.state = .completed
-        #expect(DockTileState.makeTransfer(state: engineSuccess, record: record, fraction: 1) == .needsReview)
+        #expect(DockTileState.makeTransfer(state: engineSuccess, record: record, history: [record].compactMap { $0 }, fraction: 1) == .needsReview)
         record.plannedFileCounts = [1]
-        #expect(DockTileState.makeTransfer(state: engineSuccess, record: record, fraction: 1) == .verified)
+        #expect(DockTileState.makeTransfer(state: engineSuccess, record: record, history: [record].compactMap { $0 }, fraction: 1) == .verified)
     }
 }

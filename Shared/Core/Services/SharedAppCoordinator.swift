@@ -978,18 +978,18 @@ class SharedAppCoordinator: ObservableObject {
         let recoveredSessionIDs = Set(recoveredOrder)
         if persistedSession == nil {
             pausedID = selectedJournal.records.first {
-                recoveredSessionIDs.contains($0.id) && Self.isQueueProblem($0)
+                recoveredSessionIDs.contains($0.id) && Self.isQueueProblem($0, in: selectedJournal.records)
             }?.id
         } else {
             let skipped = skippedIDs
             let savedPauseIsStillValid = pausedID.flatMap { paused in
                 selectedJournal.records.first {
-                    $0.id == paused && Self.isQueueProblem($0) && !skipped.contains($0.id)
+                    $0.id == paused && Self.isQueueProblem($0, in: selectedJournal.records) && !skipped.contains($0.id)
                 }
             } != nil
             if !savedPauseIsStillValid && !sessionEnded {
                 pausedID = selectedJournal.records.first {
-                    recoveredSessionIDs.contains($0.id) && Self.isQueueProblem($0)
+                    recoveredSessionIDs.contains($0.id) && Self.isQueueProblem($0, in: selectedJournal.records)
                         && !skipped.contains($0.id)
                 }?.id
             }
@@ -1156,7 +1156,12 @@ class SharedAppCoordinator: ObservableObject {
             notifyFinish: generalSettings.notifyWhenTransferOrQueueFinishes,
             notifyEachQueuedCard: generalSettings.notifyForEachCardInQueue
         ) else { return }
-        guard let notice = TransferFinishNotice.make(record: record, kind: kind) else { return }
+        let lineageAssessment = SourceFaultLineage.assess(for: record, in: transferJournal.records)
+        guard let notice = TransferFinishNotice.make(
+            record: record, kind: kind,
+            priorSourceFault: !lineageAssessment.faults.isEmpty,
+            lineageIncomplete: lineageAssessment.preventsSafeToEraseClaim && lineageAssessment.faults.isEmpty
+        ) else { return }
         transferNotifier.post(notice)
     }
 
@@ -1819,7 +1824,7 @@ class SharedAppCoordinator: ObservableObject {
     func skipPausedCardAndContinue(_ expectedID: UUID) {
         guard queuePausedRecordID == expectedID,
               let record = transferJournal.records.first(where: { $0.id == expectedID }),
-              Self.isQueueProblem(record) else { return }
+              Self.isQueueProblem(record, in: transferJournal.records) else { return }
         skippedQueueAttentionIDs.insert(expectedID)
         queuePausedRecordID = nil
         queueMessage = nil
@@ -2014,7 +2019,7 @@ class SharedAppCoordinator: ObservableObject {
         guard let pausedID = queuePausedRecordID,
               !skippedQueueAttentionIDs.contains(pausedID) else { return false }
         return transferJournal.records.contains {
-            $0.id == pausedID && Self.isQueueProblem($0)
+            $0.id == pausedID && Self.isQueueProblem($0, in: transferJournal.records)
         }
     }
 
@@ -2171,7 +2176,7 @@ class SharedAppCoordinator: ObservableObject {
             try requireCurrentQueuePreparation(invocationID)
             if stale.contains(0) {
                 let message = "\(record.title) is not connected"
-                try transferJournal.fail(id: record.id, summary: message)
+                try transferJournal.fail(id: record.id, summary: message, reason: .sourceNotConnected)
                 handleAttemptTerminal(recordID: record.id)
                 return
             }
@@ -2190,7 +2195,9 @@ class SharedAppCoordinator: ObservableObject {
                 for destination in destinationURLs {
                     try Task.checkCancellation()
                     if let refusal = BackupTargetPolicy.refusal(for: destination, origin: .userChoice, source: queuedSource) {
-                        throw FileOperationError.unsafeOperation(refusal)
+                        // Tagged at the source so the failure handler below
+                        // never has to guess which step refused.
+                        throw Self.queuePreparationError(refusal, reason: .backupRefused)
                     }
                 }
             }
@@ -2214,7 +2221,16 @@ class SharedAppCoordinator: ObservableObject {
                 }
             }
             queuedSourceScanTask = sourceScan
-            let sourceManifest = try await sourceScan.value
+            let sourceManifest: [FileEntry]
+            do {
+                sourceManifest = try await sourceScan.value
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // The card could not be enumerated: a source read failure the
+                // record must remember, so a later verified retry still warns.
+                throw Self.queuePreparationError(error.localizedDescription, reason: .sourceReadFailed, underlying: error)
+            }
             try requireCurrentQueuePreparation(invocationID)
             queuedSourceScanTask = nil
             // An empty queued card fails its own record and stops the queue
@@ -2255,8 +2271,13 @@ class SharedAppCoordinator: ObservableObject {
         } catch {
             queueIsRunning = false
             queueMessage = error.localizedDescription
+            // Only a failure that tagged itself is classified. Anything else
+            // (an empty card, an unexpected error) stays unexplained, and a
+            // later retry cannot call the card safe on its own.
+            let reason = ((error as NSError).userInfo[ResultFailureReason.userInfoKey] as? String)
+                .flatMap(ResultFailureReason.init(rawValue:))
             do {
-                try transferJournal.fail(id: record.id, summary: error.localizedDescription)
+                try transferJournal.fail(id: record.id, summary: error.localizedDescription, reason: reason)
                 handleAttemptTerminal(recordID: record.id)
             } catch {
                 pauseQueueAttempt(
@@ -2284,8 +2305,15 @@ class SharedAppCoordinator: ObservableObject {
         }
     }
 
-    private static func isQueueProblem(_ record: LocalTransferRecord) -> Bool {
-        let safety = TransferLibraryPresentation.safetyState(for: record)
+    /// A queue-preparation failure that carries its classification.
+    nonisolated private static func queuePreparationError(_ message: String, reason: ResultFailureReason, underlying: Error? = nil) -> NSError {
+        var info: [String: Any] = [NSLocalizedDescriptionKey: message, ResultFailureReason.userInfoKey: reason.rawValue]
+        if let underlying { info[NSUnderlyingErrorKey] = underlying as NSError }
+        return NSError(domain: "SharedAppCoordinator.queuePreparation", code: 1, userInfo: info)
+    }
+
+    private static func isQueueProblem(_ record: LocalTransferRecord, in records: [LocalTransferRecord]) -> Bool {
+        let safety = TransferLibraryPresentation.safetyState(for: record, in: records)
         return (safety == .needsAttention || safety == .failed || safety == .interrupted)
             && !TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
     }
@@ -2820,7 +2848,7 @@ class SharedAppCoordinator: ObservableObject {
             operationState = settled
         }
         notifyIfTransferEnded(record: record)
-        let safety = TransferLibraryPresentation.safetyState(for: record)
+        let safety = TransferLibraryPresentation.safetyState(for: record, in: transferJournal.records)
         let belongs = belongsToQueueSession
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
         switch safety {
@@ -2894,7 +2922,7 @@ class SharedAppCoordinator: ObservableObject {
         // clear its ejecting flag early.
         if ejectingQueueSourceIDs.contains(id) { return nil }
         guard let record = transferJournal.records.first(where: { $0.id == id }),
-              TransferLibraryPresentation.safetyState(for: record) == .safeToErase else {
+              TransferLibraryPresentation.safetyState(for: record, in: transferJournal.records) == .safeToErase else {
             return "Only a verified card that is safe to erase can be ejected."
         }
         // Claim the card before the first await so a second call arriving
@@ -2909,7 +2937,7 @@ class SharedAppCoordinator: ObservableObject {
             try Task.checkCancellation()
             guard let current = transferJournal.records.first(where: { $0.id == id }),
                   current.source.bookmark == record.source.bookmark,
-                  TransferLibraryPresentation.safetyState(for: current) == .safeToErase else {
+                  TransferLibraryPresentation.safetyState(for: current, in: transferJournal.records) == .safeToErase else {
                 access.release()
                 return "The saved transfer changed. Review its results before ejecting."
             }
@@ -3463,7 +3491,7 @@ class SharedAppCoordinator: ObservableObject {
               record.state != .queued, record.state != .running else {
             throw CompletionExportError.noFinishedTransfer
         }
-        return try TransferHistoryDocument(record: record, asCSV: asCSV)
+        return try TransferHistoryDocument(record: record, history: transferJournal.records, asCSV: asCSV)
     }
     
     // MARK: - Mode Management

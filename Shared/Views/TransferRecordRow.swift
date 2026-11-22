@@ -3,21 +3,24 @@ import BitMatchEngine
 
 struct TransferRecordRow<Trailing: View>: View {
     let record: LocalTransferRecord
+    let history: [LocalTransferRecord]
     let clipMatchLine: String?
     @ViewBuilder var trailing: () -> Trailing
 
     init(
         record: LocalTransferRecord,
+        history: [LocalTransferRecord],
         clipMatchLine: String? = nil,
         @ViewBuilder trailing: @escaping () -> Trailing
     ) {
         self.record = record
+        self.history = history
         self.clipMatchLine = clipMatchLine
         self.trailing = trailing
     }
 
     var body: some View {
-        let presentation = TransferLibraryPresentation.rowPresentation(for: record)
+        let presentation = TransferLibraryPresentation.rowPresentation(for: record, in: history)
         let state = presentation.stateLabel
         let detail = presentation.detailLine
         return HStack(alignment: .center, spacing: 10) {

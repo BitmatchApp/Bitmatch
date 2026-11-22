@@ -451,6 +451,69 @@ struct FanOutTests {
         }
     }
 
+    @Test func recopyRetainsSourceInstabilityReason() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try FanOutFixture(name: "recopy-source-unstable")
+            defer { fixture.cleanup() }
+            try fixture.write(Data(repeating: 0x33, count: 4096), to: "clip.bin")
+            let reads = Mutex(0)
+            let hooks = DestinationWriter.FanOutHooks(sourceDidRead: { _, data in
+                let first = reads.withLock { count in
+                    count += 1
+                    return count == 1
+                }
+                if first {
+                    var corrupted = data
+                    if !corrupted.isEmpty { corrupted[corrupted.startIndex] ^= 0xff }
+                    return corrupted
+                }
+                throw NSError(domain: "fixture", code: 1,
+                    userInfo: [ResultFailureReason.userInfoKey: ResultFailureReason.sourceUnstable.rawValue])
+            })
+            let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .thorough, settings: CameraLabelSettings(),
+                progressCallback: { _ in }, onFileResult: nil)
+            let failed = try #require(operation.results.first { $0.recopyOutcome == "stillFailed" })
+            #expect(!failed.success)
+            #expect(failed.failureReason == ResultFailureReason.sourceUnstable.rawValue)
+            #expect(failed.verificationResult == nil)
+        }
+    }
+
+    @Test func sourceOpenFailureIsSeparateFromBackupFailure() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try FanOutFixture(name: "source-open-failure")
+            defer { fixture.cleanup() }
+            try fixture.write(Data("original".utf8), to: "clip.bin")
+            let hooks = DestinationWriter.FanOutHooks(beforeSourceOpen: { _ in
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+            })
+            let operation = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                verificationMode: .standard, settings: CameraLabelSettings(),
+                progressCallback: { _ in }, onFileResult: nil)
+            #expect(!operation.results.isEmpty)
+            #expect(operation.results.allSatisfy { !$0.success && $0.failureReason == ResultFailureReason.sourceReadFailed.rawValue })
+            #expect(!fixture.verdict(for: operation, settings: CameraLabelSettings()).success)
+        }
+    }
+
+    @Test func cancellationAtSourceOpenIsNotAReadFailure() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try FanOutFixture(name: "source-open-cancel")
+            defer { fixture.cleanup() }
+            try fixture.write(Data("original".utf8), to: "clip.bin")
+            let hooks = DestinationWriter.FanOutHooks(beforeSourceOpen: { _ in throw CancellationError() })
+            await #expect(throws: CancellationError.self) {
+                _ = try await fixture.pipeline(hooks: hooks).performFileOperation(
+                    sourceURL: fixture.source, destinationURLs: fixture.destinations,
+                    verificationMode: .standard, settings: CameraLabelSettings(),
+                    progressCallback: { _ in }, onFileResult: nil)
+            }
+        }
+    }
+
     /// Plant: corruption repeats. The re-copy also fails, is marked under
     /// the occupied-name rule, and nothing is claimed verified.
     @Test

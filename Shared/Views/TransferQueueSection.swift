@@ -1045,7 +1045,7 @@ struct TransferQueueSection: View {
             return
         }
         do {
-            exportDocument = try TransferHistoryDocument(record: record, asCSV: asCSV)
+            exportDocument = try TransferHistoryDocument(record: record, history: coordinator.transferJournal.records, asCSV: asCSV)
             exportType = asCSV ? .commaSeparatedText : .json
             showingExporter = true
         } catch { errorMessage = error.localizedDescription }

@@ -56,9 +56,16 @@ extension TransferOutcomePresentation {
             && coordinator.transferJournal.persistenceError != nil
             && !coordinator.isOperationInProgress
             && coordinator.operationState == .failed
+        let history = coordinator.transferJournal.records
         let displayedState = journalWriteFailed
             ? OperationState.failed
-            : record.flatMap { recordedState(for: $0) } ?? coordinator.operationState
+            : record.flatMap { recordedState(for: $0, in: history) } ?? coordinator.operationState
+        // A verified retry keeps an earlier attempt's source fault, and a
+        // chain that cannot be walked is not evidence the card read fine.
+        let lineageAssessment = record.map { SourceFaultLineage.assess(for: $0, in: history) }
+            ?? SourceFaultLineage.Assessment.noFaultObserved
+        let priorSourceFault = !lineageAssessment.faults.isEmpty
+        let lineageIncomplete = lineageAssessment.preventsSafeToEraseClaim && !priorSourceFault
         return make(
             // The journal is the durable terminal outcome. An unexpected
             // interruption may leave the live state `.failed`, but its saved
@@ -81,20 +88,33 @@ extension TransferOutcomePresentation {
             sourceName: record?.title ?? coordinator.sourceURL?.lastPathComponent ?? "",
             completionReason: journalWriteFailed
                 ? "Could not save transfer results. Keep the source and review History."
-                : record.map { recordedCompletionReason(for: $0) }
-                    ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
+                : priorSourceFault
+                    ? "An earlier attempt could not read this card reliably. This backup verified, but do not erase the card."
+                    : lineageIncomplete
+                        ? "The record of earlier attempts is incomplete. This backup verified, but do not erase the card."
+                        : record.map { recordedCompletionReason(for: $0) }
+                            ?? (coordinator.operationState == .failed ? coordinator.queueMessage : nil),
             independentDestinationCount: record?.independentDestinationCount,
             selectedFileVerificationQualified: record.map {
                 hasVerifiedSelectedFiles($0)
-            } ?? false
+            } ?? false,
+            priorSourceFault: priorSourceFault,
+            lineageIncomplete: lineageIncomplete
         )
     }
 
     /// Translate a saved attempt into presentation state without treating an
     /// interrupted process as a user-requested cancellation in the journal.
+    /// Lineage-blind form for callers that apply the lineage downgrade
+    /// themselves (TransferFinishNotice takes it as parameters). Anything
+    /// that shows a verdict must use the history-aware form.
     static func recordedState(for record: LocalTransferRecord) -> OperationState? {
+        recordedState(for: record, in: [record])
+    }
+
+    static func recordedState(for record: LocalTransferRecord, in history: [LocalTransferRecord]) -> OperationState? {
         let reason = recordedCompletionReason(for: record)
-        switch TransferLibraryPresentation.safetyState(for: record) {
+        switch TransferLibraryPresentation.safetyState(for: record, in: history) {
         case .safeToErase:
             return .completed(.init(success: true, message: reason))
         case .copiedNotVerified:

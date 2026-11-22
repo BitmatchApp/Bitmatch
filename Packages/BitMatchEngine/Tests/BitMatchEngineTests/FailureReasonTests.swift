@@ -62,6 +62,22 @@ import Testing
         #expect(summary(["companionConflict"]).contains("Turn on Ignore AppleDouble metadata files"))
     }
 
+    @Test func summaryDistinguishesAnUnstableSource() {
+        #expect(summary(["sourceUnstable"]).contains("the card changed or could not be read consistently"))
+        #expect(summary(["sourceReadFailed"]).contains("the card could not be read"))
+    }
+
+    @Test func exportedEvidenceRetainsClassifiedSourceFailure() throws {
+        let row = ResultRow(path: "/card/a.mov", status: ResultOutcome.failed.statusText, size: 1,
+                            checksum: nil, destination: "T9", failureReason: "sourceUnstable")
+        let item = JSONReportItem(from: row)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(item)) as? [String: Any])
+        #expect(object["failureReason"] as? String == "sourceUnstable")
+        let csv = try EvidenceWriter.makeEnhancedCSV(results: [row], started: Date(timeIntervalSince1970: 0),
+            duration: 1, filesPerSecond: 0, project: nil)
+        #expect(csv.contains("the card changed or could not be read consistently"))
+    }
+
     @Test func summaryStaysPlainWhenReasonsDiffer() {
         #expect(!summary(["outOfSpace", nil]).contains("ran out of space"))
         #expect(!summary(["outOfSpace", "companionConflict"]).contains("ran out of space"))

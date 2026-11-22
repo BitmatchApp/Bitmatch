@@ -90,7 +90,7 @@ struct ReportThumbnailTests {
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
         record.state = .issues; record.summary = "Keep the source"; record.results = [row]
         try FileManager.default.removeItem(at: source)
-        let data = try await ReportExporter.historyPDF(record: record, includeThumbnails: true)
+        let data = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: true)
         let pdf = try #require(PDFDocument(data: data))
         let text = try #require(pdf.string)
         #expect(text.contains("Clip preview"))
@@ -124,7 +124,7 @@ struct ReportThumbnailTests {
         record.state = .issues
         record.results = [row, ResultRow(path: "/original-card/proprietary.r3d", status: row.status, size: 20,
             checksum: "saved", destination: row.destination, destinationPath: nil)]
-        let data = try await ReportExporter.historyPDF(record: record, includeThumbnails: false)
+        let data = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)
         let text = try #require(PDFDocument(data: data)?.string)
         #expect(text.contains("proprietary.r3d"))
         #expect(text.contains("preview.mp4"))
