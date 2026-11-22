@@ -25,7 +25,7 @@ struct BackupIndependencePolicyTests {
         #expect(result.resolvedIdentityGroupCount == 1)
         #expect(result.unresolvedDestinationCount == 0)
         #expect(result.physicalSeparationNote == nil)
-        #expect(result.warnings == ["SHUTTLE A and SHUTTLE B are on the same physical drive — they count as one backup"])
+        #expect(result.warnings == ["SHUTTLE A and SHUTTLE B appear to be on the same drive — they count as one backup"])
     }
 
     @Test func distinctOrUnknownPhysicalDrivesDoNotCollapse() {
@@ -46,20 +46,21 @@ struct BackupIndependencePolicyTests {
         #expect(result.warnings.isEmpty)
     }
 
-    /// Safety gates must use the proven count: unresolved identity never
-    /// satisfies a required copy count, however the policy count reads.
-    @Test func provenCountExcludesUnresolvedDestinations() {
+    /// Safety gates use the resolved-group count: unresolved identity never
+    /// satisfies a required copy count, however the policy count reads. A
+    /// resolved group is not proof of a physically separate device.
+    @Test func resolvedGroupCountExcludesUnresolvedDestinations() {
         let first = URL(fileURLWithPath: "/Volumes/A")
         let second = URL(fileURLWithPath: "/Volumes/B")
         let third = URL(fileURLWithPath: "/Volumes/C")
         let unknown = BackupIndependencePolicy.assess(
             destinations: [first, second], provider: FakeProvider(identities: [:]))
-        #expect(unknown.provenIndependentCopyCount == 0)
+        #expect(unknown.resolvedIdentityCopyCount == 0)
         #expect(unknown.independentCopyCount == 2)
         let mixed = BackupIndependencePolicy.assess(
             destinations: [first, second, third],
             provider: FakeProvider(identities: [first.path: "disk4", second.path: "disk4"]))
-        #expect(mixed.provenIndependentCopyCount == 1)
+        #expect(mixed.resolvedIdentityCopyCount == 1)
         #expect(mixed.independentCopyCount == 2)
     }
 
@@ -96,5 +97,18 @@ struct BackupIndependencePolicyTests {
         #expect(SystemPhysicalDiskIdentityProvider.wholeDiskName("disk12s2s1") == "disk12")
         #expect(SystemPhysicalDiskIdentityProvider.wholeDiskName("disk7") == "disk7")
         #expect(SystemPhysicalDiskIdentityProvider.wholeDiskName("network-share") == "network-share")
+    }
+
+    /// A mount or BSD name says nothing about the stores behind a network
+    /// share, and missing locality is not evidence either.
+    @Test(arguments: [false, nil] as [Bool?])
+    func nonLocalOrUnknownLocalityNeverResolves(locality: Bool?) {
+        let provider = SystemPhysicalDiskIdentityProvider(volumeIsLocal: { _ in locality })
+        #expect(provider.physicalDiskIdentity(for: FileManager.default.temporaryDirectory) == nil)
+    }
+
+    @Test func localVolumeStillResolves() {
+        let provider = SystemPhysicalDiskIdentityProvider(volumeIsLocal: { _ in true })
+        #expect(provider.physicalDiskIdentity(for: FileManager.default.temporaryDirectory) != nil)
     }
 }
