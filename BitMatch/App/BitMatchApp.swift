@@ -42,6 +42,8 @@ struct BitMatchApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
     @StateObject private var environment: MacAppEnvironment
     @StateObject private var updater: UpdaterController
+    @StateObject private var welcomeGreeting: WelcomeGreeting
+    @StateObject private var welcomeWindow: WelcomeWindowController
     @State private var menuBarExtraIsInserted = true
     #if DEBUG
     @ObservedObject private var devModeManager = DevModeManager.shared
@@ -79,6 +81,9 @@ struct BitMatchApp: App {
         #endif
         _environment = StateObject(wrappedValue: environment)
         _updater = StateObject(wrappedValue: UpdaterController(coordinator: environment.coordinator))
+        let welcomeGreeting = WelcomeGreeting()
+        _welcomeGreeting = StateObject(wrappedValue: welcomeGreeting)
+        _welcomeWindow = StateObject(wrappedValue: WelcomeWindowController(greeting: welcomeGreeting))
         appDelegate.coordinator = environment.coordinator
         UNUserNotificationCenter.current().delegate = notifDelegate
     }
@@ -107,6 +112,15 @@ struct BitMatchApp: App {
                     updater.checkForUpdates()
                 }
                 .disabled(!updater.canCheckForUpdates)
+            }
+
+            CommandGroup(replacing: .help) {
+                Button("Welcome to BitMatch") {
+                    welcomeWindow.show()
+                }
+                Button("BitMatch on GitHub") {
+                    NSWorkspace.shared.open(WelcomeGreeting.repositoryURL)
+                }
             }
 
             OperationCommands()
@@ -237,6 +251,26 @@ struct BitMatchApp: App {
                 isInterfaceLab: launchesInterfaceLab
             ) {
                 window.center()
+            }
+            scheduleWelcomeIfNeeded()
+        }
+    }
+
+    /// Once the main window is up, give it a moment, then greet a first-time
+    /// person. The greeting decides once per launch and skips a launch that is
+    /// already transferring; see WelcomeGreeting.
+    private func scheduleWelcomeIfNeeded() {
+        guard !launchesInterfaceLab else { return }
+#if DEBUG
+        if MacUnitTestHost.isRunning() { return }
+#endif
+        let coordinator = environment.coordinator
+        Task { @MainActor in
+            try? await Task.sleep(for: WelcomeGreeting.launchDelay)
+            welcomeGreeting.presentAtLaunchIfNeeded(
+                transferIsRunning: coordinator.isOperationInProgress || coordinator.queueIsRunning
+            ) {
+                welcomeWindow.show()
             }
         }
     }
