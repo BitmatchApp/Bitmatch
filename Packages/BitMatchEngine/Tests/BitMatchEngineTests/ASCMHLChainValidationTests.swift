@@ -22,6 +22,26 @@ struct ASCMHLChainValidationTests {
             .filter { $0.pathExtension == "mhl" && !$0.lastPathComponent.hasPrefix("._") }.sorted { $0.path < $1.path }
     }
 
+    @Test func offloaderChainChecksEmptyAndUnicodeFiles() async throws {
+        let bundled = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/EvidenceCompatibility/asc-offloader/media")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-offloader-asc-\(UUID())")
+        try FileManager.default.copyItem(at: bundled, to: root)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let before = try snapshot(root)
+        let discovery = try await checker.discover(under: root)
+        #expect(discovery.chainEvidence.count == 1)
+        let result = try await checker.check(discovery) { _ in }
+        #expect(result.isIntact)
+        #expect(Set(result.matchingPaths) == ["empty.mov", "café clip.txt"])
+        #expect(result.validatedHistoryDirectories == [root.appendingPathComponent("ascmhl")])
+        #expect(try snapshot(root) == before)
+
+        let manifest = try #require(manifests(root).first)
+        try (Data(contentsOf: manifest) + Data("<!-- changed -->".utf8)).write(to: manifest)
+        await #expect(throws: (any Error).self) { _ = try await checker.discover(under: root) }
+    }
+
     @Test(arguments: ["md5", "xxh64", "xxh64-boundaries", "bitmatch-fat-extended"])
     func independentReferenceChainsAreReadOnly(dataset: String) async throws {
         let root = try copy(dataset)
