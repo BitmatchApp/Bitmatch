@@ -48,6 +48,9 @@ final class CameraLabelModel: ObservableObject {
     /// synchronous stages; a superseded detection's late result is still
     /// discarded by generation below.
     private static let detectionWorker = DriveAccessWorker(maxConcurrent: 2, maxQueued: 8, useBlockingThreads: true)
+    /// Keys are per model: the worker is shared, and two models' equal
+    /// generation numbers must never cancel each other.
+    private let jobNamespace = UUID().uuidString
 
     private struct DetectionOutcome: Sendable {
         let detectedName: String?
@@ -60,13 +63,18 @@ final class CameraLabelModel: ObservableObject {
         // publish.
         let generation = supersedeDetection()
         let worker = Self.detectionWorker
+        let jobNamespace = jobNamespace
         detectionTask = Task { [weak self] in
             let outcome: DetectionOutcome
             do {
                 outcome = try await worker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: url)],
-                    jobKey: "camera-detection.\(generation)"
+                    jobKey: "camera-detection.\(jobNamespace).\(generation)"
                 ) { check in
+                    // The job keeps its own access until it returns; the
+                    // caller may have moved on by then.
+                    let scoped = url.startAccessingSecurityScopedResource()
+                    defer { if scoped { url.stopAccessingSecurityScopedResource() } }
                     let isCancelled: @Sendable () -> Bool = {
                         do { try check(); return false } catch { return true }
                     }

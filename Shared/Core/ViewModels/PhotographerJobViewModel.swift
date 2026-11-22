@@ -339,6 +339,8 @@ final class PhotographerJobViewModel: ObservableObject {
                 let analysis = try await Self.preparationWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: standardizedSource)], jobKey: workerKey
                 ) { check in
+                    let scoped = standardizedSource.startAccessingSecurityScopedResource()
+                    defer { if scoped { standardizedSource.stopAccessingSecurityScopedResource() } }
                     let entries = try enumerator(standardizedSource, check)
                     try check()
                     let analysis = try analyzer(entries)

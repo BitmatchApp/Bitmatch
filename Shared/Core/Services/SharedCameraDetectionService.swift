@@ -57,7 +57,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                         manufacturer: make,
                         model: modelFromHint,
                         fileCount: fileURLs.count,
-                        totalSize: calculateTotalSize(fileURLs),
+                        totalSize: try await calculateTotalSize(fileURLs),
                         detectionConfidence: confidence,
                         metadata: metadata,
                         volumeURL: folderURL,
@@ -156,7 +156,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                         manufacturer: finalManufacturer,
                         model: finalModel,
                         fileCount: fileURLs.count,
-                        totalSize: calculateTotalSize(fileURLs),
+                        totalSize: try await calculateTotalSize(fileURLs),
                         detectionConfidence: confidence,
                         metadata: metadata,
                         volumeURL: folderURL,
@@ -165,12 +165,15 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                     )
                 } else {
                     let cleanName = Self.cameraCardName(manufacturer: finalManufacturer, model: finalModel)
+                    let totalSize: Int64
+                    if let known = detectedCard?.totalSize { totalSize = known }
+                    else { totalSize = try await calculateTotalSize(fileURLs) }
                     detectedCard = CameraCard(
                         name: cleanName,
                         manufacturer: finalManufacturer,
                         model: finalModel,
                         fileCount: detectedCard?.fileCount ?? fileURLs.count,
-                        totalSize: detectedCard?.totalSize ?? calculateTotalSize(fileURLs),
+                        totalSize: totalSize,
                         detectionConfidence: confidence,
                         metadata: metadata.merging(detectedCard?.metadata ?? [:]) { a, _ in a },
                         volumeURL: folderURL,
@@ -227,14 +230,28 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
     }
     
     func analyzeFolderStructure(at url: URL) async throws -> [String: Any] {
+        // Whole-tree walk on a card: blocking work, cancellable between entries.
+        let counted: (files: Int, folders: Int, extensions: Set<String>) =
+            try await BoundedBlockingExecutor.shared.performCancellable { check in
+                try Self.countTree(at: url, checkCancellation: check)
+            }
         var structure: [String: Any] = [:]
-        
+        structure["total_files"] = counted.files
+        structure["total_folders"] = counted.folders
+        structure["file_extensions"] = Array(counted.extensions).sorted()
+        structure["folder_name"] = url.lastPathComponent
+        return structure
+    }
+
+    private static func countTree(at url: URL, checkCancellation: @Sendable () throws -> Void) throws
+        -> (files: Int, folders: Int, extensions: Set<String>) {
         let enumerator = FileManager.default.enumerator(at: url, includingPropertiesForKeys: nil)
         var fileCount = 0
         var folderCount = 0
         var extensions: Set<String> = []
         
         while let fileURL = enumerator?.nextObject() as? URL {
+            try checkCancellation()
             let isDirectory = (try? fileURL.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory ?? false
             
             if isDirectory {
@@ -244,13 +261,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                 extensions.insert(fileURL.pathExtension.lowercased())
             }
         }
-        
-        structure["total_files"] = fileCount
-        structure["total_folders"] = folderCount
-        structure["file_extensions"] = Array(extensions).sorted()
-        structure["folder_name"] = url.lastPathComponent
-        
-        return structure
+        return (fileCount, folderCount, extensions)
     }
     
     func extractVideoMetadata(from fileURL: URL) async throws -> [String: Any] {
@@ -317,10 +328,11 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
     // MARK: - Private Helper Methods
     
     private func getFileList(from folderURL: URL) async throws -> [URL] {
-        try await BoundedBlockingExecutor.shared.perform {
+        try await BoundedBlockingExecutor.shared.performCancellable { check in
             let enumerator = FileManager.default.enumerator(at: folderURL, includingPropertiesForKeys: [.isRegularFileKey])
             var fileURLs: [URL] = []
             while let url = enumerator?.nextObject() as? URL {
+                try check()
                 let resourceValues = try url.resourceValues(forKeys: [.isRegularFileKey])
                 if resourceValues.isRegularFile == true {
                     fileURLs.append(url)
@@ -423,10 +435,16 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
         return videoExtensions.contains(url.pathExtension.lowercased())
     }
     
-    private func calculateTotalSize(_ fileURLs: [URL]) -> Int64 {
-        return fileURLs.compactMap { url in
-            try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64
-        }.reduce(0, +)
+    private func calculateTotalSize(_ fileURLs: [URL]) async throws -> Int64 {
+        // One attribute read per file is still a card read per file.
+        try await BoundedBlockingExecutor.shared.performCancellable { check in
+            var total: Int64 = 0
+            for url in fileURLs {
+                try check()
+                total += (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+            }
+            return total
+        }
     }
 }
 
