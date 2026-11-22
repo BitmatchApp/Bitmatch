@@ -20,6 +20,19 @@ final class WelcomeWindowController: NSObject, ObservableObject, NSWindowDelegat
     init(greeting: WelcomeGreeting, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
         self.greeting = greeting
         self.openURL = openURL
+        super.init()
+        // Quitting does not close windows, so a person who reads the note and
+        // presses Cmd-Q would see it again next launch. Treat quit as read.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(applicationWillTerminate(_:)),
+            name: NSApplication.willTerminateNotification,
+            object: nil
+        )
+    }
+
+    deinit {
+        NotificationCenter.default.removeObserver(self)
     }
 
     /// Creates the panel on first use and brings it forward on every call.
@@ -32,6 +45,11 @@ final class WelcomeWindowController: NSObject, ObservableObject, NSWindowDelegat
 
     func openRepository() {
         openURL(WelcomeGreeting.repositoryURL)
+    }
+
+    @objc private func applicationWillTerminate(_ notification: Notification) {
+        guard panel?.isVisible == true else { return }
+        greeting.markShown()
     }
 
     func windowWillClose(_ notification: Notification) {

@@ -67,6 +67,23 @@ struct WelcomeWindowControllerTests {
         #expect(box.defaults.bool(forKey: WelcomeGreeting.shownKey))
     }
 
+    @Test func quittingWithThePanelOpenMarksGreetingShown() throws {
+        let box = try DefaultsBox()
+        let (greeting, controller) = makeController(defaults: box.defaults)
+        controller.show()
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        #expect(greeting.hasBeenShown)
+        #expect(box.defaults.bool(forKey: WelcomeGreeting.shownKey))
+        controller.panel?.close()
+    }
+
+    @Test func quittingWithoutThePanelLeavesGreetingUnseen() throws {
+        let box = try DefaultsBox()
+        let (greeting, _) = makeController(defaults: box.defaults)
+        NotificationCenter.default.post(name: NSApplication.willTerminateNotification, object: NSApp)
+        #expect(greeting.hasBeenShown == false)
+    }
+
     @Test func starButtonOpensRepositoryURL() throws {
         let box = try DefaultsBox()
         var opened: [URL] = []
