@@ -2200,7 +2200,9 @@ class SharedAppCoordinator: ObservableObject {
                 for destination in destinationURLs {
                     try Task.checkCancellation()
                     if let refusal = BackupTargetPolicy.refusal(for: destination, origin: .userChoice, source: queuedSource) {
-                        throw FileOperationError.unsafeOperation(refusal)
+                        // Tagged at the source so the failure handler below
+                        // never has to guess which step refused.
+                        throw Self.queuePreparationError(refusal, reason: .backupRefused)
                     }
                 }
             }
@@ -2224,7 +2226,16 @@ class SharedAppCoordinator: ObservableObject {
                 }
             }
             queuedSourceScanTask = sourceScan
-            let sourceManifest = try await sourceScan.value
+            let sourceManifest: [FileEntry]
+            do {
+                sourceManifest = try await sourceScan.value
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // The card could not be enumerated: a source read failure the
+                // record must remember, so a later verified retry still warns.
+                throw Self.queuePreparationError(error.localizedDescription, reason: .sourceReadFailed, underlying: error)
+            }
             try requireCurrentQueuePreparation(invocationID)
             queuedSourceScanTask = nil
             // An empty queued card fails its own record and stops the queue
@@ -2265,8 +2276,13 @@ class SharedAppCoordinator: ObservableObject {
         } catch {
             queueIsRunning = false
             queueMessage = error.localizedDescription
+            // Only a failure that tagged itself is classified. Anything else
+            // (an empty card, an unexpected error) stays unexplained, and a
+            // later retry cannot call the card safe on its own.
+            let reason = ((error as NSError).userInfo[ResultFailureReason.userInfoKey] as? String)
+                .flatMap(ResultFailureReason.init(rawValue:))
             do {
-                try transferJournal.fail(id: record.id, summary: error.localizedDescription, reason: .backupRefused)
+                try transferJournal.fail(id: record.id, summary: error.localizedDescription, reason: reason)
                 handleAttemptTerminal(recordID: record.id)
             } catch {
                 pauseQueueAttempt(
@@ -2292,6 +2308,13 @@ class SharedAppCoordinator: ObservableObject {
         for phase in ["replay-stale", "replay", "replay-policy"] {
             driveAccessWorker.cancel(jobKey: driveJobNamespace + ".\(phase).\(invocationID)")
         }
+    }
+
+    /// A queue-preparation failure that carries its classification.
+    nonisolated private static func queuePreparationError(_ message: String, reason: ResultFailureReason, underlying: Error? = nil) -> NSError {
+        var info: [String: Any] = [NSLocalizedDescriptionKey: message, ResultFailureReason.userInfoKey: reason.rawValue]
+        if let underlying { info[NSUnderlyingErrorKey] = underlying as NSError }
+        return NSError(domain: "SharedAppCoordinator.queuePreparation", code: 1, userInfo: info)
     }
 
     private static func isQueueProblem(_ record: LocalTransferRecord, in records: [LocalTransferRecord]) -> Bool {

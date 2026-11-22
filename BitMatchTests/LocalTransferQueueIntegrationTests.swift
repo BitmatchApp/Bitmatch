@@ -1463,6 +1463,50 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.queuePresentation.tally.needsAttention, 1)
     }
 
+    /// The queued card could not be enumerated at all. That is a source
+    /// read failure the record keeps, so a later verified retry still warns.
+    func testRetryAfterFailedSourceScanKeepsTheCardUnsafe() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        var reports = ReportPrefs()
+        reports.makeReport = false
+        let originalID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared
+            )),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        // The card itself is connected and opens, but a folder on it cannot
+        // be read: enumeration fails after admission, which is a card read
+        // failure, not "not connected".
+        let locked = f.source.appendingPathComponent("LOCKED")
+        try FileManager.default.createDirectory(at: locked, withIntermediateDirectories: true)
+        try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: locked.path)
+        coordinator.startQueue()
+        let failed = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            journal.records.first(where: { $0.id == originalID })?.state == .failed
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: locked.path)
+        try FileManager.default.removeItem(at: locked)
+        XCTAssertTrue(failed)
+        XCTAssertEqual(journal.records.first(where: { $0.id == originalID })?.failureReason,
+                       ResultFailureReason.sourceReadFailed.rawValue)
+        coordinator.retryTransfer(originalID)
+        let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+                && journal.records.contains(where: { $0.id != originalID && $0.state == .completed })
+        }
+        XCTAssertTrue(finished)
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+        XCTAssertEqual(coordinator.queuePresentation.tally.needsAttention, 1)
+    }
+
     func testRetryReplacesVisibleCardAndSingleSuccessUsesNormalFinish() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
