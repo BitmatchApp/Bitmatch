@@ -1391,6 +1391,13 @@ final class InMemoryPhotographerJobStore: PhotographerJobStore {
 
     func presets() throws -> [PhotographerPreset] { storedPresets }
 
+    func addPresetsAtomically(_ additions: [PhotographerPreset]) throws {
+        if let errorOnSave { throw errorOnSave }
+        let ids = storedPresets.map(\.id) + additions.map(\.id)
+        guard Set(ids).count == ids.count else { throw PortableRecipeImportError.duplicateID }
+        storedPresets.append(contentsOf: additions)
+    }
+
     func save(_ preset: PhotographerPreset) throws {
         if let index = storedPresets.firstIndex(where: { $0.id == preset.id }) {
             storedPresets[index] = preset
