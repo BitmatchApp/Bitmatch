@@ -310,6 +310,9 @@ struct PhotographerReportContext: Codable, Equatable, Sendable {
     /// Caps verified destinations when several folders share one physical
     /// drive. Nil preserves records and call sites from older versions.
     var independentDestinationCount: Int? = nil
+    /// An earlier attempt at this card could not read it, or failed without
+    /// saying why. This run's backups may verify; the card is not safe.
+    var priorSourceFault: Bool = false
 }
 
 enum PhotographerReportError: Error, Equatable {
@@ -590,6 +593,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
             && originalPaths.count == card.fileCount
             && identifiedRows.count == results.count
             && independentCount >= context.job.requiredLocalCopyCount
+            && !context.priorSourceFault
             && groups.values.allSatisfy { rows in
                 rows.count == expectedPaths.count
                     && Set(rows.map(\.path)) == expectedSet

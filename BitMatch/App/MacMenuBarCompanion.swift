@@ -271,7 +271,7 @@ struct MenuBarRecentTransfer: Equatable {
 
     static func status(for record: LocalTransferRecord, history: [LocalTransferRecord]) -> (text: String, needsAttention: Bool)? {
         guard record.state != .queued, record.state != .running else { return nil }
-        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: history) {
             return ("Selected files verified", false)
         }
         return switch TransferLibraryPresentation.safetyState(for: record, in: history) {

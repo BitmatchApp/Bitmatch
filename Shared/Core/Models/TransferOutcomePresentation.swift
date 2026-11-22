@@ -161,6 +161,13 @@ struct TransferOutcomePresentation: Equatable, Sendable {
 
     /// Reuse the saved classifier, exact selected-plan and final-handoff proof.
     /// A legacy status string or an empty digest cannot establish this result.
+    /// The selected-files claim is quiet and gray, so it must not hide an
+    /// earlier attempt's card fault: with the history in view it holds only
+    /// when the lineage would also allow a safe claim.
+    static func hasVerifiedSelectedFiles(_ record: LocalTransferRecord, in records: [LocalTransferRecord]) -> Bool {
+        hasVerifiedSelectedFiles(record) && !SourceFaultLineage.assess(for: record, in: records).preventsSafeToEraseClaim
+    }
+
     static func hasVerifiedSelectedFiles(_ record: LocalTransferRecord) -> Bool {
         TransferJournal.permitsExpectedExclusionQueueContinuation(record)
             && record.results.allSatisfy {

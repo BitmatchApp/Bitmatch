@@ -34,8 +34,11 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
             // "Professional Camera").
             var brandLocked = false
             // Fast path: use orchestrator’s folder/name heuristics on every platform.
-            let orchestrated = try await BoundedBlockingExecutor.shared.perform {
-                Self.withScope(folderURL) { CameraDetectionOrchestrator.shared.detectCamera(at: folderURL, layout: layout) }
+            let orchestrated = try await BoundedBlockingExecutor.shared.performCancellable { check in
+                let isCancelled: @Sendable () -> Bool = { (try? check()) == nil }
+                return Self.withScope(folderURL) {
+                    CameraDetectionOrchestrator.shared.detectCamera(at: folderURL, layout: layout, isCancelled: isCancelled)
+                }
             }
             if let orchestrated {
                 metadata["orchestrator_hint"] = orchestrated
@@ -57,7 +60,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                         manufacturer: make,
                         model: modelFromHint,
                         fileCount: fileURLs.count,
-                        totalSize: try await calculateTotalSize(fileURLs),
+                        totalSize: try await calculateTotalSize(fileURLs, within: folderURL),
                         detectionConfidence: confidence,
                         metadata: metadata,
                         volumeURL: folderURL,
@@ -156,7 +159,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                         manufacturer: finalManufacturer,
                         model: finalModel,
                         fileCount: fileURLs.count,
-                        totalSize: try await calculateTotalSize(fileURLs),
+                        totalSize: try await calculateTotalSize(fileURLs, within: folderURL),
                         detectionConfidence: confidence,
                         metadata: metadata,
                         volumeURL: folderURL,
@@ -167,7 +170,7 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
                     let cleanName = Self.cameraCardName(manufacturer: finalManufacturer, model: finalModel)
                     let totalSize: Int64
                     if let known = detectedCard?.totalSize { totalSize = known }
-                    else { totalSize = try await calculateTotalSize(fileURLs) }
+                    else { totalSize = try await calculateTotalSize(fileURLs, within: folderURL) }
                     detectedCard = CameraCard(
                         name: cleanName,
                         manufacturer: finalManufacturer,
@@ -446,17 +449,19 @@ final class SharedCameraDetectionService: CameraDetectionService, Sendable {
         return videoExtensions.contains(url.pathExtension.lowercased())
     }
     
-    private func calculateTotalSize(_ fileURLs: [URL]) async throws -> Int64 {
-        // One attribute read per file is still a card read per file.
+    private func calculateTotalSize(_ fileURLs: [URL], within folderURL: URL) async throws -> Int64 {
+        // One attribute read per file is still a card read per file. The
+        // scope belongs to the picked folder; enumerated children carry none
+        // of their own on iOS.
         try await BoundedBlockingExecutor.shared.performCancellable { check in
-            var total: Int64 = 0
-            for url in fileURLs {
-                try check()
-                total += Self.withScope(url) {
-                    (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
+            try Self.withScope(folderURL) {
+                var total: Int64 = 0
+                for url in fileURLs {
+                    try check()
+                    total += (try? FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int64) ?? 0
                 }
+                return total
             }
-            return total
         }
     }
 }

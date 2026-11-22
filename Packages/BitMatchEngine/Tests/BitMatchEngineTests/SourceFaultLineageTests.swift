@@ -188,4 +188,24 @@ struct SourceFaultLineageTests {
         #expect(SourceFaultLineage.assess(for: afterUnreadable, in: [afterUnreadable, unreadable])
             == .priorFaultFound([.init(attemptID: unreadable.id, reasons: [ResultFailureReason.sourceReadFailed.rawValue])]))
     }
+
+    /// One explained row never explains another: a failed attempt with an
+    /// out-of-space row and a row that died for no recorded reason is unknown.
+    @Test func mixedExplainedAndUnexplainedRowsAreIncomplete() throws {
+        let first = try record(rows: [faultRow(.outOfSpace), failedRowWithoutReason()], state: .failed)
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .lineageIncomplete([]))
+        var explainedRecord = try record(rows: [failedRowWithoutReason()], state: .failed)
+        explainedRecord.failureReason = ResultFailureReason.backupRefused.rawValue
+        let retry2 = try record(retryOf: explainedRecord.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry2, in: [retry2, explainedRecord]) == .lineageIncomplete([]))
+    }
+
+    /// A cancelled attempt is the person's choice, but a row that failed
+    /// unexplained before the cancel is still unexplained.
+    @Test func cancelledAttemptWithAnUnexplainedRowIsIncomplete() throws {
+        let first = try record(rows: [successRow(), failedRowWithoutReason()], state: .cancelled)
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .lineageIncomplete([]))
+    }
 }

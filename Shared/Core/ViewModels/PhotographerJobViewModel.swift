@@ -331,6 +331,9 @@ final class PhotographerJobViewModel: ObservableObject {
         let enumerator = entryEnumerator
         let analyzer = preliminaryAnalyzer
         let workerKey = preparationWorkerKey
+        // The security scope belongs to the URL the person picked; a
+        // standardized copy drops it on iOS.
+        let scopeURL = sourceURL
         let standardizedSource = sourceURL.standardizedFileURL
         currentSourcePath = standardizedPath(standardizedSource)
         setupTask = Task { [weak self] in
@@ -339,8 +342,8 @@ final class PhotographerJobViewModel: ObservableObject {
                 let analysis = try await Self.preparationWorker.performCancellable(
                     mountKeys: [DriveAccessWorker.mountKey(for: standardizedSource)], jobKey: workerKey
                 ) { check in
-                    let scoped = standardizedSource.startAccessingSecurityScopedResource()
-                    defer { if scoped { standardizedSource.stopAccessingSecurityScopedResource() } }
+                    let scoped = scopeURL.startAccessingSecurityScopedResource()
+                    defer { if scoped { scopeURL.stopAccessingSecurityScopedResource() } }
                     let entries = try enumerator(standardizedSource, check)
                     try check()
                     let analysis = try analyzer(entries)
@@ -647,7 +650,8 @@ final class PhotographerJobViewModel: ObservableObject {
         cardID: UUID,
         analysis: CardAnalysis,
         results: [ResultRow],
-        independentDestinationCount: Int? = nil
+        independentDestinationCount: Int? = nil,
+        priorSourceFault: Bool = false
     ) throws -> PhotographerFinalizationResult {
         guard var job = jobForRun(jobID) else {
             throw PhotographerJobViewModelError.noActiveJob
@@ -666,7 +670,8 @@ final class PhotographerJobViewModel: ObservableObject {
             analysis: analysis,
             verifiedDestinationCount: currentCard.verifiedDestinationCount,
             warnings: duplicateWarning.map { [$0.message] } ?? [],
-            independentDestinationCount: independentDestinationCount
+            independentDestinationCount: independentDestinationCount,
+            priorSourceFault: priorSourceFault
         )
         // Compute before unsafe whole-card finalization clears the verified
         // destination count. The executor still has to prove these exclusions

@@ -292,6 +292,9 @@ private func taggingSourceReadFailure<T>(_ body: () async throws -> T) async thr
         return try await body()
     } catch is CancellationError {
         throw CancellationError()
+    } catch let error as BoundedBlockingExecutor.ExecutorError {
+        // Another drive is holding the executor: not a fault of this card.
+        throw error
     } catch {
         let original = error as NSError
         var info = original.userInfo

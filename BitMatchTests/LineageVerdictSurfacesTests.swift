@@ -99,4 +99,14 @@ struct LineageVerdictSurfacesTests {
         let status = MenuBarRecentTransfer.status(for: retry, history: all)
         #expect(status?.needsAttention == true)
     }
+
+    /// The one-record form is deliberately blind to lineage: a retry whose
+    /// own evidence verified reads as a success there, and callers apply
+    /// the downgrade themselves. Otherwise every retry would read as
+    /// needing attention simply because its predecessor is not in view.
+    @Test func oneRecordStateIsBlindToLineage() throws {
+        let (retry, all) = try history()
+        #expect(TransferOutcomePresentation.recordedState(for: retry) == .completed(.init(success: true, message: TransferOutcomePresentation.recordedCompletionReason(for: retry))))
+        #expect(TransferOutcomePresentation.recordedState(for: retry, in: all) != .completed(.init(success: true, message: TransferOutcomePresentation.recordedCompletionReason(for: retry))))
+    }
 }

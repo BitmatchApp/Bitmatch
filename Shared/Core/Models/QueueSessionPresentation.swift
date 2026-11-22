@@ -506,7 +506,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         } else {
             state = TransferLibraryPresentation.safetyState(for: record, in: history)
         }
-        let qualifiedSelection = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+        let qualifiedSelection = TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: history)
         let countedRows = qualifiedSelection ? record.results.filter {
             ResultOutcome(statusText: $0.status) != .excludedAppleDouble
         } : record.results
@@ -525,8 +525,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
             evidence = nil
         }
         let destinationNames = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
-        let cause = qualifiedSelection ? nil : cause(for: record, state: state)
-        let outcome = finishedOutcome(for: record, state: state)
+        let cause = qualifiedSelection ? nil : cause(for: record, state: state, history: history)
+        let outcome = finishedOutcome(for: record, state: state, history: history)
         let allFilesReused = state == .safeToErase
             && !record.results.isEmpty
             && record.results.allSatisfy { $0.isVerifiedStatus && $0.wasReused }
@@ -576,7 +576,8 @@ struct QueueSessionPresentation: Equatable, Sendable {
 
     private static func finishedOutcome(
         for record: LocalTransferRecord,
-        state: CardSafetyState
+        state: CardSafetyState,
+        history: [LocalTransferRecord]
     ) -> TransferOutcomePresentation? {
         guard record.state != .queued, record.state != .running else { return nil }
         let displayedReason = TransferOutcomePresentation.recordedCompletionReason(for: record)
@@ -599,6 +600,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         let sourceBytes = uniqueFiles.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
         let issueCount = record.results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count
         let duration = record.startedAt.flatMap { started in record.endedAt.map { $0.timeIntervalSince(started) } }
+        let lineage = SourceFaultLineage.assess(for: record, in: history)
         return TransferOutcomePresentation.make(
             state: operationState,
             rows: record.results,
@@ -620,13 +622,25 @@ struct QueueSessionPresentation: Equatable, Sendable {
             sourceName: record.title,
             completionReason: displayedReason,
             independentDestinationCount: record.independentDestinationCount,
-            selectedFileVerificationQualified: TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+            selectedFileVerificationQualified: TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: history),
+            priorSourceFault: !lineage.faults.isEmpty,
+            lineageIncomplete: lineage.preventsSafeToEraseClaim && lineage.faults.isEmpty
         )
     }
 
-    private static func cause(for record: LocalTransferRecord, state: CardSafetyState) -> String? {
+    private static func cause(for record: LocalTransferRecord, state: CardSafetyState, history: [LocalTransferRecord]) -> String? {
         guard state == .needsAttention || state == .failed || state == .interrupted else { return nil }
         if state == .needsAttention {
+            // Downgraded by an earlier attempt, not by this one's rows.
+            if TransferLibraryPresentation.safetyStateIgnoringLineage(for: record) == .safeToErase {
+                let assessment = SourceFaultLineage.assess(for: record, in: history)
+                if !assessment.faults.isEmpty {
+                    return "An earlier attempt could not read this card reliably · Keep the card"
+                }
+                if assessment.preventsSafeToEraseClaim {
+                    return "The record of earlier attempts is incomplete · Keep the card"
+                }
+            }
             if record.results.contains(where: { !$0.isSuccessStatus && $0.failureReason == ResultFailureReason.sourceUnstable.rawValue }) {
                 return "The card changed or could not be read consistently · Review all backups"
             }

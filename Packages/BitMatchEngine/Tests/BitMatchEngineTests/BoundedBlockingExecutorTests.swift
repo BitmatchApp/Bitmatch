@@ -200,6 +200,8 @@ struct BoundedBlockingExecutorTests {
     /// A saturated advisory pool must not delay transfer-critical work.
     @Test func transferPoolIsIndependentOfTheSharedPool() async throws {
         #expect(BoundedBlockingExecutor.transfer !== BoundedBlockingExecutor.shared)
+        #expect(BoundedBlockingExecutor.check !== BoundedBlockingExecutor.transfer)
+        #expect(BoundedBlockingExecutor.check !== BoundedBlockingExecutor.shared)
         let gates = [ExecutorGate(), ExecutorGate()]
         defer { gates.forEach { $0.release() } }
         let blockers = gates.map { gate in

@@ -30,6 +30,9 @@ final class LocalTransferJournal: ObservableObject {
     /// large queue's next render.
     static let completedQueueRowLimit = 64
     private var completedQueueRows: [UUID: QueueSessionRow] = [:]
+    /// The lineage each cached row was built with: a later change to an
+    /// earlier attempt (pruned, retried) must rebuild the row.
+    private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
     private var isRefreshingRecords = false
     /// Counts expensive derivations, so performance tests need no timing limit.
     private(set) var completedQueueRowBuildCount = 0
@@ -78,6 +81,7 @@ final class LocalTransferJournal: ObservableObject {
         // All record mutation goes through this owner, including failed calls.
         // Invalidate without comparing/hashing potentially huge result arrays.
         completedQueueRows.removeAll(keepingCapacity: true)
+        completedQueueRowLineage.removeAll(keepingCapacity: true)
         isRefreshingRecords = true
         defer { isRefreshingRecords = false }
         records = store.records
@@ -105,9 +109,13 @@ final class LocalTransferJournal: ObservableObject {
             let admittedIDs = Set(admitted.map(\.id))
             for id in completedQueueRows.keys where !admittedIDs.contains(id) {
                 completedQueueRows.removeValue(forKey: id)
+                completedQueueRowLineage.removeValue(forKey: id)
             }
-            for record in admitted where completedQueueRows[record.id] == nil {
+            for record in admitted {
+                let lineage = SourceFaultLineage.assess(for: record, in: records)
+                if completedQueueRows[record.id] != nil, completedQueueRowLineage[record.id] == lineage { continue }
                 completedQueueRows[record.id] = QueueSessionPresentation.completedRow(for: record, in: records)
+                completedQueueRowLineage[record.id] = lineage
                 completedQueueRowBuildCount += 1
             }
         }
@@ -443,9 +451,9 @@ final class LocalTransferJournal: ObservableObject {
         store.matchingVerifiedRecord(sourceFingerprint: sourceFingerprint)
     }
 
-    func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil) throws {
+    func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil) throws {
         defer { refresh() }
-        try store.interrupt(id: id, summary: summary, results: results)
+        try store.interrupt(id: id, summary: summary, results: results, reason: reason)
     }
 
     func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil) throws {
