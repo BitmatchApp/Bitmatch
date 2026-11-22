@@ -14,16 +14,22 @@ import SwiftUI
 @MainActor
 final class WelcomeWindowController: NSObject, ObservableObject, NSWindowDelegate {
     private let greeting: WelcomeGreeting
+    private let notificationCenter: NotificationCenter
     private let openURL: (URL) -> Void
     private(set) var panel: NSPanel?
 
-    init(greeting: WelcomeGreeting, openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }) {
+    init(
+        greeting: WelcomeGreeting,
+        notificationCenter: NotificationCenter = .default,
+        openURL: @escaping (URL) -> Void = { NSWorkspace.shared.open($0) }
+    ) {
         self.greeting = greeting
+        self.notificationCenter = notificationCenter
         self.openURL = openURL
         super.init()
         // Quitting does not close windows, so a person who reads the note and
         // presses Cmd-Q would see it again next launch. Treat quit as read.
-        NotificationCenter.default.addObserver(
+        notificationCenter.addObserver(
             self,
             selector: #selector(applicationWillTerminate(_:)),
             name: NSApplication.willTerminateNotification,
@@ -32,7 +38,7 @@ final class WelcomeWindowController: NSObject, ObservableObject, NSWindowDelegat
     }
 
     deinit {
-        NotificationCenter.default.removeObserver(self)
+        notificationCenter.removeObserver(self)
     }
 
     /// Creates the panel on first use and brings it forward on every call.
@@ -48,7 +54,9 @@ final class WelcomeWindowController: NSObject, ObservableObject, NSWindowDelegat
     }
 
     @objc private func applicationWillTerminate(_ notification: Notification) {
-        guard panel?.isVisible == true else { return }
+        // The panel exists until it closes, even while Cmd-H hides the app,
+        // so "open" means "has a panel", not "is visible".
+        guard panel != nil else { return }
         greeting.markShown()
     }
 
