@@ -843,6 +843,8 @@ class SharedAppCoordinator: ObservableObject {
     @Published var cameraDetectionInProgress = false
     private var cameraDetectionTask: Task<Void, Never>?
     private var cameraDetectionGeneration = 0
+    /// Set for the run in progress; read by the project-card finalizer.
+    private var activeRunLineagePreventsSafeClaim = false
     
     // MARK: - Folder Info State (delegated to FolderInfoService)
     // One per coordinator (the app has one); a shared singleton let parallel
@@ -1155,6 +1157,7 @@ class SharedAppCoordinator: ObservableObject {
         guard currentMode == .copyAndVerify else { return }
         guard let kind = TransferNotificationDecision.kind(
             record: record,
+            in: transferJournal.records,
             queueIsRunning: queueIsRunning,
             isReplayingQueuedTransfer: isReplayingQueuedTransfer,
             notifyAttention: generalSettings.notifyWhenCardNeedsAttention,
@@ -2310,6 +2313,11 @@ class SharedAppCoordinator: ObservableObject {
         }
     }
 
+    /// The classification an error carried, if the code that threw it knew.
+    nonisolated static func taggedFailureReason(of error: Error) -> ResultFailureReason? {
+        ((error as NSError).userInfo[ResultFailureReason.userInfoKey] as? String).flatMap(ResultFailureReason.init(rawValue:))
+    }
+
     /// A queue-preparation failure that carries its classification.
     nonisolated private static func queuePreparationError(_ message: String, reason: ResultFailureReason, underlying: Error? = nil) -> NSError {
         var info: [String: Any] = [NSLocalizedDescriptionKey: message, ResultFailureReason.userInfoKey: reason.rawValue]
@@ -2320,7 +2328,7 @@ class SharedAppCoordinator: ObservableObject {
     private static func isQueueProblem(_ record: LocalTransferRecord, in records: [LocalTransferRecord]) -> Bool {
         let safety = TransferLibraryPresentation.safetyState(for: record, in: records)
         return (safety == .needsAttention || safety == .failed || safety == .interrupted)
-            && !TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+            && !TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: records)
     }
 
     func startOperation(
@@ -2564,7 +2572,7 @@ class SharedAppCoordinator: ObservableObject {
                 settings: context.cameraLabelSettings
             )
         } catch {
-            try? transferJournal.interrupt(id: recordID, summary: error.localizedDescription)
+            try? transferJournal.interrupt(id: recordID, summary: error.localizedDescription, reason: Self.taggedFailureReason(of: error))
             if currentTransferBelongsToQueueSession {
                 pauseQueueAttempt(recordID: recordID, message: error.localizedDescription)
             } else {
@@ -2616,6 +2624,11 @@ class SharedAppCoordinator: ObservableObject {
             projectID: context.projectID, projectCardID: context.projectCardID,
             record: transferJournal.records.first(where: { $0.id == recordID })
         )
+        // The record being run may be a retry; its lineage must reach the
+        // live report and the project card, which are written before History.
+        let lineagePreventsSafeClaim = transferJournal.records.first(where: { $0.id == recordID })
+            .map { SourceFaultLineage.assess(for: $0, in: transferJournal.records).preventsSafeToEraseClaim } ?? false
+        activeRunLineagePreventsSafeClaim = lineagePreventsSafeClaim
         let config = CopyVerifyConfig(
             operationId: startID,
             sourceURL: context.sourceURL,
@@ -2632,7 +2645,8 @@ class SharedAppCoordinator: ObservableObject {
             // demo seeder's own records on a flagged DEBUG launch; nil
             // everywhere else, and always nil in Release.
             fanOutHooks: demoFanOutHooks(for: context.journalRecordID),
-            expectedExclusionQueueIdentity: expectedExclusionQueueIdentity
+            expectedExclusionQueueIdentity: expectedExclusionQueueIdentity,
+            priorSourceFaultPreventsSafeClaim: lineagePreventsSafeClaim
         )
 
         let callbacks = CopyVerifyCallbacks(
@@ -2764,7 +2778,8 @@ class SharedAppCoordinator: ObservableObject {
                     let summary = error is CancellationError || error is TransferInterruption
                         ? "Transfer interrupted unexpectedly; partial results retained. Keep source media intact."
                         : error.localizedDescription
-                    try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows)
+                    try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
+                                                  reason: Self.taggedFailureReason(of: error))
                     SharedLogger.transferEvent(.journalInterrupted, run: startID, code: (error as NSError).code,
                                                taskCancelled: Task.isCancelled)
                 }
@@ -2858,7 +2873,7 @@ class SharedAppCoordinator: ObservableObject {
             ?? (isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID))
         switch safety {
         case .needsAttention, .failed, .interrupted:
-            if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+            if TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: transferJournal.records) {
                 // Every selected file and requested handoff verified; only
                 // reviewed metadata was excluded. Keep whole-card safety
                 // conservative without an attention signal or queue pause.
@@ -3051,18 +3066,21 @@ class SharedAppCoordinator: ObservableObject {
         // identity must not inflate the count, and a resolved group is not
         // proof of a physically separate device.
         let independentDestinationCount = destinationIndependence.resolvedIdentityCopyCount
-        photographerReportFinalizer = { [weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results in
+        photographerReportFinalizer = { [weak self, weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results in
             guard let photographerJobViewModel, let analysis,
                   let state = photographerJobViewModel.projectCardState(jobID: jobID, cardID: cardID),
                   state == .copying || state == .verifying else {
                 throw PhotographerReportError.cardNotReady
             }
+            // Fail closed if the coordinator is gone: never assume a clean lineage.
+            let priorSourceFault = self?.activeRunLineagePreventsSafeClaim ?? true
             return try photographerJobViewModel.completeIngest(
                 jobID: jobID,
                 cardID: cardID,
                 analysis: analysis,
                 results: results,
-                independentDestinationCount: independentDestinationCount
+                independentDestinationCount: independentDestinationCount,
+                priorSourceFault: priorSourceFault
             )
         }
         activeProjectCardID = cardID

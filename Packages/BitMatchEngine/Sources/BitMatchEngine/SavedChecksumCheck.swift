@@ -292,7 +292,9 @@ public struct SavedChecksumCheck: Sendable {
                 continue
             }
             if entry.record.kind == .classicMHL || entry.record.kind == .ascMHL {
-                let mediaURL = root.appendingPathComponent(path)
+                // The listed file, not the manifest's spelling under root: on a
+                // filesystem that does not fold Unicode forms they can differ.
+                let mediaURL = file
                 let checked = try await checkInventoryFile(mediaURL, entry: entry)
                 checkedInventoryMedia[mediaURL] = checked.identity
                 if checked.matches { matching.append(path) }

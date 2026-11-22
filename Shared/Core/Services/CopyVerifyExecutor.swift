@@ -37,6 +37,10 @@ struct CopyVerifyConfig {
     /// Frozen run and saved-journal identity agreed before execution. Missing
     /// for direct/legacy configs; never inferred from an absent finalizer.
     let expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification?
+    /// An earlier attempt's card fault, or an unexplained one: the live
+    /// report and the project card may describe this run's backups as
+    /// verified, but never call the card safe.
+    let priorSourceFaultPreventsSafeClaim: Bool
 
     init(
         operationId: UUID,
@@ -51,9 +55,11 @@ struct CopyVerifyConfig {
         photographerReportFinalizer: PhotographerReportFinalizer? = nil,
         generateASCMHL: Bool = false,
         fanOutHooks: DestinationWriter.FanOutHooks? = nil,
-        expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil
+        expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil,
+        priorSourceFaultPreventsSafeClaim: Bool = false
     ) {
         self.operationId = operationId
+        self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
         self.sourceURL = sourceURL
         self.destinationURLs = destinationURLs
         self.verificationMode = verificationMode
@@ -427,10 +433,14 @@ final class CopyVerifyExecutor {
                 locallySafe: photographerLifecycle.locallySafe
             )
         )
-        let preReportSafetyState = ReportExporter.safetyState(
+        let ownSafetyState = ReportExporter.safetyState(
             authoritativeVerdict: preReportVerdict,
             rows: allResults
         )
+        // Evidence written now is durable: it must carry the same verdict
+        // History will show, so an earlier card fault downgrades it here too.
+        let preReportSafetyState = config.priorSourceFaultPreventsSafeClaim && ownSafetyState == .safeToErase
+            ? CardSafetyState.needsAttention : ownSafetyState
         // A failed requested report is a structured outcome, not a silent side effect:
         // verified media stays described as verified, but completion is issues.
         let reportIssue: String?

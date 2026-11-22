@@ -294,6 +294,13 @@ enum TransferLibraryPresentation {
     /// source-fault warning, so an otherwise safe verdict is downgraded.
     /// Callers with only one record cannot see lineage and must not claim
     /// this check was done.
+    /// Deliberately lineage-blind: what this one record's own evidence says.
+    /// For callers that apply the lineage downgrade themselves (notification
+    /// kind, the finish screen's own wording). Never a verdict on its own.
+    static func safetyStateIgnoringLineage(for record: LocalTransferRecord) -> CardSafetyState {
+        recordedSafetyState(for: record)
+    }
+
     static func safetyState(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> CardSafetyState {
         let base = recordedSafetyState(for: record)
         guard base == .safeToErase,
@@ -302,7 +309,7 @@ enum TransferLibraryPresentation {
     }
 
     static func stateLabel(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> StateLabel {
-        stateLabel(for: record, in: records, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+        stateLabel(for: record, in: records, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: records))
     }
 
     private static func stateLabel(for record: LocalTransferRecord, in records: [LocalTransferRecord], hasVerifiedSelectedFiles: Bool) -> StateLabel {
@@ -322,7 +329,7 @@ enum TransferLibraryPresentation {
     }
 
     static func rowPresentation(for record: LocalTransferRecord, in records: [LocalTransferRecord]) -> RowPresentation {
-        let verified = TransferOutcomePresentation.hasVerifiedSelectedFiles(record)
+        let verified = TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: records)
         return RowPresentation(
             stateLabel: stateLabel(for: record, in: records, hasVerifiedSelectedFiles: verified),
             detailLine: detailLine(

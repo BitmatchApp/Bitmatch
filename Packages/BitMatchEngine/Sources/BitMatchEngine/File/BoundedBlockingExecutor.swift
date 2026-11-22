@@ -16,6 +16,10 @@ public final class BoundedBlockingExecutor: @unchecked Sendable {
     /// source manifests, Check's file listing). A stalled advisory scan must
     /// never make a healthy transfer's final safety gate wait or fail.
     public static let transfer = BoundedBlockingExecutor(qos: .userInitiated)
+    /// Check's listing of saved evidence and media. Separate from the
+    /// transfer pool so two stalled Check listings cannot hold a transfer's
+    /// initial or final safety gate.
+    public static let check = BoundedBlockingExecutor(qos: .userInitiated)
 
     public enum ExecutorError: LocalizedError, Sendable {
         case busy
@@ -93,7 +97,7 @@ public final class BoundedBlockingExecutor: @unchecked Sendable {
     /// cancellation), which is how synchronous bodies observe cancellation
     /// without a task context.
     public func performCancellable<Value: Sendable>(
-        operation: @escaping @Sendable (@Sendable () throws -> Void) throws -> Value
+        operation: @escaping @Sendable (@escaping @Sendable () throws -> Void) throws -> Value
     ) async throws -> Value {
         let completion = Completion<Value>()
         return try await withTaskCancellationHandler {

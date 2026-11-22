@@ -22,7 +22,7 @@ struct TransferFinishNotice: Equatable, Sendable {
                      priorSourceFault: Bool = false, lineageIncomplete: Bool = false) -> TransferFinishNotice? {
         guard record.state != .queued, record.state != .running,
               let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
-        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record) {
+        if TransferOutcomePresentation.hasVerifiedSelectedFiles(record), !priorSourceFault, !lineageIncomplete {
             let names = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
             return .init(
                 title: "\(record.title): selected files verified",

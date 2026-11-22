@@ -103,9 +103,10 @@ enum SetupConnectedMenuPolicy {
     /// any folder beneath it.
     static func isSelected(volume: URL, destinationURLs: [URL]) -> Bool {
         let volumePath = volume.standardizedFileURL.path
+        let prefix = volumePath.hasSuffix("/") ? volumePath : volumePath + "/"
         return destinationURLs.contains {
             let path = $0.standardizedFileURL.path
-            return path == volumePath || path.hasPrefix(volumePath + "/")
+            return path == volumePath || path.hasPrefix(prefix)
         }
     }
 

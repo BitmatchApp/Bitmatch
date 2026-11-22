@@ -47,30 +47,36 @@ public enum SourceFaultLineage {
     /// evidence the card read fine. A cancellation is the person's choice,
     /// and a classified non-source failure says the card read fine.
     static func predecessorIsUnclassified(_ record: LocalTransferRecord) -> Bool {
+        let unsuccessful = record.results.filter { !$0.isSuccessStatus }
+        // Every unsuccessful row must say why, whatever the record's state:
+        // one explained row never explains another.
+        let anyUnexplainedRow = unsuccessful.contains { row in
+            guard let reason = row.failureReason else { return true }
+            return ResultFailureReason(rawValue: reason) == nil
+        }
         switch record.state {
-        case .cancelled, .queued, .running: return false
-        case .completed, .issues:
+        case .queued, .running: return false
+        case .cancelled, .completed:
+            // A cancellation is the person's choice, but a row that failed
+            // for no recorded reason before they cancelled is still unexplained.
+            return anyUnexplainedRow
+        case .issues:
             // Quick-mode records are .issues with successful rows, and those
-            // read the card fine. An .issues record with no rows at all, or
-            // any unsuccessful row without a known reason, is unexplained.
-            if record.state == .issues, record.results.isEmpty { return true }
-            return record.results.contains { row in
-                guard !row.isSuccessStatus else { return false }
-                guard let reason = row.failureReason else { return true }
-                return ResultFailureReason(rawValue: reason) == nil
-            }
+            // read the card fine. An .issues record with no rows at all
+            // stopped before it could say why.
+            return record.results.isEmpty || anyUnexplainedRow
         case .failed, .interrupted:
             // The attempt did not finish. Its rows may all read as verified
             // (the card failed during the final check, after every file was
-            // published), so only a classified reason explains it: on the
-            // record itself, or on an unsuccessful row. Anything else is
-            // unknown, never clean.
-            if let reason = record.failureReason, ResultFailureReason(rawValue: reason) != nil { return false }
-            let classified = record.results.contains { row in
-                guard !row.isSuccessStatus, let reason = row.failureReason else { return false }
-                return ResultFailureReason(rawValue: reason) != nil
+            // published), so something must explain the stop: a classified
+            // reason on the record, or at least one classified unsuccessful
+            // row with no unexplained one beside it.
+            if anyUnexplainedRow { return true }
+            let recordExplained = record.failureReason.flatMap(ResultFailureReason.init(rawValue:)) != nil
+            let rowExplained = unsuccessful.contains { row in
+                row.failureReason.flatMap(ResultFailureReason.init(rawValue:)) != nil
             }
-            return !classified
+            return !(recordExplained || rowExplained)
         }
     }
 

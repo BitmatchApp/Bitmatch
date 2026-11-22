@@ -1507,6 +1507,45 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(coordinator.queuePresentation.tally.needsAttention, 1)
     }
 
+    /// The automatic report is durable evidence written during the run.
+    /// After a card fault, a verified retry's JSON must not say safe to erase.
+    func testLiveReportWrittenDuringRetryCarriesTheLineageDowngrade() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        var reports = ReportPrefs()
+        reports.makeReport = true
+        let originalID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared
+            )),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        try journal.fail(id: originalID, summary: "The card could not be read", reason: .sourceReadFailed)
+        coordinator.retryTransfer(originalID)
+        let finished = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+                && journal.records.contains(where: { $0.id != originalID && $0.state != .queued && $0.state != .running })
+        }
+        XCTAssertTrue(finished)
+        let enumerator = FileManager.default.enumerator(at: f.destination, includingPropertiesForKeys: nil)
+        var jsonReports: [URL] = []
+        while let url = enumerator?.nextObject() as? URL {
+            if url.pathExtension == "json" { jsonReports.append(url) }
+        }
+        XCTAssertFalse(jsonReports.isEmpty, "no JSON report was written under the destination")
+        for url in jsonReports {
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+            XCTAssertNotEqual(payload["safeToErase"] as? Bool, true, "\(url.lastPathComponent) claims safe to erase")
+        }
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+    }
+
     func testRetryReplacesVisibleCardAndSingleSuccessUsesNormalFinish() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }

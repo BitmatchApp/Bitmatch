@@ -1028,12 +1028,13 @@ public final class TransferJournal: Sendable {
         return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
     }
 
-    public func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil) throws {
+    public func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.state = .interrupted
             record.expectedExclusionQueueQualification = nil
             record.summary = summary
+            if let reason { record.failureReason = reason.rawValue }
             if let results { record.results = results }
             record.endedAt = Date()
         }

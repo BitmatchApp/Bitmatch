@@ -193,22 +193,26 @@ enum TransferNotificationPolicy {
 enum TransferNotificationDecision {
     /// Only a settled journal record can establish that intentional metadata
     /// exclusions were the sole reason the whole-card verdict stayed unsafe.
+    /// `records` is the whole journal: the routing decision must see a
+    /// retry's lineage before the person's preferences are applied, or a
+    /// downgraded retry could skip the attention notice they asked for.
     static func kind(
         record: LocalTransferRecord,
+        in records: [LocalTransferRecord],
         queueIsRunning: Bool,
         isReplayingQueuedTransfer: Bool,
         notifyAttention: Bool,
         notifyFinish: Bool,
         notifyEachQueuedCard: Bool
     ) -> TransferNotificationKind? {
-        guard let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
+        guard let state = TransferOutcomePresentation.recordedState(for: record, in: records) else { return nil }
         let issueCount = record.results.filter {
             !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
         }.count
         return kind(
             state: state,
             issueCount: issueCount,
-            verifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record),
+            verifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: records),
             queueIsRunning: queueIsRunning,
             isReplayingQueuedTransfer: isReplayingQueuedTransfer,
             notifyAttention: notifyAttention,
