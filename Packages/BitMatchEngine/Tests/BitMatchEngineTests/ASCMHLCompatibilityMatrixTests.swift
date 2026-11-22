@@ -75,11 +75,11 @@ struct ASCMHLCompatibilityMatrixTests {
         #expect(try await run(root).isIntact)
     }
 
-    /// Fail-closed decision, pinned on purpose: a manifest recording the
-    /// NFC form of a name while the disk holds the NFD form must not be
-    /// silently matched. If BitMatch ever normalizes Unicode paths, this
-    /// test is the place that decision gets made and recorded.
-    @Test func unicodeNormalizationDifferenceIsNotSilentlyMatched() async throws {
+    /// Pinned decision: a manifest recording the NFC form of a name while
+    /// the disk holds the NFD form describes the same file. macOS itself
+    /// treats the two as one name, and the bytes are still proven against
+    /// the digest, so this is a match, not a false alarm.
+    @Test func unicodeNormalizationDifferenceStillMatchesByDigest() async throws {
         let root = try temporaryRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let nfdName = "cafe\u{0301}.txt"
@@ -87,7 +87,54 @@ struct ASCMHLCompatibilityMatrixTests {
         try write(Data("A".utf8), path: nfdName, root: root)
         try write(Data(manifest(path: nfcName).utf8), path: "ascmhl/0001_test.mhl", root: root)
         let result = try await run(root)
-        #expect(!result.isIntact)
+        #expect(result.isIntact)
+        #expect(result.matchingPaths.count == 1)
+        #expect(result.newPaths.isEmpty)
+    }
+
+    /// Two on-disk names that differ only by normalization cannot be told
+    /// apart by the manifest, so the check refuses rather than guessing.
+    @Test func canonicallyEquivalentDuplicateFilesAreRejected() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "a.txt", root: root)
+        try write(Data(manifest().utf8), path: "ascmhl/0001_test.mhl", root: root)
+        let urls = [root.appendingPathComponent("cafe\u{0301}.txt"), root.appendingPathComponent("caf\u{00E9}.txt")]
+        // APFS folds the two names, so feed the duplicate through a file
+        // access that reports both; a real exFAT volume written elsewhere can.
+        struct DuplicateListing: FileAccess {
+            let base: LocalFileAccess
+            let extra: [URL]
+            func validateFileAccess(url: URL) async -> Bool { await base.validateFileAccess(url: url) }
+            func startAccessing(url: URL) -> Bool { base.startAccessing(url: url) }
+            func stopAccessing(url: URL) { base.stopAccessing(url: url) }
+            func getFileList(from folderURL: URL) async throws -> [URL] {
+                try await base.getFileList(from: folderURL) + extra
+            }
+            nonisolated func getFileSize(for url: URL) throws -> Int64 { try base.getFileSize(for: url) }
+            nonisolated func createDirectory(at url: URL) throws { try base.createDirectory(at: url) }
+            nonisolated func freeSpace(at url: URL) -> Int64 { base.freeSpace(at: url) }
+        }
+        for url in urls { try Data("A".utf8).write(to: url) }
+        let checker = SavedChecksumCheck(
+            fileAccess: DuplicateListing(base: LocalFileAccess(), extra: [urls[1]]),
+            checksum: ChecksumEngine.shared)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.check(try await checker.discover(under: root)) { _ in }
+        }
+    }
+
+    /// Two histories under one root that disagree about the same file are
+    /// conflicting evidence, not "latest wins".
+    @Test func conflictingDigestsAcrossHistoriesAreRejected() async throws {
+        let root = try temporaryRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try write(Data("A".utf8), path: "sub/a.txt", root: root)
+        try write(Data(manifest(path: "sub/a.txt", content: "A").utf8), path: "ascmhl/0001_test.mhl", root: root)
+        try write(Data(manifest(path: "a.txt", content: "B").utf8), path: "sub/ascmhl/0001_test.mhl", root: root)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.discover(under: root)
+        }
     }
 
     @Test func matchingUnicodeNameVerifies() async throws {

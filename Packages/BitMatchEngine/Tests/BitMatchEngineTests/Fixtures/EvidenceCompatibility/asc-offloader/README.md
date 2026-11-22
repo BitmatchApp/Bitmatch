@@ -23,3 +23,17 @@ SHA-256 pins:
 The BitMatch reader check, writer verifier and external schema validation have
 not yet been run. The fixture covers content and chain records, not directory
 hashes, lineage or authenticity.
+
+## Independent checks (2026-11-22)
+
+- `media/ascmhl/0001_media_2026-01-01_000000Z.mhl` validates against the
+  official schema: `xmllint --noout --schema ASCMHL.xsd` using
+  `xsd/ASCMHL.xsd` from https://github.com/ascmitc/mhl (master). The chain
+  file was not schema-validated; that XSD was not retrievable.
+- Every SHA-256 pin above was recomputed with `shasum -a 256` and matched.
+- The two MD5 values in the inventory were recomputed with `md5` from the
+  media files and matched.
+- The BitMatch reader check (`offloaderChainChecksEmptyAndUnicodeFiles`)
+  has now been run and passes.
+
+The writer's own verifier has still not been run on this fixture.

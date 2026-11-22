@@ -247,7 +247,10 @@ struct ASCMHLChainValidationTests {
         await #expect(throws: CancellationError.self) { _ = try await task.value }
     }
 
-    @Test func chainOrderWinsOverAnIncorrectCreationClock() async throws {
+    /// A later generation that records a different digest for the same
+    /// file is conflicting evidence, whatever its creation clock says. The
+    /// reader refuses rather than letting either generation win.
+    @Test func conflictingGenerationDigestsAreRejectedWhateverTheClockSays() async throws {
         let root = try copy()
         defer { try? FileManager.default.removeItem(at: root) }
         let second = try #require(manifests(root).last)
@@ -261,7 +264,8 @@ struct ASCMHLChainValidationTests {
             .replacingOccurrences(of: ASCMHLGenerator.c4(oldBytes), with: ASCMHLGenerator.c4(Data(modified.utf8)))
         try Data(chainXML.utf8).write(to: chain(root))
         try Data("New media".utf8).write(to: root.appendingPathComponent("Camera A/clip & café.txt"))
-        let result = try await checker.check(try await checker.discover(under: root)) { _ in }
-        #expect(result.isIntact)
+        await #expect(throws: SavedChecksumCheck.CheckError.unreadableEvidence) {
+            _ = try await checker.discover(under: root)
+        }
     }
 }

@@ -204,24 +204,26 @@ public struct SavedChecksumCheck: Sendable {
             guard histories.isEmpty, chains.isEmpty else { throw CheckError.notFound }
             return try Self.discoverClassic(in: files, under: canonicalRoot, publicationStatuses: statuses)
         }
-        // A history may add algorithms in later generations, but two values
-        // for the same algorithm and path cannot both describe unchanged data.
-        var historyDigests: [URL: [String: [String: String]]] = [:]
-        var historySizes: [URL: [String: Int64]] = [:]
+        // A history may add algorithms in later generations, and a nested
+        // history may describe the same file as its parent, but two values
+        // for the same algorithm and path cannot both describe unchanged
+        // data. Whichever generation or history wrote them, that is a
+        // conflict in the evidence, never "latest wins".
+        var recordedDigests: [String: [String: String]] = [:]
+        var recordedSizes: [String: Int64] = [:]
         for entry in mhlEntries {
-            let history = entry.record.url.deletingLastPathComponent()
             if let size = entry.expectedSize {
-                if let previous = historySizes[history]?[entry.relativePath], previous != size {
+                if let previous = recordedSizes[entry.relativePath], previous != size {
                     throw CheckError.unreadableEvidence
                 }
-                historySizes[history, default: [:]][entry.relativePath] = size
+                recordedSizes[entry.relativePath] = size
             }
             for digest in entry.requiredDigests {
-                if let previous = historyDigests[history]?[entry.relativePath]?[digest.algorithm.rawValue],
+                if let previous = recordedDigests[entry.relativePath]?[digest.algorithm.rawValue],
                    previous != digest.value {
                     throw CheckError.unreadableEvidence
                 }
-                historyDigests[history, default: [:]][entry.relativePath, default: [:]][digest.algorithm.rawValue] = digest.value
+                recordedDigests[entry.relativePath, default: [:]][digest.algorithm.rawValue] = digest.value
             }
         }
         var discovery = Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries, publicationStatuses: statuses)
@@ -266,6 +268,10 @@ public struct SavedChecksumCheck: Sendable {
             if discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }
             #endif
+            // Two listed files whose names differ only by Unicode normalization
+            // collapse to one key here, and the evidence cannot say which one
+            // it meant. Refuse rather than check one and forget the other.
+            guard actual[path] == nil else { throw CheckError.unreadableEvidence }
             actual[path] = file.standardizedFileURL.resolvingSymlinksKeepingCase()
         }
 
@@ -821,6 +827,14 @@ public struct SavedChecksumCheck: Sendable {
             }
             stack.append(name)
             text = ""
+            // Nothing legitimate nests this deep; a crafted file must not
+            // make the parser walk thousands of levels.
+            guard stack.count <= 16 else { reject(parser, .unreadableEvidence); return }
+            // The spec puts file records and directory records here; anything
+            // else is a format BitMatch does not know how to check.
+            if stack.count == 3, stack[1] == "hashes", name != "hash", name != "directoryhash" {
+                reject(parser, .unsupportedEvidence); return
+            }
             if stack == ["hashlist", "hashes", "hash"] {
                 guard namespaceURI == namespace else { reject(parser, .unsupportedEvidence); return }
                 item = Item()
@@ -912,8 +926,8 @@ public struct SavedChecksumCheck: Sendable {
                     // The discovery pass already rejects conflicts within a
                     // history. Keep algorithms supplied by earlier generations
                     // so selecting a later record cannot silently drop one.
-                    var digests = previous.requiredDigests
-                    for digest in entry.requiredDigests where !digests.contains(where: { $0.algorithm == digest.algorithm }) {
+                    var digests = entry.requiredDigests
+                    for digest in previous.requiredDigests where !digests.contains(where: { $0.algorithm == digest.algorithm }) {
                         digests.append(digest)
                     }
                     latest[entry.relativePath] = ExpectedFile(relativePath: entry.relativePath,

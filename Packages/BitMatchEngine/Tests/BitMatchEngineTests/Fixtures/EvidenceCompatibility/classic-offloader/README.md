@@ -21,5 +21,17 @@ SHA-256 pins for the generated files are:
 - `media/empty.mov` — `e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
 - `media/café clip.txt` — `0b7940e882004a92e8e4222e6345f727adc5ab94f84882130decf1714298e9ad`
 
-The accompanying BitMatch reader check is unrun. It should check both files,
+The accompanying BitMatch reader check is recorded below. It should check both files,
 reject changed empty-file contents, and leave the fixture copy untouched.
+
+## Independent checks (2026-11-22)
+
+- Every SHA-256 pin above was recomputed with `shasum -a 256` and matched.
+- Both MD5 values and both `<size>` values in the inventory were recomputed
+  from the media files (`md5`, `stat`) and matched.
+- The BitMatch reader check (`offloaderInventoryIncludesEmptyAndUnicodeFiles`)
+  has now been run and passes. It required the reader to accept a `version`
+  attribute on the creator `<tool>` element, which this writer emits.
+
+No external schema for classic MHL 1.1 was validated against, and the
+writer's own verifier has still not been run on this fixture.
