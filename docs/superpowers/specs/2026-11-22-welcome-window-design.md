@@ -34,17 +34,20 @@ may convert quiet Sparkle users into GitHub stars and issue reporters.
 
 ## Approaches considered
 
-1. Dedicated SwiftUI `Window` scene, opened by `openWindow` (chosen). Native
-   look, carries icon and rich copy, independent of the main window.
+1. A separate window carrying a SwiftUI view (chosen). Native look, holds
+   the icon and rich copy, independent of the main window. Built as an
+   `NSPanel` with an `NSHostingView` rather than a SwiftUI `Window` scene:
+   a scene gives no control over `canBecomeMain`, and the app delegate
+   already excludes panels from its content-window search.
 2. Sheet over the main window. Reads as a nag and blocks the content view.
 3. `NSAlert`. Cannot carry the icon and copy well; feels like an error.
 
 ## Decided
 
-- Window: `Window("Welcome to BitMatch", id: "welcome")`, fixed size about
-  440x520, not resizable, dark. The underlying NSWindow is made unable to
-  become main (`canBecomeMain` false via a small NSWindow subclass or
-  `NSPanel` styling) so the app delegate ignores it.
+- Window: an `NSPanel` (titled, closable, not resizable, not floating,
+  does not hide on deactivate), about 440x520, dark appearance, owned by a
+  `WelcomeWindowController` in the macOS app target. Being a panel, the app
+  delegate's content-window logic ignores it.
 - Content, top to bottom: app icon (NSApp.applicationIconImage), title
   "Welcome to BitMatch 👋", copy (below), then buttons "Star on GitHub"
   (opens https://github.com/BitmatchApp/Bitmatch) and "Close" (default).
