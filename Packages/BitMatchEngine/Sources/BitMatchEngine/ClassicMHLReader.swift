@@ -162,7 +162,11 @@ enum ClassicMHLReader {
                 default: reject(parser, .unsupportedEvidence); return
                 }
             case ["hashlist", "creatorinfo"]:
-                guard attributes.isEmpty, let order = Self.creatorFields.firstIndex(of: name) else {
+                // Writers such as Offloader put their version on the tool
+                // element; the text is still the tool name.
+                let attributesAllowed = attributes.isEmpty
+                    || (name == "tool" && Set(attributes.keys).isSubset(of: ["version"]))
+                guard attributesAllowed, let order = Self.creatorFields.firstIndex(of: name) else {
                     reject(parser, .unsupportedEvidence); return
                 }
                 guard order > creatorOrder, creatorFields.insert(name).inserted else { reject(parser); return }

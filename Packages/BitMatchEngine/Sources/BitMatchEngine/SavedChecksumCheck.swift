@@ -55,7 +55,7 @@ public struct SavedChecksumCheck: Sendable {
         public let checksum: String
         public let algorithm: Algorithm
         public let record: Record
-        /// Every supplied classic digest is required, not just the first one.
+        /// Every supported digest retained from an inventory is required.
         public let requiredDigests: [Digest]
         public let expectedSize: Int64?
 
@@ -78,6 +78,7 @@ public struct SavedChecksumCheck: Sendable {
         public let publicationStatuses: [URL]
         var chainEvidence: [ASCMHLChainValidator.Snapshot] = []
         var classicEvidence: [ClassicMHLReader.Snapshot] = []
+        var ascEvidence: [ASCInventoryEvidence] = []
 
         public init(root: URL, expectedFiles: [String: ExpectedFile], records: [Record], publicationStatuses: [URL] = []) {
             self.root = root
@@ -87,6 +88,12 @@ public struct SavedChecksumCheck: Sendable {
         }
 
         public var newestRecordDate: Date { records.map(\.date).max() ?? .distantPast }
+    }
+
+    struct ASCInventoryEvidence: Equatable, Sendable {
+        let url: URL
+        let identity: ClassicMHLFile.Identity
+        let sha256: String
     }
 
     public struct Result: Equatable, Sendable {
@@ -138,21 +145,21 @@ public struct SavedChecksumCheck: Sendable {
 
     private let fileAccess: any FileAccess
     private let checksum: any ChecksumService
-    private let classicChunkRead: (@Sendable (URL, Int64) async throws -> Void)?
+    private let inventoryChunkRead: (@Sendable (URL, Int64) async throws -> Void)?
 
     public init(fileAccess: any FileAccess, checksum: any ChecksumService) {
         self.fileAccess = fileAccess
         self.checksum = checksum
-        self.classicChunkRead = nil
+        self.inventoryChunkRead = nil
     }
 
-    /// Test-only interruption seam on the real classic read loop; production
+    /// Test-only interruption seam on the real inventory read loop; production
     /// callers use the public initializer, with no callback or global hook.
     init(fileAccess: any FileAccess, checksum: any ChecksumService,
-         classicChunkRead: @escaping @Sendable (URL, Int64) async throws -> Void) {
+         inventoryChunkRead: @escaping @Sendable (URL, Int64) async throws -> Void) {
         self.fileAccess = fileAccess
         self.checksum = checksum
-        self.classicChunkRead = classicChunkRead
+        self.inventoryChunkRead = inventoryChunkRead
     }
 
     /// Finds and parses records without hashing the recorded files.
@@ -180,13 +187,16 @@ public struct SavedChecksumCheck: Sendable {
             chain.names.enumerated().map { (chain.directory.appendingPathComponent($0.element), $0.offset + 1) }
         })
         var mhlEntries: [ExpectedFile] = []
+        var ascEvidence: [ASCInventoryEvidence] = []
         for historyURL in histories {
             try Task.checkCancellation()
             // macOS may materialize extended attributes as ._manifest.mhl on
             // exFAT. Prove it is metadata; a ._ name alone is not enough.
             if try Self.isMHLMetadataCompanion(historyURL) { continue }
             let chain = chains.first { $0.directory == historyURL.deletingLastPathComponent() }
-            mhlEntries.append(contentsOf: try Self.readMHL(historyURL, root: canonicalRoot, generation: ranks[historyURL], expectedDigest: chain?.evidence[historyURL.lastPathComponent]?.sha256))
+            let inventory = try Self.readMHL(historyURL, root: canonicalRoot, generation: ranks[historyURL], expectedDigest: chain?.evidence[historyURL.lastPathComponent]?.sha256)
+            mhlEntries.append(contentsOf: inventory.entries)
+            ascEvidence.append(inventory.evidence)
         }
         if mhlEntries.isEmpty {
             // Empty/unsupported ASC evidence must not be silently bypassed in
@@ -194,8 +204,31 @@ public struct SavedChecksumCheck: Sendable {
             guard histories.isEmpty, chains.isEmpty else { throw CheckError.notFound }
             return try Self.discoverClassic(in: files, under: canonicalRoot, publicationStatuses: statuses)
         }
+        // A history may add algorithms in later generations, and a nested
+        // history may describe the same file as its parent, but two values
+        // for the same algorithm and path cannot both describe unchanged
+        // data. Whichever generation or history wrote them, that is a
+        // conflict in the evidence, never "latest wins".
+        var recordedDigests: [String: [String: String]] = [:]
+        var recordedSizes: [String: Int64] = [:]
+        for entry in mhlEntries {
+            if let size = entry.expectedSize {
+                if let previous = recordedSizes[entry.relativePath], previous != size {
+                    throw CheckError.unreadableEvidence
+                }
+                recordedSizes[entry.relativePath] = size
+            }
+            for digest in entry.requiredDigests {
+                if let previous = recordedDigests[entry.relativePath]?[digest.algorithm.rawValue],
+                   previous != digest.value {
+                    throw CheckError.unreadableEvidence
+                }
+                recordedDigests[entry.relativePath, default: [:]][digest.algorithm.rawValue] = digest.value
+            }
+        }
         var discovery = Self.makeDiscovery(root: canonicalRoot, entries: mhlEntries, publicationStatuses: statuses)
         discovery.chainEvidence = chains
+        discovery.ascEvidence = ascEvidence
         return discovery
     }
 
@@ -216,6 +249,7 @@ public struct SavedChecksumCheck: Sendable {
             throw CheckError.unreadableEvidence
         }
         try Self.requireUnchangedChains(discovery, files: files)
+        try Self.requireUnchangedASCInventories(discovery, files: files)
         try Self.requireUnchangedClassic(discovery, files: files)
         let classicManifestURLs = Set(discovery.classicEvidence.map { $0.url.standardizedFileURL })
         let resolver = RelativePathResolver(base: root)
@@ -234,6 +268,10 @@ public struct SavedChecksumCheck: Sendable {
             if discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }
             #endif
+            // Two listed files whose names differ only by Unicode normalization
+            // collapse to one key here, and the evidence cannot say which one
+            // it meant. Refuse rather than check one and forget the other.
+            guard actual[path] == nil else { throw CheckError.unreadableEvidence }
             actual[path] = file.standardizedFileURL.resolvingSymlinksKeepingCase()
         }
 
@@ -242,7 +280,7 @@ public struct SavedChecksumCheck: Sendable {
         var matching: [String] = []
         var changed: [String] = []
         var missing: [String] = []
-        var classicMedia: [URL: ClassicMHLFile.Identity] = [:]
+        var checkedInventoryMedia: [URL: ClassicMHLFile.Identity] = [:]
         await progress(Self.progress(processed: 0, total: paths.count, path: nil))
 
         for (index, path) in paths.enumerated() {
@@ -253,10 +291,10 @@ public struct SavedChecksumCheck: Sendable {
                 await progress(Self.progress(processed: index + 1, total: paths.count, path: path))
                 continue
             }
-            if entry.record.kind == .classicMHL {
+            if entry.record.kind == .classicMHL || entry.record.kind == .ascMHL {
                 let mediaURL = root.appendingPathComponent(path)
-                let checked = try await checkClassicFile(mediaURL, entry: entry)
-                classicMedia[mediaURL] = checked.identity
+                let checked = try await checkInventoryFile(mediaURL, entry: entry)
+                checkedInventoryMedia[mediaURL] = checked.identity
                 if checked.matches { matching.append(path) }
                 else { changed.append(path) }
             } else {
@@ -277,8 +315,9 @@ public struct SavedChecksumCheck: Sendable {
             throw CheckError.unreadableEvidence
         }
         try Self.requireUnchangedChains(discovery, files: finalFiles)
+        try Self.requireUnchangedASCInventories(discovery, files: finalFiles)
         try Self.requireUnchangedClassic(discovery, files: finalFiles)
-        for (url, identity) in classicMedia {
+        for (url, identity) in checkedInventoryMedia {
             try Task.checkCancellation()
             guard try ClassicMHLFile.currentIdentity(at: url) == identity else {
                 throw CheckError.unreadableEvidence
@@ -403,7 +442,8 @@ public struct SavedChecksumCheck: Sendable {
             } catch {
                 throw CheckError.unreadableEvidence
             }
-            guard let text = String(data: data, encoding: .utf8) else { throw CheckError.unreadableEvidence }
+            guard let decoded = String(data: data, encoding: .utf8) else { throw CheckError.unreadableEvidence }
+            let text = decoded.hasPrefix("\u{feff}") ? String(decoded.dropFirst()) : decoded
             var values: [String: (String, Algorithm)] = [:]
             var recordCount = 0
             for line in text.split(whereSeparator: \.isNewline) {
@@ -548,25 +588,32 @@ public struct SavedChecksumCheck: Sendable {
         try ClassicMHLReader.requireUnchanged(discovery.classicEvidence)
     }
 
-    private func checkClassicFile(_ url: URL, entry: ExpectedFile) async throws
+    private func checkInventoryFile(_ url: URL, entry: ExpectedFile) async throws
         -> (matches: Bool, identity: ClassicMHLFile.Identity) {
-        guard let expectedSize = entry.expectedSize, expectedSize >= 0,
+        guard (entry.record.kind != .classicMHL || entry.expectedSize != nil),
               !entry.requiredDigests.isEmpty,
               entry.requiredDigests.allSatisfy({
-                  ($0.algorithm == .md5 || $0.algorithm == .sha1) && Self.isValid($0.value, for: $0.algorithm)
+                  Self.isValid($0.value, for: $0.algorithm)
               }) else { throw CheckError.unsupportedEvidence }
         let file = try ClassicMHLFile(url: url)
-        guard file.identity.size == expectedSize else {
+        guard entry.expectedSize == nil || file.identity.size == entry.expectedSize else {
             try file.validateUnchanged()
             return (false, file.identity)
         }
-        guard fcntl(file.handle.fileDescriptor, F_NOCACHE, 1) != -1 else {
-            throw CheckError.unreadableEvidence
-        }
         let needsMD5 = entry.requiredDigests.contains { $0.algorithm == .md5 }
         let needsSHA1 = entry.requiredDigests.contains { $0.algorithm == .sha1 }
+        let needsSHA256 = entry.requiredDigests.contains { $0.algorithm == .sha256 }
+        let needsXXH64 = entry.requiredDigests.contains { $0.algorithm == .xxh64 }
+        // Preserve the existing cache policy for each reader. Classic and
+        // XXH64 checks require this flag; SHA/MD5 ASC checks use best effort.
+        if fcntl(file.handle.fileDescriptor, F_NOCACHE, 1) == -1,
+           entry.record.kind == .classicMHL || needsXXH64 {
+            throw CheckError.unreadableEvidence
+        }
         var md5 = Insecure.MD5()
         var sha1 = Insecure.SHA1()
+        var sha256 = SHA256()
+        var xxh64 = XXH64.State()
         var bytesRead: Int64 = 0
         while true {
             try Task.checkCancellation()
@@ -577,19 +624,30 @@ public struct SavedChecksumCheck: Sendable {
                 guard data.count <= remaining else { throw CheckError.unreadableEvidence }
                 if needsMD5 { md5.update(data: data) }
                 if needsSHA1 { sha1.update(data: data) }
+                if needsSHA256 { sha256.update(data: data) }
+                if needsXXH64 { xxh64.update(data) }
                 return data.count
             }
             if count == 0 { break }
             bytesRead += Int64(count)
-            try await classicChunkRead?(url, bytesRead)
+            try await inventoryChunkRead?(url, bytesRead)
         }
         try Task.checkCancellation()
         try file.validateUnchanged()
         guard bytesRead == file.identity.size else { throw CheckError.unreadableEvidence }
         let md5Value = needsMD5 ? md5.finalize().map { String(format: "%02x", $0) }.joined() : ""
         let sha1Value = needsSHA1 ? sha1.finalize().map { String(format: "%02x", $0) }.joined() : ""
+        let sha256Value = needsSHA256 ? sha256.finalize().map { String(format: "%02x", $0) }.joined() : ""
+        let xxh64Value = needsXXH64 ? String(format: "%016llx", xxh64.finalize()) : ""
         let matches = entry.requiredDigests.allSatisfy { digest in
-            digest.value.caseInsensitiveCompare(digest.algorithm == .md5 ? md5Value : sha1Value) == .orderedSame
+            let actual: String
+            switch digest.algorithm {
+            case .md5: actual = md5Value
+            case .sha1: actual = sha1Value
+            case .sha256: actual = sha256Value
+            case .xxh64: actual = xxh64Value
+            }
+            return digest.value.caseInsensitiveCompare(actual) == .orderedSame
         }
         return (matches, file.identity)
     }
@@ -658,6 +716,28 @@ public struct SavedChecksumCheck: Sendable {
         guard try validateHistoryChains(in: histories) == discovery.chainEvidence else { throw CheckError.unreadableEvidence }
     }
 
+    private static func requireUnchangedASCInventories(_ discovery: Discovery, files: [URL]) throws {
+        guard !discovery.ascEvidence.isEmpty else {
+            if discovery.records.contains(where: { $0.kind == .ascMHL }) { throw CheckError.unreadableEvidence }
+            return
+        }
+        var current = Set<URL>()
+        for url in files where isMHLHistory(url, under: discovery.root) {
+            if try isMHLMetadataCompanion(url) { continue }
+            current.insert(url.standardizedFileURL.resolvingSymlinksKeepingCase())
+        }
+        let expected = Set(discovery.ascEvidence.map { $0.url.standardizedFileURL.resolvingSymlinksKeepingCase() })
+        guard current == expected else { throw CheckError.unreadableEvidence }
+        for evidence in discovery.ascEvidence {
+            try Task.checkCancellation()
+            let file = try ClassicMHLFile(url: evidence.url)
+            guard file.identity == evidence.identity else { throw CheckError.unreadableEvidence }
+            let bytes = try file.boundedData(maxBytes: EvidenceReader.maxReportBytes)
+            let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
+            guard digest == evidence.sha256 else { throw CheckError.unreadableEvidence }
+        }
+    }
+
     private static func isMHLMetadataCompanion(_ url: URL) throws -> Bool {
         guard url.lastPathComponent.hasPrefix("._") else { return false }
         guard let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize else {
@@ -667,10 +747,12 @@ public struct SavedChecksumCheck: Sendable {
         return try !AppleDoubleSelection.companions(in: [entry]).isEmpty
     }
 
-    private static func readMHL(_ url: URL, root: URL, generation: Int? = nil, expectedDigest: String? = nil) throws -> [ExpectedFile] {
-        let bytes = try boundedEvidenceData(url)
+    private static func readMHL(_ url: URL, root: URL, generation: Int? = nil, expectedDigest: String? = nil) throws -> (entries: [ExpectedFile], evidence: ASCInventoryEvidence) {
+        let file = try ClassicMHLFile(url: url)
+        let bytes = try file.boundedData(maxBytes: EvidenceReader.maxReportBytes)
+        let digest = SHA256.hash(data: bytes).map { String(format: "%02x", $0) }.joined()
         if let expectedDigest {
-            guard SHA256.hash(data: bytes).map({ String(format: "%02x", $0) }).joined() == expectedDigest else { throw CheckError.unreadableEvidence }
+            guard digest == expectedDigest else { throw CheckError.unreadableEvidence }
         }
         let parser = XMLParser(data: bytes)
         let delegate = MHLParser()
@@ -681,25 +763,31 @@ public struct SavedChecksumCheck: Sendable {
         try Task.checkCancellation()
         if let failure = delegate.failure { throw failure }
         guard parsed else { throw CheckError.unreadableEvidence }
+        // Unknown structure is noted without stopping the parse, so a file
+        // that is also damaged still reports as damaged.
+        if delegate.unsupportedStructure { throw CheckError.unsupportedEvidence }
         let fallbackDate = (try? url.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
         let record = Record(url: url, date: delegate.creationDate ?? fallbackDate, kind: .ascMHL, generation: generation)
         // ASC paths belong to the folder containing ascmhl/, not whichever
         // ancestor the user selected in Check.
         let historyRoot = url.deletingLastPathComponent().deletingLastPathComponent()
         var paths = Set<String>()
-        return try delegate.items.map { item in
+        let entries = try delegate.items.map { item in
             guard let path = safeRecordedPath(item.path),
                   let relative = relativePath(historyRoot.appendingPathComponent(path).path, root: root),
                   paths.insert(relative).inserted else { throw CheckError.unreadableEvidence }
-            let selected: (Algorithm, String)?
-            if let hash = item.sha256 { selected = (.sha256, hash) }
-            else if let hash = item.md5 { selected = (.md5, hash) }
-            else if let hash = item.xxh64 { selected = (.xxh64, hash) }
-            else { selected = nil }
-            guard let (algorithm, value) = selected else { throw CheckError.unsupportedEvidence }
-            guard isValid(value, for: algorithm) else { throw CheckError.unreadableEvidence }
-            return ExpectedFile(relativePath: relative, checksum: value.lowercased(), algorithm: algorithm, record: record)
+            let supplied: [(Algorithm, String?)] = [(.sha256, item.sha256), (.md5, item.md5), (.xxh64, item.xxh64)]
+            let digests = try supplied.compactMap { pair -> Digest? in
+                let (algorithm, value) = pair
+                guard let value else { return nil }
+                guard isValid(value, for: algorithm) else { throw CheckError.unreadableEvidence }
+                return Digest(algorithm: algorithm, value: value.lowercased())
+            }
+            guard let primary = digests.first else { throw CheckError.unsupportedEvidence }
+            return ExpectedFile(relativePath: relative, checksum: primary.value, algorithm: primary.algorithm,
+                                record: record, requiredDigests: digests, expectedSize: item.expectedSize)
         }
+        return (entries, ASCInventoryEvidence(url: url, identity: file.identity, sha256: digest))
     }
 
     private final class MHLParser: NSObject, XMLParserDelegate {
@@ -708,6 +796,7 @@ public struct SavedChecksumCheck: Sendable {
             var sha256: String?
             var md5: String?
             var xxh64: String?
+            var expectedSize: Int64?
         }
         var items: [Item] = []
         var creationDate: Date?
@@ -722,6 +811,14 @@ public struct SavedChecksumCheck: Sendable {
             failure = error
             parser.abortParsing()
         }
+
+        private static let directoryDigestNames: Set<String> = [
+            "md5", "sha1", "sha256", "sha-256", "xxh64", "xxhash64", "xxh128", "xxh3", "c4",
+        ]
+
+        /// Set by structure the parser does not understand. Parsing continues
+        /// so well-formedness errors still take precedence as "damaged".
+        private(set) var unsupportedStructure = false
 
         func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
             if Task.isCancelled { parser.abortParsing(); return }
@@ -741,13 +838,48 @@ public struct SavedChecksumCheck: Sendable {
             }
             stack.append(name)
             text = ""
+            // Nothing legitimate nests this deep; a crafted file must not
+            // make the parser walk thousands of levels.
+            guard stack.count <= 16 else { reject(parser, .unreadableEvidence); return }
+            // Every structural context has an allowlist. Unknown structure is
+            // unsupported evidence, never skipped: a record hidden inside an
+            // element the parser does not understand must not leave the rest
+            // of the manifest looking intact.
+            if stack.count == 2, !["creatorinfo", "processinfo", "hashes"].contains(name) {
+                unsupportedStructure = true; return
+            }
+            if stack.count == 3, stack[1] == "hashes", name != "hash", name != "directoryhash" {
+                unsupportedStructure = true; return
+            }
+            if stack.count >= 4, stack[2] == "directoryhash" {
+                let allowed: Bool
+                switch stack.count {
+                case 4: allowed = ["path", "content", "structure"].contains(name)
+                case 5:
+                    // Only digest leaves, in the ASC namespace, live under
+                    // content and structure.
+                    allowed = ["content", "structure"].contains(stack[3])
+                        && Self.directoryDigestNames.contains(name)
+                        && namespaceURI == namespace
+                default: allowed = false
+                }
+                if !allowed { unsupportedStructure = true; return }
+            }
             if stack == ["hashlist", "hashes", "hash"] {
                 guard namespaceURI == namespace else { reject(parser, .unsupportedEvidence); return }
                 item = Item()
                 fields.removeAll()
             } else if item != nil, stack.count == 4 {
                 guard namespaceURI == namespace else { reject(parser, .unsupportedEvidence); return }
-                guard fields.insert(name).inserted else { reject(parser, .unreadableEvidence); return }
+                let field = name == "sha-256" ? "sha256" : (name == "xxhash64" ? "xxh64" : name)
+                guard fields.insert(field).inserted else { reject(parser, .unreadableEvidence); return }
+                guard ["path", "metadata", "sha256", "md5", "xxh64", "xxhash64"].contains(name) || name == "sha-256" else {
+                    reject(parser, .unsupportedEvidence); return
+                }
+                if name == "path", let size = attributeDict["size"] {
+                    guard let parsed = Int64(size), parsed >= 0 else { reject(parser, .unreadableEvidence); return }
+                    item?.expectedSize = parsed
+                }
                 if name != "path", name != "metadata", name != "previouspath",
                    let action = attributeDict["action"], !["original", "verified"].contains(action) {
                     reject(parser, .unsupportedEvidence)
@@ -818,7 +950,9 @@ public struct SavedChecksumCheck: Sendable {
                 return $0.record.url.path < $1.record.url.path
             }
             var latest: [String: ExpectedFile] = [:]
-            for entry in sorted { latest[entry.relativePath] = entry }
+            for entry in sorted {
+                latest[entry.relativePath] = mergedASCEvidence(entry, over: latest[entry.relativePath])
+            }
             selected.append(contentsOf: latest.values)
         }
         let sorted = selected.sorted {
@@ -826,7 +960,7 @@ public struct SavedChecksumCheck: Sendable {
             return $0.record.url.path < $1.record.url.path
         }
         var expected: [String: ExpectedFile] = [:]
-        for entry in sorted { expected[entry.relativePath] = entry }
+        for entry in sorted { expected[entry.relativePath] = mergedASCEvidence(entry, over: expected[entry.relativePath]) }
         // Every file in a report/history shares its record URL. Collect each
         // contributing record once, after choosing the newest evidence per file.
         var recordsByURL: [URL: Record] = [:]
@@ -836,6 +970,21 @@ public struct SavedChecksumCheck: Sendable {
             return $0.url.path < $1.url.path
         }
         return Discovery(root: root, expectedFiles: expected, records: records, publicationStatuses: publicationStatuses)
+    }
+
+    /// Later ASC evidence for a path keeps every digest and size earlier
+    /// generations or other histories supplied. Discovery already rejected
+    /// conflicting values, so an algorithm the later record lacks is still
+    /// required: date order must never discard a recorded digest.
+    private static func mergedASCEvidence(_ entry: ExpectedFile, over previous: ExpectedFile?) -> ExpectedFile {
+        guard entry.record.kind == .ascMHL, let previous, previous.record.kind == .ascMHL else { return entry }
+        var digests = entry.requiredDigests
+        for digest in previous.requiredDigests where !digests.contains(where: { $0.algorithm == digest.algorithm }) {
+            digests.append(digest)
+        }
+        return ExpectedFile(relativePath: entry.relativePath,
+            checksum: entry.checksum, algorithm: entry.algorithm, record: entry.record,
+            requiredDigests: digests, expectedSize: entry.expectedSize ?? previous.expectedSize)
     }
 
     private static func progress(processed: Int, total: Int, path: String?) -> OperationProgress {
@@ -936,7 +1085,7 @@ private enum XXH64 {
         )
     }
 
-    private struct State {
+    struct State {
         var total: UInt64 = 0
         var v1 = prime1 &+ prime2
         var v2 = prime2
