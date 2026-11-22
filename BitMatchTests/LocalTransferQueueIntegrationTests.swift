@@ -1433,7 +1433,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(starts.isEmpty)
     }
 
-    func testRetryReplacesVisibleCardAndSingleSuccessUsesNormalFinish() async throws {
+    /// An unexplained first failure is unknown territory: the retry's own
+    /// backup verifies, but nothing may call the card safe to erase.
+    func testRetryAfterUnexplainedFailureNeverCallsTheCardSafe() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL)
@@ -1451,6 +1453,36 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             defaults: f.defaults
         )
         try journal.fail(id: originalID, summary: "Try again")
+        coordinator.retryTransfer(originalID)
+        let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
+            !coordinator.queueIsRunning && !coordinator.isOperationInProgress
+                && journal.records.contains(where: { $0.id != originalID && $0.state == .completed })
+        }
+        XCTAssertTrue(finished)
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+        XCTAssertEqual(coordinator.queuePresentation.tally.needsAttention, 1)
+    }
+
+    func testRetryReplacesVisibleCardAndSingleSuccessUsesNormalFinish() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        var reports = ReportPrefs()
+        reports.makeReport = false
+        let originalID = try journal.enqueue(
+            sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: reports, generateASCMHL: false
+        )
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(
+                fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared
+            )),
+            transferJournal: journal,
+            defaults: f.defaults
+        )
+        // The first attempt never read the card: a classified, non-source
+        // failure. The verified retry may then call the card safe.
+        try journal.fail(id: originalID, summary: "Card not connected", reason: .sourceNotConnected)
         coordinator.retryTransfer(originalID)
         let finished = await waitUntil(timeout: .seconds(15)) { @MainActor in
             !coordinator.queueIsRunning && !coordinator.isOperationInProgress

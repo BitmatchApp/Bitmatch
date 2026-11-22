@@ -28,13 +28,15 @@ public enum SourceFaultLineage {
 
     /// Source faults recorded by the record itself.
     public static func sourceFaultReasons(in record: LocalTransferRecord) -> [String] {
-        let reasons = Set(record.results.compactMap { row -> String? in
+        var reasons = Set(record.results.compactMap { row -> String? in
             guard !row.isSuccessStatus, let reason = row.failureReason,
-                  reason == ResultFailureReason.sourceUnstable.rawValue
-                    || reason == ResultFailureReason.sourceReadFailed.rawValue
+                  ResultFailureReason(rawValue: reason)?.isSourceFault == true
             else { return nil }
             return reason
         })
+        if let reason = record.failureReason, ResultFailureReason(rawValue: reason)?.isSourceFault == true {
+            reasons.insert(reason)
+        }
         return reasons.sorted()
     }
 
@@ -47,16 +49,28 @@ public enum SourceFaultLineage {
     static func predecessorIsUnclassified(_ record: LocalTransferRecord) -> Bool {
         switch record.state {
         case .cancelled, .queued, .running: return false
-        case .completed, .issues, .failed, .interrupted:
-            // An unsuccessful attempt with no rows at all stopped before it
-            // could say why (quick-mode records are .issues with successful
-            // rows, and those read the card fine).
-            if record.state != .completed, record.results.isEmpty { return true }
+        case .completed, .issues:
+            // Quick-mode records are .issues with successful rows, and those
+            // read the card fine. An .issues record with no rows at all, or
+            // any unsuccessful row without a known reason, is unexplained.
+            if record.state == .issues, record.results.isEmpty { return true }
             return record.results.contains { row in
                 guard !row.isSuccessStatus else { return false }
                 guard let reason = row.failureReason else { return true }
                 return ResultFailureReason(rawValue: reason) == nil
             }
+        case .failed, .interrupted:
+            // The attempt did not finish. Its rows may all read as verified
+            // (the card failed during the final check, after every file was
+            // published), so only a classified reason explains it: on the
+            // record itself, or on an unsuccessful row. Anything else is
+            // unknown, never clean.
+            if let reason = record.failureReason, ResultFailureReason(rawValue: reason) != nil { return false }
+            let classified = record.results.contains { row in
+                guard !row.isSuccessStatus, let reason = row.failureReason else { return false }
+                return ResultFailureReason(rawValue: reason) != nil
+            }
+            return !classified
         }
     }
 

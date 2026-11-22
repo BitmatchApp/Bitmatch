@@ -2181,7 +2181,7 @@ class SharedAppCoordinator: ObservableObject {
             try requireCurrentQueuePreparation(invocationID)
             if stale.contains(0) {
                 let message = "\(record.title) is not connected"
-                try transferJournal.fail(id: record.id, summary: message)
+                try transferJournal.fail(id: record.id, summary: message, reason: .sourceNotConnected)
                 handleAttemptTerminal(recordID: record.id)
                 return
             }
@@ -2266,7 +2266,7 @@ class SharedAppCoordinator: ObservableObject {
             queueIsRunning = false
             queueMessage = error.localizedDescription
             do {
-                try transferJournal.fail(id: record.id, summary: error.localizedDescription)
+                try transferJournal.fail(id: record.id, summary: error.localizedDescription, reason: .backupRefused)
                 handleAttemptTerminal(recordID: record.id)
             } catch {
                 pauseQueueAttempt(

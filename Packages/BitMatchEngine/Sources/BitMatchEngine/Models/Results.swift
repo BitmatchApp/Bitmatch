@@ -40,6 +40,11 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
     case companionConflict
     case sourceUnstable
     case sourceReadFailed
+    /// The attempt never read the card: it was not connected when the
+    /// queue reached it.
+    case sourceNotConnected
+    /// The attempt never started: a backup was refused by policy.
+    case backupRefused
     /// NSError userInfo key the writer sets on the errors it classifies.
     public static let userInfoKey = "BitMatchFailureReason"
 
@@ -49,8 +54,13 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
         case .companionConflict: "the backup keeps its own hidden companion file"
         case .sourceUnstable: "the card changed or could not be read consistently"
         case .sourceReadFailed: "the card could not be read"
+        case .sourceNotConnected: "the card was not connected"
+        case .backupRefused: "a backup was refused before copying started"
         }
     }
+
+    /// Reasons that say something went wrong reading the card itself.
+    public var isSourceFault: Bool { self == .sourceUnstable || self == .sourceReadFailed }
 }
 
 // MARK: - Result Row
