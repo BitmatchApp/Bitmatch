@@ -196,7 +196,7 @@ struct TransferFinishNoticeTests {
         _ record: LocalTransferRecord, queue: Bool = false,
         attention: Bool = true, finish: Bool = true, eachCard: Bool = false
     ) -> TransferNotificationKind? {
-        TransferNotificationDecision.kind(record: record, queueIsRunning: queue,
+        TransferNotificationDecision.kind(record: record, in: [record], queueIsRunning: queue,
             isReplayingQueuedTransfer: queue, notifyAttention: attention,
             notifyFinish: finish, notifyEachQueuedCard: eachCard)
     }

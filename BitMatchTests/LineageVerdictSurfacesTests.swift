@@ -109,4 +109,30 @@ struct LineageVerdictSurfacesTests {
         #expect(TransferOutcomePresentation.recordedState(for: retry) == .completed(.init(success: true, message: TransferOutcomePresentation.recordedCompletionReason(for: retry))))
         #expect(TransferOutcomePresentation.recordedState(for: retry, in: all) != .completed(.init(success: true, message: TransferOutcomePresentation.recordedCompletionReason(for: retry))))
     }
+
+    /// Notification routing must see the lineage BEFORE preferences are
+    /// applied: with only "needs attention" enabled, a lineage-downgraded
+    /// retry must still notify; with only routine finishes enabled, it is
+    /// not a routine finish and must not notify.
+    @Test func notificationRoutingUsesTheHistoryAwareVerdict() throws {
+        let (retry, all) = try history()
+        let attentionOnly = TransferNotificationDecision.kind(
+            record: retry, in: all, queueIsRunning: false, isReplayingQueuedTransfer: false,
+            notifyAttention: true, notifyFinish: false, notifyEachQueuedCard: false)
+        #expect(attentionOnly != nil)
+        let finishOnly = TransferNotificationDecision.kind(
+            record: retry, in: all, queueIsRunning: false, isReplayingQueuedTransfer: false,
+            notifyAttention: false, notifyFinish: true, notifyEachQueuedCard: false)
+        #expect(finishOnly == nil)
+        let queuedAttentionOnly = TransferNotificationDecision.kind(
+            record: retry, in: all, queueIsRunning: true, isReplayingQueuedTransfer: true,
+            notifyAttention: true, notifyFinish: false, notifyEachQueuedCard: false)
+        #expect(queuedAttentionOnly != nil)
+        // A clean first attempt still routes as a routine finish.
+        let clean = try cleanFirstAttempt()
+        let cleanFinishOnly = TransferNotificationDecision.kind(
+            record: clean, in: [clean], queueIsRunning: false, isReplayingQueuedTransfer: false,
+            notifyAttention: false, notifyFinish: true, notifyEachQueuedCard: false)
+        #expect(cleanFinishOnly != nil)
+    }
 }

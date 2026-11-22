@@ -1157,6 +1157,7 @@ class SharedAppCoordinator: ObservableObject {
         guard currentMode == .copyAndVerify else { return }
         guard let kind = TransferNotificationDecision.kind(
             record: record,
+            in: transferJournal.records,
             queueIsRunning: queueIsRunning,
             isReplayingQueuedTransfer: isReplayingQueuedTransfer,
             notifyAttention: generalSettings.notifyWhenCardNeedsAttention,
