@@ -38,8 +38,19 @@ public enum ResultOutcome: CaseIterable, Equatable, Sendable {
 public enum ResultFailureReason: String, Sendable, CaseIterable {
     case outOfSpace
     case companionConflict
+    case sourceUnstable
+    case sourceReadFailed
     /// NSError userInfo key the writer sets on the errors it classifies.
     public static let userInfoKey = "BitMatchFailureReason"
+
+    public var rowNote: String {
+        switch self {
+        case .outOfSpace: "backup out of space"
+        case .companionConflict: "the backup keeps its own hidden companion file"
+        case .sourceUnstable: "the card changed or could not be read consistently"
+        case .sourceReadFailed: "the card could not be read"
+        }
+    }
 }
 
 // MARK: - Result Row

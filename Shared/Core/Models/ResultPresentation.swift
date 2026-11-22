@@ -398,19 +398,13 @@ enum DestinationVolumeLabel {
 }
 
 extension ResultFailureReason {
-    /// Suffix for one row in History/Review.
-    var rowNote: String {
-        switch self {
-        case .outOfSpace: return "backup out of space"
-        case .companionConflict: return "the backup keeps its own hidden companion file"
-        }
-    }
-
     /// Lead-in for a backup whose failures all share this reason.
     func backupLead(_ name: String) -> String {
         switch self {
         case .outOfSpace: return "\(name) ran out of space"
         case .companionConflict: return "\(name) keeps its own hidden companion files"
+        case .sourceUnstable: return "The card changed or could not be read consistently"
+        case .sourceReadFailed: return "The card could not be read"
         }
     }
 }

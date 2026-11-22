@@ -96,6 +96,17 @@ struct ReportView: View {
         rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
     }
 
+    private var sourceIssueWarnings: [String] {
+        var warnings: [String] = []
+        if reportIssueRows.contains(where: { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue }) {
+            warnings.append("The card changed or could not be read consistently. Keep the card.")
+        }
+        if reportIssueRows.contains(where: { $0.failureReason == ResultFailureReason.sourceReadFailed.rawValue }) {
+            warnings.append("The card could not be read. Keep the card.")
+        }
+        return warnings
+    }
+
     private var excludedResultCount: Int {
         rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count
     }
@@ -297,6 +308,10 @@ struct ReportView: View {
         let issueCount = self.issueCount
         if issueCount > 0 {
             append { _ in Text("Issues Detail (\(issueCount))").font(.system(size: 14, weight: .semibold)) }
+            for warning in sourceIssueWarnings {
+                append { _ in Text(warning)
+                    .font(.system(size: 10)) }
+            }
             for group in ResultPresentation.issueGroups(reportIssueRows) {
                 let groupStatus = group.status
                 let groupCount = group.rows.count
@@ -934,6 +949,9 @@ struct ReportView: View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Issues Detail (\(issueCount))")
                 .font(.system(size: 14, weight: .semibold))
+            ForEach(sourceIssueWarnings, id: \.self) { warning in
+                Text(warning).font(.system(size: 10))
+            }
             
             let groups = ResultPresentation.issueGroups(reportIssueRows)
             

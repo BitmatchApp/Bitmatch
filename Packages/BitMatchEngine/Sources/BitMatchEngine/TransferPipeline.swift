@@ -284,11 +284,13 @@ private func sourceChangeReason(initial: [FileEntry], current: [FileEntry]) -> S
     return "The card changed during the copy: " + changes.joined(separator: "; ") + ". Run it again."
 }
 
-private func completionGateError(_ message: String) -> NSError {
-    NSError(
+private func completionGateError(_ message: String, reason: ResultFailureReason? = nil) -> NSError {
+    var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
+    if let reason { userInfo[ResultFailureReason.userInfoKey] = reason.rawValue }
+    return NSError(
         domain: "TransferPipeline",
         code: NSFileReadUnknownError,
-        userInfo: [NSLocalizedDescriptionKey: message]
+        userInfo: userInfo
     )
 }
 
@@ -533,9 +535,17 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 processingTime: Date().timeIntervalSince(started),
                 failedOutputMarking: marking, recopyOutcome: "stillFailed")
         }
+        func sourceFailure(_ error: Error) -> FileOperationResult {
+            FileOperationResult(
+                sourceURL: source, destinationURL: destination, success: false, error: error,
+                fileSize: fileSize, verificationResult: nil,
+                processingTime: Date().timeIntervalSince(started),
+                failedOutputMarking: initialMarking, recopyOutcome: "stillFailed")
+        }
         do {
             try Task.checkCancellation()
             let copyError = Mutex(false)
+            let sourceError = Mutex<NSError?>(nil)
             try await DestinationWriter.copyAllSafelyFanOut(
                 from: source.deletingLastPathComponent(),
                 toPinnedRoots: [DestinationWriter.FanOutDestination(index: destinationIndex, root: pinnedRoot)],
@@ -545,8 +555,16 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 hooks: hooks, onIOBytes: onIOBytes,
                 onSourceReadEvidence: { _, _ in },
                 onProgress: { _, _, _, _ in },
-                onError: { _, _, _ in copyError.withLock { $0 = true } }
+                onError: { _, _, error in
+                    copyError.withLock { $0 = true }
+                    let nsError = error as NSError
+                    let reason = nsError.userInfo[ResultFailureReason.userInfoKey] as? String
+                    if reason == ResultFailureReason.sourceUnstable.rawValue || reason == ResultFailureReason.sourceReadFailed.rawValue {
+                        sourceError.withLock { $0 = nsError }
+                    }
+                }
             )
+            if let error = sourceError.withLock({ $0 }) { return sourceFailure(error) }
             if copyError.withLock({ $0 }) {
                 return stillFailed(marking: initialMarking, verification: initialVerification)
             }
@@ -579,6 +597,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         } catch is CancellationError {
             throw CancellationError()
         } catch {
+            let reason = (error as NSError).userInfo[ResultFailureReason.userInfoKey] as? String
+            if reason == ResultFailureReason.sourceUnstable.rawValue || reason == ResultFailureReason.sourceReadFailed.rawValue {
+                return sourceFailure(error)
+            }
             return stillFailed(marking: initialMarking, verification: initialVerification)
         }
     }
@@ -1279,7 +1301,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             try CardSource.enumerateRegularFiles(base: operation.sourceURL, checkCancellation: check)
         }
         if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceManifest) {
-            let error = completionGateError(reason)
+            let error = completionGateError(reason, reason: .sourceUnstable)
             for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
                 let root = pinnedDestinations[destIndex]?.logicalRootURL
                     ?? SafetyValidator.resolvedDestinationRoot(
