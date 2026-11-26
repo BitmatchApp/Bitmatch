@@ -48,6 +48,9 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
     /// spinning drive. An explicit choice is never reported as limited.
     public let limitedForRotationalMedia: Bool
 
+    /// Zero verify workers means the run verified nothing (Quick mode).
+    public var verified: Bool { verifyWorkers > 0 }
+
     public init(copyWorkers: Int, verifyWorkers: Int, limitedForRotationalMedia: Bool) {
         self.copyWorkers = copyWorkers
         self.verifyWorkers = verifyWorkers

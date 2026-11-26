@@ -48,7 +48,7 @@ extension ReportSummary {
     var workersDescription: String? {
         guard let workers else { return nil }
         guard let verifyWorkers else { return "\(workers) parallel" }
-        return "\(workers) copy · \(verifyWorkers) verify"
+        return verifyWorkers == 0 ? "\(workers) copy · no verify" : "\(workers) copy · \(verifyWorkers) verify"
     }
 }
 

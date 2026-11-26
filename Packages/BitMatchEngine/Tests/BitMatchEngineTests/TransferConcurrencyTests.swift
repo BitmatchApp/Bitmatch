@@ -192,6 +192,22 @@ struct TransferConcurrencyPipelineTests {
         }
     }
 
+    @Test func quickModeRecordsNoVerifyWorkerBecauseNothingIsVerified() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.source); try? FileManager.default.removeItem(at: tree.destination) }
+            let pipeline = TransferPipeline(
+                fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                storageMediumDetector: FixedMediumDetector(kind: .solidState))
+            let operation = try await pipeline.performFileOperation(
+                sourceURL: tree.source, destinationURLs: [tree.destination],
+                verificationMode: .quick, settings: CameraLabelSettings(),
+                estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            #expect(operation.concurrency?.verifyWorkers == 0)
+            #expect(operation.concurrency?.verified == false)
+        }
+    }
+
     @Test func theLegacyVerifyConcurrencyParameterStillCountsAsAnExplicitChoice() async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()

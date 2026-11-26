@@ -803,10 +803,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let shouldPipelineVerify = operation.verificationMode != .quick
             && concurrencyChoice.verifyWhileCopying
         let verifyConcurrency = concurrencyPlan.verifyWorkers
-        // Without pipelining each backup is verified in one sequential pass, so
-        // the record says one verify worker: what ran, not what was chosen.
+        // The record says what ran, not what was chosen: Quick verifies nothing,
+        // so no verify worker; without pipelining each backup is verified in
+        // one sequential pass, so one.
         let recordedConcurrency = shouldPipelineVerify ? concurrencyPlan : TransferConcurrencyPlan(
-            copyWorkers: concurrencyPlan.copyWorkers, verifyWorkers: 1,
+            copyWorkers: concurrencyPlan.copyWorkers, verifyWorkers: operation.verificationMode == .quick ? 0 : 1,
             limitedForRotationalMedia: concurrencyPlan.limitedForRotationalMedia)
         let diagnosticRun = TransferDiagnostics.runID ?? operation.id
         SharedLogger.verifyConfiguration(run: diagnosticRun, concurrency: shouldPipelineVerify ? verifyConcurrency : 1)
