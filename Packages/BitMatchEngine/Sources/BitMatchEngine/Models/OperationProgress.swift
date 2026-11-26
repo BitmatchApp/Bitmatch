@@ -2,7 +2,7 @@
 import Foundation
 
 // MARK: - Progress Stage
-public enum ProgressStage: Codable, Sendable {
+public enum ProgressStage: Codable, Hashable, Sendable {
     case idle
     case preparing
     case copying
@@ -23,7 +23,7 @@ public enum ProgressStage: Codable, Sendable {
 }
 
 // MARK: - Operation Progress
-public struct OperationProgress: Codable, Sendable {
+public struct OperationProgress: Codable, Hashable, Sendable {
     public let overallProgress: Double
     public let currentFile: String?
     public let filesProcessed: Int
