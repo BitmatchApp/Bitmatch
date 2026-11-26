@@ -68,22 +68,32 @@ public final class RemoteAdmissionStore: Sendable {
     /// Requests that were still pending when the file was last written.
     public func pendingAtLoad() -> [(ClientID, RequestID)] { loadedPending }
 
+    /// What `admit` would answer for a request the store already knows,
+    /// without admitting anything; nil for a request it has never seen.
+    public func existing(client: ClientID, request: RequestID, contentHash: String) -> Admission? {
+        entries.withLock { entries in
+            entries[Key(client: client, request: request)].map { Self.duplicate($0, contentHash: contentHash) }
+        }
+    }
+
     public func admit(client: ClientID, request: RequestID, contentHash: String) throws -> Admission {
         try entries.withLock { entries in
             let key = Key(client: client, request: request)
-            if let existing = entries[key] {
-                guard existing.contentHash == contentHash else { return .contentMismatch }
-                switch existing.state {
-                case .pending: return .duplicatePending
-                case .done(let outcome): return .duplicateDone(outcome)
-                case .unknown(let reason): return .duplicateDone(.unknown(reason: reason))
-                }
-            }
+            if let existing = entries[key] { return Self.duplicate(existing, contentHash: contentHash) }
             var updated = entries
             updated[key] = Entry(clientID: client, requestID: request, contentHash: contentHash,
                                  state: .pending, admittedAt: now(), completedAt: nil)
             try commit(updated, into: &entries)
             return .admitted
+        }
+    }
+
+    private static func duplicate(_ existing: Entry, contentHash: String) -> Admission {
+        guard existing.contentHash == contentHash else { return .contentMismatch }
+        switch existing.state {
+        case .pending: return .duplicatePending
+        case .done(let outcome): return .duplicateDone(outcome)
+        case .unknown(let reason): return .duplicateDone(.unknown(reason: reason))
         }
     }
 

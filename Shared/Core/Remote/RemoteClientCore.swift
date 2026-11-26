@@ -6,11 +6,18 @@ import BitMatchEngine
 /// whose reply does not come within `replyTimeout` ends `.unknown("no
 /// reply")` and is kept, so `retry` resends it unchanged: the same request
 /// and content hash, which the Mac answers from its record instead of
-/// running it again.
+/// running it again. A final reply that arrives after its wait ended is kept
+/// too, and `retry` returns it without resending.
+///
+/// Carry-forward (transport slice): the link is fixed for this core's life,
+/// so a retry after a reconnect needs a way to hand the core the replacement
+/// link while it keeps its unanswered commands.
 @MainActor
 final class RemoteClientCore: RemoteCommandSender {
     static let noReplyReason = "no reply"
-    static let alreadyAnsweredWording = "The Mac has already answered that command."
+    static let forgottenReason = "the Mac's answer to that command is no longer kept; check the Mac"
+    /// How many late replies are kept for `retry`.
+    static let lateOutcomeLimit = 64
 
     struct NothingInstalled: LocalizedError {
         var errorDescription: String? { "no state from the Mac yet" }
@@ -29,6 +36,8 @@ final class RemoteClientCore: RemoteCommandSender {
     private var sendOrder: [RequestID] = []
     /// Requests whose wait for a reply is still open.
     private var timeouts: [RequestID: RemoteScheduledAction] = [:]
+    /// Final replies that arrived when nobody was waiting, oldest first.
+    private var lateOutcomes: [(request: RequestID, outcome: RemoteCommandOutcome)] = []
 
     init(view: RemoteCoordinatorView, link: any RemoteLink, client: ClientID, replyTimeout: TimeInterval = 10,
          scheduler: any RemoteScheduler = RemoteTaskScheduler(), now: @escaping @Sendable () -> Date = Date.init) {
@@ -61,6 +70,7 @@ final class RemoteClientCore: RemoteCommandSender {
     func stop() {
         receiving?.cancel()
         receiving = nil
+        lateOutcomes.removeAll()
         disconnect()
     }
 
@@ -71,11 +81,11 @@ final class RemoteClientCore: RemoteCommandSender {
         try await transmit(RemoteCommand(client: client, request: request, session: session, body: body))
     }
 
-    /// Resends an unanswered command as it was first sent and waits for the reply.
+    /// Resends an unanswered command as it was first sent and waits for the
+    /// reply, or returns the Mac's reply if it has since arrived.
     func retry(_ request: RequestID) async -> RemoteCommandOutcome {
-        guard let view, let command = sent[request] else {
-            return .rejected(.unsupported(wording: Self.alreadyAnsweredWording))
-        }
+        if let late = lateOutcomes.last(where: { $0.request == request }) { return late.outcome }
+        guard let view, let command = sent[request] else { return .unknown(reason: Self.forgottenReason) }
         let pending = view.pendingOutcomes.register(request)
         do {
             try await transmit(command)
@@ -116,12 +126,17 @@ final class RemoteClientCore: RemoteCommandSender {
 
     // MARK: - Incoming
 
-    /// `pending` means the Mac is still running it, so the command stays retryable.
+    /// `pending` means the Mac is still running it, so the command stays
+    /// retryable. A final reply nobody is waiting for is kept for `retry`.
     private func receive(_ envelope: RemoteEnvelope) {
         if case .outcome(let request, let outcome) = envelope.message {
             if outcome == .pending {
                 timeouts.removeValue(forKey: request)?.cancel()
             } else {
+                if sent[request] != nil, timeouts[request] == nil {
+                    lateOutcomes.append((request, outcome))
+                    if lateOutcomes.count > Self.lateOutcomeLimit { lateOutcomes.removeFirst() }
+                }
                 forget(request)
             }
         }

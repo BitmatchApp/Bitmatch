@@ -10,6 +10,7 @@ import BitMatchEngine
 @MainActor
 final class RemoteHostCore {
     static let restartedReason = "the Mac restarted before this command finished; check the Mac"
+    static let protocolVersionWording = "protocol version"
 
     private final class Attachment {
         let outbox: AsyncStream<RemoteEnvelope>.Continuation
@@ -31,18 +32,19 @@ final class RemoteHostCore {
     private let scheduler: any RemoteScheduler
     private let now: @Sendable () -> Date
     private var attachments: [SessionID: Attachment] = [:]
-    /// The state attached clients were last sent, at the host's revisions;
-    /// the next update is the difference from it.
-    private var published: RemoteSnapshot?
+    /// The surface as last diffed, at the host's revisions; the next update
+    /// is the difference from it. It is kept while no client is attached, so
+    /// a change made offline still moves the revisions and a command from
+    /// before a disconnect is stale after it.
+    private var published: RemoteSnapshot
     private var changes: AnyCancellable?
     private var flushScheduled = false
     private var heartbeat: RemoteScheduledAction?
 
-    /// `safeToErase` is the Mac's eject check for a remote eject; until one
-    /// is given, every remote eject is refused as not safe.
+    /// `safeToErase` is the Mac's eject check for a remote eject.
     init(surface: any RemoteSurface, host: RemoteHostState, admission: RemoteAdmissionStore,
          hostName: String, heartbeatInterval: TimeInterval = 2,
-         safeToErase: @escaping @MainActor (UUID, MediaIncarnation) -> Bool = { _, _ in false },
+         safeToErase: @escaping @MainActor (UUID, MediaIncarnation) -> Bool,
          scheduler: any RemoteScheduler = RemoteTaskScheduler(),
          now: @escaping @Sendable () -> Date = Date.init) {
         self.surface = surface
@@ -53,6 +55,11 @@ final class RemoteHostCore {
         self.scheduler = scheduler
         self.now = now
         executor = RemoteCommandExecutor(surface: surface, host: host, admission: admission, safeToErase: safeToErase)
+        // Each update names its own session, so the session here is only a placeholder.
+        published = RemoteSnapshotBuilder(surface: surface, host: host, hostName: hostName, session: SessionID())
+            .snapshot(now: now())
+        // `RemoteSurface` is main-actor isolated, so its `objectWillChange`
+        // is sent on the main actor; this traps if that ever stops being true.
         changes = Self.willChange(surface).sink { [weak self] in
             MainActor.assumeIsolated { self?.surfaceWillChange() }
         }
@@ -69,16 +76,19 @@ final class RemoteHostCore {
         let (outgoing, outbox) = AsyncStream<RemoteEnvelope>.makeStream()
         let attachment = Attachment(outbox: outbox)
         attachments[session] = attachment
-        let snapshot = builder(for: session).snapshot(now: now())
-        if published == nil { published = snapshot }
-        outbox.yield(RemoteEnvelope(message: .snapshot(snapshot)))
+        outbox.yield(RemoteEnvelope(message: .snapshot(builder(for: session).snapshot(now: now()))))
         // One sender per link, so envelopes arrive in the order they were made.
-        Task {
+        Task { [weak self] in
             for await envelope in outgoing {
                 do {
                     try await link.send(envelope)
                 } catch {
+                    // The client has lost its place in the stream, and only a
+                    // snapshot mends that: drop the link, so the transport
+                    // reconnects and `attach` sends a fresh one.
                     SharedLogger.warning("Remote message to session \(session.rawValue) was not sent: \(error)")
+                    if self?.attachments[session] === attachment { self?.detach(session: session) }
+                    return
                 }
             }
         }
@@ -94,7 +104,6 @@ final class RemoteHostCore {
         attachment.outbox.finish()
         attachment.receiving?.cancel()
         if attachments.isEmpty {
-            published = nil
             heartbeat?.cancel()
             heartbeat = nil
         }
@@ -102,8 +111,9 @@ final class RemoteHostCore {
 
     /// For transports that carry bytes. A command that cannot be decoded
     /// (another protocol version, a content hash that does not match its
-    /// body) is answered `contentMismatch` when its request can still be
-    /// read; anything else unreadable is dropped.
+    /// body) is answered when its request can still be read: `unsupported`
+    /// for another version, `contentMismatch` otherwise. Anything else
+    /// unreadable is dropped.
     func receive(encoded data: Data, session: SessionID) {
         let envelope: RemoteEnvelope
         do {
@@ -114,17 +124,29 @@ final class RemoteHostCore {
                 return
             }
             SharedLogger.warning("Remote command \(request.rawValue) could not be decoded: \(error)")
-            attachments[session]?.outbox.yield(
-                RemoteEnvelope(message: .outcome(request: request, .rejected(.contentMismatch))))
+            let rejection: RemoteRejection = if case RemoteProtocolError.unsupportedProtocolVersion = error {
+                .unsupported(wording: Self.protocolVersionWording)
+            } else {
+                .contentMismatch
+            }
+            attachments[session]?.outbox.yield(RemoteEnvelope(message: .outcome(request: request, .rejected(rejection))))
             return
         }
         route(envelope, from: session)
     }
 
     /// Commands run concurrently, so a duplicate of one still running is
-    /// answered `pending` by admission instead of waiting behind it.
+    /// answered `pending` by admission instead of waiting behind it. A
+    /// command naming another session is refused unless the store already
+    /// knows it, so a retry across a reconnect still hears its answer.
     private func route(_ envelope: RemoteEnvelope, from session: SessionID) {
         guard case .command(let command) = envelope.message, let attachment = attachments[session] else { return }
+        if command.session != session,
+           admission.existing(client: command.client, request: command.request,
+                              contentHash: command.contentHash) == nil {
+            attachment.outbox.yield(RemoteEnvelope(message: .outcome(request: command.request, .rejected(.unauthorized))))
+            return
+        }
         attachment.clients.insert(command.client)
         Task { [executor] in
             let outcome = await executor.execute(command)
@@ -136,7 +158,8 @@ final class RemoteHostCore {
 
     /// Commands still pending when the Mac last stopped did not finish here.
     /// Each becomes `unknown` unless `proof` shows its outcome, so a retry
-    /// hears an answer instead of running it again.
+    /// hears an answer instead of running it again. Call it before the first
+    /// `attach`: until then a retry of such a command would hear `pending`.
     func reconcilePendingAtLaunch(using proof: (ClientID, RequestID) -> RemoteCommandOutcome?) {
         for (client, request) in admission.pendingAtLoad() {
             do {
@@ -163,7 +186,6 @@ final class RemoteHostCore {
 
     private func flushChanges() {
         flushScheduled = false
-        guard let published else { return }
         let builder = builder(for: published.session)
         let now = now()
         guard let update = builder.patch(from: published, now: now) else { return }

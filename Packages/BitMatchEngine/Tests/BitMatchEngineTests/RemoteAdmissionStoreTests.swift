@@ -46,6 +46,18 @@ struct RemoteAdmissionStoreTests {
         }
     }
 
+    @Test func lookingUpARequestNeverAdmitsIt() throws {
+        let (directory, file) = try makeFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try RemoteAdmissionStore(fileURL: file)
+        let client = ClientID(), request = RequestID()
+
+        #expect(store.existing(client: client, request: request, contentHash: "h") == nil)
+        #expect(try store.admit(client: client, request: request, contentHash: "h") == .admitted)
+        #expect(store.existing(client: client, request: request, contentHash: "h") == .duplicatePending)
+        #expect(store.existing(client: client, request: request, contentHash: "other") == .contentMismatch)
+    }
+
     @Test func aReusedIDWithDifferentContentIsRefused() throws {
         let (directory, file) = try makeFile()
         defer { try? FileManager.default.removeItem(at: directory) }

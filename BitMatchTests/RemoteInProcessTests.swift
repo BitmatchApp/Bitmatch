@@ -22,8 +22,11 @@ final class InMemoryRemoteLink: RemoteLink {
         }
     }
 
+    struct SendFailure: Error {}
+
     private struct Settings {
         var dropNextReply = false
+        var failNextSend = false
         var delay: Duration = .zero
     }
 
@@ -51,6 +54,12 @@ final class InMemoryRemoteLink: RemoteLink {
         set { settings.withLock { $0.dropNextReply = newValue } }
     }
 
+    /// The next send on this end throws, though the link stays open.
+    var failNextSend: Bool {
+        get { settings.withLock { $0.failNextSend } }
+        set { settings.withLock { $0.failNextSend = newValue } }
+    }
+
     /// How long each envelope this end sends takes to arrive.
     var delay: Duration {
         get { settings.withLock { $0.delay } }
@@ -60,11 +69,14 @@ final class InMemoryRemoteLink: RemoteLink {
     func send(_ envelope: RemoteEnvelope) async throws {
         let isReply: Bool
         if case .outcome = envelope.message { isReply = true } else { isReply = false }
-        let (drop, delay) = settings.withLock { settings -> (Bool, Duration) in
-            let drop = isReply && settings.dropNextReply
+        let (fail, drop, delay) = settings.withLock { settings -> (Bool, Bool, Duration) in
+            let fail = settings.failNextSend
+            settings.failNextSend = false
+            let drop = !fail && isReply && settings.dropNextReply
             if drop { settings.dropNextReply = false }
-            return (drop, settings.delay)
+            return (fail, drop, settings.delay)
         }
+        if fail { throw SendFailure() }
         if drop { return }
         if delay > .zero { try await Task.sleep(for: delay) }
         let wire = try JSONEncoder().encode(envelope)
@@ -174,6 +186,21 @@ private func settle() async {
             clientCore.start()
             try #require(await eventually { view.snapshot != nil })
         }
+
+        /// Attaches a further link under `session` and returns its client end.
+        @MainActor
+        func attachAnotherLink(session: SessionID = SessionID()) -> InMemoryRemoteLink {
+            let (hostEnd, clientEnd) = InMemoryRemoteLink.pair()
+            hostCore.attach(hostEnd, session: session)
+            return clientEnd
+        }
+    }
+
+    /// Sends a command straight onto `link`, as a client would.
+    private func send(_ body: RemoteCommandBody, request: RequestID = RequestID(), session: SessionID,
+                      client: ClientID, on link: InMemoryRemoteLink) async throws {
+        let command = RemoteCommand(client: client, request: request, session: session, body: body)
+        try await link.send(RemoteEnvelope(message: .command(command)))
     }
 
     private func makeDirectory() throws -> URL {
@@ -219,7 +246,7 @@ private func settle() async {
         let now: @Sendable () -> Date = { [scheduler] in scheduler.now }
         let admission = try RemoteAdmissionStore(fileURL: admissionsFile(in: directory), now: now, retention: retention)
         let hostCore = RemoteHostCore(surface: surface, host: host, admission: admission, hostName: "Studio Mac",
-                                      scheduler: scheduler, now: now)
+                                      safeToErase: { _, _ in false }, scheduler: scheduler, now: now)
         let (hostEnd, clientEnd) = InMemoryRemoteLink.pair()
         let view = RemoteCoordinatorView()
         let client = ClientID()
@@ -454,20 +481,184 @@ private func settle() async {
         let h = try makeHarness()
         defer { try? FileManager.default.removeItem(at: h.directory) }
         h.hostCore.attach(h.hostEnd, session: h.session)
-        let request = RequestID()
-        let command = RemoteCommand(client: h.client, request: request, session: h.session,
+        let newerVersion = RequestID(), tampered = RequestID()
+
+        h.hostCore.receive(encoded: try encodedCommand(newerVersion, session: h.session, client: h.client) {
+            $0["version"] = RemoteProtocolVersion.current + 1
+        }, session: h.session)
+        h.hostCore.receive(encoded: try encodedCommand(tampered, session: h.session, client: h.client) {
+            try Self.setContentHash("0", in: &$0)
+        }, session: h.session)
+        h.hostCore.receive(encoded: Data("not a message".utf8), session: h.session)
+
+        #expect(await eventually { outcomes(h.clientEnd).count == 2 })
+        await settle()
+        #expect(kinds(h.clientEnd) == ["snapshot", "outcome", "outcome"])
+        #expect(outcomes(h.clientEnd)[newerVersion] == .rejected(.unsupported(wording: RemoteHostCore.protocolVersionWording)))
+        #expect(outcomes(h.clientEnd)[tampered] == .rejected(.contentMismatch))
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    /// A `.command` envelope as JSON, changed by `edit` before it is sent.
+    private func encodedCommand(_ request: RequestID, session: SessionID, client: ClientID,
+                                edit: (inout [String: Any]) throws -> Void) throws -> Data {
+        let command = RemoteCommand(client: client, request: request, session: session,
                                     body: .startQueue(queueRevision: 0))
         let encoded = try JSONEncoder().encode(RemoteEnvelope(message: .command(command)))
         var object = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
-        object["version"] = RemoteProtocolVersion.current + 1
+        try edit(&object)
+        return try JSONSerialization.data(withJSONObject: object)
+    }
 
-        h.hostCore.receive(encoded: try JSONSerialization.data(withJSONObject: object), session: h.session)
-        h.hostCore.receive(encoded: Data("not a message".utf8), session: h.session)
+    private static func setContentHash(_ hash: String, in object: inout [String: Any]) throws {
+        var message = try #require(object["message"] as? [String: Any])
+        var wrapper = try #require(message["command"] as? [String: Any])
+        var command = try #require(wrapper["_0"] as? [String: Any])
+        command["contentHash"] = hash
+        wrapper["_0"] = command
+        message["command"] = wrapper
+        object["message"] = message
+    }
 
-        #expect(await eventually { outcomes(h.clientEnd).count == 1 })
-        await settle()
-        #expect(kinds(h.clientEnd) == ["snapshot", "outcome"])
-        #expect(outcomes(h.clientEnd)[request] == .rejected(.contentMismatch))
+    // MARK: - Reconnects and several clients
+
+    @Test func aCommandAtARevisionFromBeforeADisconnectIsRejectedAfterReconnect() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let seen = try #require(h.view.snapshot).revisions.selection
+        h.hostCore.detach(session: h.session)
+
+        // The Mac's selection changes while nobody is attached.
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+        #expect(await eventually { h.host.revisions.selection == seen + 1 })
+
+        let session = SessionID()
+        let link = h.attachAnotherLink(session: session)
+        #expect(await eventually { !link.received.isEmpty })
+        guard case .snapshot(let snapshot) = link.received.first?.message else {
+            Issue.record("expected a snapshot first")
+            return
+        }
+        #expect(snapshot.revisions.selection == seen + 1)
+        #expect(snapshot.selectedBackupIDs == ["backup-2"])
+
+        let request = RequestID()
+        try await send(.selectSource(cardID: "card-1", selectionRevision: seen), request: request,
+                       session: session, client: h.client, on: link)
+
+        #expect(await eventually { outcomes(link)[request] != nil })
+        #expect(outcomes(link)[request] == .rejected(.staleRevision(current: h.host.revisions)))
         #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func aCommandFromAnotherSessionIsRefusedButARetryIsStillAnswered() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let first = h.attachAnotherLink(session: h.session)
+        let body = RemoteCommandBody.setVerificationMode(.paranoid, settingsRevision: h.host.revisions.settings)
+        let answered = RequestID()
+        try await send(body, request: answered, session: h.session, client: h.client, on: first)
+        #expect(await eventually { outcomes(first)[answered] != nil })
+        let original = try #require(outcomes(first)[answered])
+
+        // The iPad reconnects under a new session; its commands still name the old one.
+        let second = h.attachAnotherLink()
+        let fresh = RequestID()
+        try await send(body, request: answered, session: h.session, client: h.client, on: second)
+        try await send(body, request: fresh, session: h.session, client: h.client, on: second)
+
+        #expect(await eventually { outcomes(second).count == 2 })
+        #expect(outcomes(second)[answered] == original)
+        #expect(outcomes(second)[fresh] == .rejected(.unauthorized))
+        #expect(h.surface.calls.filter { $0 == .saveVerificationMode }.count == 1)
+    }
+
+    @Test func aLateReplyIsReturnedByRetryInsteadOfARejection() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let gate = Gate()
+        h.surface.startHook = { await gate.wait() }
+        let first = Task { await h.view.startSetupTransfersPrepared() }
+        #expect(await eventually { h.surface.calls.contains(.start) })
+        h.scheduler.advance(by: 10)
+        #expect(await first.value == .unknown(reason: RemoteClientCore.noReplyReason))
+        let request = try #require(h.clientCore.unansweredRequests.first)
+        #expect(await h.clientCore.retry(request) == .pending)
+
+        gate.open()
+        #expect(await eventually { h.clientCore.unansweredRequests.isEmpty })
+        let commandsSent = kinds(h.hostEnd).count
+
+        let retried = await h.clientCore.retry(request)
+
+        guard case .done(let result) = retried else {
+            Issue.record("expected the Mac's late done, got \(retried)")
+            return
+        }
+        #expect(result.request == request)
+        #expect(kinds(h.hostEnd).count == commandsSent) // answered from what arrived, not resent
+        #expect(h.surface.calls.filter { $0 == .start }.count == 1)
+    }
+
+    @Test func aFailedStateSendDetachesTheLink() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        h.hostEnd.failNextSend = true
+
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+        #expect(await eventually { h.host.revisions.state > (h.view.snapshot?.revisions.state ?? .max) })
+        await settle()
+        h.scheduler.advance(by: 2)
+        await settle()
+
+        // Nothing more goes to a link that lost its place in the stream.
+        #expect(kinds(h.clientEnd) == ["snapshot"])
+        // A reconnect starts again from a snapshot that includes the change.
+        let link = h.attachAnotherLink()
+        #expect(await eventually { !link.received.isEmpty })
+        guard case .snapshot(let snapshot) = link.received.first?.message else {
+            Issue.record("expected a snapshot first")
+            return
+        }
+        #expect(snapshot.selectedBackupIDs == ["backup-2"])
+    }
+
+    @Test func twoClientsEachGetOnePatchAndTheirOwnReplies() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let (secondHostEnd, secondClientEnd) = InMemoryRemoteLink.pair()
+        let secondView = RemoteCoordinatorView()
+        let secondCore = RemoteClientCore(view: secondView, link: secondClientEnd, client: ClientID(),
+                                          scheduler: h.scheduler, now: { [scheduler = h.scheduler] in scheduler.now })
+        let secondSession = SessionID()
+        h.hostCore.attach(secondHostEnd, session: secondSession)
+        secondCore.start()
+        #expect(await eventually { secondView.snapshot != nil })
+
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+        #expect(await eventually {
+            h.view.snapshot?.selectedBackupIDs == ["backup-2"] && secondView.snapshot?.selectedBackupIDs == ["backup-2"]
+        })
+        await settle()
+        #expect(kinds(h.clientEnd) == ["snapshot", "update"])
+        #expect(kinds(secondClientEnd) == ["snapshot", "update"])
+        #expect(h.view.snapshot?.session == h.session)
+        #expect(secondView.snapshot?.session == secondSession)
+
+        async let firstOutcome = h.view.saveVerificationMode(.paranoid)
+        async let secondOutcome = secondView.saveVerificationMode(.paranoid)
+        let outcomes = await [firstOutcome, secondOutcome]
+
+        #expect(outcomes.allSatisfy { if case .done = $0 { true } else { false } })
+        #expect(self.outcomes(h.clientEnd).count == 1)
+        #expect(self.outcomes(secondClientEnd).count == 1)
+        #expect(Set(self.outcomes(h.clientEnd).keys).isDisjoint(with: self.outcomes(secondClientEnd).keys))
     }
 }
