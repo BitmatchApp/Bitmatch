@@ -7,6 +7,11 @@ public enum ApplyResult: Hashable, Sendable {
     case gap
 }
 
+public enum InstallResult: Hashable, Sendable {
+    case installed
+    case ignoredOlder
+}
+
 /// Holds the client's installed snapshot. Updates apply only in order; any gap
 /// leaves the installed state untouched and asks for a fresh snapshot.
 public struct RemoteStateApplier: Sendable {
@@ -18,9 +23,19 @@ public struct RemoteStateApplier: Sendable {
         needsSnapshot = false
     }
 
-    public mutating func install(_ snapshot: RemoteSnapshot) {
+    /// A snapshot always installs when one was requested or none is installed;
+    /// otherwise a same-session snapshot that is not newer is a delayed arrival
+    /// and is ignored so it cannot roll the client back.
+    @discardableResult
+    public mutating func install(_ snapshot: RemoteSnapshot) -> InstallResult {
+        if let current = installed, !needsSnapshot,
+           snapshot.host == current.host, snapshot.session == current.session,
+           snapshot.revisions.state <= current.revisions.state {
+            return .ignoredOlder
+        }
         installed = snapshot
         needsSnapshot = false
+        return .installed
     }
 
     public mutating func apply(_ update: RemoteStateUpdate) -> ApplyResult {
@@ -30,6 +45,10 @@ public struct RemoteStateApplier: Sendable {
         }
         let patch = update.snapshotPatch
         guard patch.host == snapshot.host, patch.session == snapshot.session else {
+            needsSnapshot = true
+            return .gap
+        }
+        guard patch.revisions.state == update.newRevision else {
             needsSnapshot = true
             return .gap
         }

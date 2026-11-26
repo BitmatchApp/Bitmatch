@@ -119,6 +119,50 @@ import Testing
         #expect(applier.installed == fresh)
     }
 
+    @Test func aDelayedOlderSnapshotNeverRollsBackInstalledState() {
+        var applier = RemoteStateApplier()
+        applier.install(snapshot(state: 5, withClaim: true))
+        #expect(applier.apply(update(base: 5, new: 6, safetyClaim: .set(nil))) == .applied)
+        let advanced = applier.installed
+
+        let result = applier.install(snapshot(state: 5, withClaim: true))
+
+        #expect(result == .ignoredOlder)
+        #expect(applier.installed == advanced)
+        #expect(applier.installed?.safetyClaim == nil)
+    }
+
+    @Test func aSnapshotAlwaysInstallsWhenOneWasRequested() {
+        var applier = RemoteStateApplier()
+        applier.install(snapshot(state: 5))
+        _ = applier.apply(update(base: 9, new: 10))
+        #expect(applier.needsSnapshot)
+
+        let older = snapshot(state: 4)
+        let result = applier.install(older)
+
+        #expect(result == .installed)
+        #expect(applier.needsSnapshot == false)
+        #expect(applier.installed == older)
+    }
+
+    @Test func anUpdateWhoseRevisionsDisagreeIsAGap() {
+        var applier = RemoteStateApplier()
+        let original = snapshot(state: 5)
+        applier.install(original)
+        let bad = RemoteStateUpdate(
+            baseRevision: 5, newRevision: 6,
+            snapshotPatch: RemoteSnapshotPatch(
+                host: host, session: session, takenAt: date.addingTimeInterval(10),
+                revisions: revisions(8), hostName: "Renamed"))
+
+        let result = applier.apply(bad)
+
+        #expect(result == .gap)
+        #expect(applier.needsSnapshot)
+        #expect(applier.installed == original)
+    }
+
     @Test func applyingBeforeAnySnapshotIsAGap() {
         var applier = RemoteStateApplier()
 
