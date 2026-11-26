@@ -367,6 +367,8 @@ struct SettingsSheetView: View {
                     }
                 }
 
+                TransferWorkersSection(settings: generalSettings)
+
                 Section("Handoff record") {
                     Toggle("ASC MHL handoff record", isOn: $coordinator.generateASCMHL)
                         .disabled(!TransferOptionsPresentation.ascMHLEnabled(for: coordinator.verificationMode))

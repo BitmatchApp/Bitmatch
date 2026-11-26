@@ -387,11 +387,15 @@ public final class TransferPipeline: FileOperationsService, Sendable {
     /// (nil); tests use it to block or fail destination setup deterministically.
     private let destinationSetupHook: (@Sendable (URL) throws -> Void)?
     private let fanOutHooks: DestinationWriter.FanOutHooks?
-    /// Verify each file while later files copy (checksum modes only). The
-    /// platform managers turn it off with the hidden `DisablePipelinedVerify`
-    /// default; the engine itself reads no settings.
+    /// Legacy initializer choices, kept for tests and callers that fix one
+    /// run's behaviour: `false` verifies each backup after its copy finishes,
+    /// and a verify count is an explicit choice. The apps use `concurrency`.
     private let pipelinedVerification: Bool
     private let verificationConcurrency: Int?
+    /// Read at the start of every run, so a Settings change applies to the
+    /// next transfer without relaunching. The engine still reads no defaults.
+    private let concurrencySettings: @Sendable () -> TransferConcurrencySettings
+    private let storageMediumDetector: any StorageMediumDetecting
     /// Monotonic-time seam for work-meter publication; production uses system uptime.
     private let workProgressClock: @Sendable () -> TimeInterval
     private let activeOperations = ActiveOperationRegistry()
@@ -402,6 +406,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         checksum: any ChecksumService,
         pipelinedVerification: Bool = true,
         verificationConcurrency: Int? = nil,
+        concurrency: @escaping @Sendable () -> TransferConcurrencySettings = { .automatic },
+        storageMediumDetector: any StorageMediumDetecting = SystemStorageMediumDetector(),
         destinationSetupHook: (@Sendable (URL) throws -> Void)? = nil,
         fanOutHooks: DestinationWriter.FanOutHooks? = nil,
         workProgressClock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
@@ -410,6 +416,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         self.checksumService = checksum
         self.pipelinedVerification = pipelinedVerification
         self.verificationConcurrency = verificationConcurrency.flatMap { $0 > 0 ? min($0, 16) : nil }
+        self.concurrencySettings = concurrency
+        self.storageMediumDetector = storageMediumDetector
         self.destinationSetupHook = destinationSetupHook
         self.fanOutHooks = fanOutHooks
         self.workProgressClock = workProgressClock
@@ -505,6 +513,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             fileSystem: fileSystem,
             checksum: checksumService,
             pipelinedVerification: pipelinedVerification,
+            verificationConcurrency: verificationConcurrency,
+            concurrency: concurrencySettings,
+            storageMediumDetector: storageMediumDetector,
             destinationSetupHook: destinationSetupHook,
             fanOutHooks: fanOutHooks ?? self.fanOutHooks,
             workProgressClock: workProgressClock
@@ -755,10 +766,30 @@ public final class TransferPipeline: FileOperationsService, Sendable {
 
         // Step 3: Copy files to each destination
         let startTime = Date()
+        // Workers: the user's choice, or Auto decided from the storage in this
+        // run. The legacy initializer parameters count as explicit choices.
+        var concurrencyChoice = concurrencySettings()
+        if !pipelinedVerification { concurrencyChoice.verifyWhileCopying = false }
+        if let verificationConcurrency { concurrencyChoice.verifyWorkers = verificationConcurrency }
+        let storageMedia = ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
+        let concurrencyPlan = TransferConcurrencyPlan.resolve(
+            settings: concurrencyChoice, media: storageMedia,
+            processorCount: ProcessInfo.processInfo.activeProcessorCount)
+        SharedLogger.info(
+            "Workers: copy \(concurrencyPlan.copyWorkers), verify \(concurrencyPlan.verifyWorkers)"
+                + (concurrencyChoice.verifyWhileCopying ? "" : " (verify after copy, one pass)")
+                + (concurrencyPlan.limitedForRotationalMedia ? " (Auto, limited for a spinning drive)" : "")
+                + "; storage \(storageMedia.map(\.rawValue))",
+            category: .transfer)
         // Perf 5: pipelined verification on by default for checksum/byte-compare modes; user can disable
         let shouldPipelineVerify = operation.verificationMode != .quick
-            && pipelinedVerification
-        let verifyConcurrency = verificationConcurrency ?? max(2, ProcessInfo.processInfo.activeProcessorCount / 2)
+            && concurrencyChoice.verifyWhileCopying
+        let verifyConcurrency = concurrencyPlan.verifyWorkers
+        // Without pipelining each backup is verified in one sequential pass, so
+        // the record says one verify worker: what ran, not what was chosen.
+        let recordedConcurrency = shouldPipelineVerify ? concurrencyPlan : TransferConcurrencyPlan(
+            copyWorkers: concurrencyPlan.copyWorkers, verifyWorkers: 1,
+            limitedForRotationalMedia: concurrencyPlan.limitedForRotationalMedia)
         let diagnosticRun = TransferDiagnostics.runID ?? operation.id
         SharedLogger.verifyConfiguration(run: diagnosticRun, concurrency: shouldPipelineVerify ? verifyConcurrency : 1)
         let fileOrdinals = Dictionary(uniqueKeysWithValues: sourceManifest.enumerated().map { ($0.element.relativePath, $0.offset + 1) })
@@ -827,8 +858,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             repeating: nil,
             count: destinationCount
         )
-        // Perf 7: adaptive copy worker count
-        let copyWorkers = min(4, max(1, ProcessInfo.processInfo.activeProcessorCount / 2))
+        let copyWorkers = concurrencyPlan.copyWorkers
 
         // One verify, recorded whatever happens except cancellation.
         let verify: @Sendable (VerifyJob) async throws -> Void = { job in
@@ -1567,6 +1597,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             estimatedTotalBytes: operation.estimatedTotalBytes
         )
         completed.reviewedAppleDoubleExclusionPaths = excluded.map(\.relativePath)
+        completed.concurrency = recordedConcurrency
         return completed
     }
 }

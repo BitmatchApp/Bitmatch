@@ -190,8 +190,9 @@ For each operation, in order:
    - A second free-space check, against the planned byte total, requires the size plus 100 MB.
 4. **Per destination, in order:**
    - **Pin the root.** `PinnedDestinationDirectory.open` pins the output root by file descriptor, walking each component with `O_NOFOLLOW`. A safety-policy error aborts the whole operation. Any other error (for example, a disconnected drive) records every planned file as failed for that destination, and the operation moves on to the next destination.
-   - **Copy.** `DestinationWriter.copyAllSafely` copies using a worker count of `min(4, max(1, cores/2))`.
-   - **Verify.** Unless the mode is Quick, verification is pipelined by default: each copied file queues a verify task. The concurrency limit is `max(2, cores/2)`, and at most 200 tasks can be queued. Setting the `DisablePipelinedVerify` user default switches to one sequential pass per destination instead.
+   - **Workers.** `TransferConcurrencyPlan.resolve` decides the copy and verify worker counts once per run from the Settings choice (Auto or a fixed count per stage, stored in the `BitMatchCopyConcurrency` and `BitMatchVerifyConcurrency` defaults; 0 is Auto), the storage in the run (`SystemStorageMediumDetector` reads the volume's locality and the nearest IOKit Device Characteristics medium type) and the core count. Auto on solid-state or unknown storage uses `min(4, max(1, cores/2))` copy workers and `max(2, cores/2)` verifies; Auto with any spinning drive in the run uses one worker per stage. The plan is recorded on the finished `FileOperation` and reported as the workers actually used.
+   - **Copy.** `DestinationWriter.copyAllSafely` copies with the plan's copy workers.
+   - **Verify.** Unless the mode is Quick, verification is pipelined by default: each copied file queues a verify task, at most the plan's verify workers in flight and at most 200 queued. The Verify while copying setting (the `DisablePipelinedVerify` default) switches to one sequential pass per destination instead.
 5. **Results.** `ResultStore` keeps one current `FileOperationResult` per source/destination pair. The final `FileOperation` carries these results.
 
 `pauseOperation()` / `resumeOperation()` toggle a flag that is checked between file chunks and between files. `cancelOperation()` cancels the running task.

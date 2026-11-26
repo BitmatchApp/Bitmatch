@@ -636,7 +636,7 @@ struct ReportView: View {
                         .font(.system(size: 11, weight: .medium))
                     
                     Text("Workers:").foregroundColor(.secondary).font(.system(size: 11))
-                    Text(s.workers.map { "\($0) parallel" } ?? "—")
+                    Text(s.workersDescription ?? "—")
                         .font(.system(size: 11, weight: .medium))
                 }
 
@@ -785,7 +785,7 @@ struct ReportView: View {
                 }
                 GridRow {
                     environmentLabel("Verification", value: s.verificationMethod)
-                    environmentLabel("Workers", value: s.workers.map { "\($0) parallel" } ?? "—")
+                    environmentLabel("Workers", value: s.workersDescription ?? "—")
                 }
             }
         }

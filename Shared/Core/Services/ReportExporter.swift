@@ -19,7 +19,8 @@ enum ReportExporter {
                        fileCount: Int,
                        matchCount: Int,
                        prefs: ReportPrefs,
-                       workers: Int,
+                       workers: Int?,
+                       verifyWorkers: Int? = nil,
                        totalBytesProcessed: Int64,
                        copyDurationSeconds: TimeInterval? = nil,
                        verifyDurationSeconds: TimeInterval? = nil,
@@ -63,6 +64,7 @@ enum ReportExporter {
             matched: matchCount,
             issues: issues.count,
             workers: workers,
+            verifyWorkers: verifyWorkers,
             appVersion: appVersion,
             osVersion: osVersion,
             client: prefs.clientName,
@@ -131,6 +133,7 @@ enum ReportExporter {
                                        matchCount: matchCount,
                                        totalBytesProcessed: totalBytesProcessed,
                                        workers: workers,
+                                       verifyWorkers: verifyWorkers,
                                        filesPerSecond: filesPerSecond,
                                        prefs: reportPrefs,
                                        generateFullReport: shouldGenerateFullReport,
@@ -270,7 +273,8 @@ enum ReportExporter {
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
-        workers: Int,
+        workers: Int?,
+        verifyWorkers: Int? = nil,
         prefs: ReportPrefs,
         photographerContext: PhotographerReportContext?
     ) throws -> ProjectJSONReport {
@@ -290,6 +294,7 @@ enum ReportExporter {
             verifyDurationSeconds: verifyDurationSeconds,
             performanceTelemetry: performanceTelemetry,
             workers: workers,
+            verifyWorkers: verifyWorkers,
             prefs: prefs,
             project: try photographerContext.map {
                 try PhotographerReportPayload.make(context: $0, results: results, finishedAt: finished)

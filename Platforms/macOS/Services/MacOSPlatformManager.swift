@@ -20,8 +20,7 @@ final class MacOSPlatformManager: PlatformManager, Sendable {
     private static let _sharedFileOperations = TransferPipeline(
         fileSystem: MacOSFileSystemService.shared,
         checksum: ChecksumEngine.shared,
-        pipelinedVerification: !UserDefaults.standard.bool(forKey: "DisablePipelinedVerify"),
-        verificationConcurrency: UserDefaults.standard.integer(forKey: "BitMatchVerifyConcurrency")
+        concurrency: { GeneralSettings.transferConcurrency() }
     )
     private static let _sharedCameraDetection = SharedCameraDetectionService()
 

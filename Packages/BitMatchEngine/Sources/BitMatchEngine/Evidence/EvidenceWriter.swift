@@ -163,7 +163,8 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let peakSpeedMBps: Double?
         public let averageSpeedMBps: Double
         public let filesPerSecond: Double
-        public let workers: Int
+        public let workers: Int?
+        public let verifyWorkers: Int?
         public let bottleneck: String?  // "Source Read", "Destination Write", "CPU", "Network"
 
         public init(
@@ -181,7 +182,8 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
             peakSpeedMBps: Double?,
             averageSpeedMBps: Double,
             filesPerSecond: Double,
-            workers: Int,
+            workers: Int?,
+            verifyWorkers: Int? = nil,
             bottleneck: String?
         ) {
             self.totalDuration = totalDuration
@@ -199,6 +201,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
             self.averageSpeedMBps = averageSpeedMBps
             self.filesPerSecond = filesPerSecond
             self.workers = workers
+            self.verifyWorkers = verifyWorkers
             self.bottleneck = bottleneck
         }
     }
@@ -316,6 +319,10 @@ public struct ProjectCSVEvidence: Sendable {
 
 // MARK: - Evidence Writer
 public enum EvidenceWriter: Sendable {
+    /// Drive types in evidence come from the system's medium type, not from
+    /// whether the filesystem supports cloning.
+    static let storageMediumDetector: any StorageMediumDetecting = SystemStorageMediumDetector()
+
     
     /// `BitMatch_Report_<finish time>.<ext>`. The PDF, CSV, JSON and checksum
     /// files share this name; `ReportScanner` looks for the JSON one.
@@ -366,7 +373,8 @@ public enum EvidenceWriter: Sendable {
                                         fileCount: Int,
                                         matchCount: Int,
                                         totalBytesProcessed: Int64,
-                                        workers: Int,
+                                        workers: Int?,
+                                        verifyWorkers: Int? = nil,
                                         filesPerSecond: Double,
                                         prefs: ReportPrefs,
                                         generateFullReport: Bool,
@@ -437,6 +445,7 @@ public enum EvidenceWriter: Sendable {
                 verifyDurationSeconds: verifyDurationSeconds,
                 performanceTelemetry: performanceTelemetry,
                 workers: workers,
+                verifyWorkers: verifyWorkers,
                 prefs: prefs,
                 project: projectJSON,
                 safeToErase: safeToErase,
@@ -617,7 +626,8 @@ public enum EvidenceWriter: Sendable {
                                                  copyDurationSeconds: TimeInterval?,
                                                  verifyDurationSeconds: TimeInterval?,
                                                  performanceTelemetry: TransferPerformanceTelemetry?,
-                                                 workers: Int,
+                                                 workers: Int?,
+                                                 verifyWorkers: Int? = nil,
                                                  prefs: ReportPrefs,
                                                  project: Project?,
                                                  safeToErase: Bool? = nil,
@@ -638,6 +648,7 @@ public enum EvidenceWriter: Sendable {
             verifyDurationSeconds: verifyDurationSeconds,
             performanceTelemetry: performanceTelemetry,
             workers: workers,
+            verifyWorkers: verifyWorkers,
             prefs: prefs,
             project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence
         )
@@ -667,7 +678,8 @@ public enum EvidenceWriter: Sendable {
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
-        workers: Int,
+        workers: Int?,
+        verifyWorkers: Int? = nil,
         prefs: ReportPrefs,
         project: Project?,
         safeToErase: Bool? = nil,
@@ -715,23 +727,7 @@ public enum EvidenceWriter: Sendable {
         let filesPerSecond = duration > 0 ? Double(fileCount) / duration : 0
         
         // Detect drive type for source
-        let sourceDriveType: String = {
-            if let source = sourceURL {
-                do {
-                    let resourceValues = try source.resourceValues(forKeys: [.volumeIsLocalKey, .volumeSupportsFileCloningKey])
-                    if !(resourceValues.volumeIsLocal ?? true) {
-                        return "Network"
-                    } else if resourceValues.volumeSupportsFileCloning ?? false {
-                        return "SSD"
-                    } else {
-                        return "HDD"
-                    }
-                } catch {
-                    return "Unknown"
-                }
-            }
-            return "Unknown"
-        }()
+        let sourceDriveType = sourceURL.map { Self.storageMediumDetector.mediumKind(for: $0).reportLabel } ?? "Unknown"
         
         // Result rows are per source file per backup. The source card totals
         // count each original once; performance/statistics retain all copies.
@@ -751,20 +747,7 @@ public enum EvidenceWriter: Sendable {
         // Create destination info array
         let destinationInfos: [EnhancedJSONReport<Project>.DestinationInfo] = destinationURLs.map { destURL in
             // Detect drive type for each destination
-            let destDriveType: String = {
-                do {
-                    let resourceValues = try destURL.resourceValues(forKeys: [.volumeIsLocalKey, .volumeSupportsFileCloningKey, .volumeAvailableCapacityKey])
-                    if !(resourceValues.volumeIsLocal ?? true) {
-                        return "Network"
-                    } else if resourceValues.volumeSupportsFileCloning ?? false {
-                        return "SSD"
-                    } else {
-                        return "HDD"
-                    }
-                } catch {
-                    return "Unknown"
-                }
-            }()
+            let destDriveType = Self.storageMediumDetector.mediumKind(for: destURL).reportLabel
             
             // Get available space
             let availableSpace: Int64 = {
@@ -825,6 +808,7 @@ public enum EvidenceWriter: Sendable {
                 averageSpeedMBps: throughputMBps,
                 filesPerSecond: filesPerSecond,
                 workers: workers,
+                verifyWorkers: verifyWorkers,
                 bottleneck: nil // Could be determined by analyzing speeds
             ),
             verification: EnhancedJSONReport<Project>.Verification(

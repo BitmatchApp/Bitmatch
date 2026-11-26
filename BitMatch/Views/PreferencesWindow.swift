@@ -215,6 +215,8 @@ struct PreferencesWindow: View {
                 Text("Verification")
             }
 
+            TransferWorkersSection(settings: generalSettings)
+
             Section("Handoff") {
                 ASCMHLPreferenceToggle(shared: coordinator)
             }

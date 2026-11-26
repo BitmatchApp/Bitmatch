@@ -73,7 +73,7 @@ public struct SystemDriveConnectionInfoProvider: DriveConnectionInfoProviding {
 
 #if os(macOS)
     /// The returned registry handle is owned by the caller.
-    private static func mediaService(for url: URL) -> io_service_t? {
+    static func mediaService(for url: URL) -> io_service_t? {
         guard let session = DASessionCreate(kCFAllocatorDefault),
               let disk = SelectedVolumeDiskResolver.disk(
                 for: url,

@@ -16,6 +16,11 @@ final class GeneralSettings: ObservableObject {
     static let notificationPromptAskedKey = "BitMatchNotificationPromptAsked"
     static let legacyNotifyFinishKey = "BitMatchNotifyWhenTransferEnds"
     static let localCrashEvidenceKey = LocalCrashEvidenceStore.consentKey
+    nonisolated static let copyWorkersKey = "BitMatchCopyConcurrency"
+    nonisolated static let verifyWorkersKey = "BitMatchVerifyConcurrency"
+    nonisolated static let verifyAfterCopyKey = "DisablePipelinedVerify"
+    /// Picker choices for both stages; 0 is Auto.
+    nonisolated static let workerChoices = [0, 1, 2, 4, 8, 12, 16]
 
     private let defaults: UserDefaults
 
@@ -39,6 +44,17 @@ final class GeneralSettings: ObservableObject {
     }
     @Published var collectLocalCrashEvidence: Bool {
         didSet { defaults.set(collectLocalCrashEvidence, forKey: Self.localCrashEvidenceKey) }
+    }
+    /// 0 is Auto; otherwise a fixed worker count for the stage. Applies to
+    /// the next transfer, not one already running.
+    @Published var copyWorkers: Int {
+        didSet { defaults.set(copyWorkers, forKey: Self.copyWorkersKey) }
+    }
+    @Published var verifyWorkers: Int {
+        didSet { defaults.set(verifyWorkers, forKey: Self.verifyWorkersKey) }
+    }
+    @Published var verifyWhileCopying: Bool {
+        didSet { defaults.set(!verifyWhileCopying, forKey: Self.verifyAfterCopyKey) }
     }
     @Published private(set) var notificationPromptWasAnswered: Bool {
         didSet { defaults.set(notificationPromptWasAnswered, forKey: Self.notificationPromptAskedKey) }
@@ -65,11 +81,37 @@ final class GeneralSettings: ObservableObject {
         autoEjectWhenSafe = Self.bool(defaults, key: Self.autoEjectKey, default: false)
         playSounds = Self.bool(defaults, key: Self.playSoundsKey, default: false)
         collectLocalCrashEvidence = Self.bool(defaults, key: Self.localCrashEvidenceKey, default: false)
+        copyWorkers = Self.explicitWorkers(defaults.integer(forKey: Self.copyWorkersKey)) ?? 0
+        verifyWorkers = Self.explicitWorkers(defaults.integer(forKey: Self.verifyWorkersKey)) ?? 0
+        verifyWhileCopying = !defaults.bool(forKey: Self.verifyAfterCopyKey)
         notificationPromptWasAnswered = Self.bool(defaults, key: Self.notificationPromptAskedKey, default: false)
     }
 
     func markNotificationPromptAnswered() {
         notificationPromptWasAnswered = true
+    }
+
+    /// The picker choices, keeping a value written by hand selectable.
+    var copyWorkerChoices: [Int] { Self.choices(including: copyWorkers) }
+    var verifyWorkerChoices: [Int] { Self.choices(including: verifyWorkers) }
+
+    nonisolated static func choices(including value: Int) -> [Int] {
+        workerChoices.contains(value) ? workerChoices : (workerChoices + [value]).sorted()
+    }
+
+    /// A stored count, or nil for Auto. Anything above the engine's maximum
+    /// is the maximum.
+    nonisolated static func explicitWorkers(_ stored: Int) -> Int? {
+        stored > 0 ? min(TransferConcurrencyPlan.maximumWorkers, stored) : nil
+    }
+
+    /// What the engine receives at the start of each run. Read from the
+    /// defaults every time, so Settings apply without a relaunch.
+    nonisolated static func transferConcurrency(defaults: UserDefaults = .standard) -> TransferConcurrencySettings {
+        TransferConcurrencySettings(
+            copyWorkers: explicitWorkers(defaults.integer(forKey: copyWorkersKey)),
+            verifyWorkers: explicitWorkers(defaults.integer(forKey: verifyWorkersKey)),
+            verifyWhileCopying: !defaults.bool(forKey: verifyAfterCopyKey))
     }
 
     private static func bool(_ defaults: UserDefaults, key: String, default defaultValue: Bool) -> Bool {
@@ -150,6 +192,17 @@ enum GeneralSettingsPresentation {
     static let autoEject = "Eject cards automatically when safe to erase"
     static let soundsSection = "Sounds"
     static let playSounds = "Play sounds"
+    static let performanceSection = "Performance"
+    static let copyWorkers = "Copy workers"
+    static let verifyWorkers = "Verify workers"
+    static let verifyWhileCopying = "Verify while copying"
+    #if os(macOS)
+    static let performanceFootnote = "Auto uses one worker per stage when the card or a backup is a spinning hard drive, so the drive reads and writes in order instead of seeking between files. On SSDs it uses up to 4 copy workers and half your cores to verify. Changes apply to the next transfer."
+    #else
+    static let performanceFootnote = "Auto uses up to 4 copy workers and half your cores to verify. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
+    #endif
+    static let verifyWhileCopyingFootnote = "Off verifies each backup in one pass after all of its files are copied, so the verify workers setting does not apply. On a hard drive this avoids reading back while it is still writing."
+    static func workerChoice(_ value: Int) -> String { value == 0 ? "Auto" : "\(value)" }
     static let notificationRequestFailed = "Couldn’t request permission. Try again or open Notification Settings."
     static func macNotificationSettingsURL(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> URL {
         let base = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!

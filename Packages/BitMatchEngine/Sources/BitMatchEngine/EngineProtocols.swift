@@ -99,6 +99,9 @@ public struct FileOperation: Sendable {
     /// Classifier-backed paths for this run. Public/manual operations have no
     /// such fact; only the pipeline can record it after validating the review.
     public internal(set) var reviewedAppleDoubleExclusionPaths: [String]? = nil
+    /// The copy and verify workers this run used, decided from the user's
+    /// choice and the storage it found. Only the pipeline records it.
+    public internal(set) var concurrency: TransferConcurrencyPlan? = nil
     public let estimatedTotalBytes: Int64? // For improved ETA calculation
     
     public var duration: TimeInterval? {

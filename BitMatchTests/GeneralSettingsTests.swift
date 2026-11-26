@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import UserNotifications
+import BitMatchEngine
 @testable import BitMatch
 
 @MainActor
@@ -56,6 +57,31 @@ struct GeneralSettingsTests {
         #expect(!settings.playSounds)
         #expect(!settings.collectLocalCrashEvidence)
         #expect(!settings.notificationPromptWasAnswered)
+    }
+
+    @Test func workerChoicesDefaultToAutoAndReachTheEngineClamped() throws {
+        let box = try DefaultsBox()
+        let settings = GeneralSettings(defaults: box.defaults)
+        #expect(settings.copyWorkers == 0)
+        #expect(settings.verifyWorkers == 0)
+        #expect(settings.verifyWhileCopying)
+        #expect(GeneralSettings.transferConcurrency(defaults: box.defaults) == .automatic)
+
+        settings.copyWorkers = 2
+        settings.verifyWhileCopying = false
+        // A count written by hand above the engine's maximum is the maximum,
+        // and stays selectable in the picker.
+        box.defaults.set(99, forKey: GeneralSettings.verifyWorkersKey)
+        #expect(GeneralSettings.transferConcurrency(defaults: box.defaults)
+            == TransferConcurrencySettings(copyWorkers: 2, verifyWorkers: 16, verifyWhileCopying: false))
+        #expect(box.defaults.bool(forKey: "DisablePipelinedVerify"))
+
+        let restored = GeneralSettings(defaults: box.defaults)
+        #expect(restored.copyWorkers == 2)
+        #expect(restored.verifyWorkers == 16)
+        #expect(!restored.verifyWhileCopying)
+        #expect(restored.verifyWorkerChoices == [0, 1, 2, 4, 8, 12, 16])
+        #expect(GeneralSettings.choices(including: 3) == [0, 1, 2, 3, 4, 8, 12, 16])
     }
 
     @Test func settingsPersistAndAnExplicitLegacyOptInStaysOn() throws {

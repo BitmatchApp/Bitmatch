@@ -15,6 +15,7 @@ struct ReportSummary {
     let matched: Int
     let issues: Int
     let workers: Int?
+    var verifyWorkers: Int? = nil
     let appVersion: String
     let osVersion: String
     let client: String
@@ -39,6 +40,16 @@ struct ReportSummary {
     var hasRecordedTiming: Bool = true
     /// PDF wording only; never changes the saved verdict or erase permission.
     var verifiedSelection: VerifiedReportSelection? = nil
+}
+
+extension ReportSummary {
+    /// "2 copy · 1 verify" for runs that recorded both stages; older evidence
+    /// carries one figure.
+    var workersDescription: String? {
+        guard let workers else { return nil }
+        guard let verifyWorkers else { return "\(workers) parallel" }
+        return "\(workers) copy · \(verifyWorkers) verify"
+    }
 }
 
 /// Opaque, exact-scope proof for a neutral selected-file PDF banner. Automatic

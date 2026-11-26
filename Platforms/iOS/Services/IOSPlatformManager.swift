@@ -34,8 +34,7 @@ final class IOSPlatformManager: PlatformManager, Sendable {
         self._fileOperations = TransferPipeline(
             fileSystem: IOSFileSystemService.shared,
             checksum: ChecksumEngine.shared,
-            pipelinedVerification: !UserDefaults.standard.bool(forKey: "DisablePipelinedVerify"),
-            verificationConcurrency: UserDefaults.standard.integer(forKey: "BitMatchVerifyConcurrency")
+            concurrency: { GeneralSettings.transferConcurrency() }
         )
         self._cameraDetection = SharedCameraDetectionService()
     }

@@ -680,7 +680,9 @@ final class CopyVerifyExecutor {
         // back to a placeholder when the source was not measured.
         let totalBytesProcessed = results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.reduce(Int64(0)) { $0 + $1.size }
         let fileCount = results.count
-        let workers = max(1, ProcessInfo.processInfo.activeProcessorCount)
+        // The workers the run actually used, never the machine's core count.
+        let workers = operation.concurrency?.copyWorkers
+        let verifyWorkers = operation.concurrency?.verifyWorkers
 
         SharedLogger.info("Auto-report queued for job \(operation.id) with \(fileCount) rows", category: .transfer)
 
@@ -711,6 +713,7 @@ final class CopyVerifyExecutor {
                 matchCount: matchCount,
                 prefs: reportSettings,
                 workers: workers,
+                verifyWorkers: verifyWorkers,
                 totalBytesProcessed: totalBytesProcessed,
                 copyDurationSeconds: phaseDurations.copySeconds,
                 verifyDurationSeconds: phaseDurations.verifySeconds,
