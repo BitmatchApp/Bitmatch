@@ -43,6 +43,9 @@ public struct RemoteStateApplier: Sendable {
             needsSnapshot = true
             return .gap
         }
+        // Once behind, only a snapshot (`install`) brings the client back;
+        // a later update would build on state it never received.
+        guard !needsSnapshot else { return .gap }
         let patch = update.snapshotPatch
         guard patch.host == snapshot.host, patch.session == snapshot.session else {
             needsSnapshot = true

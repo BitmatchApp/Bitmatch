@@ -1,94 +1,85 @@
 import Foundation
 import BitMatchEngine
 
-/// Replies the client is waiting for, by request. Order matters: a sender
-/// calls `register` before it transmits, so a reply that arrives before the
-/// sender awaits is kept for it. A reply for a request nobody registered is
-/// dropped. Every wait ends: with the reply, with `.unknown` when the wait is
-/// cancelled, or with `.unknown(reason)` from `failAll`.
+/// Replies the client is waiting for, by request. Order matters: the view
+/// calls `register` before the sender transmits, so a reply that arrives
+/// before anyone awaits is kept in the returned `Pending`. A reply for a
+/// request nobody registered is dropped. Every wait ends: with the reply,
+/// with `.unknown` when the wait is cancelled, or with `.unknown(reason)`
+/// from `failAll`. Resolved entries leave the table at once.
 @MainActor
 final class RemotePendingOutcomes {
     static let cancelledReason = "cancelled"
-    static let unregisteredReason = "no reply was expected for this request"
+    static let supersededReason = "superseded by a newer send of the same request"
 
-    /// One registered request's reply. Await `value()` once.
+    /// One registration's reply. The first outcome wins; await `value()` once.
     @MainActor
-    struct Pending {
+    final class Pending {
         let request: RequestID
-        fileprivate let table: RemotePendingOutcomes
+        private weak var table: RemotePendingOutcomes?
+        private var outcome: RemoteCommandOutcome?
+        private var continuation: CheckedContinuation<RemoteCommandOutcome, Never>?
+
+        fileprivate init(request: RequestID, table: RemotePendingOutcomes) {
+            self.request = request
+            self.table = table
+        }
 
         func value() async -> RemoteCommandOutcome {
-            await table.wait(for: request)
-        }
-    }
-
-    private enum Slot {
-        case registered
-        case waiting(CheckedContinuation<RemoteCommandOutcome, Never>)
-        case resolved(RemoteCommandOutcome)
-    }
-
-    private var slots: [RequestID: Slot] = [:]
-
-    /// Starts expecting a reply for `request`. Registering again keeps the
-    /// existing entry, so a retry with the same ID still hears the reply.
-    func register(_ request: RequestID) -> Pending {
-        if slots[request] == nil { slots[request] = .registered }
-        return Pending(request: request, table: self)
-    }
-
-    /// The first outcome for a request wins; later ones are ignored.
-    func resolve(_ request: RequestID, _ outcome: RemoteCommandOutcome) {
-        switch slots[request] {
-        case .registered?:
-            slots[request] = .resolved(outcome)
-        case .waiting(let continuation)?:
-            slots[request] = nil
-            continuation.resume(returning: outcome)
-        case .resolved?, nil:
-            break
-        }
-    }
-
-    /// Ends every unanswered request with `.unknown(reason)`: the command
-    /// may or may not have run on the Mac.
-    func failAll(reason: String) {
-        for (request, slot) in slots {
-            switch slot {
-            case .registered:
-                slots[request] = .resolved(.unknown(reason: reason))
-            case .waiting(let continuation):
-                slots[request] = nil
-                continuation.resume(returning: .unknown(reason: reason))
-            case .resolved:
-                break
-            }
-        }
-    }
-
-    fileprivate func wait(for request: RequestID) async -> RemoteCommandOutcome {
-        switch slots[request] {
-        case .resolved(let outcome)?:
-            slots[request] = nil
-            return outcome
-        case nil:
-            return .unknown(reason: Self.unregisteredReason)
-        case .registered?, .waiting?:
-            break
-        }
-        if Task.isCancelled {
-            slots[request] = nil
-            return .unknown(reason: Self.cancelledReason)
-        }
-        return await withTaskCancellationHandler {
-            await withCheckedContinuation { continuation in
-                if case .waiting(let earlier)? = slots[request] {
-                    earlier.resume(returning: .unknown(reason: Self.cancelledReason))
+            if let outcome { return outcome }
+            if Task.isCancelled { return cancel() }
+            return await withTaskCancellationHandler {
+                await withCheckedContinuation { continuation in
+                    if let outcome {
+                        continuation.resume(returning: outcome)
+                    } else {
+                        self.continuation = continuation
+                    }
                 }
-                slots[request] = .waiting(continuation)
+            } onCancel: {
+                // Ends this registration only, never a later one for the same request.
+                Task { @MainActor in _ = self.cancel() }
             }
-        } onCancel: {
-            Task { @MainActor in self.resolve(request, .unknown(reason: Self.cancelledReason)) }
         }
+
+        fileprivate func finish(_ outcome: RemoteCommandOutcome) {
+            guard self.outcome == nil else { return }
+            self.outcome = outcome
+            continuation?.resume(returning: outcome)
+            continuation = nil
+        }
+
+        private func cancel() -> RemoteCommandOutcome {
+            finish(.unknown(reason: RemotePendingOutcomes.cancelledReason))
+            table?.forget(self)
+            return outcome ?? .unknown(reason: RemotePendingOutcomes.cancelledReason)
+        }
+    }
+
+    private var pending: [RequestID: Pending] = [:]
+
+    /// A new registration for `request`. One still open for the same request
+    /// (an earlier send of it) ends as superseded.
+    func register(_ request: RequestID) -> Pending {
+        pending[request]?.finish(.unknown(reason: Self.supersededReason))
+        let registration = Pending(request: request, table: self)
+        pending[request] = registration
+        return registration
+    }
+
+    func resolve(_ request: RequestID, _ outcome: RemoteCommandOutcome) {
+        pending.removeValue(forKey: request)?.finish(outcome)
+    }
+
+    /// Ends every open request with `.unknown(reason)`: the command may or
+    /// may not have run on the Mac.
+    func failAll(reason: String) {
+        let open = pending.values
+        pending.removeAll()
+        for registration in open { registration.finish(.unknown(reason: reason)) }
+    }
+
+    fileprivate func forget(_ registration: Pending) {
+        if pending[registration.request] === registration { pending[registration.request] = nil }
     }
 }

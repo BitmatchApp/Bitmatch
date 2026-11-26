@@ -176,6 +176,28 @@ import BitMatchEngine
         #expect(builder.snapshot(now: now).safetyClaim == nil)
     }
 
+    @Test func queueRowsFollowTheMacsRunOrderAndAReorderBumpsTheQueue() throws {
+        var ids: [UUID] = []
+        let (directory, journal) = try journal { folder in
+            let records = try (0..<3).map { _ in try savedRecord(from: folder, volumeID: "v", endedAt: now) }
+            ids = records.map(\.id)
+            return records
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (surface, _, builder) = arranged(journal: journal)
+        surface.queueSessionRecordIDs = Set(ids)
+        // The third record is in the session but not in the run order.
+        surface.queueSessionRecordOrder = [ids[1], ids[0]]
+        let first = builder.snapshot(now: now)
+        #expect(first.queue.map(\.recordID) == [ids[1], ids[0], ids[2]])
+
+        surface.queueSessionRecordOrder = [ids[0], ids[1]]
+        let update = try #require(builder.patch(from: first, now: now.addingTimeInterval(5)))
+
+        #expect(update.snapshotPatch.queue?.map(\.recordID) == [ids[0], ids[1], ids[2]])
+        #expect(update.snapshotPatch.revisions.queue == first.revisions.queue + 1)
+    }
+
     @Test func aClaimThatDisappearsIsClearedInThePatch() throws {
         let (directory, journal) = try journal { folder in
             [try savedRecord(from: folder, volumeID: media.volumeIdentity, endedAt: now)]

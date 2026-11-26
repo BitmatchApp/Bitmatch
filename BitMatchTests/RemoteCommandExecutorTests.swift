@@ -63,6 +63,36 @@ struct RemoteCommandExecutorTests {
         )
     }
 
+    @Test func aReorderCountsPositionsAmongWaitingCardsOnly() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("RemoteReorder-\(UUID().uuidString)", isDirectory: true)
+        let folder = directory.appendingPathComponent("A001", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let resource = try LocalTransferResource(url: folder)
+        let records: [LocalTransferRecord] = [LocalTransferState.completed, .running, .queued, .queued].map { state in
+            var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: resource, destinations: [resource],
+                                             verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+                                             reportSettings: ReportPrefs())
+            record.state = state
+            return record
+        }
+        let file = directory.appendingPathComponent("history.json")
+        try JSONEncoder().encode(records).write(to: file)
+        let surface = FakeRemoteSurface(journal: LocalTransferJournal(fileURL: file))
+        let host = RemoteHostState(revisions: ResourceRevisions(selection: 3, queue: 2, operation: 1, settings: 1, state: 7))
+        let admission = try RemoteAdmissionStore(fileURL: directory.appendingPathComponent("admissions.json"))
+        let executor = RemoteCommandExecutor(surface: surface, host: host, admission: admission, safeToErase: { _, _ in true })
+        // The journal reopens a running record as interrupted; either way it is not waiting.
+        let (finished, wasRunning, firstWaiting, secondWaiting) = (records[0].id, records[1].id, records[2].id, records[3].id)
+
+        let reorder = command(.reorderQueue(recordIDs: [finished, wasRunning, secondWaiting, firstWaiting], queueRevision: 2))
+        let outcome = await executor.execute(reorder)
+
+        #expect(outcome == done(reorder, host))
+        #expect(surface.calls == [.move(secondWaiting, 0), .move(firstWaiting, 1)])
+    }
+
     @Test func setDestinationsKeepsABackupWithNoRegisteredID() async throws {
         let h = try makeHarness()
         defer { try? FileManager.default.removeItem(at: h.directory) }

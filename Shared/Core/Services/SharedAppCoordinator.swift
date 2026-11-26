@@ -254,7 +254,7 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var queueSessionEnded = false
     @Published private(set) var queueSessionStarted = false
     @Published private(set) var editingSetupTransferID: UUID?
-    private var queueSessionRecordOrder: [UUID] = []
+    private(set) var queueSessionRecordOrder: [UUID] = []
     private var isProcessingQueue = false
     // Retained through access.release(), not just until the engine starts.
     private var queueInvocationID: UUID?

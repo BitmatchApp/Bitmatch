@@ -3,15 +3,24 @@ import Testing
 import BitMatchEngine
 @testable import BitMatch
 
-/// Records each body and answers with a fixed outcome.
+/// Records each transmission. When `replyThrough` is set, the host's reply
+/// `outcome` comes back the way a real link delivers it, through
+/// `receive(.outcome(...))`, before `send` returns.
 @MainActor
 final class FakeRemoteCommandSender: RemoteCommandSender {
-    private(set) var bodies: [RemoteCommandBody] = []
-    var outcome: RemoteCommandOutcome = .pending
+    struct SendFailure: Error {}
 
-    func send(_ body: RemoteCommandBody) async -> RemoteCommandOutcome {
+    private(set) var bodies: [RemoteCommandBody] = []
+    private(set) var requests: [RequestID] = []
+    weak var replyThrough: RemoteCoordinatorView?
+    var outcome: RemoteCommandOutcome = .pending
+    var fails = false
+
+    func send(_ body: RemoteCommandBody, request: RequestID) async throws {
+        if fails { throw SendFailure() }
         bodies.append(body)
-        return outcome
+        requests.append(request)
+        replyThrough?.receive(.outcome(request: request, outcome), at: Date())
     }
 }
 
@@ -82,6 +91,28 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
         #expect(view.currentSafetyClaim(at: now) == fresh)
     }
 
+    @Test func anInSequenceUpdateAfterAGapDoesNotReviveTheClaim() {
+        let view = RemoteCoordinatorView(sender: FakeRemoteCommandSender())
+        view.receive(.snapshot(snapshot(state: 20, claim: claim(revision: 20))), at: now)
+        view.receive(.update(RemoteStateUpdate(
+            baseRevision: 22, newRevision: 23,
+            snapshotPatch: RemoteSnapshotPatch(
+                host: hostID, session: session, takenAt: now,
+                revisions: ResourceRevisions(selection: 7, queue: 1, operation: 1, settings: 1, state: 23)))),
+            at: now)
+
+        view.receive(.update(RemoteStateUpdate(
+            baseRevision: 20, newRevision: 21,
+            snapshotPatch: RemoteSnapshotPatch(
+                host: hostID, session: session, takenAt: now,
+                revisions: ResourceRevisions(selection: 7, queue: 1, operation: 1, settings: 1, state: 21),
+                safetyClaim: .set(claim(revision: 21))))),
+            at: now)
+
+        #expect(view.applier.needsSnapshot)
+        #expect(view.currentSafetyClaim(at: now) == nil)
+    }
+
     @Test func aNewSessionStartsAFreshLease() {
         let view = RemoteCoordinatorView(sender: FakeRemoteCommandSender())
         view.receive(.snapshot(snapshot(state: 50, claim: claim(revision: 50))), at: now)
@@ -95,9 +126,11 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
 
     @Test func aStartTapBecomesAStartCommandAtTheInstalledSelectionRevision() async {
         let sender = FakeRemoteCommandSender()
-        let reply = RemoteCommandOutcome.unknown(reason: "test")
+        let reply = RemoteCommandOutcome.rejected(.staleRevision(
+            current: ResourceRevisions(selection: 9, queue: 1, operation: 1, settings: 1, state: 22)))
         sender.outcome = reply
         let view = RemoteCoordinatorView(sender: sender)
+        sender.replyThrough = view
         view.receive(.snapshot(snapshot(selection: 7, state: 20)), at: now)
         view.receive(.update(RemoteStateUpdate(
             baseRevision: 20, newRevision: 21,
@@ -110,6 +143,21 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
 
         #expect(sender.bodies == [.start(selectionRevision: 8)])
         #expect(outcome == reply)
+    }
+
+    @Test func aCommandTheSenderCouldNotTransmitEndsAsNotSent() async {
+        let sender = FakeRemoteCommandSender()
+        sender.fails = true
+        let view = RemoteCoordinatorView(sender: sender)
+        view.receive(.snapshot(snapshot()), at: now)
+
+        let outcome = await view.startQueue()
+
+        guard case .unknown(let reason) = outcome else {
+            Issue.record("expected unknown, got \(outcome)")
+            return
+        }
+        #expect(reason.hasPrefix("not sent: "))
     }
 
     @Test func aBackupChangeIsRefusedWhileTheMacHasOneThisDeviceCannotManage() async {
@@ -129,6 +177,7 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
     @Test func aReorderCountsOnlyWaitingCards() async {
         let sender = FakeRemoteCommandSender()
         let view = RemoteCoordinatorView(sender: sender)
+        sender.replyThrough = view
         let done = UUID(), running = UUID(), first = UUID(), second = UUID(), third = UUID()
         view.receive(.snapshot(snapshot(queue: [
             row(done, .completed), row(running, .running), row(first, .queued), row(second, .queued), row(third, .queued),
@@ -173,5 +222,23 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
         waiter.cancel()
 
         #expect(await waiter.value == .unknown(reason: RemotePendingOutcomes.cancelledReason))
+    }
+
+    @Test func aCancelledWaitDoesNotEndALaterRegistrationOfTheSameRequest() async {
+        let view = RemoteCoordinatorView(sender: FakeRemoteCommandSender())
+        let request = RequestID()
+        let first = view.pendingOutcomes.register(request)
+        let waiter = Task { await first.value() }
+        await Task.yield()
+        waiter.cancel()
+        // Re-register before the cancellation's deferred cleanup has run.
+        let second = view.pendingOutcomes.register(request)
+        _ = await waiter.value
+        await Task.yield()
+
+        let reply = RemoteCommandOutcome.rejected(.unauthorized)
+        view.receive(.outcome(request: request, reply), at: now)
+
+        #expect(await second.value() == reply)
     }
 }

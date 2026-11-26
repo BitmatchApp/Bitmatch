@@ -183,6 +183,21 @@ import Testing
         #expect(applier.installed?.unmanagedDestinationCount == 1)
     }
 
+    @Test func anUpdateWhileASnapshotIsNeededIsStillAGap() {
+        var applier = RemoteStateApplier()
+        let original = snapshot(state: 5)
+        applier.install(original)
+        #expect(applier.apply(update(base: 7, new: 8)) == .gap)
+
+        let inSequence = applier.apply(update(base: 5, new: 6, hostName: "Renamed"))
+
+        #expect(inSequence == .gap)
+        #expect(applier.needsSnapshot)
+        #expect(applier.installed == original)
+        applier.install(snapshot(state: 8))
+        #expect(applier.needsSnapshot == false)
+    }
+
     @Test func applyingBeforeAnySnapshotIsAGap() {
         var applier = RemoteStateApplier()
 

@@ -199,7 +199,7 @@ final class RemoteCoordinatorView: ObservableObject {
         guard waiting.contains(id) else { return .rejected(.hostRefused(wording: Self.notWaitingWording)) }
         var order = waiting.filter { $0 != id }
         order.insert(id, at: min(max(destinationIndex, 0), order.count))
-        return await sender.send(.reorderQueue(recordIDs: order, queueRevision: snapshot.revisions.queue))
+        return await transmit(.reorderQueue(recordIDs: order, queueRevision: snapshot.revisions.queue))
     }
 
     /// Bound to the card's media as last installed, so a swapped card is refused.
@@ -215,7 +215,20 @@ final class RemoteCoordinatorView: ObservableObject {
 
     private func send(_ body: (RemoteSnapshot) -> RemoteCommandBody) async -> RemoteCommandOutcome {
         guard let snapshot else { return notConnected() }
-        return await sender.send(body(snapshot))
+        return await transmit(body(snapshot))
+    }
+
+    /// Registers the request before transmitting it, so a reply that beats
+    /// the await is kept, then waits for the host's `.outcome`.
+    private func transmit(_ body: RemoteCommandBody) async -> RemoteCommandOutcome {
+        let request = RequestID()
+        let pending = pendingOutcomes.register(request)
+        do {
+            try await sender.send(body, request: request)
+        } catch {
+            pendingOutcomes.resolve(request, .unknown(reason: "not sent: \(error.localizedDescription)"))
+        }
+        return await pending.value()
     }
 
     private func notConnected() -> RemoteCommandOutcome {

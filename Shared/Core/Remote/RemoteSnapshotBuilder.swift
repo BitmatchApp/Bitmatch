@@ -129,11 +129,17 @@ struct RemoteSnapshotBuilder {
             unmanagedDestinationCount: surface.destinationURLs.count - selectedBackupIDs.count)
     }
 
-    /// The queue session's records in run order (the journal keeps newest
-    /// first), labelled as the Mac's History labels them.
+    /// The queue session's records in the Mac's run order
+    /// (`queueSessionRecordOrder`); session records missing from it follow
+    /// in journal order. Labelled as the Mac's History labels them.
     private func queueRows() -> [RemoteQueueRow] {
         let records = surface.transferJournal.records
-        return records.reversed().filter { surface.queueSessionRecordIDs.contains($0.id) }.map {
+        let order = surface.queueSessionRecordOrder
+        let session = records.filter { surface.queueSessionRecordIDs.contains($0.id) }
+        let byID = Dictionary(uniqueKeysWithValues: session.map { ($0.id, $0) })
+        let ordered = order.compactMap { byID[$0] }
+        let ranked = Set(order)
+        return (ordered + session.filter { !ranked.contains($0.id) }).map {
             RemoteQueueRow(recordID: $0.id, title: $0.title,
                            stateLabel: TransferLibraryPresentation.stateLabel(for: $0, in: records).title,
                            summary: $0.summary, stateRaw: $0.state.rawValue)

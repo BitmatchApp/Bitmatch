@@ -19,6 +19,8 @@ protocol RemoteSurface: AnyObject, ObservableObject {
     var queueIsRunning: Bool { get }
     var queueMessage: String? { get }
     var queueSessionRecordIDs: Set<UUID> { get }
+    /// The queue session's run order; `moveQueuedTransfer` indexes its waiting cards.
+    var queueSessionRecordOrder: [UUID] { get }
     var queuePausedRecordID: UUID? { get }
     var reportSettings: ReportPrefs { get }
     var generateASCMHL: Bool { get }

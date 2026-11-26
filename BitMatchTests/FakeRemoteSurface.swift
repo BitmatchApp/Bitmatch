@@ -37,6 +37,7 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     var queueIsRunning = false
     var queueMessage: String?
     var queueSessionRecordIDs: Set<UUID> = []
+    var queueSessionRecordOrder: [UUID] = []
     var queuePausedRecordID: UUID?
     var reportSettings = ReportPrefs()
     var generateASCMHL = false
