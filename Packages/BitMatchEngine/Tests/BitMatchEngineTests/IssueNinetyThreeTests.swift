@@ -220,24 +220,36 @@ struct IssueNinetyThreeTests {
 
     /// A different `.DS_Store` already at the final name on DEST_A when
     /// BitMatch publishes: never overwritten, and the row says so.
-    @Test func plantedConflictAtPublishCarriesItsReason() async throws {
+    @Test(arguments: [4096, 6148])
+    func plantedConflictAtPublishCarriesItsReason(plantedSize: Int) async throws {
         try await FileOperationsTestLock.shared.run {
             #if os(macOS)
-            let fixture = try IssueNinetyThreeFixture(name: "conflict")
+            let fixture = try IssueNinetyThreeFixture(name: "conflict-\(plantedSize)")
             defer { fixture.cleanup() }
-            let planted = IssueNinetyThreeFixture.finderBytes(fill: 0x55, count: 4096)
+            let planted = IssueNinetyThreeFixture.finderBytes(fill: 0x55, count: plantedSize)
             let once = OnceFlag()
+            // The hook does not name the file being published, so the plant
+            // is an exclusive create: it can never replace a file BitMatch
+            // already wrote, and it happens at most once.
             let hooks = DestinationWriter.FanOutHooks(beforePublish: { destination, root in
-                guard destination == 0, once.take() else { return }
+                guard destination == 0 else { return }
                 try FileManager.default.createDirectory(at: root.appendingPathComponent("AMB"), withIntermediateDirectories: true)
-                try planted.write(to: root.appendingPathComponent("AMB/.DS_Store"))
+                let fd = Darwin.open(root.appendingPathComponent("AMB/.DS_Store").path, O_WRONLY | O_CREAT | O_EXCL, 0o644)
+                guard fd >= 0 else { return }
+                defer { _ = Darwin.close(fd) }
+                #expect(once.take(), "planted twice")
+                let written = planted.withUnsafeBytes { Darwin.write(fd, $0.baseAddress, $0.count) }
+                #expect(written == planted.count)
             })
             let operation = try await fixture.run(hooks: hooks)
 
             let rows = TransferCompletion.rows(from: operation)
             let failed = try #require(rows.first { $0.destination == "DEST_A" && $0.fileName == ".DS_Store" })
             #expect(ResultOutcome(statusText: failed.status) == .failed)
-            #expect(failed.failureReason == ResultFailureReason.existingDestinationConflict.rawValue)
+            // A different size is plainly a different file; the same size with
+            // different bytes leaves the card unproven.
+            let expected: ResultFailureReason = plantedSize == 6148 ? .existingDestinationContentDiffers : .existingDestinationConflict
+            #expect(failed.failureReason == expected.rawValue)
             #expect(failed.recordedChecksumBeforeFailure == nil)
             #expect(try Data(contentsOf: fixture.backupRoot(0).appendingPathComponent("AMB/.DS_Store")) == planted)
             #expect(rows.filter { $0.destination == "DEST_B" }.allSatisfy { $0.isVerifiedStatus })
@@ -351,5 +363,24 @@ struct IssueNinetyThreeSummaryTests {
         #expect(plan.jobs.first?.label == "DEST_B")
         #expect(plan.issues == ["ASC MHL not created on DEST_A: 1 file not verified"])
         #expect(!plan.issues.joined().contains("02_AMB"))
+    }
+
+    /// Two backups on one volume would both read "RAID": each is named
+    /// "VOLUME/folder" instead, and a backup alone on its volume keeps the
+    /// plain volume name.
+    @Test func ascmhlPlanTellsApartBackupsOnOneVolume() throws {
+        let raidA = URL(fileURLWithPath: "/Volumes/RAID/A")
+        let raidB = URL(fileURLWithPath: "/Volumes/RAID/B")
+        let results = [
+            sha256Result(clip, on: raidA, verified: true), sha256Result(finder, on: raidA, verified: false),
+            sha256Result(clip, on: raidB, verified: true), sha256Result(finder, on: raidB, verified: true),
+            sha256Result(clip, on: backupA, verified: true), sha256Result(finder, on: backupA, verified: true),
+        ]
+        let plan = TransferCompletion.ascmhlPlan(
+            results: results, sourceFiles: [clip, finder], destinations: [raidA, raidB, backupA],
+            source: source, settings: CameraLabelSettings()
+        )
+        #expect(plan.jobs.map(\.label) == ["RAID/B", "DEST_A"])
+        #expect(plan.issues == ["ASC MHL not created on RAID/A: 1 file not verified"])
     }
 }

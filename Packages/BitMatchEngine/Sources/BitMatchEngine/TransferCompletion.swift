@@ -297,10 +297,16 @@ public enum TransferCompletion: Sendable {
         )
         var jobs: [ASCMHLJob] = []
         var issues = coverage.issues.map { "ASC MHL not created — \($0)" }
-        for item in coverage.destinations {
+        // Name the volume: two backups often use the same folder name. Two
+        // backups on one volume would then read alike, so those become
+        // "VOLUME/folder".
+        let volumeLabels = coverage.destinations.map { destinationLabel(for: $0.destination, roots: [$0.destination]) }
+        let sharedLabels = Set(volumeLabels.filter { label in volumeLabels.filter { $0 == label }.count > 1 })
+        for (position, item) in coverage.destinations.enumerated() {
             let rows = item.entryIndices.map { results[$0] }
-            // Name the volume: two backups often use the same folder name.
-            let name = destinationLabel(for: item.destination, roots: [item.destination])
+            let volume = volumeLabels[position]
+            let name = sharedLabels.contains(volume) && volume != item.destination.lastPathComponent
+                ? "\(volume)/\(item.destination.lastPathComponent)" : volume
             guard sourceFiles != nil, item.isExact else {
                 issues.append("ASC MHL not created on \(name) because verification is incomplete")
                 continue
@@ -555,6 +561,8 @@ public enum TransferCompletion: Sendable {
                     failedMessage += "; a backup's copy changed size after BitMatch checked it. Keep the source"
                 case .existingDestinationConflict:
                     failedMessage += "; a different file was already at that name on a backup and was not overwritten. Keep the source"
+                case .existingDestinationContentDiffers:
+                    failedMessage += "; a file already at that name on a backup has different contents and was not overwritten. Keep the card: it is not proven"
                 case .destinationCheckFailed:
                     failedMessage += "; a backup could not be checked at the end of the run. Keep the source"
                 }

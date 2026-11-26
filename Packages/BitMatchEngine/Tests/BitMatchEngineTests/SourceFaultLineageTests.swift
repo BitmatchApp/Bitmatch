@@ -129,6 +129,26 @@ struct SourceFaultLineageTests {
         #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .lineageIncomplete([]))
     }
 
+    /// GitHub #93 review: attempt 1 verifies, attempt 2 finds the backup's
+    /// existing file has the same size but different contents, and attempt
+    /// 3 verifies after that file is removed. The mismatch may mean the card
+    /// returned different bytes, so it explains nothing about the card and
+    /// attempt 3 must not reach safe to erase. A size conflict stays a
+    /// classified backup-side failure.
+    @Test(arguments: [LocalTransferState.issues, .failed])
+    func contentDiffersConflictLeavesTheCardUnproven(state: LocalTransferState) throws {
+        let first = try record(rows: [successRow()])
+        let second = try record(retryOf: first.id, rows: [faultRow(.existingDestinationContentDiffers)], state: state)
+        let third = try record(retryOf: second.id, rows: [successRow()])
+        let assessment = SourceFaultLineage.assess(for: third, in: [third, second, first])
+        #expect(assessment == .lineageIncomplete([]))
+        #expect(assessment.preventsSafeToEraseClaim)
+
+        let sizeConflict = try record(retryOf: first.id, rows: [faultRow(.existingDestinationConflict)], state: state)
+        let afterSize = try record(retryOf: sizeConflict.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: afterSize, in: [afterSize, sizeConflict, first]) == .noFaultObserved)
+    }
+
     @Test func failedRowWithoutReasonIsIncompleteNotClean() throws {
         let first = try record(rows: [failedRowWithoutReason()], state: .issues)
         let retry = try record(retryOf: first.id, rows: [successRow()])

@@ -412,6 +412,7 @@ extension ResultFailureReason {
         case .destinationMissingAfterCheck: return "Copies went missing from \(name) after BitMatch checked them"
         case .destinationSizeChangedAfterCheck: return "Copies changed size on \(name) after BitMatch checked them"
         case .existingDestinationConflict: return "\(name) already had different files at those names"
+        case .existingDestinationContentDiffers: return "\(name) already had files with different contents at those names"
         case .destinationCheckFailed: return "\(name) could not be checked at the end of the run"
         }
     }

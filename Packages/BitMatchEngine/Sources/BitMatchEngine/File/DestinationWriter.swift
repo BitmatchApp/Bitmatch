@@ -1732,9 +1732,14 @@ public final class DestinationWriter {
 
 
     #if canImport(Darwin)
-    private static func reuseConflict(_ reason: String, relativePath: String) -> NSError {
+    /// `contentDiffers`: same size, different bytes or checksum. That is
+    /// either a rewritten backup or a card that read back differently, so it
+    /// gets a token that leaves the card unproven; a size difference is
+    /// plainly a different file.
+    private static func reuseConflict(_ reason: String, relativePath: String, contentDiffers: Bool = false) -> NSError {
         guard (relativePath as NSString).lastPathComponent.hasPrefix("._") else {
-            return existingDestinationConflictError(reason, failureReason: .existingDestinationConflict)
+            return existingDestinationConflictError(reason, failureReason: contentDiffers
+                ? .existingDestinationContentDiffers : .existingDestinationConflict)
         }
         return existingDestinationConflictError(
             "A hidden companion file on the backup differs from the source. macOS can create or update these files on exFAT drives. BitMatch is refusing to overwrite it. Nothing was overwritten. Keep the source intact and export the results before retrying.",
@@ -1775,7 +1780,7 @@ public final class DestinationWriter {
                 hooks: hooks,
                 onIOBytes: reuseComparisonIOCallback(onIOBytes)
             ) else {
-                throw reuseConflict("Existing destination file bytes differ; refusing to overwrite it", relativePath: relativePath)
+                throw reuseConflict("Existing destination file bytes differ; refusing to overwrite it", relativePath: relativePath, contentDiffers: true)
             }
         }
 
@@ -1789,7 +1794,7 @@ public final class DestinationWriter {
             hooks: hooks,
             onIOBytes: reuseValidationIOCallback(onIOBytes)
         ) else {
-            throw reuseConflict("Existing destination file checksum differs; refusing to overwrite it", relativePath: relativePath)
+            throw reuseConflict("Existing destination file checksum differs; refusing to overwrite it", relativePath: relativePath, contentDiffers: true)
         }
 
     }

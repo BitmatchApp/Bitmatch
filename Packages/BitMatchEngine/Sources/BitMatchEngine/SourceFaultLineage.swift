@@ -50,9 +50,11 @@ public enum SourceFaultLineage {
         let unsuccessful = record.results.filter { !$0.isSuccessStatus }
         // Every unsuccessful row must say why, whatever the record's state:
         // one explained row never explains another.
+        // A reason that leaves the card unproven (an existing backup file
+        // whose contents differ) explains nothing about the card.
         let anyUnexplainedRow = unsuccessful.contains { row in
-            guard let reason = row.failureReason else { return true }
-            return ResultFailureReason(rawValue: reason) == nil
+            guard let reason = row.failureReason.flatMap(ResultFailureReason.init(rawValue:)) else { return true }
+            return reason.leavesCardUnproven
         }
         switch record.state {
         case .queued, .running: return false
@@ -72,9 +74,10 @@ public enum SourceFaultLineage {
             // reason on the record, or at least one classified unsuccessful
             // row with no unexplained one beside it.
             if anyUnexplainedRow { return true }
-            let recordExplained = record.failureReason.flatMap(ResultFailureReason.init(rawValue:)) != nil
+            let recordExplained = record.failureReason.flatMap(ResultFailureReason.init(rawValue:))
+                .map { !$0.leavesCardUnproven } ?? false
             let rowExplained = unsuccessful.contains { row in
-                row.failureReason.flatMap(ResultFailureReason.init(rawValue:)) != nil
+                row.failureReason.flatMap(ResultFailureReason.init(rawValue:)).map { !$0.leavesCardUnproven } ?? false
             }
             return !(recordExplained || rowExplained)
         }

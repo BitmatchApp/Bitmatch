@@ -59,6 +59,12 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
     /// A different file already sat at the final name on the backup; BitMatch
     /// never overwrites it. (`._*` names use `companionConflict`.)
     case existingDestinationConflict
+    /// A file of the same size already sat at the final name on the backup,
+    /// and its bytes or checksum differ from what BitMatch read from the
+    /// card. Either something rewrote the backup or the card returned
+    /// different bytes; nothing tells which, so the card is not proven
+    /// (`leavesCardUnproven`).
+    case existingDestinationContentDiffers
     /// The end-of-run checks of a backup could not be completed: its files
     /// could not be listed, its folder moved, its transfer status could not be
     /// saved, or a fresh empty-file proof failed.
@@ -79,12 +85,18 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
         case .destinationMissingAfterCheck: "the backup's copy was gone when BitMatch checked it again"
         case .destinationSizeChangedAfterCheck: "the backup's copy changed size after BitMatch checked it"
         case .existingDestinationConflict: "a different file was already at that name on the backup; it was not overwritten"
+        case .existingDestinationContentDiffers: "a file already at that name on the backup has different contents; it was not overwritten, and the card is not proven"
         case .destinationCheckFailed: "the backup could not be checked at the end of the run"
         }
     }
 
     /// Reasons that say something went wrong reading the card itself.
     public var isSourceFault: Bool { self == .sourceUnstable || self == .sourceReadFailed }
+
+    /// A classified failure that still says nothing reliable about the
+    /// card. Retry lineage treats it like an unexplained failure, so a later
+    /// verified attempt cannot make the card safe to erase on its strength.
+    public var leavesCardUnproven: Bool { self == .existingDestinationContentDiffers }
 }
 
 // MARK: - Result Row

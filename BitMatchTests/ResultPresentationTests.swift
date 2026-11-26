@@ -21,6 +21,31 @@ final class ResultPresentationTests: XCTestCase {
         XCTAssertEqual(ResultFailureReason.sourceUnstable.rowNote, "the card changed or could not be read consistently")
     }
 
+    /// GitHub #93: the destination-side reasons name the backup, never claim
+    /// a verification (Quick reaches the same gates), and only the
+    /// content-differs conflict leaves the card unproven.
+    func testIssue93DestinationReasonsNameTheBackupAndClaimNoVerification() {
+        let leads: [ResultFailureReason: String] = [
+            .destinationChangedAfterCheck: "Something wrote to DEST_A after BitMatch checked its copies",
+            .destinationMissingAfterCheck: "Copies went missing from DEST_A after BitMatch checked them",
+            .destinationSizeChangedAfterCheck: "Copies changed size on DEST_A after BitMatch checked them",
+            .existingDestinationConflict: "DEST_A already had different files at those names",
+            .existingDestinationContentDiffers: "DEST_A already had files with different contents at those names",
+            .destinationCheckFailed: "DEST_A could not be checked at the end of the run",
+        ]
+        for (reason, lead) in leads {
+            XCTAssertEqual(reason.backupLead("DEST_A"), lead)
+            XCTAssertFalse(reason.rowNote.isEmpty)
+            XCTAssertFalse(reason.rowNote.lowercased().contains("verif"), reason.rawValue)
+            XCTAssertFalse(reason.isSourceFault, reason.rawValue)
+            XCTAssertEqual(reason.leavesCardUnproven, reason == .existingDestinationContentDiffers, reason.rawValue)
+        }
+        XCTAssertEqual(ResultFailureReason.destinationChangedAfterCheck.rowNote,
+                       "the backup's copy changed after BitMatch checked it; something else wrote to it, for example Finder")
+        XCTAssertEqual(ResultFailureReason.existingDestinationContentDiffers.rowNote,
+                       "a file already at that name on the backup has different contents; it was not overwritten, and the card is not proven")
+    }
+
     func testSameDiskDestinationsNeverProduceATwoDestinationCompletionClaim() {
         struct SameDisk: PhysicalDiskIdentityProviding {
             func physicalDiskIdentity(for url: URL) -> String? { "disk5" }
