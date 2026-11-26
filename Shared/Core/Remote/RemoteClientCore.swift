@@ -70,6 +70,7 @@ final class RemoteClientCore: RemoteCommandSender {
     func stop() {
         receiving?.cancel()
         receiving = nil
+        link.close()
         lateOutcomes.removeAll()
         disconnect()
     }

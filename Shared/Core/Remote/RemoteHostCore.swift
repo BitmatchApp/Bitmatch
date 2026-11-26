@@ -58,11 +58,15 @@ final class RemoteHostCore {
         // Each update names its own session, so the session here is only a placeholder.
         published = RemoteSnapshotBuilder(surface: surface, host: host, hostName: hostName, session: SessionID())
             .snapshot(now: now())
-        // `RemoteSurface` is main-actor isolated, so its `objectWillChange`
-        // is sent on the main actor; this traps if that ever stops being true.
-        changes = Self.willChange(surface).sink { [weak self] in
-            MainActor.assumeIsolated { self?.surfaceWillChange() }
-        }
+        // A card or backup registered in `host` changes the snapshot as a
+        // surface change does. Both are main-actor isolated, so their
+        // `objectWillChange` is sent on the main actor; this traps if that
+        // ever stops being true.
+        changes = Self.willChange(surface)
+            .merge(with: host.objectWillChange)
+            .sink { [weak self] in
+                MainActor.assumeIsolated { self?.stateWillChange() }
+            }
     }
 
     private static func willChange<Surface: RemoteSurface>(_ surface: Surface) -> AnyPublisher<Void, Never> {
@@ -78,7 +82,10 @@ final class RemoteHostCore {
         attachments[session] = attachment
         outbox.yield(RemoteEnvelope(message: .snapshot(builder(for: session).snapshot(now: now()))))
         // One sender per link, so envelopes arrive in the order they were made.
+        // When `detach` finishes the outbox, what is queued is still sent,
+        // then the link is closed so the client knows it is no longer heard.
         Task { [weak self] in
+            defer { link.close() }
             for await envelope in outgoing {
                 do {
                     try await link.send(envelope)
@@ -178,7 +185,7 @@ final class RemoteHostCore {
 
     /// `objectWillChange` fires before the change, so the update is built on
     /// a later turn, after it, and once for every change made in this turn.
-    private func surfaceWillChange() {
+    private func stateWillChange() {
         guard !flushScheduled else { return }
         flushScheduled = true
         Task { [weak self] in self?.flushChanges() }

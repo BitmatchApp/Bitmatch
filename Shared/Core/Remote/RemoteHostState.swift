@@ -1,3 +1,4 @@
+import Combine
 import Foundation
 import BitMatchEngine
 
@@ -9,8 +10,12 @@ import BitMatchEngine
 /// identity as the transfer journal records it (`LocalTransferResource
 /// .volumeID`, from `volumeIdentity(_:)`): the snapshot binds a saved
 /// record to a card only when the two are equal, never by path.
+///
+/// Registering or removing a card or backup sends `objectWillChange`, so the
+/// host core moves the revisions even while no client is attached.
+/// `revisions` does not: the snapshot builder sets it.
 @MainActor
-final class RemoteHostState {
+final class RemoteHostState: ObservableObject {
     let id: HostID
     /// Bumped by the snapshot builder whenever a resource changes.
     var revisions: ResourceRevisions
@@ -26,21 +31,25 @@ final class RemoteHostState {
     }
 
     func registerCard(_ card: RemoteCardSummary, url: URL) {
+        objectWillChange.send()
         cards[card.id] = card
         cardURLs[card.id] = url
     }
 
     func removeCard(id: String) {
+        objectWillChange.send()
         cards[id] = nil
         cardURLs[id] = nil
     }
 
     func registerBackup(_ backup: RemoteBackupSummary, url: URL) {
+        objectWillChange.send()
         backups[backup.id] = backup
         backupURLs[backup.id] = url
     }
 
     func removeBackup(id: String) {
+        objectWillChange.send()
         backups[id] = nil
         backupURLs[id] = nil
     }

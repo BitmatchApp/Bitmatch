@@ -27,6 +27,7 @@ final class InMemoryRemoteLink: RemoteLink {
     private struct Settings {
         var dropNextReply = false
         var failNextSend = false
+        var isSilent = false
         var delay: Duration = .zero
     }
 
@@ -77,14 +78,23 @@ final class InMemoryRemoteLink: RemoteLink {
             return (fail, drop, settings.delay)
         }
         if fail { throw SendFailure() }
-        if drop { return }
+        if drop || isSilent { return }
         if delay > .zero { try await Task.sleep(for: delay) }
         let wire = try JSONEncoder().encode(envelope)
         outbox.deliver(try JSONDecoder().decode(RemoteEnvelope.self, from: wire))
     }
 
-    /// Ends the other end's `incoming`, as a dropped connection does.
-    func close() { outbox.continuation.finish() }
+    /// Everything this end sends is lost while true, though the link stays open.
+    var isSilent: Bool {
+        get { settings.withLock { $0.isSilent } }
+        set { settings.withLock { $0.isSilent = newValue } }
+    }
+
+    /// Ends both ends' `incoming`, as a dropped connection does.
+    func close() {
+        inbox.continuation.finish()
+        outbox.continuation.finish()
+    }
 }
 
 /// Time that moves only when a test says so. Each scheduled action runs when
@@ -159,7 +169,7 @@ private func settle() async {
 }
 
 @MainActor
-@Suite struct RemoteInProcessTests {
+@Suite(.timeLimit(.minutes(1))) struct RemoteInProcessTests {
     private let start = Date(timeIntervalSince1970: 1_700_000_000)
     private let media = MediaIncarnation(volumeIdentity: "vol-a001", mountGeneration: 1)
 
@@ -468,8 +478,8 @@ private func settle() async {
         #expect(try h.admission.admit(client: h.client, request: ownRequest, contentHash: "hash")
                 == .duplicateDone(.rejected(.unauthorized)))
 
-        // The Mac goes quiet.
-        h.hostCore.detach(session: h.session)
+        // The Mac goes quiet while the link stays open.
+        h.hostEnd.isSilent = true
         h.scheduler.advance(by: 11)
 
         #expect(h.view.currentSafetyClaim(at: h.scheduler.now) == nil)
@@ -660,5 +670,60 @@ private func settle() async {
         #expect(self.outcomes(h.clientEnd).count == 1)
         #expect(self.outcomes(secondClientEnd).count == 1)
         #expect(Set(self.outcomes(h.clientEnd).keys).isDisjoint(with: self.outcomes(secondClientEnd).keys))
+    }
+
+    @Test func aDetachedLinkDisconnectsTheClient() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let gate = Gate()
+        h.surface.startHook = { await gate.wait() }
+        let waiting = Task { await h.view.startSetupTransfersPrepared() }
+        #expect(await eventually { h.surface.calls.contains(.start) })
+
+        // A state update cannot be sent, so the Mac drops the link.
+        h.hostEnd.failNextSend = true
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+
+        #expect(await eventually { h.view.connection == .disconnected })
+        // The wait has already ended; neither the start finishing nor the
+        // reply timeout can change it.
+        gate.open()
+        h.scheduler.advance(by: 10)
+        #expect(await waiting.value == .unknown(reason: RemoteCoordinatorView.disconnectedReason))
+    }
+
+    @Test func aCardRegisteredWhileDetachedAdvancesTheSelectionRevision() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let seen = try #require(h.view.snapshot).revisions.selection
+        h.hostCore.detach(session: h.session)
+
+        // A second card is plugged in while nobody is attached.
+        let second = h.directory.appendingPathComponent("B001", isDirectory: true)
+        h.host.registerCard(RemoteCardSummary(id: "card-2", name: "B001", capacityBytes: nil, detectedCamera: nil,
+                                              hasAccess: true,
+                                              media: MediaIncarnation(volumeIdentity: "vol-b001", mountGeneration: 1)),
+                            url: second)
+        #expect(await eventually { h.host.revisions.selection == seen + 1 })
+
+        let session = SessionID()
+        let link = h.attachAnotherLink(session: session)
+        #expect(await eventually { !link.received.isEmpty })
+        guard case .snapshot(let snapshot) = link.received.first?.message else {
+            Issue.record("expected a snapshot first")
+            return
+        }
+        #expect(snapshot.revisions.selection == seen + 1)
+        #expect(snapshot.cards.map(\.id) == ["card-1", "card-2"])
+
+        let request = RequestID()
+        try await send(.start(selectionRevision: seen), request: request, session: session, client: h.client, on: link)
+
+        #expect(await eventually { outcomes(link)[request] != nil })
+        #expect(outcomes(link)[request] == .rejected(.staleRevision(current: h.host.revisions)))
+        #expect(h.surface.calls.isEmpty)
     }
 }
