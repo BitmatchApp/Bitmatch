@@ -320,6 +320,33 @@ The public mode is **Check**; many source types retain their Compare names. It o
 - **iOS store.** iOS uses `UserDefaultsPhotographerJobStore` (`Shared/Core/Services/UserDefaultsPhotographerJobStore.swift`), which is the `SharedAppCoordinator` default.
 - **Mac store.** The Mac uses `CoreDataPhotographerJobStore` (`BitMatch/Core/Services/Photographer/PhotographerJobStore.swift`) on `BitMatchPersistenceController` (model `BitMatch/BitMatch.xcdatamodeld`). `MacAppEnvironment.make()` passes its job view model into `SharedAppCoordinator`, so the Mac has one.
 
+## Remote (groundwork)
+
+Remote lets an iPad show and drive a Mac's transfers. Only the groundwork exists: the protocol, the host's memory of commands, the safety-claim lease, and a host core and client core joined by an in-process link. Nothing is visible in the apps yet. The design is `docs/superpowers/specs/2026-11-26-bitmatch-remote-design.md`; the list of coordinator members the Mac may expose is `docs/superpowers/specs/2026-11-26-remote-boundary-inventory.md`.
+
+- **Two streams.**
+  - Reliable state is a `RemoteSnapshot` followed by `RemoteStateUpdate`s. Each resource (selection, settings, queue, operation, outcome, and so on) has its own revision in `ResourceRevisions`, and an update carries a `RemoteSnapshotPatch` for the revisions it moves. A patch field that can be cleared uses `RemotePatchValue` (`unchanged` or `set(value?)`), so a cleared outcome or safety claim is distinct from one that did not change.
+  - Progress (`RemoteProgressSample`) is replaceable: a newer sample supersedes an older one and a lost sample is never resent.
+  - `RemoteStateApplier` installs snapshots and applies updates on the client. An update whose revision does not follow the installed one, or any update while a snapshot is awaited, is a gap; the client keeps its state, asks for a snapshot, and refuses an older snapshot for the same host and session.
+- **Commands and outcomes.**
+  - A `RemoteCommand` has a request ID, a client and session, a body, and a content hash that is recomputed on decode. Bodies that act on stale data carry the revision they were built from.
+  - `RemoteAdmissionStore` writes each command to disk before any side effect and answers `admitted`, `duplicatePending`, `duplicateDone(outcome)` or `contentMismatch`. A retry after completion gets the original outcome; a reused ID with different content is refused.
+  - Writes are staged and committed to memory only after the file is replaced, except `FlushAfterPublishFailure` (`File/DurableJSONFile.swift`), where the file is already replaced. Expiry never purges entries for clients the host says are connected.
+  - An entry still pending when the host restarts is reported at load and reconciled to `unknown`; it is never run again.
+  - `RemoteCommandExecutor` maps a body onto the coordinator through `RemoteSurface`. The outcome comes from the intent's own result: `done` carries the post-run revisions, `rejected` carries a reason (`staleRevision`, `mediaChanged`, `notSafeToErase`, `unauthorized`, `unsupported`, `hostRefused`, `contentMismatch`). Intents that return nothing check a postcondition and report `hostRefused` when it fails. `unknown` is reserved for partial effects, outcomes that could not be recorded, and crash reconciliation.
+- **Safety claim.** `RemoteSafetyLease` decides whether a "safe to erase" claim may be shown. The host publishes a claim only when the record's volume identity equals the inserted card's. The client shows it only while the connection is live within the lease (10 seconds by default), the claim's revision is the latest state seen, and the media incarnation is unchanged. A gap, a disconnect, a change of media, or a heartbeat that arrives after the lease lapsed hides the claim until a fresh state arrives; a heartbeat alone never revives it.
+- **Host and client cores.**
+  - `RemoteHostState` holds the registered surface, the published snapshot and a registration generation. `RemoteSnapshotBuilder` turns `RemoteSurface` into snapshots and patches, and the published snapshot lives as long as the host core, so revisions advance while no client is connected.
+  - `RemoteHostCore` attaches a link per session, sends the snapshot and then updates, progress and heartbeats, and admits and executes commands. A failed send detaches the link; the end of a link's incoming stream is a detach.
+  - `RemoteClientCore` reads a link into `RemoteCoordinatorView` and transmits its commands. `RemoteCommandSender` is transmit-only; `RemotePendingOutcomes` holds one waiter per request, which resolves `unknown` on disconnect, identity change or cancellation.
+  - `RemoteCoordinatorView` is the client's observable model: state, progress, the lease (which gates the claim), connection freshness, and one method per command.
+  - `RemoteLink` carries `RemoteEnvelope`s, with `close()`. The only implementation is an in-memory one in `BitMatchTests/RemoteInProcessTests.swift`.
+- **Where the types live.**
+  - Engine, `Packages/BitMatchEngine/Sources/BitMatchEngine/Remote/`: `RemoteProtocol.swift`, `RemoteCommand.swift`, `RemoteStateApplier.swift`, `RemoteSafetyLease.swift`, `RemoteAdmissionStore.swift`.
+  - Shared, `Shared/Core/Remote/`: `RemoteSurface.swift`, `RemoteHostState.swift`, `RemoteSnapshotBuilder.swift`, `RemoteCommandExecutor.swift`, `RemoteHostCore.swift`, `RemoteClientCore.swift`, `RemoteCommandSender.swift`, `RemotePendingOutcomes.swift`, `RemoteCoordinatorView.swift`, `RemoteLink.swift`.
+  - `SharedAppCoordinator` conforms to `RemoteSurface` (an extension at the end of `SharedAppCoordinator.swift`); `queueSessionRecordOrder` became `private(set)` so the surface can read it.
+- **Not built.** Pairing and credentials, TLS, discovery, Local Network permission, a Settings screen for Remote, the iPad Remote entry, screens bound to `RemoteCoordinatorView`, and a replacement link after a reconnect (the client core does not yet resend unanswered commands on a new link). `docs/REMOTE_PROTOCOL_CONTRACT.md` still governs those.
+
 ## Platform managers
 
 `PlatformManager` (`Packages/BitMatchEngine/Sources/BitMatchEngine/EngineProtocols.swift`) is the only platform seam the engine sees. It exposes:

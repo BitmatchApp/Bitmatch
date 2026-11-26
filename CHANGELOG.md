@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Groundwork for BitMatch Remote: the protocol, admission store, safety-claim lease and in-process host and client cores. No user-visible change yet.
+
 ## [0.2.14] - 2026-11-26
 
 - A symbolic link, named pipe, socket or device on the card is no longer skipped in silence. Each one is a failed row on every backup ("the card holds an item BitMatch does not copy"), so the transfer ends with "Keep the card" instead of "All files copied and verified". Nothing opens or follows such entries. A source holding only such items is refused before copying. Compare and Check still list regular files only.

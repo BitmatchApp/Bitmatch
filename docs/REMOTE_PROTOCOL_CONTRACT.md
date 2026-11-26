@@ -1,6 +1,6 @@
 # Remote monitoring: proposed protocol contract
 
-Status: design only. Remote monitoring, pairing, and controls are not implemented by this document. The Mac remains the sole authority for transfers, storage, journal, and verdicts.
+Status: slices 0 and 1 (the protocol, admission, the safety-claim lease, and in-process host and client cores) are implemented on the branch; see `docs/superpowers/specs/2026-11-26-bitmatch-remote-design.md` and ARCHITECTURE.md. Pairing, transport, discovery, and screens are not implemented. The Mac remains the sole authority for transfers, storage, journal, and verdicts.
 
 ## Discovery and pairing
 
