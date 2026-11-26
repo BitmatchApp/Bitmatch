@@ -59,12 +59,26 @@ public struct RemoteCommand: Codable, Hashable, Sendable {
         self.body = body
     }
 
+    private enum CodingKeys: String, CodingKey { case client, request, session, contentHash, body }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        client = try c.decode(ClientID.self, forKey: .client)
+        request = try c.decode(RequestID.self, forKey: .request)
+        session = try c.decode(SessionID.self, forKey: .session)
+        body = try c.decode(RemoteCommandBody.self, forKey: .body)
+        contentHash = try c.decode(String.self, forKey: .contentHash)
+        guard contentHash == Self.contentHash(of: body) else {
+            throw RemoteProtocolError.contentHashMismatch
+        }
+    }
+
     /// SHA-256 hex of the body's JSON encoding with sorted keys.
     public static func contentHash(of body: RemoteCommandBody) -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        // Encoding a plain Codable enum of strings, numbers and UUIDs cannot fail.
-        let data = (try? encoder.encode(body)) ?? Data()
+        // These types always encode (strings, numbers, UUIDs); a failure is a programmer error.
+        let data = try! encoder.encode(body)
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
     }
 }

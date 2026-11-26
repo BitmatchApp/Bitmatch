@@ -55,10 +55,10 @@ import Testing
             .progress(RemoteProgressSample(operationID: UUID(), hostTime: date, progress: progress)),
             .heartbeat(RemoteHeartbeat(hostTime: date, stateRevision: 5)),
             .command(command),
-            .outcome(.done(result)),
-            .outcome(.pending),
-            .outcome(.unknown(reason: "lost")),
-            .outcome(.rejected(.staleRevision(current: revisions))),
+            .outcome(request: request, .done(result)),
+            .outcome(request: request, .pending),
+            .outcome(request: request, .unknown(reason: "lost")),
+            .outcome(request: request, .rejected(.staleRevision(current: revisions))),
         ]
         for message in messages {
             #expect(try roundTrip(message) == message)
@@ -85,5 +85,31 @@ import Testing
         #expect(RemoteCommand.contentHash(of: a) == RemoteCommand.contentHash(of: same))
         #expect(RemoteCommand.contentHash(of: a) != RemoteCommand.contentHash(of: other))
         #expect(RemoteCommand.contentHash(of: a).count == 64)
+        let golden = RemoteCommandBody.pause(operationID: UUID(uuidString: "00000000-0000-0000-0000-000000000001")!)
+        #expect(RemoteCommand.contentHash(of: golden) == "be4daaa91244f650a8985e3bbcf21b3b1f9a31ebdcadc1b7e403e3c35b9c94fe")
+    }
+
+    @Test func aPatchCanClearTheSafetyClaimAndLeaveTheOutcomeUnchanged() throws {
+        let patch = RemoteSnapshotPatch(host: HostID(), session: SessionID(), takenAt: date,
+                                        revisions: revisions, outcome: .unchanged, safetyClaim: .set(nil))
+        let data = try JSONEncoder().encode(patch)
+        let json = String(decoding: data, as: UTF8.self)
+        #expect(json.contains(#""safetyClaim":null"#))
+        #expect(!json.contains(#""outcome""#))
+        let decoded = try JSONDecoder().decode(RemoteSnapshotPatch.self, from: data)
+        #expect(decoded == patch)
+        #expect(decoded.safetyClaim == RemotePatchValue<RemoteSafetyClaim>.set(nil))
+        #expect(decoded.outcome == RemotePatchValue<RemoteOutcome>.unchanged)
+    }
+
+    @Test func aForgedContentHashIsRefusedOnDecode() throws {
+        let command = RemoteCommand(client: ClientID(), request: RequestID(), session: SessionID(),
+                                    body: .selectSource(cardID: "c1"))
+        let json = String(decoding: try JSONEncoder().encode(command), as: UTF8.self)
+        let forged = json.replacingOccurrences(of: command.contentHash, with: String(repeating: "0", count: 64))
+        #expect(forged != json)
+        #expect(throws: RemoteProtocolError.contentHashMismatch) {
+            try JSONDecoder().decode(RemoteCommand.self, from: Data(forged.utf8))
+        }
     }
 }

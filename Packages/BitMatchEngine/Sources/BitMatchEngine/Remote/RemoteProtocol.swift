@@ -9,6 +9,7 @@ public struct RemoteProtocolVersion: Codable, Hashable, Sendable {
 
 public enum RemoteProtocolError: Error, Hashable, Sendable {
     case unsupportedProtocolVersion(Int)
+    case contentHashMismatch
 }
 
 // MARK: - Identifiers
@@ -224,25 +225,25 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
     public var verificationMode: VerificationMode?
     public var cards: [RemoteCardSummary]?
     public var backups: [RemoteBackupSummary]?
-    public var selectedCardID: String?
+    public var selectedCardID: RemotePatchValue<String>
     public var selectedBackupIDs: [String]?
     public var readinessWording: String?
     public var readinessStatus: String?
     public var queue: [RemoteQueueRow]?
-    public var outcome: RemoteOutcome?
-    public var safetyClaim: RemoteSafetyClaim?
-    public var appleDoubleReview: RemoteAppleDoubleReview?
+    public var outcome: RemotePatchValue<RemoteOutcome>
+    public var safetyClaim: RemotePatchValue<RemoteSafetyClaim>
+    public var appleDoubleReview: RemotePatchValue<RemoteAppleDoubleReview>
     public var settings: RemoteSettings?
 
     public init(host: HostID, session: SessionID, takenAt: Date, revisions: ResourceRevisions,
                 hostName: String? = nil, mode: String? = nil,
                 verificationMode: VerificationMode? = nil,
                 cards: [RemoteCardSummary]? = nil, backups: [RemoteBackupSummary]? = nil,
-                selectedCardID: String? = nil, selectedBackupIDs: [String]? = nil,
+                selectedCardID: RemotePatchValue<String> = .unchanged, selectedBackupIDs: [String]? = nil,
                 readinessWording: String? = nil, readinessStatus: String? = nil,
-                queue: [RemoteQueueRow]? = nil, outcome: RemoteOutcome? = nil,
-                safetyClaim: RemoteSafetyClaim? = nil,
-                appleDoubleReview: RemoteAppleDoubleReview? = nil,
+                queue: [RemoteQueueRow]? = nil, outcome: RemotePatchValue<RemoteOutcome> = .unchanged,
+                safetyClaim: RemotePatchValue<RemoteSafetyClaim> = .unchanged,
+                appleDoubleReview: RemotePatchValue<RemoteAppleDoubleReview> = .unchanged,
                 settings: RemoteSettings? = nil) {
         self.host = host
         self.session = session
@@ -262,6 +263,74 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         self.safetyClaim = safetyClaim
         self.appleDoubleReview = appleDoubleReview
         self.settings = settings
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case host, session, takenAt, revisions, hostName, mode, verificationMode, cards, backups
+        case selectedCardID, selectedBackupIDs, readinessWording, readinessStatus, queue
+        case outcome, safetyClaim, appleDoubleReview, settings
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        host = try c.decode(HostID.self, forKey: .host)
+        session = try c.decode(SessionID.self, forKey: .session)
+        takenAt = try c.decode(Date.self, forKey: .takenAt)
+        revisions = try c.decode(ResourceRevisions.self, forKey: .revisions)
+        hostName = try c.decodeIfPresent(String.self, forKey: .hostName)
+        mode = try c.decodeIfPresent(String.self, forKey: .mode)
+        verificationMode = try c.decodeIfPresent(VerificationMode.self, forKey: .verificationMode)
+        cards = try c.decodeIfPresent([RemoteCardSummary].self, forKey: .cards)
+        backups = try c.decodeIfPresent([RemoteBackupSummary].self, forKey: .backups)
+        selectedCardID = try c.contains(.selectedCardID) ? c.decode(RemotePatchValue<String>.self, forKey: .selectedCardID) : .unchanged
+        selectedBackupIDs = try c.decodeIfPresent([String].self, forKey: .selectedBackupIDs)
+        readinessWording = try c.decodeIfPresent(String.self, forKey: .readinessWording)
+        readinessStatus = try c.decodeIfPresent(String.self, forKey: .readinessStatus)
+        queue = try c.decodeIfPresent([RemoteQueueRow].self, forKey: .queue)
+        outcome = try c.contains(.outcome) ? c.decode(RemotePatchValue<RemoteOutcome>.self, forKey: .outcome) : .unchanged
+        safetyClaim = try c.contains(.safetyClaim) ? c.decode(RemotePatchValue<RemoteSafetyClaim>.self, forKey: .safetyClaim) : .unchanged
+        appleDoubleReview = try c.contains(.appleDoubleReview) ? c.decode(RemotePatchValue<RemoteAppleDoubleReview>.self, forKey: .appleDoubleReview) : .unchanged
+        settings = try c.decodeIfPresent(RemoteSettings.self, forKey: .settings)
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(host, forKey: .host)
+        try c.encode(session, forKey: .session)
+        try c.encode(takenAt, forKey: .takenAt)
+        try c.encode(revisions, forKey: .revisions)
+        try c.encodeIfPresent(hostName, forKey: .hostName)
+        try c.encodeIfPresent(mode, forKey: .mode)
+        try c.encodeIfPresent(verificationMode, forKey: .verificationMode)
+        try c.encodeIfPresent(cards, forKey: .cards)
+        try c.encodeIfPresent(backups, forKey: .backups)
+        if case .set = selectedCardID { try c.encode(selectedCardID, forKey: .selectedCardID) }
+        try c.encodeIfPresent(selectedBackupIDs, forKey: .selectedBackupIDs)
+        try c.encodeIfPresent(readinessWording, forKey: .readinessWording)
+        try c.encodeIfPresent(readinessStatus, forKey: .readinessStatus)
+        try c.encodeIfPresent(queue, forKey: .queue)
+        if case .set = outcome { try c.encode(outcome, forKey: .outcome) }
+        if case .set = safetyClaim { try c.encode(safetyClaim, forKey: .safetyClaim) }
+        if case .set = appleDoubleReview { try c.encode(appleDoubleReview, forKey: .appleDoubleReview) }
+        try c.encodeIfPresent(settings, forKey: .settings)
+    }
+}
+
+/// A patch entry for a nullable snapshot field: absent means unchanged,
+/// null means cleared, a value means replaced.
+public enum RemotePatchValue<Value: Codable & Hashable & Sendable>: Codable, Hashable, Sendable {
+    case unchanged
+    case set(Value?)
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        self = c.decodeNil() ? .set(nil) : .set(try c.decode(Value.self))
+    }
+
+    /// Patch types omit the key for `.unchanged`; the null here is only a fallback.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        if case .set(let value?) = self { try c.encode(value) } else { try c.encodeNil() }
     }
 }
 
@@ -306,7 +375,7 @@ public enum RemoteMessage: Codable, Hashable, Sendable {
     case progress(RemoteProgressSample)
     case heartbeat(RemoteHeartbeat)
     case command(RemoteCommand)
-    case outcome(RemoteCommandOutcome)
+    case outcome(request: RequestID, RemoteCommandOutcome)
 }
 
 public struct RemoteEnvelope: Codable, Hashable, Sendable {
