@@ -23,6 +23,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 - `cancelOperation(ifCurrentTargetID:origin:)` and `addDestination(_:origin:facts:)` have defaulted parameters; the protocol declares them in full.
 - `addDestination` is `@discardableResult` and returns `String?` (a refusal message). `ejectQueueSource` returns `String?` and takes `using ejector:`.
 - `ejectQueueSource` exists only on macOS (`#if os(macOS)`), so it sits inside the same conditional in the protocol.
+- Added for the command executor (Task 6): `applyPreparedSource(expectedSource:expectedDestinations:newSource:)` as an intent, and `verificationMode` as `{ get set }`. The protocol exposes no other way to choose a source or set the verification mode.
 - `queueIsRunning`, `queueMessage`, `queueSessionRecordIDs`, `queuePausedRecordID` are `private(set)`; `transferJournal` and `generalSettings` are `let`. All are `{ get }`.
 - `currentOperation` and `timingService` are not referenced as `coordinator.x` by any view; they are kept (brief) as the Progress state source.
 
@@ -35,7 +36,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | isOperationInProgress | Setup, ActionBar, ModularContent, PhoneContent, Preferences, Progress adapters | read | yes |
 | sourceURL | Setup, CopyAndVerify, ProjectSetupCard, Progress adapters | read | yes |
 | currentMode | Content, Setup, HeaderTabs, ActionBar, ModularContent, PhoneContent | read | yes |
-| verificationMode | Setup, Preferences, ModularContent, Queue, CompareFolders | read | yes |
+| verificationMode | Setup, Preferences, ModularContent, Queue, CompareFolders | read-write | yes (`{ get set }`: a remote `setVerificationMode` assigns it, then calls `saveVerificationMode()`) |
 | photographerJobViewModel | Setup, CopyAndVerify, MacSetup, ModularContent, Preferences, ProjectSetupCard, RemoteBackupDestination | read | no (later slice: project workflow is edited on the Mac) |
 | transferJournal | ModularContent, PhoneContent, TransferLibrary, Progress adapters, Queue | read | yes |
 | queuePresentation | AdaptiveQueuePresentation, Content, Queue | read | no (derived from transferJournal and queue state) |
@@ -136,7 +137,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | backgroundTimeRemainingSeconds | Progress adapters | read | no (local UI: the device's own lifecycle) |
 | autoEjectWhenSafe | Queue | read | yes, via `generalSettings.autoEjectWhenSafe` (the coordinator property forwards to it; not a separate protocol member) |
 | queueNewCardsAutomatically (auto-queue) | Queue, Preferences | read | yes, via `generalSettings.queueNewCardsAutomatically` |
-| applyPreparedSource | Setup (locations) | intent | no (local UI: picker result) |
+| applyPreparedSource | Setup (locations) | intent | yes (a remote `selectSource` calls it with the current source and destinations as the expected values, so the destination lock and the selection check both hold) |
 | alreadyBackedUpLine | Setup | read | no (derived) |
 | addDestination | CopyAndVerify | intent | yes (`addDestination(_:origin:facts:)`) |
 

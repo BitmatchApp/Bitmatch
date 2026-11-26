@@ -10,7 +10,7 @@ import BitMatchEngine
 protocol RemoteSurface: AnyObject, ObservableObject {
     // MARK: Read side
     var currentMode: AppMode { get }
-    var verificationMode: VerificationMode { get }
+    var verificationMode: VerificationMode { get set }
     var sourceURL: URL? { get }
     var destinationURLs: [URL] { get }
     var detectedCamera: CameraCard? { get }
@@ -29,6 +29,8 @@ protocol RemoteSurface: AnyObject, ObservableObject {
     var generalSettings: GeneralSettings { get }
 
     // MARK: Intents
+    @discardableResult
+    func applyPreparedSource(expectedSource: URL?, expectedDestinations: [URL], newSource: URL) -> Bool
     func startSetupTransfersPrepared() async throws -> UUID?
     func enqueueSelectionPrepared() async throws -> UUID
     func startQueue()

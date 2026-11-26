@@ -172,7 +172,7 @@ public enum TransferInterruption: Int, Error, Sendable {
     case ownerReleased = 1, runSuperseded = 2
 }
 public enum TransferCancelOrigin: String, Codable, Sendable {
-    case user, menu, windowClose, appQuit
+    case user, menu, windowClose, appQuit, remote
 }
 
 extension SharedLogger {
