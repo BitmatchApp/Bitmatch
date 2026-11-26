@@ -1,7 +1,18 @@
 // DestinationWriter.swift - Writes into a pinned backup folder: atomic
 // no-replace links where supported, durable direct final files on FAT-family
-// drives, reuse checks, and verified reads.
+// drives and measured network shares, reuse checks, and verified reads.
 import Foundation
+
+/// The filesystems that publish by writing the final name directly under a
+/// visible status marker, because they cannot hard link. Only measured
+/// types are listed: anything else keeps the link path and fails closed.
+/// The ASC MHL generator claims histories the same way on the same types.
+public enum DirectPublicationFilesystems {
+    public static let fatFamily: Set<String> = ["exfat", "msdos", "msdosfs", "fat", "fat32"]
+    /// Measured 2026-11-26 against the macOS SMB server: `linkat` returns
+    /// ENOTSUP and RENAME_EXCL is unsupported (docs/TRANSFER_MATRIX.md).
+    public static let measuredWithoutHardLinks: Set<String> = ["smbfs"]
+}
 import Synchronization
 import CryptoKit
 #if canImport(Darwin)
@@ -42,12 +53,19 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         var currentFD = destinationFD
         var logicalRoot = destination
         do {
-            // FAT cannot hard link and neither can most network shares (SMB,
-            // NFS); both publish by writing the final name directly under a
-            // visible status marker instead of linking a finished temp file.
-            let direct = try forceDirectFinalPublication
-                || isFATFamily(directoryFD: destinationFD)
-                || !supportsHardLinks(directoryFD: destinationFD)
+            // FAT cannot hard link and neither can SMB; both publish by writing
+            // the final name directly under a visible status marker instead of
+            // linking a finished temp file. Only measured filesystems take this
+            // path, and the volume's own capabilities must agree; anything else
+            // keeps the link path and fails closed if the link is refused.
+            let fileSystem = try fileSystemType(directoryFD: destinationFD)
+            let direct = forceDirectFinalPublication
+                || DirectPublicationFilesystems.fatFamily.contains(fileSystem)
+                || (DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystem)
+                    && hardLinkSupport(directoryFD: destinationFD) == false)
+            if direct, !forceDirectFinalPublication {
+                SharedLogger.info("Destination \(destination.path) publishes directly: \(fileSystem) cannot hard link", category: .transfer)
+            }
             for component in rootComponents {
                 try validate(component: component)
                 let childFD = try openOrCreateDirectory(
@@ -99,9 +117,10 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         logicalRootURL.appendingPathComponent(relativePath)
     }
 
-    /// FAT-family volumes have no hard links. A marker is saved before the
-    /// first direct final name can be created. Unknown filesystems still try
-    /// the atomic link path and fail closed if the capability is unavailable.
+    /// FAT-family volumes and measured network shares have no hard links. A
+    /// marker is saved before the first direct final name can be created.
+    /// Unknown filesystems still try the atomic link path and fail closed if
+    /// the capability is unavailable.
     func preparePublication(
         attemptID: UUID,
         sourcePaths: [String],
@@ -565,9 +584,10 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
     }
 
     /// Whether the volume holding the directory can hard link, read from its
-    /// capabilities. A volume that does not answer is taken to support them;
-    /// its `linkat` then fails loudly rather than silently changing mode.
-    static func supportsHardLinks(directoryFD: Int32) -> Bool {
+    /// capabilities; nil when the volume does not say. A volume that does not
+    /// answer keeps the link path, whose `linkat` then fails loudly rather
+    /// than silently changing mode.
+    static func hardLinkSupport(directoryFD: Int32) -> Bool? {
         var request = attrlist()
         request.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
         request.volattr = attrgroup_t(ATTR_VOL_INFO) | attrgroup_t(ATTR_VOL_CAPABILITIES)
@@ -575,11 +595,17 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         let status = withUnsafeMutablePointer(to: &reply) { pointer in
             fgetattrlist(directoryFD, &request, pointer, MemoryLayout<VolumeCapabilitiesReply>.size, 0)
         }
-        guard status == 0, Int(reply.length) >= MemoryLayout<VolumeCapabilitiesReply>.size else { return true }
+        guard status == 0, Int(reply.length) >= MemoryLayout<VolumeCapabilitiesReply>.size else { return nil }
         let format = Int(VOL_CAPABILITIES_FORMAT)
         let valid = withUnsafeBytes(of: reply.capabilities.valid) { $0.load(fromByteOffset: format * 4, as: UInt32.self) }
         let capabilities = withUnsafeBytes(of: reply.capabilities.capabilities) { $0.load(fromByteOffset: format * 4, as: UInt32.self) }
-        guard valid & UInt32(VOL_CAP_FMT_HARDLINKS) != 0 else { return true }
+        return hardLinkSupport(validFormatBits: valid, formatCapabilities: capabilities)
+    }
+
+    /// The pure reading of the format capability words: nil unless the volume
+    /// marks the hard-link bit valid.
+    static func hardLinkSupport(validFormatBits valid: UInt32, formatCapabilities capabilities: UInt32) -> Bool? {
+        guard valid & UInt32(VOL_CAP_FMT_HARDLINKS) != 0 else { return nil }
         return capabilities & UInt32(VOL_CAP_FMT_HARDLINKS) != 0
     }
 
@@ -588,15 +614,14 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         var capabilities = vol_capabilities_attr_t()
     }
 
-    private static func isFATFamily(directoryFD: Int32) throws -> Bool {
+    static func fileSystemType(directoryFD: Int32) throws -> String {
         var info = statfs()
         guard fstatfs(directoryFD, &info) == 0 else {
             throw posixError("Unable to identify destination filesystem")
         }
-        let filesystem = withUnsafeBytes(of: info.f_fstypename) { bytes in
+        return withUnsafeBytes(of: info.f_fstypename) { bytes in
             String(decoding: bytes.prefix(while: { $0 != 0 }), as: UTF8.self).lowercased()
         }
-        return ["exfat", "msdos", "msdosfs", "fat", "fat32"].contains(filesystem)
     }
 
     private static func validate(component: String) throws {

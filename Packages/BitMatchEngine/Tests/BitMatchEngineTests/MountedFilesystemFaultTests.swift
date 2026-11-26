@@ -48,8 +48,8 @@ final class MountedFilesystemFaultTests: XCTestCase {
     /// publish by writing the final name directly under a visible status marker.
     func testDirectPublicationFilesystemsAndHandoff() async throws {
         let filesystem = ProcessInfo.processInfo.environment["BITMATCH_FAULT_MATRIX_TYPE"]
-        guard ["exfat", "msdos", "smbfs", "nfs"].contains(filesystem ?? "") else {
-            throw XCTSkip("This handoff exercises mounted exFAT, FAT32 and network shares only")
+        guard ["exfat", "msdos", "smbfs"].contains(filesystem ?? "") else {
+            throw XCTSkip("This handoff exercises mounted exFAT, FAT32 and SMB only")
         }
         let directoryFD = Darwin.open(destination.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         XCTAssertGreaterThanOrEqual(directoryFD, 0)

@@ -1584,7 +1584,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             }
         }
 
-        // A FAT-family destination may expose a partial final-name file while
+        // A directly publishing destination (FAT, SMB) may expose a partial final-name file while
         // it is being written. Only the current attempt's validated marker may
         // advance from incomplete, and only after the ordinary independent
         // readback and exact selected-file coverage have passed. A card that

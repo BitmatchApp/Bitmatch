@@ -161,11 +161,10 @@ final class ASCMHLGeneratorTests: XCTestCase {
         // Without its status record the directly claimed history is not evidence.
         try FileManager.default.removeItem(at: status)
         do {
-            let discovery = try await checker.discover(under: root)
-            let result = try await checker.check(discovery) { _ in }
-            XCTAssertFalse(result.isIntact, "a DIRECT manifest without its status record must not check as intact")
-        } catch {
-            // Refusing the evidence outright is the other acceptable answer.
+            _ = try await checker.discover(under: root)
+            XCTFail("a DIRECT manifest without its status record must be refused as evidence")
+        } catch let error as SavedChecksumCheck.CheckError {
+            XCTAssertEqual(error, .unreadableEvidence)
         }
     }
 

@@ -3,7 +3,7 @@ import CryptoKit
 #if canImport(Darwin)
 import Darwin
 
-/// A visible, durable warning for FAT-family output, which must be written at
+/// A visible, durable warning for directly published output (FAT-family drives and measured network shares), which must be written at
 /// its final name. This file is never evidence that media was verified.
 final class TransferStatusMarker: @unchecked Sendable {
     enum Status: String {

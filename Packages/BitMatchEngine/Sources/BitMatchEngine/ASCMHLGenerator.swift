@@ -11,11 +11,10 @@ public enum ASCMHLGenerator: Sendable {
     /// record and verifies it against both ASC files before trusting them.
     static let publicationStatusName = "BITMATCH_HISTORY_STATUS.txt"
     static let fatManifestPrefix = "0001_BitMatch_FAT_"
-    /// Network shares (SMB, NFS) cannot do an exclusive directory rename
-    /// either, so their histories are claimed the FAT way and named so Check
-    /// requires the same status record.
+    /// Measured network shares (`DirectPublicationFilesystems`) cannot do an
+    /// exclusive directory rename either, so their histories are claimed the
+    /// FAT way and named so Check requires the same status record.
     static let directClaimManifestPrefix = "0001_BitMatch_DIRECT_"
-    static let directClaimFileSystemTypes: Set<String> = ["smbfs", "nfs", "webdav", "afpfs"]
     static let publicationOpening = Data("BitMatch ASC MHL publication v1\nINCOMPLETE until a valid COMPLETE record follows. Keep the source.\n".utf8)
 
     static func publicationCompletion(name: String, manifest: Data, chain: Data) -> Data {
@@ -312,8 +311,8 @@ public enum ASCMHLGenerator: Sendable {
         timestamp.timeZone = TimeZone(secondsFromGMT: 0)
         timestamp.dateFormat = "yyyy-MM-dd_HHmmss'Z'"
         let fileSystemType = destinationFileSystemType?.lowercased() ?? ""
-        let fatFamily = ["exfat", "msdos"].contains(fileSystemType)
-        let claimsDirectly = fatFamily || directClaimFileSystemTypes.contains(fileSystemType)
+        let fatFamily = DirectPublicationFilesystems.fatFamily.contains(fileSystemType)
+        let claimsDirectly = fatFamily || DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystemType)
         let prefix = fatFamily ? fatManifestPrefix : (claimsDirectly ? directClaimManifestPrefix : "0001_BitMatch_")
         let name = "\(prefix)\(timestamp.string(from: Date())).mhl"
         let chain = initialChain(name: name, manifest: Data(xml.utf8))
@@ -330,7 +329,7 @@ public enum ASCMHLGenerator: Sendable {
         // Neither replacing the destination URL nor a staging symlink can redirect writes.
         try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
         if claimsDirectly {
-            // FAT and network shares cannot do an exclusive directory rename. Claim the public
+            // FAT and SMB cannot do an exclusive directory rename. Claim the public
             // name once, then write only through its pinned descriptor. No
             // staging name is created, renamed over, or deleted on this path.
             guard mkdirat(rootFD, "ascmhl", 0o700) == 0 else { throw posixError() }
