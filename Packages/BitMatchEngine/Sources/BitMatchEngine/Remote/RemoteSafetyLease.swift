@@ -11,6 +11,7 @@ public struct RemoteSafetyLease: Sendable {
     private var stateRevision: Int?
     private var lastActivity: Date?
     private var media: MediaIncarnation?
+    private var hasNotedMedia = false
     private var isInterrupted = false
 
     public init(leaseLength: TimeInterval = 10) {
@@ -40,7 +41,8 @@ public struct RemoteSafetyLease: Sendable {
     public mutating func noteBackgrounded() { isInterrupted = true }
 
     public mutating func noteMedia(_ media: MediaIncarnation?) {
-        if media != self.media { isInterrupted = true }
+        if hasNotedMedia, media != self.media { isInterrupted = true }
+        hasNotedMedia = true
         self.media = media
     }
 

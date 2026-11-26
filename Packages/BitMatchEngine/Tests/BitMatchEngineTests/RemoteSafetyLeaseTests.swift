@@ -52,6 +52,16 @@ import Testing
         #expect(lease.currentClaim(at: t0.addingTimeInterval(5)) == c)
     }
 
+    @Test func theFirstMediaObservationAfterAStateDoesNotHideTheClaim() {
+        var lease = RemoteSafetyLease(leaseLength: 10)
+        let c = claim(revision: 5)
+        lease.noteState(revision: 5, claim: c, at: t0)
+        lease.noteMedia(media)
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(1)) == c)
+        lease.noteMedia(MediaIncarnation(volumeIdentity: "vol-b", mountGeneration: 1))
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(2)) == nil)
+    }
+
     @Test func aHeartbeatAfterTheLeaseLapsedDoesNotReviveTheClaim() {
         var lease = RemoteSafetyLease(leaseLength: 10)
         let c = claim(revision: 5)
