@@ -3828,3 +3828,5 @@ extension OperationReadinessAssessment {
         )
     }
 }
+
+extension SharedAppCoordinator: RemoteSurface {}
