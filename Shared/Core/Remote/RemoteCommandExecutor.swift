@@ -85,10 +85,17 @@ final class RemoteCommandExecutor {
 
         case .start(let revision):
             guard revision == host.revisions.selection else { return stale() }
+            let enqueued: UUID?
             do {
-                _ = try await surface.startSetupTransfersPrepared()
+                enqueued = try await surface.startSetupTransfersPrepared()
             } catch {
                 return refused(error.localizedDescription)
+            }
+            // The intent returns normally even when `startQueue()` refused to run.
+            guard surface.queueIsRunning else {
+                let reason = surface.queueMessage ?? "no reason given"
+                return enqueued == nil ? refused("the queue did not start: \(reason)")
+                                       : .unknown(reason: "enqueued; the queue did not start: \(reason)")
             }
             return done(request)
 
@@ -116,6 +123,7 @@ final class RemoteCommandExecutor {
 
         case .resume(let operationID):
             guard surface.stateService.currentOperationId == operationID else { return refused("no such operation") }
+            guard surface.stateService.currentState.isPaused else { return refused("operation is not paused") }
             await surface.resumeOperation()
             guard surface.stateService.currentOperationId == operationID,
                   !surface.stateService.currentState.isPaused else { return refused("the operation did not resume") }
@@ -129,9 +137,17 @@ final class RemoteCommandExecutor {
 
         case .retry(let recordID, let revision):
             guard revision == host.revisions.queue else { return stale() }
+            guard let record = surface.transferJournal.records.first(where: { $0.id == recordID }) else {
+                return refused("no such record")
+            }
+            // A project retry rewrites the selection without queuing an
+            // attempt, so its effect could not be reported as done or refused.
+            guard record.projectID == nil else { return .rejected(.unsupported(wording: "project retry is a later slice")) }
             let attemptsBefore = retryAttempts(of: recordID)
             await surface.retryTransferPrepared(recordID, generateASCMHL: nil)
-            guard retryAttempts(of: recordID) > attemptsBefore else { return refused("no retry attempt was queued") }
+            guard retryAttempts(of: recordID) > attemptsBefore else {
+                return refused(surface.queueMessage ?? "no retry attempt was queued")
+            }
             return done(request)
 
         case .removeQueued(let recordID, let revision):
@@ -198,7 +214,7 @@ final class RemoteCommandExecutor {
             return .rejected(.mediaChanged)
         }
         guard let record = surface.transferJournal.records.first(where: { $0.id == recordID }),
-              Self.samePath(record.source.url, cardURL) else {
+              Self.isInside(record.source.url, cardURL) else {
             return refused("record does not belong to that card")
         }
         guard safeToErase(recordID, media) else {
@@ -217,8 +233,12 @@ final class RemoteCommandExecutor {
         #endif
     }
 
-    private static func samePath(_ a: URL, _ b: URL) -> Bool {
-        a.standardizedFileURL.resolvingSymlinksInPath().path == b.standardizedFileURL.resolvingSymlinksInPath().path
+    /// True when `source` is `card` or a folder inside it, compared by whole
+    /// path components so "/Volumes/A0010" is not inside "/Volumes/A001".
+    private static func isInside(_ source: URL, _ card: URL) -> Bool {
+        let sourceParts = source.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        let cardParts = card.standardizedFileURL.resolvingSymlinksInPath().pathComponents
+        return sourceParts.starts(with: cardParts)
     }
 
     // MARK: - Outcomes

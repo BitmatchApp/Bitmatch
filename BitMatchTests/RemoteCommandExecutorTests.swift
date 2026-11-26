@@ -207,6 +207,65 @@ struct RemoteCommandExecutorTests {
         #expect(h.surface.calls == [.pause])
     }
 
+    @Test func aProjectRecordRetryIsRefusedBeforeAnyEffect() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let recordID = try h.surface.transferJournal.enqueue(
+            sourceURL: try makeFolder("A001", in: h), destinationURLs: [try makeFolder("Backup", in: h)],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(), generateASCMHL: false, projectID: UUID()
+        )
+
+        let outcome = await h.executor.execute(command(.retry(recordID: recordID, queueRevision: 2)))
+
+        #expect(outcome == .rejected(.unsupported(wording: "project retry is a later slice")))
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func aStartWhoseQueueDidNotRunIsReportedAsPartial() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        h.surface.startRunsQueue = false
+        h.surface.queueMessage = "Resolve the paused card first."
+
+        let outcome = await h.executor.execute(command(.start(selectionRevision: 3)))
+
+        #expect(outcome == .unknown(reason: "enqueued; the queue did not start: Resolve the paused card first."))
+        #expect(h.surface.calls == [.start])
+    }
+
+    @Test func aResumeOfAnUnpausedOperationIsRefused() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let operationID = UUID()
+        h.surface.stateService.startOperation(id: operationID, sourceURL: h.directory, destinationURLs: [],
+                                              totalFiles: 1, totalBytes: 1)
+
+        let outcome = await h.executor.execute(command(.resume(operationID: operationID)))
+
+        #expect(outcome == .rejected(.hostRefused(wording: "operation is not paused")))
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func ejectAcceptsARecordSourcedFromASubfolderOfTheCard() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let card = try registerCard(h)
+        let dcim = card.appendingPathComponent("DCIM", isDirectory: true)
+        try FileManager.default.createDirectory(at: dcim, withIntermediateDirectories: true)
+        let recordID = try record(from: dcim, in: h)
+        _ = try makeFolder("A0010", in: h)
+        let lookalikeID = try record(from: h.directory.appendingPathComponent("A0010", isDirectory: true), in: h)
+        let eject = command(.eject(cardID: "card-1", media: media, recordID: recordID))
+
+        let outcome = await h.executor.execute(eject)
+        let lookalike = await h.executor.execute(command(.eject(cardID: "card-1", media: media, recordID: lookalikeID)))
+
+        #expect(outcome == done(eject, h.host))
+        #expect(lookalike == .rejected(.hostRefused(wording: "record does not belong to that card")))
+        #expect(h.surface.calls == [.eject(recordID)])
+    }
+
     @Test func cancelGoesThroughTheTargetCheckedIntent() async throws {
         let h = try makeHarness()
         defer { try? FileManager.default.removeItem(at: h.directory) }

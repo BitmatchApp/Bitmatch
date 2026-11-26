@@ -52,7 +52,9 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     var selectionLocked = false
     var cancellationTargetID: UUID?
     var startHook: (() async -> Void)?
-    var startResult: UUID?
+    var startResult: UUID? = UUID()
+    /// False models `startQueue()` refusing inside a start that still enqueued.
+    var startRunsQueue = true
     var ejectResult: String?
 
     func applyPreparedSource(expectedSource: URL?, expectedDestinations: [URL], newSource: URL) -> Bool {
@@ -65,6 +67,7 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     func startSetupTransfersPrepared() async throws -> UUID? {
         calls.append(.start)
         await startHook?()
+        queueIsRunning = startRunsQueue
         return startResult
     }
 
