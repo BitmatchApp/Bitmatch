@@ -90,9 +90,63 @@ struct RemoteAdmissionStoreTests {
         _ = try store.admit(client: pendingClient, request: pendingRequest, contentHash: "h")
 
         clock.advance(hours: 25)
-        try store.purgeExpired()
+        try store.purgeExpired(keepingClients: [])
 
         #expect(try store.admit(client: doneClient, request: doneRequest, contentHash: "other") == .admitted)
         #expect(try store.admit(client: pendingClient, request: pendingRequest, contentHash: "h") == .duplicatePending)
+    }
+
+    @Test func aReconciledUnknownIsRetainedForTheFullRetentionFromReconciliation() throws {
+        let (directory, file) = try makeFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = Clock()
+        let client = ClientID(), request = RequestID()
+        let first = try RemoteAdmissionStore(fileURL: file, now: { clock.now })
+        _ = try first.admit(client: client, request: request, contentHash: "h")
+
+        clock.advance(hours: 30)
+        let second = try RemoteAdmissionStore(fileURL: file, now: { clock.now })
+        try second.markUnknown(client: client, request: request, reason: "host restarted")
+        try second.purgeExpired(keepingClients: [])
+        #expect(try second.admit(client: client, request: request, contentHash: "h")
+                == .duplicateDone(.unknown(reason: "host restarted")))
+
+        clock.advance(hours: 25)
+        try second.purgeExpired(keepingClients: [])
+        #expect(try second.admit(client: client, request: request, contentHash: "h") == .admitted)
+    }
+
+    @Test func aFailedWriteBeforeTheRenameLeavesMemoryUnchanged() throws {
+        let (directory, file) = try makeFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try RemoteAdmissionStore(fileURL: file)
+        let client = ClientID(), request = RequestID()
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: directory.path)
+        defer { try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path) }
+        #expect(throws: (any Error).self) {
+            try store.admit(client: client, request: request, contentHash: "h")
+        }
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+
+        #expect(try store.admit(client: client, request: request, contentHash: "h") == .admitted)
+    }
+
+    @Test func anActiveClientsAdmissionsAreNeverPurged() throws {
+        let (directory, file) = try makeFile()
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let clock = Clock()
+        let store = try RemoteAdmissionStore(fileURL: file, now: { clock.now })
+        let client = ClientID(), request = RequestID()
+        let outcome = RemoteCommandOutcome.unknown(reason: "x")
+        _ = try store.admit(client: client, request: request, contentHash: "h")
+        try store.complete(client: client, request: request, outcome: outcome)
+
+        clock.advance(hours: 48)
+        try store.purgeExpired(keepingClients: [client])
+        #expect(try store.admit(client: client, request: request, contentHash: "h") == .duplicateDone(outcome))
+
+        try store.purgeExpired(keepingClients: [])
+        #expect(try store.admit(client: client, request: request, contentHash: "h") == .admitted)
     }
 }

@@ -79,9 +79,10 @@ public final class RemoteAdmissionStore: Sendable {
                 case .unknown(let reason): return .duplicateDone(.unknown(reason: reason))
                 }
             }
-            entries[key] = Entry(clientID: client, requestID: request, contentHash: contentHash,
+            var updated = entries
+            updated[key] = Entry(clientID: client, requestID: request, contentHash: contentHash,
                                  state: .pending, admittedAt: now(), completedAt: nil)
-            try persist(entries)
+            try commit(updated, into: &entries)
             return .admitted
         }
     }
@@ -93,8 +94,9 @@ public final class RemoteAdmissionStore: Sendable {
             guard case .pending = entry.state else { throw StoreError.notPending }
             entry.state = .done(outcome)
             entry.completedAt = now()
-            entries[key] = entry
-            try persist(entries)
+            var updated = entries
+            updated[key] = entry
+            try commit(updated, into: &entries)
         }
     }
 
@@ -104,25 +106,38 @@ public final class RemoteAdmissionStore: Sendable {
             guard var entry = entries[key] else { throw StoreError.unknownRequest }
             guard case .pending = entry.state else { throw StoreError.notPending }
             entry.state = .unknown(reason)
-            entries[key] = entry
-            try persist(entries)
+            entry.completedAt = now()
+            var updated = entries
+            updated[key] = entry
+            try commit(updated, into: &entries)
         }
     }
 
-    /// Drops finished entries older than the retention window. Pending entries stay.
-    public func purgeExpired() throws {
+    /// Drops finished entries older than the retention window. Pending entries
+    /// and entries of clients in `active` stay.
+    public func purgeExpired(keepingClients active: Set<ClientID>) throws {
         try entries.withLock { entries in
             let cutoff = now().addingTimeInterval(-retention)
-            let before = entries.count
-            entries = entries.filter { _, entry in
-                switch entry.state {
-                case .pending: return true
-                case .done: return (entry.completedAt ?? entry.admittedAt) >= cutoff
-                case .unknown: return entry.admittedAt >= cutoff
-                }
+            let kept = entries.filter { _, entry in
+                if active.contains(entry.clientID) { return true }
+                if case .pending = entry.state { return true }
+                return (entry.completedAt ?? entry.admittedAt) >= cutoff
             }
-            if entries.count != before { try persist(entries) }
+            if kept.count != entries.count { try commit(kept, into: &entries) }
         }
+    }
+
+    /// Writes `updated`, and adopts it in memory only if the write took effect.
+    /// A failure before the rename leaves memory as it was; a failed folder
+    /// flush after the rename means the file already holds `updated`.
+    private func commit(_ updated: [Key: Entry], into entries: inout [Key: Entry]) throws {
+        do {
+            try persist(updated)
+        } catch let failure as FlushAfterPublishFailure {
+            entries = updated
+            throw failure
+        }
+        entries = updated
     }
 
     private func persist(_ entries: [Key: Entry]) throws {
