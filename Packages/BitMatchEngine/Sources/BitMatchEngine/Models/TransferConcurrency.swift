@@ -43,9 +43,10 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
     public static let maximumWorkers = 16
 
     public let copyWorkers: Int
-    /// Per backup: each backup drive verifies in its own lane with this many
-    /// workers, so two backups read back side by side and a spinning drive
-    /// still reads its own files in order.
+    /// Per lane: each backup drive verifies in its own lane with this many
+    /// workers while verifying during the copy, so backups on different drives
+    /// read back side by side and a spinning drive still reads its own files
+    /// in order.
     public let verifyWorkers: Int
     /// How many lanes the run verified in: the drives its backups spanned
     /// while verifying during the copy, otherwise one. Records written before
