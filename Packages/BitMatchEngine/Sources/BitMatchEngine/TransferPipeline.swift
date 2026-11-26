@@ -694,12 +694,20 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // outer defer at once, while this enumeration may still be running.
         let sourceURL = operation.sourceURL
         let fileSystem = self.fileSystem
-        let completeSourceManifest = try await taggingSourceReadFailure {
+        let sourceEnumeration = try await taggingSourceReadFailure {
             try await BoundedBlockingExecutor.transfer.performCancellable { check in
                 let scoped = fileSystem.startAccessing(url: sourceURL)
                 defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
-                return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+                return try CardSource.enumerateSource(base: sourceURL, checkCancellation: check)
             }
+        }
+        let completeSourceManifest = sourceEnumeration.files
+        // Links, pipes, sockets and devices on the card are never copied. Each
+        // gets a failed row per backup below, so the verdict cannot say the
+        // whole card is backed up while something on it was never mentioned.
+        let unsupportedEntries = sourceEnumeration.unsupported
+        if !unsupportedEntries.isEmpty {
+            SharedLogger.info("Source holds entries BitMatch does not copy: \(Self.describe(unsupportedEntries))", category: .transfer)
         }
         // Validate these captured paths before exclusions or String-keyed maps.
         // A later live scan cannot prove this manifest has unambiguous names.
@@ -712,9 +720,13 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let sourceManifest = excluded.isEmpty ? completeSourceManifest
             : completeSourceManifest.filter { !excludedPaths.contains($0.relativePath) }
         guard !sourceManifest.isEmpty else {
-            throw FileOperationError.unsafeOperation(excluded.isEmpty
-                ? "Source folder is empty. Choose a source that contains files."
-                : "No files remain after AppleDouble exclusions. Nothing was copied; keep the source.")
+            if !excluded.isEmpty || !unsupportedEntries.isEmpty {
+                var parts: [String] = []
+                if !excluded.isEmpty { parts.append("No files remain after AppleDouble exclusions") }
+                if !unsupportedEntries.isEmpty { parts.append("the source holds only items BitMatch does not copy (\(Self.describe(unsupportedEntries)))") }
+                throw FileOperationError.unsafeOperation(parts.joined(separator: "; ") + ". Nothing was copied; keep the source.")
+            }
+            throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
         }
         let sourceFingerprint = SourceFingerprint.make(completeSourceManifest)
         let manifestURLByRelativePath = Dictionary(
@@ -756,6 +768,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 var row = FileOperationResult(sourceURL: entry.url, destinationURL: root.appendingPathComponent(entry.relativePath),
                     success: false, error: nil, fileSize: entry.size, verificationResult: nil, processingTime: 0)
                 row.excludedAppleDouble = true
+                await ledger.record(row, relativePath: entry.relativePath, destination: index)
+                await onFileResult?(row)
+            }
+            for entry in unsupportedEntries {
+                let row = FileOperationResult(sourceURL: entry.url, destinationURL: root.appendingPathComponent(entry.relativePath),
+                    success: false, error: Self.unsupportedEntryError(entry.kind), fileSize: 0, verificationResult: nil, processingTime: 0)
                 await ledger.record(row, relativePath: entry.relativePath, destination: index)
                 await onFileResult?(row)
             }
@@ -1356,15 +1374,20 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Re-read only source metadata. Any path, size, or modification-time
         // change invalidates the whole run, including a file added after the
         // initial manifest was captured.
-        let finalSourceManifest = try await taggingSourceReadFailure {
+        let finalSourceEnumeration = try await taggingSourceReadFailure {
             try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
                 let sourceURL = operation.sourceURL
                 let scoped = fileSystem.startAccessing(url: sourceURL)
                 defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
-                return try CardSource.enumerateRegularFiles(base: sourceURL, checkCancellation: check)
+                return try CardSource.enumerateSource(base: sourceURL, checkCancellation: check)
             }
         }
-        if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceManifest) {
+        // An entry BitMatch does not copy that appeared or vanished during the
+        // run is a changed card too; the regular-file comparison cannot see it.
+        let unsupportedChanged = Set(finalSourceEnumeration.unsupported.map(\.relativePath))
+            != Set(unsupportedEntries.map(\.relativePath))
+        if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceEnumeration.files)
+            ?? (unsupportedChanged ? "The source's links, pipes or devices changed during the transfer" : nil) {
             let error = completionGateError(reason, reason: .sourceUnstable)
             for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
                 let root = pinnedDestinations[destIndex]?.logicalRootURL
@@ -1516,9 +1539,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // A FAT-family destination may expose a partial final-name file while
         // it is being written. Only the current attempt's validated marker may
         // advance from incomplete, and only after the ordinary independent
-        // readback and exact selected-file coverage have passed.
+        // readback and exact selected-file coverage have passed. A card that
+        // held entries BitMatch does not copy keeps the incomplete marker: the
+        // regular files may all be verified, but the card is not all there.
         for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
-            guard let pinned = pinnedDestinations[destIndex],
+            guard unsupportedEntries.isEmpty,
+                  let pinned = pinnedDestinations[destIndex],
                   pinned.usesDirectFinalPublication,
                   await ledger.hasSuccessfulCoverage(
                     destination: destIndex,

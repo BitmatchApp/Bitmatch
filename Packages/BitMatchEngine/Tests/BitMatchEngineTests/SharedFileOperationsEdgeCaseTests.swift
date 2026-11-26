@@ -79,8 +79,12 @@ struct SharedFileOperationsEdgeCaseTests {
                 #expect(copiedReal.destinationURL.path.hasPrefix(expectedDestRoot.path))
                 #expect(fm.fileExists(atPath: copiedReal.destinationURL.path))
             }
-            let copiedSymlink = op.results.contains { $0.sourceURL.lastPathComponent == "link.txt" && $0.success }
-            #expect(copiedSymlink == false)
+            // The link is not copied, and the run says so: one failed row with
+            // the canonical reason, so the verdict can never be green.
+            let linkRows = op.results.filter { $0.sourceURL.lastPathComponent == "link.txt" }
+            #expect(linkRows.count == 1)
+            #expect(linkRows.allSatisfy { !$0.success && $0.failureReason == ResultFailureReason.unsupportedSourceEntry.rawValue })
+            #expect(linkRows.first?.error?.localizedDescription.contains("symbolic link") == true)
             #expect(fm.fileExists(atPath: expectedDestRoot.appendingPathComponent("link.txt").path) == false)
 
             try? fm.removeItem(at: source)
@@ -88,6 +92,40 @@ struct SharedFileOperationsEdgeCaseTests {
             #else
             #expect(true)
             #endif
+        }
+    }
+
+    /// One failed row per unsupported entry per backup, and a source made only
+    /// of such entries is refused before anything is written.
+    @Test
+    func testUnsupportedEntriesFailOnEveryBackupAndAnUnsupportedOnlySourceIsRefused() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fm = FileManager.default
+            let tmp = fm.temporaryDirectory
+            let source = tmp.appendingPathComponent("bitmatch_unsupported_src_\(UUID().uuidString)")
+            let destA = tmp.appendingPathComponent("bitmatch_unsupported_dstA_\(UUID().uuidString)")
+            let destB = tmp.appendingPathComponent("bitmatch_unsupported_dstB_\(UUID().uuidString)")
+            for url in [source, destA, destB] { try fm.createDirectory(at: url, withIntermediateDirectories: true) }
+            defer { for url in [source, destA, destB] { try? fm.removeItem(at: url) } }
+            #expect(mkfifo(source.appendingPathComponent("pipe").path, 0o600) == 0)
+
+            let sut = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            await #expect(throws: FileOperationError.self) {
+                _ = try await sut.performFileOperation(
+                    sourceURL: source, destinationURLs: [destA], verificationMode: .standard,
+                    settings: CameraLabelSettings(), estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            }
+
+            try Data("real".utf8).write(to: source.appendingPathComponent("real.txt"))
+            let op = try await sut.performFileOperation(
+                sourceURL: source, destinationURLs: [destA, destB], verificationMode: .standard,
+                settings: CameraLabelSettings(), estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            let pipeRows = op.results.filter { $0.sourceURL.lastPathComponent == "pipe" }
+            #expect(pipeRows.count == 2)
+            #expect(pipeRows.allSatisfy { !$0.success && $0.failureReason == ResultFailureReason.unsupportedSourceEntry.rawValue })
+            let backups = Set(pipeRows.map { $0.destinationURL.deletingLastPathComponent().deletingLastPathComponent().resolvingSymlinksInPath().path })
+            #expect(backups == Set([destA, destB].map { $0.resolvingSymlinksInPath().path }))
+            #expect(op.results.filter { $0.sourceURL.lastPathComponent == "real.txt" }.allSatisfy { $0.verificationResult?.isValid == true })
         }
     }
 

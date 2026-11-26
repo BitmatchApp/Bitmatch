@@ -464,6 +464,9 @@ public enum TransferCompletion: Sendable {
                     failedMessage += "; the card was not connected"
                 case .backupRefused:
                     failedMessage += "; a backup was refused before copying started"
+                case .unsupportedSourceEntry:
+                    let distinctItems = Set(rows.filter { !$0.isSuccessStatus }.map(\.path)).count
+                    failedMessage += "; the card holds \(distinctItems == 1 ? "an item" : "items") BitMatch does not copy (a link, pipe, socket or device). Keep the card"
                 }
             }
             fileResultsMessage = failedMessage

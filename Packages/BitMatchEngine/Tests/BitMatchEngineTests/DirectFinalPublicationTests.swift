@@ -66,6 +66,26 @@ final class DirectFinalPublicationTests: XCTestCase, @unchecked Sendable {
         }
     }
 
+    /// Every regular file verified, but the card also held a link BitMatch does
+    /// not copy: the marker must keep saying incomplete, never "files verified".
+    func testUnsupportedSourceEntryKeepsTheMarkerIncomplete() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let bytes = Data(repeating: 0x45, count: 4096)
+            try writeSource(bytes)
+            try FileManager.default.createSymbolicLink(at: source.appendingPathComponent("alias.bin"),
+                                                      withDestinationURL: source.appendingPathComponent("clip.bin"))
+            let operation = try await perform()
+            let clip = try XCTUnwrap(operation.results.first { $0.sourceURL.lastPathComponent == "clip.bin" })
+            XCTAssertEqual(clip.verificationResult?.isValid, true)
+            let alias = try XCTUnwrap(operation.results.first { $0.sourceURL.lastPathComponent == "alias.bin" })
+            XCTAssertFalse(alias.success)
+            XCTAssertEqual(alias.failureReason, ResultFailureReason.unsupportedSourceEntry.rawValue)
+            XCTAssertEqual(try markers().count, 1)
+            XCTAssertEqual(try markers().first?.status, .incomplete)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: outputRoot.appendingPathComponent("alias.bin").path))
+        }
+    }
+
     func testInterruptedSecondChunkLeavesPartialFinalFileAndIncompleteWarning() async throws {
         try await FileOperationsTestLock.shared.run {
             let bytes = Data(repeating: 0x62, count: 4 * 1024 * 1024 + 97)

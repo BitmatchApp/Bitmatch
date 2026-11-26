@@ -45,6 +45,9 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
     case sourceNotConnected
     /// The attempt never started: a backup was refused by policy.
     case backupRefused
+    /// The card holds an entry BitMatch does not copy: a symbolic link,
+    /// named pipe, socket, device or whiteout. Never opened or followed.
+    case unsupportedSourceEntry
     /// NSError userInfo key the writer sets on the errors it classifies.
     public static let userInfoKey = "BitMatchFailureReason"
 
@@ -56,6 +59,7 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
         case .sourceReadFailed: "the card could not be read"
         case .sourceNotConnected: "the card was not connected"
         case .backupRefused: "a backup was refused before copying started"
+        case .unsupportedSourceEntry: "the card holds an item BitMatch does not copy (a link, pipe, socket or device)"
         }
     }
 

@@ -25,6 +25,47 @@ final class CardSourceTests: XCTestCase {
         }
         XCTAssertEqual(try Data(contentsOf: file), Data("original".utf8))
     }
+    /// A FIFO blocks any open until a writer appears, so this test finishing
+    /// is itself the proof that nothing opened it.
+    func testWalkRecordsEveryUnsupportedEntryKindWithoutOpeningIt() throws {
+        // A Unix socket path must fit sun_path (104 bytes), which the per-user
+        // temporary directory does not; the fixture lives under /tmp instead.
+        let root = URL(fileURLWithPath: "/tmp/bm-entries-\(UUID().uuidString.prefix(8))", isDirectory: true)
+        try FileManager.default.createDirectory(at: root.appendingPathComponent("CLIPS"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        try Data("clip".utf8).write(to: root.appendingPathComponent("CLIPS/A001.MOV"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("CLIPS/link.MOV"),
+                                                  withDestinationURL: root.appendingPathComponent("CLIPS/A001.MOV"))
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("dangling"),
+                                                  withDestinationURL: root.appendingPathComponent("nowhere"))
+        // A link to a folder is never descended: its files appear once.
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("CLIPS_ALIAS"),
+                                                  withDestinationURL: root.appendingPathComponent("CLIPS"))
+        XCTAssertEqual(mkfifo(root.appendingPathComponent("pipe").path, 0o600), 0)
+        let socketFD = socket(AF_UNIX, SOCK_STREAM, 0)
+        XCTAssertGreaterThanOrEqual(socketFD, 0)
+        defer { _ = close(socketFD) }
+        var address = sockaddr_un()
+        address.sun_family = sa_family_t(AF_UNIX)
+        address.sun_len = UInt8(MemoryLayout<sockaddr_un>.size)
+        let socketPath = root.appendingPathComponent("sock").path
+        XCTAssertLessThan(socketPath.utf8.count, MemoryLayout.size(ofValue: address.sun_path))
+        withUnsafeMutableBytes(of: &address.sun_path) { buffer in
+            socketPath.utf8CString.withUnsafeBytes { buffer.copyMemory(from: $0) }
+        }
+        let bound = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { Darwin.bind(socketFD, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
+        }
+        XCTAssertEqual(bound, 0)
+
+        let enumeration = try CardSource.enumerateSource(base: root)
+        XCTAssertEqual(enumeration.files.map(\.relativePath), ["CLIPS/A001.MOV"])
+        XCTAssertEqual(enumeration.unsupported.map(\.relativePath), ["CLIPS/link.MOV", "CLIPS_ALIAS", "dangling", "pipe", "sock"])
+        XCTAssertEqual(enumeration.unsupported.map(\.kind), [.symbolicLink, .symbolicLink, .symbolicLink, .namedPipe, .socket])
+        XCTAssertEqual(try CardSource.enumerateRegularFiles(base: root).map(\.relativePath), ["CLIPS/A001.MOV"],
+                       "Regular-file consumers see exactly what they always did")
+    }
+
     func testMissingRootThrowsInsteadOfReturningEmptyManifest() {
         let missing = FileManager.default.temporaryDirectory
             .appendingPathComponent("missing-manifest-\(UUID().uuidString)")

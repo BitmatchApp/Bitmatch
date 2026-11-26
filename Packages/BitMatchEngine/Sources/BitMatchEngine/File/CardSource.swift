@@ -132,9 +132,55 @@ public enum CardSource: Sendable {
         return values.isUbiquitousItem == true
     }
 
+    /// A source entry BitMatch does not copy. It is recorded so the run can
+    /// say so, and never opened or followed: a FIFO would block, a device
+    /// would be read, a link would reach outside the card.
+    public enum UnsupportedEntryKind: String, Equatable, Sendable, CaseIterable {
+        case symbolicLink
+        case namedPipe
+        case socket
+        case characterDevice
+        case blockDevice
+        case whiteout
+        case other
+
+        public var noun: String {
+            switch self {
+            case .symbolicLink: "symbolic link"
+            case .namedPipe: "named pipe"
+            case .socket: "socket"
+            case .characterDevice: "character device"
+            case .blockDevice: "block device"
+            case .whiteout: "whiteout"
+            case .other: "item of an unknown kind"
+            }
+        }
+
+        public var plural: String {
+            switch self {
+            case .other: "items of an unknown kind"
+            default: noun + "s"
+            }
+        }
+    }
+
     enum TreeEntryKind: Equatable, Sendable {
         case regularFile
         case directory
+        case unsupported(UnsupportedEntryKind)
+    }
+
+    public struct UnsupportedEntry: Equatable, Sendable {
+        public let url: URL
+        public let relativePath: String
+        public let kind: UnsupportedEntryKind
+    }
+
+    /// Everything a walk found: the regular files to copy and the entries
+    /// that cannot be. A consumer that drops the second list must say so.
+    public struct SourceEnumeration: Sendable {
+        public let files: [FileEntry]
+        public let unsupported: [UnsupportedEntry]
     }
 
     struct TreeEntry: Sendable {
@@ -199,15 +245,32 @@ public enum CardSource: Sendable {
         checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
         isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile
     ) throws -> [FileEntry] {
+        try enumerateSource(base: base, checkCancellation: checkCancellation, isDataless: isDataless).files
+    }
+
+    /// The regular files plus every entry the card holds that BitMatch does
+    /// not copy. The transfer records a failed row for each of the latter;
+    /// a walk that only lists regular files could certify a card as fully
+    /// backed up while a link or pipe on it was never mentioned.
+    public static func enumerateSource(
+        base: URL,
+        checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
+        isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile
+    ) throws -> SourceEnumeration {
         try checkCancellation()
         if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
             throw CloudManagedSourceError()
         }
         let tree = try enumerateTree(base: base, checkCancellation: checkCancellation)
         var entries: [FileEntry] = []
+        var unsupported: [UnsupportedEntry] = []
         var datalessPaths: [String] = []
         for entry in tree {
             try checkCancellation()
+            if case .unsupported(let kind) = entry.kind {
+                unsupported.append(UnsupportedEntry(url: entry.url, relativePath: entry.relativePath, kind: kind))
+                continue
+            }
             guard entry.kind == .regularFile else { continue }
             if isDataless(entry.url) {
                 datalessPaths.append(entry.relativePath)
@@ -227,7 +290,7 @@ public enum CardSource: Sendable {
             )
         }
         try checkCancellation()
-        return entries
+        return SourceEnumeration(files: entries, unsupported: unsupported)
     }
 
     /// Enumerates through directory descriptors because Foundation hides every
@@ -390,7 +453,28 @@ public enum CardSource: Sendable {
                     size: Int64(info.st_size),
                     modificationDate: modificationDate(info)
                 ))
+            } else {
+                // Every other kind is recorded, never opened or followed.
+                entries.append(TreeEntry(
+                    url: itemURL,
+                    relativePath: relativePath,
+                    kind: .unsupported(unsupportedKind(type)),
+                    size: 0,
+                    modificationDate: modificationDate(info)
+                ))
             }
+        }
+    }
+
+    private static func unsupportedKind(_ type: mode_t) -> UnsupportedEntryKind {
+        switch type {
+        case S_IFLNK: .symbolicLink
+        case S_IFIFO: .namedPipe
+        case S_IFSOCK: .socket
+        case S_IFCHR: .characterDevice
+        case S_IFBLK: .blockDevice
+        case S_IFWHT: .whiteout
+        default: .other
         }
     }
 
@@ -434,11 +518,11 @@ public enum CardSource: Sendable {
                 continue
             }
             let values = try item.resourceValues(forKeys: keys)
-            if values.isSymbolicLink == true { continue }
             let kind: TreeEntryKind
-            if values.isRegularFile == true { kind = .regularFile }
+            if values.isSymbolicLink == true { kind = .unsupported(.symbolicLink) }
+            else if values.isRegularFile == true { kind = .regularFile }
             else if values.isDirectory == true { kind = .directory }
-            else { continue }
+            else { kind = .unsupported(.other) }
             entries.append(TreeEntry(
                 url: item,
                 relativePath: try resolver.resolve(item),

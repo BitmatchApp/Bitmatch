@@ -54,6 +54,11 @@ import Testing
         ).message
     }
 
+    @Test func summaryNamesAnUnsupportedEntryAndKeepsTheCard() {
+        #expect(summary(["unsupportedSourceEntry"]).hasPrefix("1 file failed; the card holds an item BitMatch does not copy (a link, pipe, socket or device). Keep the card"))
+        #expect(summary(["unsupportedSourceEntry", "unsupportedSourceEntry"]).hasPrefix("2 files failed; the card holds items BitMatch does not copy"))
+    }
+
     @Test func summaryNamesOutOfSpaceWhenEveryFailureSharesIt() {
         #expect(summary(["outOfSpace", "outOfSpace", "outOfSpace"]).hasPrefix("3 files failed; a backup ran out of space"))
     }
