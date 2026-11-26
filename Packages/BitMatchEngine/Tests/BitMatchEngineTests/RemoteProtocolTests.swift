@@ -28,7 +28,7 @@ import Testing
             safetyClaim: RemoteSafetyClaim(recordID: record, media: media, isSafeToErase: true,
                                            wording: "Safe", revision: 9),
             appleDoubleReview: RemoteAppleDoubleReview(reviewID: UUID(), paths: ["._a"]),
-            settings: settings())
+            settings: settings(), operationID: UUID(), cancellationTargetID: UUID())
     }
 
     private func roundTrip(_ message: RemoteMessage) throws -> RemoteMessage {
@@ -41,7 +41,8 @@ import Testing
         let snap = snapshot(host: host, session: session)
         let patch = RemoteSnapshotPatch(host: host, session: session, takenAt: date,
                                         revisions: revisions, mode: "move", queue: [],
-                                        settings: settings())
+                                        settings: settings(), operationID: .set(UUID()),
+                                        cancellationTargetID: .set(nil))
         let progress = OperationProgress(overallProgress: 0.5, currentFile: "a.mov",
                                          filesProcessed: 1, totalFiles: 2,
                                          currentStage: .copying, speed: 100)

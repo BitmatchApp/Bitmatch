@@ -6,6 +6,7 @@ import BitMatchEngine
 /// never sends a path; the host resolves each ID here. No I/O.
 @MainActor
 final class RemoteHostState {
+    let id: HostID
     /// Bumped by the snapshot builder whenever a resource changes.
     var revisions: ResourceRevisions
     private(set) var cards: [String: RemoteCardSummary] = [:]
@@ -13,7 +14,9 @@ final class RemoteHostState {
     private var cardURLs: [String: URL] = [:]
     private var backupURLs: [String: URL] = [:]
 
-    init(revisions: ResourceRevisions = ResourceRevisions(selection: 0, queue: 0, operation: 0, settings: 0, state: 0)) {
+    init(id: HostID = HostID(),
+         revisions: ResourceRevisions = ResourceRevisions(selection: 0, queue: 0, operation: 0, settings: 0, state: 0)) {
+        self.id = id
         self.revisions = revisions
     }
 

@@ -235,7 +235,7 @@ final class RemoteCommandExecutor {
 
     /// True when `source` is `card` or a folder inside it, compared by whole
     /// path components so "/Volumes/A0010" is not inside "/Volumes/A001".
-    private static func isInside(_ source: URL, _ card: URL) -> Bool {
+    static func isInside(_ source: URL, _ card: URL) -> Bool {
         let sourceParts = source.standardizedFileURL.resolvingSymlinksInPath().pathComponents
         let cardParts = card.standardizedFileURL.resolvingSymlinksInPath().pathComponents
         return sourceParts.starts(with: cardParts)

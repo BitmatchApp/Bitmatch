@@ -27,6 +27,11 @@ protocol RemoteSurface: AnyObject, ObservableObject {
     var stateService: OperationStateService { get }
     var timingService: OperationTimingService { get }
     var generalSettings: GeneralSettings { get }
+    /// The one readiness rule for the current selection; it leaves
+    /// `.analysing` when source preparation finishes.
+    var transferReadiness: TransferReadiness { get }
+    /// The ID `cancelOperation(ifCurrentTargetID:origin:)` accepts.
+    var cancellationTargetID: UUID? { get }
 
     // MARK: Intents
     @discardableResult

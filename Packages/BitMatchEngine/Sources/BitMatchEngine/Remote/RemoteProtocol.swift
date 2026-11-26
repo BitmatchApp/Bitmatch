@@ -184,6 +184,11 @@ public struct RemoteSnapshot: Codable, Hashable, Sendable {
     public var safetyClaim: RemoteSafetyClaim?
     public var appleDoubleReview: RemoteAppleDoubleReview?
     public var settings: RemoteSettings
+    /// The operation `pause` and `resume` act on (the host's current operation).
+    public var operationID: UUID?
+    /// The ID `cancel` must carry: a start still preparing owns one before
+    /// the operation exists.
+    public var cancellationTargetID: UUID?
 
     public init(host: HostID, hostName: String, session: SessionID, takenAt: Date,
                 revisions: ResourceRevisions, mode: String, verificationMode: VerificationMode,
@@ -191,7 +196,8 @@ public struct RemoteSnapshot: Codable, Hashable, Sendable {
                 selectedCardID: String?, selectedBackupIDs: [String],
                 readinessWording: String, readinessStatus: String, queue: [RemoteQueueRow],
                 outcome: RemoteOutcome?, safetyClaim: RemoteSafetyClaim?,
-                appleDoubleReview: RemoteAppleDoubleReview?, settings: RemoteSettings) {
+                appleDoubleReview: RemoteAppleDoubleReview?, settings: RemoteSettings,
+                operationID: UUID? = nil, cancellationTargetID: UUID? = nil) {
         self.host = host
         self.hostName = hostName
         self.session = session
@@ -210,6 +216,8 @@ public struct RemoteSnapshot: Codable, Hashable, Sendable {
         self.safetyClaim = safetyClaim
         self.appleDoubleReview = appleDoubleReview
         self.settings = settings
+        self.operationID = operationID
+        self.cancellationTargetID = cancellationTargetID
     }
 }
 
@@ -234,6 +242,8 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
     public var safetyClaim: RemotePatchValue<RemoteSafetyClaim>
     public var appleDoubleReview: RemotePatchValue<RemoteAppleDoubleReview>
     public var settings: RemoteSettings?
+    public var operationID: RemotePatchValue<UUID>
+    public var cancellationTargetID: RemotePatchValue<UUID>
 
     public init(host: HostID, session: SessionID, takenAt: Date, revisions: ResourceRevisions,
                 hostName: String? = nil, mode: String? = nil,
@@ -244,7 +254,9 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
                 queue: [RemoteQueueRow]? = nil, outcome: RemotePatchValue<RemoteOutcome> = .unchanged,
                 safetyClaim: RemotePatchValue<RemoteSafetyClaim> = .unchanged,
                 appleDoubleReview: RemotePatchValue<RemoteAppleDoubleReview> = .unchanged,
-                settings: RemoteSettings? = nil) {
+                settings: RemoteSettings? = nil,
+                operationID: RemotePatchValue<UUID> = .unchanged,
+                cancellationTargetID: RemotePatchValue<UUID> = .unchanged) {
         self.host = host
         self.session = session
         self.takenAt = takenAt
@@ -263,12 +275,14 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         self.safetyClaim = safetyClaim
         self.appleDoubleReview = appleDoubleReview
         self.settings = settings
+        self.operationID = operationID
+        self.cancellationTargetID = cancellationTargetID
     }
 
     private enum CodingKeys: String, CodingKey {
         case host, session, takenAt, revisions, hostName, mode, verificationMode, cards, backups
         case selectedCardID, selectedBackupIDs, readinessWording, readinessStatus, queue
-        case outcome, safetyClaim, appleDoubleReview, settings
+        case outcome, safetyClaim, appleDoubleReview, settings, operationID, cancellationTargetID
     }
 
     public init(from decoder: Decoder) throws {
@@ -291,6 +305,8 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         safetyClaim = try c.contains(.safetyClaim) ? c.decode(RemotePatchValue<RemoteSafetyClaim>.self, forKey: .safetyClaim) : .unchanged
         appleDoubleReview = try c.contains(.appleDoubleReview) ? c.decode(RemotePatchValue<RemoteAppleDoubleReview>.self, forKey: .appleDoubleReview) : .unchanged
         settings = try c.decodeIfPresent(RemoteSettings.self, forKey: .settings)
+        operationID = try c.contains(.operationID) ? c.decode(RemotePatchValue<UUID>.self, forKey: .operationID) : .unchanged
+        cancellationTargetID = try c.contains(.cancellationTargetID) ? c.decode(RemotePatchValue<UUID>.self, forKey: .cancellationTargetID) : .unchanged
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -313,6 +329,8 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         if case .set = safetyClaim { try c.encode(safetyClaim, forKey: .safetyClaim) }
         if case .set = appleDoubleReview { try c.encode(appleDoubleReview, forKey: .appleDoubleReview) }
         try c.encodeIfPresent(settings, forKey: .settings)
+        if case .set = operationID { try c.encode(operationID, forKey: .operationID) }
+        if case .set = cancellationTargetID { try c.encode(cancellationTargetID, forKey: .cancellationTargetID) }
     }
 }
 

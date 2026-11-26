@@ -163,6 +163,24 @@ import Testing
         #expect(applier.installed == original)
     }
 
+    @Test func anUpdateSetsAndClearsTheOperationIDs() {
+        var applier = RemoteStateApplier()
+        var original = snapshot(state: 5)
+        original.cancellationTargetID = UUID()
+        applier.install(original)
+        let operation = UUID()
+
+        let result = applier.apply(RemoteStateUpdate(
+            baseRevision: 5, newRevision: 6,
+            snapshotPatch: RemoteSnapshotPatch(
+                host: host, session: session, takenAt: date, revisions: revisions(6),
+                operationID: .set(operation), cancellationTargetID: .set(nil))))
+
+        #expect(result == .applied)
+        #expect(applier.installed?.operationID == operation)
+        #expect(applier.installed?.cancellationTargetID == nil)
+    }
+
     @Test func applyingBeforeAnySnapshotIsAGap() {
         var applier = RemoteStateApplier()
 

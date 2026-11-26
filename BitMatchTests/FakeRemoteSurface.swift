@@ -49,6 +49,8 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     let timingService = OperationTimingService()
     let generalSettings = GeneralSettings(defaults: UserDefaults(suiteName: "FakeRemoteSurface-\(UUID().uuidString)")!)
 
+    var transferReadiness = TransferReadiness(status: .needsSource, blockers: [], warnings: [])
+
     var selectionLocked = false
     var cancellationTargetID: UUID?
     var startHook: (() async -> Void)?

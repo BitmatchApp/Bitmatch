@@ -25,6 +25,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 - `ejectQueueSource` exists only on macOS (`#if os(macOS)`), so it sits inside the same conditional in the protocol.
 - Added for the command executor (Task 6): `applyPreparedSource(expectedSource:expectedDestinations:newSource:)` as an intent, and `verificationMode` as `{ get set }`. The protocol exposes no other way to choose a source or set the verification mode. Also `ejectingQueueSourceIDs` (macOS), so a remote eject can tell "already unmounting" from success.
 - `setDestinations` compares the backups as a set: their order is not part of the remote contract.
+- Added for the snapshot builder (Task 7): `transferReadiness` (read), so the snapshot's readiness wording comes from the shared `OperationReadinessAssessment` and the selection revision bumps when source preparation leaves `.analysing`; and `cancellationTargetID` (read, `activeStartID ?? stateService.currentOperationId`), the ID a remote `cancel` must carry. Both already exist on the coordinator under these names.
 - `queueIsRunning`, `queueMessage`, `queueSessionRecordIDs`, `queuePausedRecordID` are `private(set)`; `transferJournal` and `generalSettings` are `let`. All are `{ get }`.
 - `currentOperation` and `timingService` are not referenced as `coordinator.x` by any view; they are kept (brief) as the Progress state source.
 
@@ -57,7 +58,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | leftURL | ModularContent, CompareFolders | read | no (local-only: Compare) |
 | isProjectRunInProgress | Setup, ProjectSetupCard | read | no (derived from usesProjectWorkflow and isOperationInProgress) |
 | cancelOperation | CompareFolders, ActionBar, ModularContent, Queue | intent | yes (`cancelOperation(ifCurrentTargetID:origin:)`; the origin-only form and Compare's use are local-only) |
-| cancellationTargetID | ActionBar | read | no (derived; the intent carries the target) |
+| cancellationTargetID | ActionBar | read | yes (published in the snapshot as the ID `cancel` carries) |
 | cameraLabels | Setup, MacSetup, ProjectSetupCard | read | no (later slice) |
 | removeQueuedTransfer | Setup, TransferLibrary, Queue | intent | yes |
 | appleDoubleSelection | Setup, ModularContent, Preferences | read | no (later slice: setting stays per device) |
@@ -97,7 +98,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | checkAgainst | CompareFolders, ModularContent | intent | no (local-only: Compare and Check) |
 | applyPreparedDestinations | Setup | intent | no (local UI: picker result) |
 | warningCount | Progress adapters | read | no (derived from stateService) |
-| transferReadiness | Setup | read | no (derived) |
+| transferReadiness | Setup | read | yes (snapshot readiness wording and status; its change bumps the selection revision) |
 | startSetupTransfers | Setup | intent | no (superseded by `startSetupTransfersPrepared`) |
 | startCurrentMode | Setup | intent | no (local UI dispatcher over the intents above) |
 | showsNotificationPermissionPrompt | NotificationPermissionBanner | read | no (later slice: per device) |
