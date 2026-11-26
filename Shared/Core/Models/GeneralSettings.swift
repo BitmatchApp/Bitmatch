@@ -197,7 +197,7 @@ enum GeneralSettingsPresentation {
     static let verifyWorkers = "Verify workers"
     static let verifyWhileCopying = "Verify while copying"
     #if os(macOS)
-    static let performanceFootnote = "Auto uses one worker per stage when the card or a backup is a spinning hard drive, so the drive reads and writes in order instead of seeking between files. On SSDs it uses up to 4 copy workers and half your cores to verify. Changes apply to the next transfer."
+    static let performanceFootnote = "Auto uses one worker per stage when macOS reports the card or a backup as a spinning hard drive, so the drive reads and writes in order instead of seeking between files. Otherwise it uses up to 4 copy workers and half your cores to verify. Some USB enclosures do not report the drive type; choose 1 for both stages if a hard drive still thrashes. Changes apply to the next transfer."
     #else
     static let performanceFootnote = "Auto uses up to 4 copy workers and half your cores to verify. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
     #endif

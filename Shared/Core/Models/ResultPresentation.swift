@@ -495,10 +495,13 @@ struct TransferRecoverySummary: Identifiable {
         return groups.enumerated().map { index, group in
             // Duplicate/conflicting evidence must not inflate success or hide an issue.
             let files = Dictionary(grouping: group.rows, by: \.path).values
-            var reused = 0, copied = 0, unverified = 0, failed = 0, excluded = 0
+            var reused = 0, copied = 0, unverified = 0, failed = 0, excluded = 0, unsupported = 0
             for rows in files {
                 if rows.allSatisfy({ ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
                     excluded += 1
+                } else if rows.allSatisfy(\.isUnsupportedSourceEntry) {
+                    failed += 1
+                    unsupported += 1
                 } else if !rows.allSatisfy(\.isSuccessStatus) {
                     failed += 1
                 } else if record.verificationMode == .quick || !rows.allSatisfy(\.isVerifiedStatus) {
@@ -509,7 +512,9 @@ struct TransferRecoverySummary: Identifiable {
                     copied += 1
                 }
             }
-            let settled = reused + copied + unverified + failed
+            // Entries BitMatch does not copy are failures, but they were never in
+            // the saved plan, so they must not make the pending count come up short.
+            let settled = reused + copied + unverified + failed - unsupported
             let plan = record.plannedFileCounts
             let expected = !hasUnassigned && plan?.count == record.destinations.count && index < record.destinations.count
                 ? plan?[index] : nil
