@@ -3,21 +3,21 @@ import BitMatchEngine
 
 /// Runs remote commands against the coordinator's intents. Every command is
 /// admitted first, so a duplicate never runs twice. Its revision and identity
-/// checks happen in the same main-actor turn as the intent call, and it is
-/// revalidated after every `await`. The outcome is recorded in the admission
-/// store before it is returned.
+/// checks happen in the same main-actor turn as the intent call. The outcome
+/// is what the intent itself reports (its return value, its error, or, for
+/// intents that return nothing, a postcondition read right after it), and it
+/// is recorded in the admission store before it is returned. `.done` carries
+/// the revisions read after the intent, so a client reconciles any concurrent
+/// change from the next snapshot.
 @MainActor
 final class RemoteCommandExecutor {
-    static let changedDuringExecution = "state changed during execution"
     static let notSafeToEraseWording = "This card is not safe to erase yet."
+    static let unrecordedOutcome = "the outcome could not be recorded; check the Mac"
 
     private let surface: any RemoteSurface
     private let host: RemoteHostState
     private let admission: RemoteAdmissionStore
     private let safeToErase: @MainActor (UUID, MediaIncarnation) -> Bool
-    /// The coordinator answers a second eject of a card already unmounting
-    /// with nil (success); a remote caller must hear "in progress" instead.
-    private var ejectingRecordIDs: Set<UUID> = []
 
     init(surface: any RemoteSurface, host: RemoteHostState, admission: RemoteAdmissionStore,
          safeToErase: @escaping @MainActor (UUID, MediaIncarnation) -> Bool) {
@@ -49,8 +49,12 @@ final class RemoteCommandExecutor {
         let outcome = await run(command.body, request: command.request)
         do {
             try admission.complete(client: command.client, request: command.request, outcome: outcome)
+        } catch is FlushAfterPublishFailure {
+            // The outcome reached the file; only the folder flush is unconfirmed.
+            SharedLogger.error("Remote command \(command.request.rawValue) outcome was written but not confirmed flushed")
         } catch {
             SharedLogger.error("Remote command \(command.request.rawValue) outcome was not recorded: \(error)")
+            return .unknown(reason: Self.unrecordedOutcome)
         }
         return outcome
     }
@@ -59,7 +63,8 @@ final class RemoteCommandExecutor {
 
     private func run(_ body: RemoteCommandBody, request: RequestID) async -> RemoteCommandOutcome {
         switch body {
-        case .selectSource(let cardID):
+        case .selectSource(let cardID, let revision):
+            guard revision == host.revisions.selection else { return stale() }
             guard let url = host.url(forCard: cardID) else { return refused("unknown card/backup") }
             guard surface.applyPreparedSource(expectedSource: surface.sourceURL,
                                               expectedDestinations: surface.destinationURLs,
@@ -68,10 +73,12 @@ final class RemoteCommandExecutor {
             }
             return done(request)
 
-        case .setDestinations(let backupIDs):
+        case .setDestinations(let backupIDs, let revision):
+            guard revision == host.revisions.selection else { return stale() }
             return setDestinations(backupIDs, request: request)
 
-        case .setVerificationMode(let mode):
+        case .setVerificationMode(let mode, let revision):
+            guard revision == host.revisions.settings else { return stale() }
             surface.verificationMode = mode
             surface.saveVerificationMode()
             return done(request)
@@ -81,35 +88,38 @@ final class RemoteCommandExecutor {
             do {
                 _ = try await surface.startSetupTransfersPrepared()
             } catch {
-                return afterAwait(\.selection, was: revision) ?? refused(error.localizedDescription)
+                return refused(error.localizedDescription)
             }
-            return afterAwait(\.selection, was: revision) ?? done(request)
+            return done(request)
 
         case .enqueue(let revision):
             guard revision == host.revisions.selection else { return stale() }
             do {
                 _ = try await surface.enqueueSelectionPrepared()
             } catch {
-                return afterAwait(\.selection, was: revision) ?? refused(error.localizedDescription)
+                return refused(error.localizedDescription)
             }
-            return afterAwait(\.selection, was: revision) ?? done(request)
+            return done(request)
 
         case .startQueue(let revision):
             guard revision == host.revisions.queue else { return stale() }
             surface.startQueue()
+            guard surface.queueIsRunning else { return refused(surface.queueMessage ?? "the queue did not start") }
             return done(request)
 
         case .pause(let operationID):
             guard surface.stateService.currentOperationId == operationID else { return refused("no such operation") }
-            let revision = host.revisions.operation
             await surface.pauseOperation(reason: .userRequested)
-            return afterAwait(\.operation, was: revision) ?? done(request)
+            guard surface.stateService.currentOperationId == operationID,
+                  surface.stateService.currentState.isPaused else { return refused("the operation did not pause") }
+            return done(request)
 
         case .resume(let operationID):
             guard surface.stateService.currentOperationId == operationID else { return refused("no such operation") }
-            let revision = host.revisions.operation
             await surface.resumeOperation()
-            return afterAwait(\.operation, was: revision) ?? done(request)
+            guard surface.stateService.currentOperationId == operationID,
+                  !surface.stateService.currentState.isPaused else { return refused("the operation did not resume") }
+            return done(request)
 
         case .cancel(let operationID):
             guard surface.cancelOperation(ifCurrentTargetID: operationID, origin: .remote) else {
@@ -117,10 +127,12 @@ final class RemoteCommandExecutor {
             }
             return done(request)
 
-        case .retry(let recordID):
-            let revision = host.revisions.queue
+        case .retry(let recordID, let revision):
+            guard revision == host.revisions.queue else { return stale() }
+            let attemptsBefore = retryAttempts(of: recordID)
             await surface.retryTransferPrepared(recordID, generateASCMHL: nil)
-            return afterAwait(\.queue, was: revision) ?? done(request)
+            guard retryAttempts(of: recordID) > attemptsBefore else { return refused("no retry attempt was queued") }
+            return done(request)
 
         case .removeQueued(let recordID, let revision):
             guard revision == host.revisions.queue else { return stale() }
@@ -152,6 +164,7 @@ final class RemoteCommandExecutor {
         }
     }
 
+    /// Backup order is not part of the contract: the result is compared as a set.
     private func setDestinations(_ backupIDs: [String], request: RequestID) -> RemoteCommandOutcome {
         var target: [URL] = []
         for id in backupIDs {
@@ -168,38 +181,47 @@ final class RemoteCommandExecutor {
                 refusal = refusal ?? message
             }
         }
-        let final = surface.destinationURLs
-        if Set(final) == Set(target) { return done(request) }
-        if final == original { return refused(refusal ?? "selection is locked") }
+        let final = Set(surface.destinationURLs)
+        if final == Set(target) { return done(request) }
+        if final == Set(original) { return refused(refusal ?? "selection is locked") }
         return .unknown(reason: "backups partly changed: \(refusal ?? "selection is locked")")
+    }
+
+    private func retryAttempts(of recordID: UUID) -> Int {
+        surface.transferJournal.records.filter { $0.retryOf == recordID }.count
     }
 
     private func eject(cardID: String, media: MediaIncarnation, recordID: UUID,
                        request: RequestID) async -> RemoteCommandOutcome {
         #if os(macOS)
-        guard host.media(forCard: cardID) == media else { return .rejected(.mediaChanged) }
+        guard let cardURL = host.url(forCard: cardID), host.media(forCard: cardID) == media else {
+            return .rejected(.mediaChanged)
+        }
+        guard let record = surface.transferJournal.records.first(where: { $0.id == recordID }),
+              Self.samePath(record.source.url, cardURL) else {
+            return refused("record does not belong to that card")
+        }
         guard safeToErase(recordID, media) else {
             return .rejected(.notSafeToErase(wording: Self.notSafeToEraseWording))
         }
-        guard ejectingRecordIDs.insert(recordID).inserted else { return refused("eject already in progress") }
-        defer { ejectingRecordIDs.remove(recordID) }
-        let revision = host.revisions.queue
-        let failure = await surface.ejectQueueSource(recordID, using: { await CardEjectService.eject($0) })
-        if let moved = afterAwait(\.queue, was: revision) { return moved }
-        if let failure { return refused(failure) }
+        // `ejectQueueSource` answers nil for a card already unmounting, the
+        // same as success. Checked in the same turn as the call, so nil below
+        // means this call did the eject.
+        guard !surface.ejectingQueueSourceIDs.contains(recordID) else { return refused("eject already in progress") }
+        if let failure = await surface.ejectQueueSource(recordID, using: { await CardEjectService.eject($0) }) {
+            return refused(failure)
+        }
         return done(request)
         #else
         return .rejected(.unsupported(wording: "eject is Mac-only"))
         #endif
     }
 
-    // MARK: - Outcomes
-
-    /// After an `await`, a moved revision means the result can no longer be
-    /// attributed to this command alone.
-    private func afterAwait(_ resource: KeyPath<ResourceRevisions, Int>, was revision: Int) -> RemoteCommandOutcome? {
-        host.revisions[keyPath: resource] == revision ? nil : .unknown(reason: Self.changedDuringExecution)
+    private static func samePath(_ a: URL, _ b: URL) -> Bool {
+        a.standardizedFileURL.resolvingSymlinksInPath().path == b.standardizedFileURL.resolvingSymlinksInPath().path
     }
+
+    // MARK: - Outcomes
 
     private func done(_ request: RequestID) -> RemoteCommandOutcome {
         .done(RemoteCommandResult(request: request, revisions: host.revisions, payload: nil))

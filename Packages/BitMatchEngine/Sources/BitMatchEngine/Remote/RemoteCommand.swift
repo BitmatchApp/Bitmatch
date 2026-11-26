@@ -25,9 +25,9 @@ public struct RemoteSettingsPatch: Codable, Hashable, Sendable {
 }
 
 public enum RemoteCommandBody: Codable, Hashable, Sendable {
-    case selectSource(cardID: String)
-    case setDestinations(backupIDs: [String])
-    case setVerificationMode(VerificationMode)
+    case selectSource(cardID: String, selectionRevision: Int)
+    case setDestinations(backupIDs: [String], selectionRevision: Int)
+    case setVerificationMode(VerificationMode, settingsRevision: Int)
     case setSettings(RemoteSettingsPatch)
     case start(selectionRevision: Int)
     case enqueue(selectionRevision: Int)
@@ -35,7 +35,7 @@ public enum RemoteCommandBody: Codable, Hashable, Sendable {
     case pause(operationID: UUID)
     case resume(operationID: UUID)
     case cancel(operationID: UUID)
-    case retry(recordID: UUID)
+    case retry(recordID: UUID, queueRevision: Int)
     case removeQueued(recordID: UUID, queueRevision: Int)
     case reorderQueue(recordIDs: [UUID], queueRevision: Int)
     case eject(cardID: String, media: MediaIncarnation, recordID: UUID)

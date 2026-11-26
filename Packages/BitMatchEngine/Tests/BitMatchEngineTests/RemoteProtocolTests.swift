@@ -104,7 +104,7 @@ import Testing
 
     @Test func aForgedContentHashIsRefusedOnDecode() throws {
         let command = RemoteCommand(client: ClientID(), request: RequestID(), session: SessionID(),
-                                    body: .selectSource(cardID: "c1"))
+                                    body: .selectSource(cardID: "c1", selectionRevision: 0))
         let json = String(decoding: try JSONEncoder().encode(command), as: UTF8.self)
         let forged = json.replacingOccurrences(of: command.contentHash, with: String(repeating: "0", count: 64))
         #expect(forged != json)

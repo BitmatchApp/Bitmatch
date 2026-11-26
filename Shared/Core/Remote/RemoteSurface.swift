@@ -40,6 +40,9 @@ protocol RemoteSurface: AnyObject, ObservableObject {
     func retryTransferPrepared(_ id: UUID, generateASCMHL: Bool?) async
     func removeQueuedTransfer(_ id: UUID) throws
     #if os(macOS)
+    /// Cards whose unmount is running. `ejectQueueSource` returns nil both on
+    /// success and when the card is already in this set.
+    var ejectingQueueSourceIDs: Set<UUID> { get }
     func ejectQueueSource(
         _ id: UUID,
         using ejector: @Sendable (URL) async -> String?

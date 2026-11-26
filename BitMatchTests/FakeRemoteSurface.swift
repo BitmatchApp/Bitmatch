@@ -87,7 +87,11 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     func removeQueuedTransfer(_ id: UUID) throws { calls.append(.removeQueued(id)) }
 
     #if os(macOS)
+    var ejectingQueueSourceIDs: Set<UUID> = []
+
+    /// Like the coordinator, a card already unmounting answers nil.
     func ejectQueueSource(_ id: UUID, using ejector: @Sendable (URL) async -> String?) async -> String? {
+        if ejectingQueueSourceIDs.contains(id) { return nil }
         calls.append(.eject(id))
         return ejectResult
     }

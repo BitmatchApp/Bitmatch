@@ -37,11 +37,29 @@ struct RemoteCommandExecutorTests {
 
     private let media = MediaIncarnation(volumeIdentity: "VOL-A", mountGeneration: 1)
 
-    private func registerCard(_ host: RemoteHostState) {
-        host.registerCard(
-            RemoteCardSummary(id: "card-1", name: "A001", capacityBytes: 64_000_000_000,
+    /// A folder standing in for a mounted card, offered to remote clients as "card-1".
+    private func registerCard(_ h: Harness, named name: String = "A001") throws -> URL {
+        let url = try makeFolder(name, in: h)
+        h.host.registerCard(
+            RemoteCardSummary(id: "card-1", name: name, capacityBytes: 64_000_000_000,
                               detectedCamera: nil, hasAccess: true, media: media),
-            url: URL(fileURLWithPath: "/Volumes/A001")
+            url: url
+        )
+        return url
+    }
+
+    private func makeFolder(_ name: String, in h: Harness) throws -> URL {
+        let url = h.directory.appendingPathComponent(name, isDirectory: true)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
+        return url
+    }
+
+    /// A journal record whose source is `source`.
+    private func record(from source: URL, in h: Harness) throws -> UUID {
+        try h.surface.transferJournal.enqueue(
+            sourceURL: source, destinationURLs: [try makeFolder("Backup-\(UUID().uuidString)", in: h)],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(), generateASCMHL: false
         )
     }
 
@@ -78,7 +96,12 @@ struct RemoteCommandExecutorTests {
         let start = command(.start(selectionRevision: 3))
 
         let first = Task { await h.executor.execute(start) }
-        while gate == nil { await Task.yield() }
+        var yields = 0
+        while gate == nil && yields < 1000 {
+            await Task.yield()
+            yields += 1
+        }
+        #expect(gate != nil, "the start intent never suspended")
         let duplicate = await h.executor.execute(start)
         gate?.resume()
         let firstOutcome = await first.value
@@ -93,10 +116,10 @@ struct RemoteCommandExecutorTests {
         var asked = false
         let h = try makeHarness(safeToErase: { _, _ in asked = true; return true })
         defer { try? FileManager.default.removeItem(at: h.directory) }
-        registerCard(h.host)
+        let recordID = try record(from: try registerCard(h), in: h)
         let remounted = MediaIncarnation(volumeIdentity: "VOL-A", mountGeneration: 2)
 
-        let outcome = await h.executor.execute(command(.eject(cardID: "card-1", media: remounted, recordID: UUID())))
+        let outcome = await h.executor.execute(command(.eject(cardID: "card-1", media: remounted, recordID: recordID)))
 
         #expect(outcome == .rejected(.mediaChanged))
         #expect(!asked)
@@ -107,8 +130,7 @@ struct RemoteCommandExecutorTests {
         var asked: (UUID, MediaIncarnation)?
         let h = try makeHarness(safeToErase: { asked = ($0, $1); return false })
         defer { try? FileManager.default.removeItem(at: h.directory) }
-        registerCard(h.host)
-        let recordID = UUID()
+        let recordID = try record(from: try registerCard(h), in: h)
 
         let outcome = await h.executor.execute(command(.eject(cardID: "card-1", media: media, recordID: recordID)))
 
@@ -118,7 +140,47 @@ struct RemoteCommandExecutorTests {
         #expect(h.surface.calls.isEmpty)
     }
 
-    @Test func aRevisionThatMovesDuringAnIntentEndsAsUnknown() async throws {
+    @Test func ejectRefusesARecordThatDoesNotBelongToTheCard() async throws {
+        var asked = false
+        let h = try makeHarness(safeToErase: { _, _ in asked = true; return true })
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        _ = try registerCard(h)
+        let otherCardRecord = try record(from: try makeFolder("B001", in: h), in: h)
+
+        let outcome = await h.executor.execute(command(.eject(cardID: "card-1", media: media, recordID: otherCardRecord)))
+        let missing = await h.executor.execute(command(.eject(cardID: "card-1", media: media, recordID: UUID())))
+
+        #expect(outcome == .rejected(.hostRefused(wording: "record does not belong to that card")))
+        #expect(missing == outcome)
+        #expect(!asked)
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func ejectOfASafeCardEjectsItsRecord() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let recordID = try record(from: try registerCard(h), in: h)
+        let eject = command(.eject(cardID: "card-1", media: media, recordID: recordID))
+
+        let outcome = await h.executor.execute(eject)
+
+        #expect(outcome == done(eject, h.host))
+        #expect(h.surface.calls == [.eject(recordID)])
+    }
+
+    @Test func aSecondEjectWhileTheCardIsUnmountingIsRefused() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let recordID = try record(from: try registerCard(h), in: h)
+        h.surface.ejectingQueueSourceIDs = [recordID]
+
+        let outcome = await h.executor.execute(command(.eject(cardID: "card-1", media: media, recordID: recordID)))
+
+        #expect(outcome == .rejected(.hostRefused(wording: "eject already in progress")))
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func aStartWhoseOwnEffectBumpsTheSelectionRevisionStillEndsDone() async throws {
         let h = try makeHarness()
         defer { try? FileManager.default.removeItem(at: h.directory) }
         h.surface.startHook = { h.host.revisions.selection += 1 }
@@ -126,9 +188,23 @@ struct RemoteCommandExecutorTests {
 
         let outcome = await h.executor.execute(start)
 
-        #expect(outcome == .unknown(reason: "state changed during execution"))
+        #expect(h.host.revisions.selection == 4)
+        #expect(outcome == done(start, h.host))
         #expect(await h.executor.execute(start) == outcome)
         #expect(h.surface.calls == [.start])
+    }
+
+    @Test func aPauseThatTheCoordinatorRefusesIsReportedAsRefused() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let operationID = UUID()
+        h.surface.stateService.startOperation(id: operationID, sourceURL: h.directory, destinationURLs: [],
+                                              totalFiles: 1, totalBytes: 1)
+
+        let outcome = await h.executor.execute(command(.pause(operationID: operationID)))
+
+        #expect(outcome == .rejected(.hostRefused(wording: "the operation did not pause")))
+        #expect(h.surface.calls == [.pause])
     }
 
     @Test func cancelGoesThroughTheTargetCheckedIntent() async throws {

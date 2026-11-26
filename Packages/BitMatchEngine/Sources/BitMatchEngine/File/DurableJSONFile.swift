@@ -3,9 +3,11 @@ import Foundation
 
 /// The journal was renamed into place but the folder flush did not confirm
 /// it durable. `commit` keeps memory in step with the file for this case.
-struct FlushAfterPublishFailure: LocalizedError {
+/// Public so a caller of a durable store can tell "written but not confirmed
+/// flushed" from "not written".
+public struct FlushAfterPublishFailure: LocalizedError {
     let underlying: NSError
-    var errorDescription: String? { underlying.localizedDescription }
+    public var errorDescription: String? { underlying.localizedDescription }
 }
 
 enum DurableJSONFile {
