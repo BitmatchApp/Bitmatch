@@ -26,7 +26,10 @@ public enum SourceFingerprint: Sendable {
     /// prefixes keep file names containing separators unambiguous. Finder
     /// metadata is excluded so mounting a card on macOS cannot change its
     /// identity by adding AppleDouble, `.DS_Store`, or volume metadata.
-    public static func make<S: Sequence>(_ entries: S) -> String where S.Element == FileEntry {
+    /// Entries BitMatch does not copy are part of the card's identity: a card
+    /// that gained a link since it was verified is not the card that was
+    /// verified. A card without any keeps the fingerprint it always had.
+    public static func make<S: Sequence>(_ entries: S, unsupported: [CardSource.UnsupportedEntry] = []) -> String where S.Element == FileEntry {
         let sorted = entries.filter { !isMacMetadata($0.relativePath) }.sorted {
             if $0.relativePath != $1.relativePath { return $0.relativePath < $1.relativePath }
             if $0.size != $1.size { return $0.size < $1.size }
@@ -37,6 +40,12 @@ public enum SourceFingerprint: Sendable {
         for entry in sorted {
             let pathBytes = entry.relativePath.lengthOfBytes(using: .utf8)
             canonical += "\(pathBytes):\(entry.relativePath)\u{0}\(entry.size)\u{0}\(dateBits(entry.modificationDate))\n"
+        }
+        if !unsupported.isEmpty {
+            canonical += "\u{0}unsupported\n"
+            for entry in unsupported.sorted(by: { $0.relativePath < $1.relativePath }) {
+                canonical += "\(entry.relativePath.lengthOfBytes(using: .utf8)):\(entry.relativePath)\u{0}\(entry.kind.rawValue)\n"
+            }
         }
         return SHA256.hash(data: Data(canonical.utf8)).map { String(format: "%02x", $0) }.joined()
     }

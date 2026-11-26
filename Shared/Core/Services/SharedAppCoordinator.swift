@@ -128,9 +128,7 @@ enum SavedTransferPlanGate {
               plan.count == destinationCount else {
             throw TransferPlanPersistenceError.missingSavedPlan
         }
-        let selectedRows = authoritativeRows.filter {
-            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
-        }
+        let selectedRows = authoritativeRows.filter(\.isInSelectedPlan)
         let groups = DestinationResultSummary.make(
             rows: selectedRows, destinations: record.destinations.map(\.url)
         )

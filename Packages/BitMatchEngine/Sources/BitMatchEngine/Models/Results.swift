@@ -144,6 +144,19 @@ public struct ResultRow: Identifiable, Sendable {
         Self.isSuccessStatus(status)
     }
 
+    /// A card entry BitMatch does not copy (link, pipe, socket, device). It
+    /// is a failure for the verdict, and it is not a selected file.
+    public var isUnsupportedSourceEntry: Bool {
+        failureReason == ResultFailureReason.unsupportedSourceEntry.rawValue
+    }
+
+    /// Rows the saved selected-file plan counts: not a reviewed AppleDouble
+    /// exclusion and not an entry that could never be copied. Both stay in
+    /// History as evidence; neither makes a complete plan look long or short.
+    public var isInSelectedPlan: Bool {
+        ResultOutcome(statusText: status) != .excludedAppleDouble && !isUnsupportedSourceEntry
+    }
+
     /// Single source of truth for whether a result row represents a verified
     /// success. Fail-safe: a status must positively signal success ("✅") and
     /// carry no failure marker; anything unrecognized counts as an issue.

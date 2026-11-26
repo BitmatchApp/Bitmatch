@@ -318,7 +318,10 @@ final class FolderInfoService: ObservableObject {
             var oldestFile: Date? = nil
             var newestFile: Date? = nil
 
-            let entries = try CardSource.enumerateRegularFiles(base: url, checkCancellation: checkCancellation)
+            // The same enumeration the transfer uses, so a card that holds a link
+            // or pipe cannot match the fingerprint of an earlier verified run.
+            let enumeration = try CardSource.enumerateSource(base: url, checkCancellation: checkCancellation)
+            let entries = enumeration.files
             for entry in entries {
                 try checkCancellation()
                 fileCount += 1
@@ -354,7 +357,7 @@ final class FolderInfoService: ObservableObject {
                 oldestFileDate: oldestFile,
                 newestFileDate: newestFile
             )
-            let fingerprint = SourceFingerprint.make(entries)
+            let fingerprint = SourceFingerprint.make(entries, unsupported: enumeration.unsupported)
             try checkCancellation()
             return (info, fingerprint)
     }

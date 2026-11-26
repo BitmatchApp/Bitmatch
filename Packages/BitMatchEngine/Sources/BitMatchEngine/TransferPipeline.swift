@@ -732,7 +732,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             }
             throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
         }
-        let sourceFingerprint = SourceFingerprint.make(completeSourceManifest)
+        let sourceFingerprint = SourceFingerprint.make(completeSourceManifest, unsupported: unsupportedEntries)
         let manifestURLByRelativePath = Dictionary(
             sourceManifest.map { ($0.relativePath, $0.url) },
             uniquingKeysWith: { first, _ in first }
@@ -793,26 +793,33 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         var concurrencyChoice = concurrencySettings()
         if !pipelinedVerification { concurrencyChoice.verifyWhileCopying = false }
         if let verificationConcurrency { concurrencyChoice.verifyWorkers = verificationConcurrency }
-        let storageMedia = ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
+        // Disk Arbitration and IOKit are synchronous IPC; a slow or stalled
+        // volume must not hold a cooperative thread.
+        let storageMedia: [StorageMediumKind] = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
+            ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
+        }
         let concurrencyPlan = TransferConcurrencyPlan.resolve(
             settings: concurrencyChoice, media: storageMedia,
             processorCount: ProcessInfo.processInfo.activeProcessorCount)
-        SharedLogger.info(
-            "Workers: copy \(concurrencyPlan.copyWorkers), verify \(concurrencyPlan.verifyWorkers)"
-                + (concurrencyChoice.verifyWhileCopying ? "" : " (verify after copy, one pass)")
-                + (concurrencyPlan.limitedForRotationalMedia ? " (Auto, limited for a spinning drive)" : "")
-                + "; storage \(storageMedia.map(\.rawValue))",
-            category: .transfer)
         // Perf 5: pipelined verification on by default for checksum/byte-compare modes; user can disable
         let shouldPipelineVerify = operation.verificationMode != .quick
             && concurrencyChoice.verifyWhileCopying
         let verifyConcurrency = concurrencyPlan.verifyWorkers
         // The record says what ran, not what was chosen: Quick verifies nothing,
         // so no verify worker; without pipelining each backup is verified in
-        // one sequential pass, so one.
-        let recordedConcurrency = shouldPipelineVerify ? concurrencyPlan : TransferConcurrencyPlan(
-            copyWorkers: concurrencyPlan.copyWorkers, verifyWorkers: operation.verificationMode == .quick ? 0 : 1,
-            limitedForRotationalMedia: concurrencyPlan.limitedForRotationalMedia)
+        // one sequential pass, so one. Auto counts as limiting only a stage
+        // whose Auto value was actually used.
+        let autoDecidedAStage = concurrencyChoice.copyWorkers == nil || (shouldPipelineVerify && concurrencyChoice.verifyWorkers == nil)
+        let recordedConcurrency = TransferConcurrencyPlan(
+            copyWorkers: concurrencyPlan.copyWorkers,
+            verifyWorkers: shouldPipelineVerify ? concurrencyPlan.verifyWorkers : (operation.verificationMode == .quick ? 0 : 1),
+            limitedForRotationalMedia: concurrencyPlan.limitedForRotationalMedia && autoDecidedAStage)
+        SharedLogger.info(
+            "Workers: copy \(recordedConcurrency.copyWorkers), verify \(recordedConcurrency.verifyWorkers)"
+                + (shouldPipelineVerify || operation.verificationMode == .quick ? "" : " (verify after copy, one pass)")
+                + (recordedConcurrency.limitedForRotationalMedia ? " (Auto, limited for a spinning drive)" : "")
+                + "; storage \(storageMedia.map(\.rawValue))",
+            category: .transfer)
         let diagnosticRun = TransferDiagnostics.runID ?? operation.id
         SharedLogger.verifyConfiguration(run: diagnosticRun, concurrency: shouldPipelineVerify ? verifyConcurrency : 1)
         let fileOrdinals = Dictionary(uniqueKeysWithValues: sourceManifest.enumerated().map { ($0.element.relativePath, $0.offset + 1) })

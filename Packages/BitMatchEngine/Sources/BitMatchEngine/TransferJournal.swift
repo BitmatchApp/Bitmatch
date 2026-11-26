@@ -398,6 +398,10 @@ public final class TransferJournal: Sendable {
                     try Self.persist(recovered, to: fileURL)
                 }
             }
+        } catch let failure as FlushAfterPublishFailure {
+            // The recovered journal is the file on disk; only its durability is
+            // unconfirmed. History stays writable and the warning is shown.
+            initial.persistenceError = failure.localizedDescription
         } catch {
             initial.loadFailed = true
             initial.persistenceError = error.localizedDescription
@@ -1005,14 +1009,13 @@ public final class TransferJournal: Sendable {
     }
 
     /// Match the recorded selected-file count for each destination. Reviewed
-    /// AppleDouble exclusions are retained as evidence but are not selected
-    /// files, so they do not make a complete selected-file plan look short.
+    /// AppleDouble exclusions and entries BitMatch does not copy are retained
+    /// as evidence but are not selected files, so they do not make a complete
+    /// selected-file plan look short or long.
     private static func hasCompletePlannedResults(_ record: LocalTransferRecord) -> Bool {
         guard let plan = record.plannedFileCounts else { return false }
         guard plan.count == record.destinations.count else { return false }
-        let selected = record.results.filter {
-            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
-        }
+        let selected = record.results.filter(\.isInSelectedPlan)
         let groups = record.destinations.map { destination in
             selected.filter { row in
                 guard let path = row.destinationPath else { return false }
@@ -1099,6 +1102,12 @@ public final class TransferJournal: Sendable {
         encoder.outputFormatting = [.sortedKeys]
         let data = try encoder.encode(updated)
 
+        // A crash between create and rename leaves a temporary file behind;
+        // the flock makes this instance the only writer, so sweep them here.
+        let temporaryPrefix = ".\(fileURL.lastPathComponent).tmp-"
+        for name in (try? FileManager.default.contentsOfDirectory(atPath: directory.path)) ?? [] where name.hasPrefix(temporaryPrefix) {
+            try? FileManager.default.removeItem(at: directory.appendingPathComponent(name))
+        }
         let temporary = directory.appendingPathComponent(".\(fileURL.lastPathComponent).tmp-\(UUID().uuidString)")
         let (fd, openFailure) = temporary.withUnsafeFileSystemRepresentation { path -> (Int32, Int32) in
             let fd = open(path!, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)

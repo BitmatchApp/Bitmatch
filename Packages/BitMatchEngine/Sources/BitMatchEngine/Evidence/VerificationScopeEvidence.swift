@@ -16,7 +16,7 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         self.selectedMode = selectedMode
         configuredChecks = includeModePlan ? Self.checkPlan(for: selectedMode) : nil
         countsBasis = "recorded-results-only"
-        let selected = results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        let selected = results.filter(\.isInSelectedPlan)
         recordedSelectedSourceFiles = Set(selected.map(\.path)).count
         recordedSelectedResults = selected.count
         // Quick cannot verify contents, even if a malformed or old status

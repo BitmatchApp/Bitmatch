@@ -64,6 +64,12 @@ final class CardSourceTests: XCTestCase {
         XCTAssertEqual(enumeration.unsupported.map(\.kind), [.symbolicLink, .symbolicLink, .symbolicLink, .namedPipe, .socket])
         XCTAssertEqual(try CardSource.enumerateRegularFiles(base: root).map(\.relativePath), ["CLIPS/A001.MOV"],
                        "Regular-file consumers see exactly what they always did")
+        // The card's identity changes with its unsupported entries, and only then.
+        let plain = SourceFingerprint.make(enumeration.files)
+        XCTAssertEqual(plain, SourceFingerprint.make(enumeration.files, unsupported: []))
+        XCTAssertNotEqual(plain, SourceFingerprint.make(enumeration.files, unsupported: enumeration.unsupported))
+        XCTAssertEqual(SourceFingerprint.make(enumeration.files, unsupported: enumeration.unsupported),
+                       SourceFingerprint.make(enumeration.files, unsupported: enumeration.unsupported.reversed()))
     }
 
     func testMissingRootThrowsInsteadOfReturningEmptyManifest() {

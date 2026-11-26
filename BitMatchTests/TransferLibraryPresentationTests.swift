@@ -23,6 +23,15 @@ struct TransferLibraryPresentationTests {
         let excluded = PresentationTestSupport.row(.excludedAppleDouble, destination: record.destinations[0].url)
         try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
             authoritativeRows: [row, excluded], priorWriteError: nil)
+        // A link the card held is a failed row, not a selected file: the plan of
+        // one regular file is still complete and the gate must let the verdict run.
+        let link = ResultRow(path: "/Card/alias.mov", status: ResultOutcome.failed.statusText, size: 0, checksum: nil,
+            destination: "Backup", destinationPath: record.destinations[0].url.appendingPathComponent("alias.mov").path,
+            failureReason: ResultFailureReason.unsupportedSourceEntry.rawValue)
+        try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+            authoritativeRows: [row, excluded, link], priorWriteError: nil)
+        #expect(link.isInSelectedPlan == false)
+        #expect(row.isInSelectedPlan)
         record.plannedFileCounts = [2]
         #expect(throws: TransferPlanPersistenceError.self) {
             try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,

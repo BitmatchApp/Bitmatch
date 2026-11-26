@@ -394,9 +394,7 @@ enum TransferLibraryPresentation {
     ) -> Bool {
         guard !summaries.isEmpty, summaries.count == destinationCount,
               planned.count == summaries.count else { return false }
-        let selected = summaries.map { summary in
-            summary.rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
-        }
+        let selected = summaries.map { summary in summary.rows.filter(\.isInSelectedPlan) }
         guard zip(selected, planned).allSatisfy({ rows, count in
             rows.count == count && Set(rows.map(\.path)).count == count
         }) else { return false }

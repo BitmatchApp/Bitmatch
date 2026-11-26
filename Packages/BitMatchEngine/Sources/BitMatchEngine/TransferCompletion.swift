@@ -238,7 +238,9 @@ public enum TransferCompletion: Sendable {
         // A filtered inventory describes only selected, verified destination
         // contents. The report/history retain excluded rows and an unsafe
         // whole-card verdict; the history is never a whole-source assertion.
-        let results = results.filter { !$0.excludedAppleDouble }
+        // Entries BitMatch does not copy are failures for the verdict, not files
+        // the history could describe.
+        let results = results.filter { !$0.excludedAppleDouble && $0.failureReason != ResultFailureReason.unsupportedSourceEntry.rawValue }
         let excludedPaths = Set(settings.excludedAppleDoublePaths ?? [])
         let sourceFiles = sourceFiles.map { files in files.filter { !excludedPaths.contains($0.relativePath(to: source)) } }
         let entries = results.map { CoverageEntry(source: $0.sourceURL, destination: $0.destinationURL) }
@@ -442,11 +444,15 @@ public enum TransferCompletion: Sendable {
             }
         } else if excludedCount > 0 {
             let selected = rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+            let selectedFailures = selected.filter { !$0.isSuccessStatus }
+            let onlyUnsupportedFailed = !selectedFailures.isEmpty && selectedFailures.allSatisfy(\.isUnsupportedSourceEntry)
             fileResultsMessage = !selected.isEmpty && selectedCoverage.isExact && selected.allSatisfy(\.isVerifiedStatus)
                 ? "Selected files verified; \(excludedDescription). Keep the source: the whole card is not backed up"
                 : (mode == .quick && actualIssueCount == 0 && selectedCoverage.isExact
                     ? "Selected files copied without verification; \(excludedDescription). Keep the source"
-                    : "\(excludedDescription); selected file results need review. Keep the source")
+                    : (onlyUnsupportedFailed
+                        ? "\(excludedDescription); the card holds \(Set(selectedFailures.map(\.path)).count == 1 ? "an item" : "items") BitMatch does not copy (a link, pipe, socket or device). Keep the card"
+                        : "\(excludedDescription); selected file results need review. Keep the source"))
         } else {
             var failedMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
             let reasons = Set(rows.filter { !$0.isSuccessStatus }.map(\.failureReason))
