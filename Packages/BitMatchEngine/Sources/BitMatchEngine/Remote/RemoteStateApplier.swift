@@ -9,6 +9,9 @@ public enum ApplyResult: Hashable, Sendable {
 
 public enum InstallResult: Hashable, Sendable {
     case installed
+    /// A same-session snapshot at the installed revision while no snapshot is
+    /// awaited: the state is unchanged, but the snapshot is fresh evidence of it.
+    case alreadyCurrent
     case ignoredOlder
 }
 
@@ -27,12 +30,14 @@ public struct RemoteStateApplier: Sendable {
     /// host or session. A same-host, same-session snapshot that is not newer
     /// than the installed state is a delayed arrival and is ignored, even
     /// while a snapshot is awaited, so it can never roll the client back;
-    /// `needsSnapshot` then stays set.
+    /// `needsSnapshot` then stays set. One at the installed revision while
+    /// none is awaited (a reattach in a quiet session) is `alreadyCurrent`.
     @discardableResult
     public mutating func install(_ snapshot: RemoteSnapshot) -> InstallResult {
         if let current = installed,
            snapshot.host == current.host, snapshot.session == current.session,
            snapshot.revisions.state <= current.revisions.state {
+            if snapshot.revisions.state == current.revisions.state, !needsSnapshot { return .alreadyCurrent }
             return .ignoredOlder
         }
         installed = snapshot

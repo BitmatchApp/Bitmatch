@@ -4,6 +4,8 @@ import Foundation
 /// A claim is current only while the connection is live within the lease, the claim's revision
 /// equals the latest state revision seen, the media is the same incarnation, and nothing has
 /// disconnected or backgrounded since the claim was noted. A heartbeat never revives an older claim.
+/// Backgrounding latches: an update that arrives afterwards may be old news the iPad is only now
+/// reading, so only a snapshot (`fromSnapshot: true`) shows a claim again.
 /// Pure: every call takes the time it applies to.
 public struct RemoteSafetyLease: Sendable {
     public let leaseLength: TimeInterval
@@ -13,17 +15,19 @@ public struct RemoteSafetyLease: Sendable {
     private var media: MediaIncarnation?
     private var hasNotedMedia = false
     private var isInterrupted = false
+    private var isBackgrounded = false
 
     public init(leaseLength: TimeInterval = 10) {
         self.leaseLength = leaseLength
     }
 
-    public mutating func noteState(revision: Int, claim: RemoteSafetyClaim?, at: Date) {
+    public mutating func noteState(revision: Int, claim: RemoteSafetyClaim?, at: Date, fromSnapshot: Bool = false) {
         if let seen = stateRevision, revision < seen { return }
         stateRevision = revision
         self.claim = claim
         lastActivity = at
-        isInterrupted = false
+        if fromSnapshot { isBackgrounded = false }
+        isInterrupted = isBackgrounded
     }
 
     public mutating func noteHeartbeat(_ h: RemoteHeartbeat, at: Date) {
@@ -38,7 +42,10 @@ public struct RemoteSafetyLease: Sendable {
 
     public mutating func noteDisconnected() { isInterrupted = true }
 
-    public mutating func noteBackgrounded() { isInterrupted = true }
+    public mutating func noteBackgrounded() {
+        isInterrupted = true
+        isBackgrounded = true
+    }
 
     public mutating func noteMedia(_ media: MediaIncarnation?) {
         if hasNotedMedia, media != self.media { isInterrupted = true }

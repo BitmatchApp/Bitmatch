@@ -91,6 +91,39 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
         #expect(view.currentSafetyClaim(at: now) == fresh)
     }
 
+    @Test func backgroundingAsksTheClientCoreToDropTheLinkSoAReattachRestoresTheClaim() {
+        let view = RemoteCoordinatorView()
+        var closeRequests = 0
+        view.useSender(FakeRemoteCommandSender(), onGap: { closeRequests += 1 })
+        view.receive(.snapshot(snapshot(state: 20, claim: claim(revision: 20))), at: now)
+        view.noteBackgrounded()
+        #expect(closeRequests == 1)
+        #expect(view.currentSafetyClaim(at: now) == nil)
+    }
+
+    @Test func anUpdateReceivedAfterBackgroundingDoesNotShowTheClaimButASnapshotDoes() {
+        let view = RemoteCoordinatorView(sender: FakeRemoteCommandSender())
+        view.receive(.snapshot(snapshot(state: 20, claim: claim(revision: 20))), at: now)
+        #expect(view.currentSafetyClaim(at: now) != nil)
+
+        view.noteBackgrounded()
+        #expect(view.currentSafetyClaim(at: now) == nil)
+
+        let restamped = claim(revision: 21)
+        view.receive(.update(RemoteStateUpdate(
+            baseRevision: 20, newRevision: 21,
+            snapshotPatch: RemoteSnapshotPatch(
+                host: hostID, session: session, takenAt: now,
+                revisions: ResourceRevisions(selection: 7, queue: 1, operation: 1, settings: 1, state: 21),
+                safetyClaim: .set(restamped)))),
+            at: now)
+        #expect(view.currentSafetyClaim(at: now) == nil)
+
+        let fresh = claim(revision: 22)
+        view.receive(.snapshot(snapshot(state: 22, claim: fresh)), at: now)
+        #expect(view.currentSafetyClaim(at: now) == fresh)
+    }
+
     /// `onGap` is how the view asks its client core to close the link; the
     /// in-process tests show the core doing so.
     @Test func aGapMarksTheConnectionStaleAndClosesTheLink() {
@@ -176,7 +209,7 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
         #expect(outcome == reply)
     }
 
-    @Test func aCommandTheSenderCouldNotTransmitEndsAsNotSent() async {
+    @Test func aCommandTheSenderCouldNotTransmitEndsAsUncertainDelivery() async {
         let sender = FakeRemoteCommandSender()
         sender.fails = true
         let view = RemoteCoordinatorView(sender: sender)
@@ -188,7 +221,7 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
             Issue.record("expected unknown, got \(outcome)")
             return
         }
-        #expect(reason.hasPrefix("not sent: "))
+        #expect(reason == RemoteClientCore.uncertainDeliveryReason)
     }
 
     @Test func aBackupChangeIsRefusedWhileTheMacHasOneThisDeviceCannotManage() async {

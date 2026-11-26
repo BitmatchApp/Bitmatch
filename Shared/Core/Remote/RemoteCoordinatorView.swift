@@ -78,7 +78,15 @@ final class RemoteCoordinatorView: ObservableObject {
             let identityChanged = applier.installed.map {
                 $0.host != snapshot.host || $0.session != snapshot.session
             } ?? true
-            guard applier.install(snapshot) == .installed else { return }
+            switch applier.install(snapshot) {
+            case .installed: break
+            case .alreadyCurrent:
+                // A reattach in a quiet session: nothing changed, but the
+                // snapshot is fresh evidence, which lifts the backgrounding latch.
+                noteInstalled(at: now, fromSnapshot: true)
+                return
+            case .ignoredOlder: return
+            }
             // A new host or session restarts revisions; the lease never
             // lowers the revision it has seen, so it starts over too. Replies
             // from the old session will never come.
@@ -86,11 +94,11 @@ final class RemoteCoordinatorView: ObservableObject {
                 lease = RemoteSafetyLease(leaseLength: leaseLength)
                 pendingOutcomes.failAll(reason: Self.sessionChangedReason)
             }
-            noteInstalled(at: now)
+            noteInstalled(at: now, fromSnapshot: true)
         case .update(let update):
             switch applier.apply(update) {
             case .applied:
-                noteInstalled(at: now)
+                noteInstalled(at: now, fromSnapshot: false)
             case .gap:
                 // The installed state is behind; only a fresh snapshot may
                 // show a claim again, and only a reconnect brings one.
@@ -119,8 +127,15 @@ final class RemoteCoordinatorView: ObservableObject {
         pendingOutcomes.failAll(reason: Self.disconnectedReason)
     }
 
+    /// The claim stays hidden until a snapshot installs, and the host sends one
+    /// only on attach, so backgrounding also asks the client core to drop the
+    /// link. The transport must reattach only once the app is in the
+    /// foreground again: a snapshot read from a socket opened in the
+    /// background would be the same old news the latch exists to hide.
+    /// Open waits end `unknown`; their commands stay retryable.
     func noteBackgrounded() {
         lease.noteBackgrounded()
+        onGap?()
     }
 
     /// Marks the connection stale once nothing has arrived for a lease length.
@@ -130,12 +145,14 @@ final class RemoteCoordinatorView: ObservableObject {
         connection = .stale(since: lastActivity)
     }
 
-    private func noteInstalled(at now: Date) {
+    /// Only a snapshot lifts the backgrounding latch: an update that arrives
+    /// after the iPad slept may be the last thing the host sent before it.
+    private func noteInstalled(at now: Date, fromSnapshot: Bool) {
         guard let installed = applier.installed else { return }
         staleSince = nil
         let media = installed.selectedCardID.flatMap { id in installed.cards.first { $0.id == id }?.media }
         lease.noteMedia(media)
-        lease.noteState(revision: installed.revisions.state, claim: installed.safetyClaim, at: now)
+        lease.noteState(revision: installed.revisions.state, claim: installed.safetyClaim, at: now, fromSnapshot: fromSnapshot)
         noteActivity(at: now)
     }
 
@@ -252,7 +269,7 @@ final class RemoteCoordinatorView: ObservableObject {
         do {
             try await sender.send(body, request: request)
         } catch {
-            pendingOutcomes.resolve(request, .unknown(reason: "not sent: \(error.localizedDescription)"))
+            pendingOutcomes.resolve(request, .unknown(reason: RemoteClientCore.sendFailureReason(error)))
         }
         return await pending.value()
     }

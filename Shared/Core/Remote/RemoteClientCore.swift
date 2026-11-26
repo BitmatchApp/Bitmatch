@@ -16,6 +16,19 @@ import BitMatchEngine
 final class RemoteClientCore: RemoteCommandSender {
     static let noReplyReason = "no reply"
     static let forgottenReason = "the Mac's answer to that command is no longer kept; check the Mac"
+    static let uncertainDeliveryReason = "the connection failed while sending; the Mac may have received that command, so check the Mac before trying again"
+
+    /// A failure before anything left this device is "not sent". Any other
+    /// failure may have been delivered, and the wording must not invite a
+    /// second, new command for the same action.
+    static func sendFailureReason(_ error: Error) -> String {
+        switch error {
+        case RemoteLinkSendFailure.notDelivered, is NothingInstalled:
+            return "not sent: \(error.localizedDescription)"
+        default:
+            return uncertainDeliveryReason
+        }
+    }
     /// How many late replies are kept for `retry`.
     static let lateOutcomeLimit = 64
 
@@ -91,7 +104,8 @@ final class RemoteClientCore: RemoteCommandSender {
         do {
             try await transmit(command)
         } catch {
-            view.pendingOutcomes.resolve(request, .unknown(reason: "not sent: \(error.localizedDescription)"))
+            // The first send may have run; a failed resend says nothing about it.
+            view.pendingOutcomes.resolve(request, .unknown(reason: Self.uncertainDeliveryReason))
         }
         return await pending.value()
     }
@@ -108,8 +122,10 @@ final class RemoteClientCore: RemoteCommandSender {
             try await link.send(RemoteEnvelope(message: .command(command)))
         } catch {
             timeouts.removeValue(forKey: request)?.cancel()
-            // A command that never left cannot have run; a resend may have.
-            if isFirstSend { forget(request) }
+            // Only a transport that promises the envelope never left lets the
+            // command be forgotten; otherwise the Mac may have run it, and a
+            // retry with the same request asks for its recorded answer.
+            if isFirstSend, case RemoteLinkSendFailure.notDelivered = error { forget(request) }
             throw error
         }
     }

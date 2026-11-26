@@ -132,6 +132,20 @@ import Testing
         #expect(applier.installed?.safetyClaim == nil)
     }
 
+    @Test func aSameRevisionSnapshotInAQuietSessionIsAlreadyCurrentButNotDuringGapRecovery() {
+        var applier = RemoteStateApplier()
+        let original = snapshot(state: 5, withClaim: true)
+        applier.install(original)
+
+        #expect(applier.install(snapshot(state: 5, withClaim: true)) == .alreadyCurrent)
+        #expect(applier.installed == original)
+        #expect(applier.needsSnapshot == false)
+
+        _ = applier.apply(update(base: 9, new: 10))
+        #expect(applier.install(snapshot(state: 5, withClaim: true)) == .ignoredOlder)
+        #expect(applier.needsSnapshot)
+    }
+
     @Test func aNewerSnapshotInstallsWhenOneWasRequested() {
         var applier = RemoteStateApplier()
         applier.install(snapshot(state: 5))

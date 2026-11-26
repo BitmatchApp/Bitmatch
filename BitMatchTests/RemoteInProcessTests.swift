@@ -27,6 +27,8 @@ final class InMemoryRemoteLink: RemoteLink {
     private struct Settings {
         var dropNextReply = false
         var failNextSend = false
+        var failNextSendAsNotDelivered = false
+        var failNextSendAfterDelivery = false
         var isSilent = false
         var stallsSends = false
         var delay: Duration = .zero
@@ -62,6 +64,19 @@ final class InMemoryRemoteLink: RemoteLink {
         set { settings.withLock { $0.failNextSend = newValue } }
     }
 
+    /// The next send on this end throws `RemoteLinkSendFailure.notDelivered`.
+    var failNextSendAsNotDelivered: Bool {
+        get { settings.withLock { $0.failNextSendAsNotDelivered } }
+        set { settings.withLock { $0.failNextSendAsNotDelivered = newValue } }
+    }
+
+    /// The next send on this end delivers its envelope and then throws, as a
+    /// transport does when the connection drops after the bytes left.
+    var failNextSendAfterDelivery: Bool {
+        get { settings.withLock { $0.failNextSendAfterDelivery } }
+        set { settings.withLock { $0.failNextSendAfterDelivery = newValue } }
+    }
+
     /// How long each envelope this end sends takes to arrive.
     var delay: Duration {
         get { settings.withLock { $0.delay } }
@@ -71,20 +86,26 @@ final class InMemoryRemoteLink: RemoteLink {
     func send(_ envelope: RemoteEnvelope) async throws {
         let isReply: Bool
         if case .outcome = envelope.message { isReply = true } else { isReply = false }
-        let (fail, drop, delay) = settings.withLock { settings -> (Bool, Bool, Duration) in
+        let (fail, notDelivered, failAfter, drop, delay) = settings.withLock { settings -> (Bool, Bool, Bool, Bool, Duration) in
             let fail = settings.failNextSend
             settings.failNextSend = false
-            let drop = !fail && isReply && settings.dropNextReply
+            let notDelivered = settings.failNextSendAsNotDelivered
+            settings.failNextSendAsNotDelivered = false
+            let failAfter = settings.failNextSendAfterDelivery
+            settings.failNextSendAfterDelivery = false
+            let drop = !fail && !notDelivered && isReply && settings.dropNextReply
             if drop { settings.dropNextReply = false }
-            return (fail, drop, settings.delay)
+            return (fail, notDelivered, failAfter, drop, settings.delay)
         }
         if fail { throw SendFailure() }
+        if notDelivered { throw RemoteLinkSendFailure.notDelivered }
         if drop || isSilent { return }
         // A stalled transport: the send returns only by being cancelled.
         if stallsSends { try await Task.sleep(for: .seconds(86_400)) }
         if delay > .zero { try await Task.sleep(for: delay) }
         let wire = try JSONEncoder().encode(envelope)
         outbox.deliver(try JSONDecoder().decode(RemoteEnvelope.self, from: wire))
+        if failAfter { throw SendFailure() }
     }
 
     /// Each send on this end waits until its task is cancelled.
@@ -388,6 +409,107 @@ private func settle() async {
         #expect(try h.admission.admit(client: h.client, request: request, contentHash: hash) == .duplicateDone(retried))
         #expect(h.surface.calls.filter { $0 == .saveVerificationMode }.count == 1)
         #expect(h.clientCore.unansweredRequests.isEmpty)
+    }
+
+    /// A transport that throws after it may have delivered must leave the
+    /// command retryable; only a definite non-delivery lets the client forget it.
+    @Test func aFirstSendWithAnUncertainFailureStaysRetryable() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        h.clientEnd.failNextSend = true
+
+        let first = await h.view.saveVerificationMode(.paranoid)
+        #expect(first == .unknown(reason: RemoteClientCore.uncertainDeliveryReason))
+        let request = try #require(h.clientCore.unansweredRequests.first)
+
+        let retried = await h.clientCore.retry(request)
+        guard case .done = retried else {
+            Issue.record("expected done, got \(retried)")
+            return
+        }
+        #expect(h.surface.calls.filter { $0 == .saveVerificationMode }.count == 1)
+    }
+
+    /// The case the retention exists for: the bytes left, the Mac ran the
+    /// command, and the transport threw anyway.
+    @Test func aFirstSendDeliveredBeforeTheTransportThrewIsAnsweredByRetryAndRanOnce() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        h.clientEnd.failNextSendAfterDelivery = true
+
+        let first = await h.view.saveVerificationMode(.paranoid)
+        #expect(first == .unknown(reason: RemoteClientCore.uncertainDeliveryReason))
+        #expect(await eventually { h.surface.calls.contains(.saveVerificationMode) })
+        let request = try #require(h.clientCore.unansweredRequests.first)
+
+        let retried = await h.clientCore.retry(request)
+        guard case .done(let result) = retried else {
+            Issue.record("expected done, got \(retried)")
+            return
+        }
+        #expect(result.request == request)
+        #expect(h.surface.calls.filter { $0 == .saveVerificationMode }.count == 1)
+        #expect(h.clientCore.unansweredRequests.isEmpty)
+    }
+
+    /// Backgrounding drops the link; a reattach under the same session in a
+    /// quiet Mac sends a snapshot at the same revision, and that is enough.
+    @Test func aReattachAfterBackgroundingRestoresTheClaimEvenAtTheSameRevision() async throws {
+        let h = try makeHarness { card in [try savedRecord(from: card, endedAt: start)] }
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let claim = try #require(h.view.currentSafetyClaim(at: h.scheduler.now))
+        let revision = try #require(h.view.snapshot).revisions.state
+
+        h.view.noteBackgrounded()
+        #expect(h.view.currentSafetyClaim(at: h.scheduler.now) == nil)
+        #expect(h.view.connection == .disconnected)
+        await settle()
+
+        // The transport reconnects on foreground: a new link, same session.
+        let (hostEnd, clientEnd) = InMemoryRemoteLink.pair()
+        let reconnected = RemoteClientCore(view: h.view, link: clientEnd, client: h.client,
+                                           scheduler: h.scheduler, now: { [scheduler = h.scheduler] in scheduler.now })
+        h.hostCore.attach(hostEnd, session: h.session)
+        reconnected.start()
+        #expect(await eventually { h.view.connection == .live })
+        #expect(try #require(h.view.snapshot).revisions.state == revision)
+        #expect(h.view.currentSafetyClaim(at: h.scheduler.now) == claim)
+        reconnected.stop()
+    }
+
+    @Test func aFirstSendTheLinkReportsAsNotDeliveredIsForgotten() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        h.clientEnd.failNextSendAsNotDelivered = true
+
+        let first = await h.view.saveVerificationMode(.paranoid)
+        guard case .unknown(let reason) = first, reason.hasPrefix("not sent") else {
+            Issue.record("expected an unsent outcome, got \(first)")
+            return
+        }
+        #expect(h.clientCore.unansweredRequests.isEmpty)
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func aRetryTheLinkReportsAsNotDeliveredStaysUncertainAboutTheFirstSend() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        h.hostEnd.dropNextReply = true
+
+        let first = Task { await h.view.saveVerificationMode(.paranoid) }
+        #expect(await eventually { h.surface.calls.contains(.saveVerificationMode) && !h.hostEnd.dropNextReply })
+        h.scheduler.advance(by: 10)
+        #expect(await first.value == .unknown(reason: RemoteClientCore.noReplyReason))
+        let request = try #require(h.clientCore.unansweredRequests.first)
+
+        h.clientEnd.failNextSendAsNotDelivered = true
+        #expect(await h.clientCore.retry(request) == .unknown(reason: RemoteClientCore.uncertainDeliveryReason))
+        #expect(h.clientCore.unansweredRequests == [request])
     }
 
     @Test func aDuplicateInFlightCommandOverTheLinkSeesPending() async throws {

@@ -8,10 +8,20 @@ import BitMatchEngine
 /// closing twice is harmless. `send` must return promptly, by throwing, when
 /// its task is cancelled: the host cancels a stalled send when it drops the
 /// link.
+/// A `send` that throws `RemoteLinkSendFailure.notDelivered` promises that
+/// nothing left this device; any other error means delivery is uncertain and
+/// the client keeps the command so a retry can ask the Mac what happened.
 protocol RemoteLink: Sendable {
     func send(_ envelope: RemoteEnvelope) async throws
     var incoming: AsyncStream<RemoteEnvelope> { get }
     func close()
+}
+
+/// Thrown by a transport only when it is certain the envelope never left.
+enum RemoteLinkSendFailure: LocalizedError {
+    case notDelivered
+
+    var errorDescription: String? { "the connection was lost before the command left this device" }
 }
 
 // MARK: - Timing

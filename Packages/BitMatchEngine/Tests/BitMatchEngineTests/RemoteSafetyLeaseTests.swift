@@ -101,8 +101,24 @@ import Testing
 
         lease.noteBackgrounded()
         #expect(lease.currentClaim(at: t0.addingTimeInterval(5)) == nil)
-        lease.noteState(revision: 5, claim: c, at: t0.addingTimeInterval(6))
+        lease.noteState(revision: 5, claim: c, at: t0.addingTimeInterval(6), fromSnapshot: true)
         #expect(lease.currentClaim(at: t0.addingTimeInterval(7)) == c)
+    }
+
+    /// Backgrounding latches: an update that arrives while the iPad is in the
+    /// background may be old news, so only a snapshot shows a claim again.
+    @Test func aStateUpdateAfterBackgroundingDoesNotReviveTheClaimButASnapshotDoes() {
+        var lease = RemoteSafetyLease(leaseLength: 10)
+        let c = claim(revision: 5)
+        lease.noteMedia(media)
+        lease.noteState(revision: 5, claim: c, at: t0)
+        lease.noteBackgrounded()
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(1)) == nil)
+        lease.noteState(revision: 6, claim: claim(revision: 6), at: t0.addingTimeInterval(2))
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(3)) == nil)
+        let fresh = claim(revision: 7)
+        lease.noteState(revision: 7, claim: fresh, at: t0.addingTimeInterval(4), fromSnapshot: true)
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(5)) == fresh)
     }
 
     @Test func aChangedMediaIncarnationHidesTheClaim() {
