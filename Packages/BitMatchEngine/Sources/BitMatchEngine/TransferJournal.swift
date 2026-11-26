@@ -1081,10 +1081,58 @@ public final class TransferJournal: Sendable {
         }
     }
 
+    /// Writes a temporary file beside the journal, flushes it to the drive,
+    /// renames it over the journal, then flushes the folder. `Data.write(.atomic)`
+    /// renames but never flushes, so a power cut right after a transfer could
+    /// lose the record that says it ran. Process death alone never could.
     private static func persist(_ updated: [LocalTransferRecord], to fileURL: URL) throws {
-        try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let directory = fileURL.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try encoder.encode(updated).write(to: fileURL, options: .atomic)
+        let data = try encoder.encode(updated)
+
+        let temporary = directory.appendingPathComponent(".\(fileURL.lastPathComponent).tmp-\(UUID().uuidString)")
+        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+        guard fd >= 0 else { throw posixError("Could not create the journal file", code: errno) }
+        do {
+            try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
+                var written = 0
+                while written < buffer.count {
+                    let count = Darwin.write(fd, buffer.baseAddress! + written, buffer.count - written)
+                    if count < 0 {
+                        if errno == EINTR { continue }
+                        throw posixError("Could not write the journal", code: errno)
+                    }
+                    written += count
+                }
+            }
+            // F_FULLFSYNC reaches the drive's platters or flash; fall back to
+            // fsync where a filesystem does not support it.
+            if fcntl(fd, F_FULLFSYNC) == -1, fsync(fd) != 0 {
+                throw posixError("Could not flush the journal to the drive", code: errno)
+            }
+            guard Darwin.close(fd) == 0 else { throw posixError("Could not finish writing the journal", code: errno) }
+        } catch {
+            _ = Darwin.close(fd)
+            _ = unlink(temporary.path)
+            throw error
+        }
+        guard rename(temporary.path, fileURL.path) == 0 else {
+            let failure = errno
+            _ = unlink(temporary.path)
+            throw posixError("Could not replace the journal", code: failure)
+        }
+        let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        if directoryFD >= 0 {
+            _ = fsync(directoryFD)
+            _ = Darwin.close(directoryFD)
+        }
+    }
+
+    private static func posixError(_ message: String, code: Int32) -> NSError {
+        NSError(domain: NSPOSIXErrorDomain, code: Int(code), userInfo: [
+            NSLocalizedDescriptionKey: "\(message): \(String(cString: strerror(code)))"
+        ])
     }
 }

@@ -47,6 +47,22 @@ final class JournalStartupPersistenceTests: XCTestCase {
         }
     }
 
+    /// Plant: write the journal with `Data.write(.atomic)` again, or leave the
+    /// flushed temporary file behind after the rename.
+    func testStartupPersistenceLeavesOnlyTheJournalAndItsLockInTheStore() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(state: .issues, rowCount: 2)
+        try fixture.write([record], missingIDs: [0])
+
+        let journal = TransferJournal(fileURL: fixture.journal)
+        XCTAssertNil(journal.persistenceError)
+        XCTAssertEqual(journal.records.count, 1)
+
+        let names = try FileManager.default.contentsOfDirectory(atPath: fixture.store.path).sorted()
+        XCTAssertEqual(names, ["history.json", "history.json.lock"], "No temporary journal file may remain after a flushed write")
+    }
+
     /// Plant: omit the generated-row-ID migration flag from startup's write decision.
     func testMissingAndNullLegacyRowIDsArePersistedOnceAlongsideExistingIDs() throws {
         let fixture = try Fixture()
