@@ -42,7 +42,12 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
         var currentFD = destinationFD
         var logicalRoot = destination
         do {
-            let direct = try forceDirectFinalPublication || isFATFamily(directoryFD: destinationFD)
+            // FAT cannot hard link and neither can most network shares (SMB,
+            // NFS); both publish by writing the final name directly under a
+            // visible status marker instead of linking a finished temp file.
+            let direct = try forceDirectFinalPublication
+                || isFATFamily(directoryFD: destinationFD)
+                || !supportsHardLinks(directoryFD: destinationFD)
             for component in rootComponents {
                 try validate(component: component)
                 let childFD = try openOrCreateDirectory(
@@ -557,6 +562,30 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
             throw FileOperationError.unsafeOperation("Destination component \(name) is not a folder")
         }
         return fd
+    }
+
+    /// Whether the volume holding the directory can hard link, read from its
+    /// capabilities. A volume that does not answer is taken to support them;
+    /// its `linkat` then fails loudly rather than silently changing mode.
+    static func supportsHardLinks(directoryFD: Int32) -> Bool {
+        var request = attrlist()
+        request.bitmapcount = u_short(ATTR_BIT_MAP_COUNT)
+        request.volattr = attrgroup_t(ATTR_VOL_INFO) | attrgroup_t(ATTR_VOL_CAPABILITIES)
+        var reply = VolumeCapabilitiesReply()
+        let status = withUnsafeMutablePointer(to: &reply) { pointer in
+            fgetattrlist(directoryFD, &request, pointer, MemoryLayout<VolumeCapabilitiesReply>.size, 0)
+        }
+        guard status == 0, Int(reply.length) >= MemoryLayout<VolumeCapabilitiesReply>.size else { return true }
+        let format = Int(VOL_CAPABILITIES_FORMAT)
+        let valid = withUnsafeBytes(of: reply.capabilities.valid) { $0.load(fromByteOffset: format * 4, as: UInt32.self) }
+        let capabilities = withUnsafeBytes(of: reply.capabilities.capabilities) { $0.load(fromByteOffset: format * 4, as: UInt32.self) }
+        guard valid & UInt32(VOL_CAP_FMT_HARDLINKS) != 0 else { return true }
+        return capabilities & UInt32(VOL_CAP_FMT_HARDLINKS) != 0
+    }
+
+    private struct VolumeCapabilitiesReply {
+        var length: UInt32 = 0
+        var capabilities = vol_capabilities_attr_t()
     }
 
     private static func isFATFamily(directoryFD: Int32) throws -> Bool {

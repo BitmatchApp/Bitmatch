@@ -44,10 +44,12 @@ final class MountedFilesystemFaultTests: XCTestCase {
         }
     }
 
-    func testFATFamilyDirectPublicationAndHandoff() async throws {
+    /// Filesystems without hard links (FAT, and network shares such as SMB)
+    /// publish by writing the final name directly under a visible status marker.
+    func testDirectPublicationFilesystemsAndHandoff() async throws {
         let filesystem = ProcessInfo.processInfo.environment["BITMATCH_FAULT_MATRIX_TYPE"]
-        guard filesystem == "exfat" || filesystem == "msdos" else {
-            throw XCTSkip("This handoff exercises mounted exFAT and FAT32 only")
+        guard ["exfat", "msdos", "smbfs", "nfs"].contains(filesystem ?? "") else {
+            throw XCTSkip("This handoff exercises mounted exFAT, FAT32 and network shares only")
         }
         let directoryFD = Darwin.open(destination.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
         XCTAssertGreaterThanOrEqual(directoryFD, 0)

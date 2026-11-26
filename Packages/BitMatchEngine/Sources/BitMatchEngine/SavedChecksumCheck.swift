@@ -673,7 +673,9 @@ public struct SavedChecksumCheck: Sendable {
         let statuses = files.filter { isPublicationStatus($0, under: root) }.sorted { $0.path < $1.path }
         let statusDirectories = Set(statuses.map { $0.deletingLastPathComponent().path })
         let fatDirectories = Set(files.filter { url in
-            url.lastPathComponent.lowercased().hasPrefix(ASCMHLGenerator.fatManifestPrefix.lowercased())
+            let name = url.lastPathComponent.lowercased()
+            return (name.hasPrefix(ASCMHLGenerator.fatManifestPrefix.lowercased())
+                    || name.hasPrefix(ASCMHLGenerator.directClaimManifestPrefix.lowercased()))
                 && isMHLHistory(url, under: root)
         }.map { $0.deletingLastPathComponent().path })
         guard fatDirectories.isSubset(of: statusDirectories) else { throw CheckError.unreadableEvidence }

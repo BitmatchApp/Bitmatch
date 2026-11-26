@@ -139,6 +139,36 @@ final class ASCMHLGeneratorTests: XCTestCase {
         XCTAssertEqual(result.recordedFileCount, 1)
     }
 
+    /// A network share cannot do the exclusive directory rename either, so its
+    /// history is claimed directly, named so Check requires the status record.
+    func testNetworkShareClaimsTheHistoryDirectlyWithItsOwnPrefix() async throws {
+        let (root, file) = try fixture()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(fileSystemType: { "smbfs" })
+        )
+        XCTAssertTrue(manifest.lastPathComponent.hasPrefix(ASCMHLGenerator.directClaimManifestPrefix), manifest.lastPathComponent)
+        let history = manifest.deletingLastPathComponent()
+        let status = history.appendingPathComponent(ASCMHLGenerator.publicationStatusName)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: status.path))
+        XCTAssertTrue(try ASCMHLGenerator.publicationIsComplete(at: status))
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: root.path).contains { $0.hasPrefix(".bitmatch-ascmhl-") })
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let intact = try await checker.check(try await checker.discover(under: root)) { _ in }
+        XCTAssertTrue(intact.isIntact)
+        XCTAssertEqual(intact.recordedFileCount, 1)
+
+        // Without its status record the directly claimed history is not evidence.
+        try FileManager.default.removeItem(at: status)
+        do {
+            let discovery = try await checker.discover(under: root)
+            let result = try await checker.check(discovery) { _ in }
+            XCTAssertFalse(result.isIntact, "a DIRECT manifest without its status record must not check as intact")
+        } catch {
+            // Refusing the evidence outright is the other acceptable answer.
+        }
+    }
+
     func testInterruptedDirectFATWritesStayMarkedAndUncheckable() async throws {
         for stopAfterChain in [false, true] {
             let (root, file) = try fixture()

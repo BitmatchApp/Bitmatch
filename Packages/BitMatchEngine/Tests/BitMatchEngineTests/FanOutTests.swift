@@ -8,6 +8,21 @@ import Darwin
 @testable import BitMatchEngine
 
 struct FanOutTests {
+    /// Local volumes hard link, so a pinned destination publishes by linking;
+    /// a volume whose capabilities say otherwise (SMB, NFS) publishes directly.
+    @Test func aLocalVolumeReportsHardLinksAndPublishesByLinking() throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-hardlink-cap-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let fd = Darwin.open(folder.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+        #expect(fd >= 0)
+        defer { _ = Darwin.close(fd) }
+        #expect(PinnedDestinationDirectory.supportsHardLinks(directoryFD: fd))
+        let pinned = try PinnedDestinationDirectory.open(destination: folder, rootComponents: [])
+        #expect(!pinned.usesDirectFinalPublication)
+        #expect(!PinnedDestinationDirectory.supportsHardLinks(directoryFD: -1) == false, "an unanswerable query assumes hard links")
+    }
+
     @Test
     func copyStageStartsBeforeFirstLargeFileFinishes() async throws {
         try await FileOperationsTestLock.shared.run {

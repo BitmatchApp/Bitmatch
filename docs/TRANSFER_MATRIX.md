@@ -16,6 +16,19 @@ MATRIX_FOCUS=collision bash Scripts/test-full-transfer-matrix.sh
 MATRIX_KEY=exfat-exfat-Standard-1-3 bash Scripts/test-full-transfer-matrix.sh
 ```
 
+## Network share
+
+The mounted-fault suite also runs against a real SMB share, which no disk image can stand in for (no hard links, no exclusive directory rename, no volume UUID). Share a scratch folder from System Settings → General → Sharing → File Sharing, mount it back, mark it, and point the suite at it:
+
+```sh
+mount_smbfs //you@localhost/BitMatchSMBTest ~/BitMatchSMBMount
+touch ~/BitMatchSMBMount/.bitmatch-fault-owned
+cd Packages/BitMatchEngine && BITMATCH_FAULT_MATRIX_MOUNT=~/BitMatchSMBMount BITMATCH_FAULT_MATRIX_TYPE=smbfs \
+  swift test --disable-swift-testing --filter MountedFilesystemFaultTests
+```
+
+Measured on macOS 27 against the built-in server on 2026-11-26: `linkat` returns `ENOTSUP`, `renameatx_np(RENAME_EXCL)` is unsupported, `F_FULLFSYNC` and `fsync` succeed, extended attributes round-trip, `volumeUUIDString` is nil. All 12 methods pass with direct publication.
+
 Runs need macOS, Xcode and space for disposable sparse images. Run jobs sequentially when sharing DerivedData. `MATRIX_DERIVED_DATA` selects a separate directory. Tests check filesystem types, distinct mounted devices and ownership markers before mutation. Scripts detach owned images without force and remove them only after successful detach. Busy images are retained with an explicit path.
 
 ## Coverage
