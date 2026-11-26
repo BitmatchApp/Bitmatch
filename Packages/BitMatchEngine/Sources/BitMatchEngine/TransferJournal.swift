@@ -1093,40 +1093,70 @@ public final class TransferJournal: Sendable {
         let data = try encoder.encode(updated)
 
         let temporary = directory.appendingPathComponent(".\(fileURL.lastPathComponent).tmp-\(UUID().uuidString)")
-        let fd = open(temporary.path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
-        guard fd >= 0 else { throw posixError("Could not create the journal file", code: errno) }
+        let (fd, openFailure) = temporary.withUnsafeFileSystemRepresentation { path -> (Int32, Int32) in
+            let fd = open(path!, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0o644)
+            return (fd, errno)
+        }
+        guard fd >= 0 else { throw posixError("Could not create the journal file", code: openFailure) }
+        var fileIsOpen = true
         do {
             try data.withUnsafeBytes { (buffer: UnsafeRawBufferPointer) in
                 var written = 0
                 while written < buffer.count {
                     let count = Darwin.write(fd, buffer.baseAddress! + written, buffer.count - written)
+                    let failure = errno
                     if count < 0 {
-                        if errno == EINTR { continue }
-                        throw posixError("Could not write the journal", code: errno)
+                        if failure == EINTR { continue }
+                        throw posixError("Could not write the journal", code: failure)
                     }
                     written += count
                 }
             }
-            // F_FULLFSYNC reaches the drive's platters or flash; fall back to
-            // fsync where a filesystem does not support it.
-            if fcntl(fd, F_FULLFSYNC) == -1, fsync(fd) != 0 {
-                throw posixError("Could not flush the journal to the drive", code: errno)
-            }
-            guard Darwin.close(fd) == 0 else { throw posixError("Could not finish writing the journal", code: errno) }
+            try flushToDrive(fd, what: "the journal")
+            fileIsOpen = false
+            let closeFailure = Darwin.close(fd) == 0 ? 0 : errno
+            guard closeFailure == 0 else { throw posixError("Could not finish writing the journal", code: closeFailure) }
         } catch {
-            _ = Darwin.close(fd)
-            _ = unlink(temporary.path)
+            if fileIsOpen { _ = Darwin.close(fd) }
+            _ = temporary.withUnsafeFileSystemRepresentation { unlink($0!) }
             throw error
         }
-        guard rename(temporary.path, fileURL.path) == 0 else {
-            let failure = errno
-            _ = unlink(temporary.path)
-            throw posixError("Could not replace the journal", code: failure)
+        let renameFailure = temporary.withUnsafeFileSystemRepresentation { from in
+            fileURL.withUnsafeFileSystemRepresentation { to in rename(from!, to!) == 0 ? 0 : errno }
         }
-        let directoryFD = open(directory.path, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
-        if directoryFD >= 0 {
-            _ = fsync(directoryFD)
-            _ = Darwin.close(directoryFD)
+        guard renameFailure == 0 else {
+            _ = temporary.withUnsafeFileSystemRepresentation { unlink($0!) }
+            throw posixError("Could not replace the journal", code: renameFailure)
+        }
+        // The rename is durable only once the folder is. The new file is
+        // already in place, so a failure here is reported as one: the caller
+        // records that history was not safely saved rather than assuming it.
+        let (directoryFD, directoryFailure) = directory.withUnsafeFileSystemRepresentation { path -> (Int32, Int32) in
+            let fd = open(path!, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
+            return (fd, errno)
+        }
+        guard directoryFD >= 0 else { throw posixError("Could not open the history folder to flush it", code: directoryFailure) }
+        defer { _ = Darwin.close(directoryFD) }
+        try flushToDrive(directoryFD, what: "the history folder")
+    }
+
+    /// F_FULLFSYNC reaches the drive's platters or flash. Only a filesystem
+    /// that does not offer it falls back to fsync; an I/O error is a failed
+    /// write, not a reason to try something weaker. Signals are retried.
+    private static func flushToDrive(_ fd: Int32, what: String) throws {
+        while true {
+            if fcntl(fd, F_FULLFSYNC) != -1 { return }
+            let failure = errno
+            if failure == EINTR { continue }
+            guard failure == ENOTSUP || failure == EOPNOTSUPP || failure == ENOTTY || failure == EINVAL || failure == ENOSYS else {
+                throw posixError("Could not flush \(what) to the drive", code: failure)
+            }
+            break
+        }
+        while fsync(fd) != 0 {
+            let failure = errno
+            if failure == EINTR { continue }
+            throw posixError("Could not flush \(what) to the drive", code: failure)
         }
     }
 
