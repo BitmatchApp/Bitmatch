@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [0.2.14] - 2026-11-26
+
 - A symbolic link, named pipe, socket or device on the card is no longer skipped in silence. Each one gets a failed row per backup ("This symbolic link was not copied…"), so the transfer ends with "Keep the card" instead of "All files copied and verified". Nothing opens or follows such entries. A source holding only such items is refused before copying.
 - History is flushed to the drive before it replaces the previous file. A power cut right after a transfer can no longer lose the record that says it ran; process death alone never could, and that is still tested.
 - Settings → Verification gains Copy workers, Verify workers and Verify while copying. Auto now uses one worker per stage when the card or a backup is a spinning hard drive, so the heads read and write in order instead of seeking between files; SSDs keep the previous limits. Reports state the workers a run actually used instead of the machine's core count, and a drive's type comes from the system's medium type rather than from whether its filesystem supports cloning (GitHub issue #92).
