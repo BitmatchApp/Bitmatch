@@ -165,6 +165,9 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let filesPerSecond: Double
         public let workers: Int?
         public let verifyWorkers: Int?
+        /// Verify lanes the run used (one per backup drive while verifying
+        /// during the copy). Nil in records from before lanes existed.
+        public let verifyLanes: Int?
         public let bottleneck: String?  // "Source Read", "Destination Write", "CPU", "Network"
 
         public init(
@@ -184,6 +187,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
             filesPerSecond: Double,
             workers: Int?,
             verifyWorkers: Int? = nil,
+            verifyLanes: Int? = nil,
             bottleneck: String?
         ) {
             self.totalDuration = totalDuration
@@ -202,6 +206,7 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
             self.filesPerSecond = filesPerSecond
             self.workers = workers
             self.verifyWorkers = verifyWorkers
+            self.verifyLanes = verifyLanes
             self.bottleneck = bottleneck
         }
     }
@@ -375,6 +380,7 @@ public enum EvidenceWriter: Sendable {
                                         totalBytesProcessed: Int64,
                                         workers: Int?,
                                         verifyWorkers: Int? = nil,
+                                        verifyLanes: Int? = nil,
                                         filesPerSecond: Double,
                                         prefs: ReportPrefs,
                                         generateFullReport: Bool,
@@ -446,6 +452,7 @@ public enum EvidenceWriter: Sendable {
                 performanceTelemetry: performanceTelemetry,
                 workers: workers,
                 verifyWorkers: verifyWorkers,
+                verifyLanes: verifyLanes,
                 prefs: prefs,
                 project: projectJSON,
                 safeToErase: safeToErase,
@@ -628,6 +635,7 @@ public enum EvidenceWriter: Sendable {
                                                  performanceTelemetry: TransferPerformanceTelemetry?,
                                                  workers: Int?,
                                                  verifyWorkers: Int? = nil,
+                                                 verifyLanes: Int? = nil,
                                                  prefs: ReportPrefs,
                                                  project: Project?,
                                                  safeToErase: Bool? = nil,
@@ -649,6 +657,7 @@ public enum EvidenceWriter: Sendable {
             performanceTelemetry: performanceTelemetry,
             workers: workers,
             verifyWorkers: verifyWorkers,
+            verifyLanes: verifyLanes,
             prefs: prefs,
             project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence
         )
@@ -680,6 +689,7 @@ public enum EvidenceWriter: Sendable {
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         workers: Int?,
         verifyWorkers: Int? = nil,
+        verifyLanes: Int? = nil,
         prefs: ReportPrefs,
         project: Project?,
         safeToErase: Bool? = nil,
@@ -809,6 +819,7 @@ public enum EvidenceWriter: Sendable {
                 filesPerSecond: filesPerSecond,
                 workers: workers,
                 verifyWorkers: verifyWorkers,
+                verifyLanes: verifyLanes,
                 bottleneck: nil // Could be determined by analyzing speeds
             ),
             verification: EnhancedJSONReport<Project>.Verification(

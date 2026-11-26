@@ -219,6 +219,10 @@ public enum VerificationMode: String, CaseIterable, Identifiable, Codable, Senda
     
     public var id: String { self.rawValue }
 
+    /// Thorough and Paranoid read the card again for every backup; Standard
+    /// reuses the hash taken while copying and Quick reads nothing.
+    public var rereadsSource: Bool { self == .thorough || self == .paranoid }
+
     /// Compact copy-mode wording for setup, where the mode name is already shown.
     public var shortDescription: String {
         switch self {

@@ -40,6 +40,9 @@ struct TransferConcurrencyPlanTests {
         let explicit = TransferConcurrencyPlan.resolve(
             settings: TransferConcurrencySettings(verifyWorkers: 2), media: [.rotational, .rotational, .rotational], processorCount: 12)
         #expect(explicit.verifyWorkers == 2, "an explicit choice is per backup too")
+        #expect(explicit.verifyLanes == 2)
+        let decoded = try? JSONDecoder().decode(TransferConcurrencyPlan.self, from: Data(#"{"copyWorkers":1,"verifyWorkers":1,"limitedForRotationalMedia":true}"#.utf8))
+        #expect(decoded?.verifyLanes == 1, "a 0.2.14 record reads as one lane, which is what it ran")
     }
 
     @Test func automaticOnSmallMachinesNeverDropsBelowOneCopyAndTwoVerify() {
@@ -260,6 +263,7 @@ struct TransferConcurrencyPipelineTests {
                 estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
             #expect(operation.results.allSatisfy { $0.success })
             #expect(operation.concurrency?.verifyWorkers == 1)
+            #expect(operation.concurrency?.verifyLanes == 2, "the record says two drives verified side by side")
             #expect(overlapped.withLock { $0 }, "the second backup never read back while the first waited")
         }
     }

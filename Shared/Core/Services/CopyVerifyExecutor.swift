@@ -683,6 +683,7 @@ final class CopyVerifyExecutor {
         // The workers the run actually used, never the machine's core count.
         let workers = operation.concurrency?.copyWorkers
         let verifyWorkers = operation.concurrency?.verifyWorkers
+        let verifyLanes = operation.concurrency?.verifyLanes
 
         SharedLogger.info("Auto-report queued for job \(operation.id) with \(fileCount) rows", category: .transfer)
 
@@ -714,6 +715,7 @@ final class CopyVerifyExecutor {
                 prefs: reportSettings,
                 workers: workers,
                 verifyWorkers: verifyWorkers,
+                verifyLanes: verifyLanes,
                 totalBytesProcessed: totalBytesProcessed,
                 copyDurationSeconds: phaseDurations.copySeconds,
                 verifyDurationSeconds: phaseDurations.verifySeconds,

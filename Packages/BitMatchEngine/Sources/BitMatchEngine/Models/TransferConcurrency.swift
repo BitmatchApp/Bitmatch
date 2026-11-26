@@ -47,6 +47,10 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
     /// workers, so two backups read back side by side and a spinning drive
     /// still reads its own files in order.
     public let verifyWorkers: Int
+    /// How many lanes the run verified in: the drives its backups spanned
+    /// while verifying during the copy, otherwise one. Records written before
+    /// lanes existed read as one, which is what they ran.
+    public let verifyLanes: Int
     /// True when Auto reduced a stage because the card or a backup is a
     /// spinning drive. An explicit choice is never reported as limited.
     public let limitedForRotationalMedia: Bool
@@ -54,10 +58,19 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
     /// Zero verify workers means the run verified nothing (Quick mode).
     public var verified: Bool { verifyWorkers > 0 }
 
-    public init(copyWorkers: Int, verifyWorkers: Int, limitedForRotationalMedia: Bool) {
+    public init(copyWorkers: Int, verifyWorkers: Int, verifyLanes: Int = 1, limitedForRotationalMedia: Bool) {
         self.copyWorkers = copyWorkers
         self.verifyWorkers = verifyWorkers
+        self.verifyLanes = max(1, verifyLanes)
         self.limitedForRotationalMedia = limitedForRotationalMedia
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        copyWorkers = try container.decode(Int.self, forKey: .copyWorkers)
+        verifyWorkers = try container.decode(Int.self, forKey: .verifyWorkers)
+        verifyLanes = max(1, try container.decodeIfPresent(Int.self, forKey: .verifyLanes) ?? 1)
+        limitedForRotationalMedia = try container.decode(Bool.self, forKey: .limitedForRotationalMedia)
     }
 
     /// `media` is the card followed by the backups. Auto on solid-state or
@@ -80,7 +93,7 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
         let lanes = max(1, verifyLanes ?? (media.count - 1))
         let verify = clamp(settings.verifyWorkers ?? (spinning ? 1 : max(1, max(2, cores / 2) / lanes)))
         let limited = spinning && (settings.copyWorkers == nil || settings.verifyWorkers == nil)
-        return TransferConcurrencyPlan(copyWorkers: copy, verifyWorkers: verify, limitedForRotationalMedia: limited)
+        return TransferConcurrencyPlan(copyWorkers: copy, verifyWorkers: verify, verifyLanes: lanes, limitedForRotationalMedia: limited)
     }
 
     static func clamp(_ workers: Int) -> Int {

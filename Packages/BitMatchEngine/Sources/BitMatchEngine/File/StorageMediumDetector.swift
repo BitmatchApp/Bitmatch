@@ -18,7 +18,7 @@ public protocol StorageMediumDetecting: Sendable {
 public extension StorageMediumDetecting {
     func driveIdentity(for url: URL) -> String? {
         guard let identifier = try? url.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier else { return nil }
-        return "\(identifier)"
+        return "volume:\(identifier)"
     }
 }
 
@@ -29,16 +29,15 @@ public extension StorageMediumDetecting {
 public struct SystemStorageMediumDetector: StorageMediumDetecting {
     public init() {}
 
-    /// On macOS the whole disk behind the volume, so partitions of one drive
-    /// share a lane; elsewhere, or when Disk Arbitration cannot say, the
-    /// volume identifier. Network volumes fall back to the volume too.
+    /// On macOS the physical store behind the volume, the same notion of
+    /// "one drive" the backup-independence check uses, so partitions and APFS
+    /// containers of one drive share a lane. Elsewhere, and for network or
+    /// unresolvable volumes, the volume identifier.
     public func driveIdentity(for url: URL) -> String? {
         guard url.isFileURL else { return nil }
-#if os(macOS)
+        if let disk = SystemPhysicalDiskIdentityProvider().physicalDiskIdentity(for: url) { return "disk:\(disk)" }
         let scoped = url.startAccessingSecurityScopedResource()
         defer { if scoped { url.stopAccessingSecurityScopedResource() } }
-        if let whole = SystemDriveConnectionInfoProvider.wholeDiskName(for: url) { return "disk:\(whole)" }
-#endif
         guard let identifier = try? url.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier else { return nil }
         return "volume:\(identifier)"
     }

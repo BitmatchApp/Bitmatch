@@ -21,6 +21,7 @@ enum ReportExporter {
                        prefs: ReportPrefs,
                        workers: Int?,
                        verifyWorkers: Int? = nil,
+                       verifyLanes: Int? = nil,
                        totalBytesProcessed: Int64,
                        copyDurationSeconds: TimeInterval? = nil,
                        verifyDurationSeconds: TimeInterval? = nil,
@@ -65,6 +66,7 @@ enum ReportExporter {
             issues: issues.count,
             workers: workers,
             verifyWorkers: verifyWorkers,
+            verifyLanes: verifyLanes,
             appVersion: appVersion,
             osVersion: osVersion,
             client: prefs.clientName,
@@ -134,6 +136,7 @@ enum ReportExporter {
                                        totalBytesProcessed: totalBytesProcessed,
                                        workers: workers,
                                        verifyWorkers: verifyWorkers,
+                                       verifyLanes: verifyLanes,
                                        filesPerSecond: filesPerSecond,
                                        prefs: reportPrefs,
                                        generateFullReport: shouldGenerateFullReport,
@@ -275,6 +278,7 @@ enum ReportExporter {
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         workers: Int?,
         verifyWorkers: Int? = nil,
+        verifyLanes: Int? = nil,
         prefs: ReportPrefs,
         photographerContext: PhotographerReportContext?
     ) throws -> ProjectJSONReport {
@@ -295,6 +299,7 @@ enum ReportExporter {
             performanceTelemetry: performanceTelemetry,
             workers: workers,
             verifyWorkers: verifyWorkers,
+            verifyLanes: verifyLanes,
             prefs: prefs,
             project: try photographerContext.map {
                 try PhotographerReportPayload.make(context: $0, results: results, finishedAt: finished)

@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-- Each backup drive verifies in its own lane again. 0.2.14 gave a run with a spinning drive one verify worker in total, so two backups read back one after the other; now each backup reads back side by side while still reading its own files in order, and a fast SSD backup is no longer paced by a hard drive sharing the run. Verify workers in Settings are per backup drive; Auto on SSDs shares the previous pool across the backups (GitHub issue #92).
+- Each backup drive verifies in its own lane while verifying during the copy. 0.2.14 gave a run with a spinning drive one verify worker in total, so two backups read back one after the other; now backups on different drives read back side by side, each drive still reading its own files in order, and backups on one drive share its lane. When Thorough or Paranoid verification rereads a spinning card, the lanes collapse to one so the card is not read in two places at once. Verify workers in Settings are per backup drive; Auto on SSDs shares the previous pool across the drives. Reports state the lanes a run used (GitHub issue #92).
 - Groundwork for BitMatch Remote: the protocol, admission store, safety-claim lease and in-process host and client cores. No user-visible change yet.
 
 ## [0.2.14] - 2026-11-26

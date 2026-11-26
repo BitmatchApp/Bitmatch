@@ -805,21 +805,26 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         var concurrencyChoice = concurrencySettings()
         if !pipelinedVerification { concurrencyChoice.verifyWhileCopying = false }
         if let verificationConcurrency { concurrencyChoice.verifyWorkers = verificationConcurrency }
-        // Disk Arbitration and IOKit are synchronous IPC; a slow or stalled
-        // volume must not hold a cooperative thread.
-        let storageMedia: [StorageMediumKind] = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
-            ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
-        }
-        let verifyLaneKeys = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
-            Self.verifyLaneKeys(for: operation.destinationURLs, detector: storageMediumDetector)
-        }
-        let concurrencyPlan = TransferConcurrencyPlan.resolve(
-            settings: concurrencyChoice, media: storageMedia,
-            processorCount: ProcessInfo.processInfo.activeProcessorCount,
-            verifyLanes: Set(verifyLaneKeys).count)
         // Perf 5: pipelined verification on by default for checksum/byte-compare modes; user can disable
         let shouldPipelineVerify = operation.verificationMode != .quick
             && concurrencyChoice.verifyWhileCopying
+        // Disk Arbitration and IOKit are synchronous IPC; a slow or stalled
+        // volume must not hold a cooperative thread. One job for both lookups.
+        let (storageMedia, verifyLaneKeys): ([StorageMediumKind], [String]) = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
+            let media = ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
+            guard shouldPipelineVerify else { return (media, operation.destinationURLs.map { _ in "none" }) }
+            // Thorough and Paranoid reread the card for every backup, so lanes
+            // on a spinning card would seek between files there: one lane then.
+            if operation.verificationMode.rereadsSource, media.first == .rotational {
+                return (media, operation.destinationURLs.map { _ in "source" })
+            }
+            return (media, Self.verifyLaneKeys(for: operation.destinationURLs, detector: storageMediumDetector))
+        }
+        let verifyLanes = shouldPipelineVerify ? max(1, Set(verifyLaneKeys).count) : 1
+        let concurrencyPlan = TransferConcurrencyPlan.resolve(
+            settings: concurrencyChoice, media: storageMedia,
+            processorCount: ProcessInfo.processInfo.activeProcessorCount,
+            verifyLanes: verifyLanes)
         let verifyConcurrency = concurrencyPlan.verifyWorkers
         // The record says what ran, not what was chosen: Quick verifies nothing,
         // so no verify worker; without pipelining each backup is verified in
@@ -829,9 +834,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let recordedConcurrency = TransferConcurrencyPlan(
             copyWorkers: concurrencyPlan.copyWorkers,
             verifyWorkers: shouldPipelineVerify ? concurrencyPlan.verifyWorkers : (operation.verificationMode == .quick ? 0 : 1),
+            verifyLanes: verifyLanes,
             limitedForRotationalMedia: concurrencyPlan.limitedForRotationalMedia && autoDecidedAStage)
         SharedLogger.info(
-            "Workers: copy \(recordedConcurrency.copyWorkers), verify \(recordedConcurrency.verifyWorkers) per backup"
+            "Workers: copy \(recordedConcurrency.copyWorkers), verify \(recordedConcurrency.verifyWorkers) in \(recordedConcurrency.verifyLanes) lane(s)"
                 + (shouldPipelineVerify || operation.verificationMode == .quick ? "" : " (verify after copy, one pass)")
                 + (recordedConcurrency.limitedForRotationalMedia ? " (Auto, limited for a spinning drive)" : "")
                 + "; storage \(storageMedia.map(\.rawValue))",

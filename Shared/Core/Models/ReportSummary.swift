@@ -16,6 +16,7 @@ struct ReportSummary {
     let issues: Int
     let workers: Int?
     var verifyWorkers: Int? = nil
+    var verifyLanes: Int? = nil
     let appVersion: String
     let osVersion: String
     let client: String
@@ -43,12 +44,15 @@ struct ReportSummary {
 }
 
 extension ReportSummary {
-    /// "2 copy · 1 verify" for runs that recorded both stages; older evidence
-    /// carries one figure.
+    /// "2 copy · 1 verify" for runs that recorded both stages, "2 copy · 1 verify
+    /// × 2 drives" when the backups verified in lanes; older evidence carries
+    /// one figure.
     var workersDescription: String? {
         guard let workers else { return nil }
         guard let verifyWorkers else { return "\(workers) parallel" }
-        return verifyWorkers == 0 ? "\(workers) copy · no verify" : "\(workers) copy · \(verifyWorkers) verify"
+        guard verifyWorkers > 0 else { return "\(workers) copy · no verify" }
+        if let verifyLanes, verifyLanes > 1 { return "\(workers) copy · \(verifyWorkers) verify × \(verifyLanes) drives" }
+        return "\(workers) copy · \(verifyWorkers) verify"
     }
 }
 
