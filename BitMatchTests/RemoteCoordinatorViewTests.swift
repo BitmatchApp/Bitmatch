@@ -91,6 +91,37 @@ final class FakeRemoteCommandSender: RemoteCommandSender {
         #expect(view.currentSafetyClaim(at: now) == fresh)
     }
 
+    /// `onGap` is how the view asks its client core to close the link; the
+    /// in-process tests show the core doing so.
+    @Test func aGapMarksTheConnectionStaleAndClosesTheLink() {
+        let view = RemoteCoordinatorView()
+        var closeRequests = 0
+        view.useSender(FakeRemoteCommandSender(), onGap: { closeRequests += 1 })
+        view.receive(.snapshot(snapshot(state: 20)), at: now)
+        #expect(view.connection == .live)
+
+        view.receive(.update(RemoteStateUpdate(
+            baseRevision: 22, newRevision: 23,
+            snapshotPatch: RemoteSnapshotPatch(
+                host: hostID, session: session, takenAt: now,
+                revisions: ResourceRevisions(selection: 7, queue: 1, operation: 1, settings: 1, state: 23)))),
+            at: now.addingTimeInterval(1))
+
+        #expect(view.connection == .stale(since: now))
+        #expect(closeRequests == 1)
+
+        // Heartbeats do not make a state that is behind live again.
+        view.receive(.heartbeat(RemoteHeartbeat(hostTime: now, stateRevision: 23)), at: now.addingTimeInterval(2))
+        #expect(view.connection == .stale(since: now))
+
+        // An older snapshot from the same session cannot repair it; a newer one does.
+        view.receive(.snapshot(snapshot(state: 19)), at: now.addingTimeInterval(3))
+        #expect(view.connection == .stale(since: now))
+        view.receive(.snapshot(snapshot(state: 23)), at: now.addingTimeInterval(4))
+        #expect(view.connection == .live)
+        #expect(!view.applier.needsSnapshot)
+    }
+
     @Test func anInSequenceUpdateAfterAGapDoesNotReviveTheClaim() {
         let view = RemoteCoordinatorView(sender: FakeRemoteCommandSender())
         view.receive(.snapshot(snapshot(state: 20, claim: claim(revision: 20))), at: now)

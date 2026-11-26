@@ -29,9 +29,13 @@ final class RemoteCoordinatorView: ObservableObject {
     let pendingOutcomes = RemotePendingOutcomes()
 
     private var sender: (any RemoteCommandSender)?
+    private var onGap: (@MainActor () -> Void)?
     private let leaseLength: TimeInterval
     private var lease: RemoteSafetyLease
     private var lastActivity: Date?
+    /// When the installed state was last known current; set while a gap
+    /// leaves it behind.
+    private var staleSince: Date?
 
     init(sender: (any RemoteCommandSender)? = nil, leaseLength: TimeInterval = 10) {
         self.sender = sender
@@ -40,9 +44,12 @@ final class RemoteCoordinatorView: ObservableObject {
     }
 
     /// A client core needs the view to deliver replies, so it is created
-    /// after the view and installs itself here.
-    func useSender(_ sender: any RemoteCommandSender) {
+    /// after the view and installs itself here. `onGap` runs when an update
+    /// shows the installed state is behind: the core closes the link so the
+    /// transport reconnects and the attach snapshot repairs the state.
+    func useSender(_ sender: any RemoteCommandSender, onGap: (@MainActor () -> Void)? = nil) {
         self.sender = sender
+        self.onGap = onGap
     }
 
     isolated deinit {
@@ -86,8 +93,11 @@ final class RemoteCoordinatorView: ObservableObject {
                 noteInstalled(at: now)
             case .gap:
                 // The installed state is behind; only a fresh snapshot may
-                // show a claim again.
+                // show a claim again, and only a reconnect brings one.
                 lease.noteDisconnected()
+                if staleSince == nil { staleSince = lastActivity ?? now }
+                connection = .stale(since: staleSince ?? now)
+                onGap?()
             case .ignoredOlder:
                 break
             }
@@ -122,25 +132,34 @@ final class RemoteCoordinatorView: ObservableObject {
 
     private func noteInstalled(at now: Date) {
         guard let installed = applier.installed else { return }
+        staleSince = nil
         let media = installed.selectedCardID.flatMap { id in installed.cards.first { $0.id == id }?.media }
         lease.noteMedia(media)
         lease.noteState(revision: installed.revisions.state, claim: installed.safetyClaim, at: now)
         noteActivity(at: now)
     }
 
+    /// Heartbeats keep a connection live, but never one whose state is
+    /// behind: that stays stale until a snapshot installs.
     private func noteActivity(at now: Date) {
         lastActivity = now
-        connection = .live
+        if applier.needsSnapshot {
+            if staleSince == nil { staleSince = now }
+            connection = .stale(since: staleSince ?? now)
+        } else {
+            connection = .live
+        }
     }
 
     // MARK: - Intents (names as in `RemoteSurface`)
 
-    func applyPreparedSource(cardID: String) async -> RemoteCommandOutcome {
+    func chooseSourcePrepared(cardID: String) async -> RemoteCommandOutcome {
         await send { .selectSource(cardID: cardID, selectionRevision: $0.revisions.selection) }
     }
 
     /// Refused while the Mac has a backup this client has no ID for: the
-    /// command carries the whole list and would leave that backup out.
+    /// command carries the whole list and would leave that backup out. The
+    /// Mac adds it through `addBackupsPrepared`.
     func addDestination(backupID: String) async -> RemoteCommandOutcome {
         if let refusal = unmanagedBackupRefusal() { return refusal }
         return await send { snapshot in

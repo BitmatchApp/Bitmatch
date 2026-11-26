@@ -9,6 +9,12 @@ import BitMatchEngine
 /// is recorded in the admission store before it is returned. `.done` carries
 /// the revisions read after the intent, so a client reconciles any concurrent
 /// change from the next snapshot.
+///
+/// `refreshRevisions` brings `host.revisions` up to the surface as it is now
+/// (the host core diffs any change still waiting for its deferred flush). It
+/// runs before every revision check and before `.done` reads the revisions,
+/// so a check never compares against a surface one turn old and `.done`
+/// carries the revisions after the intent's own effect.
 @MainActor
 final class RemoteCommandExecutor {
     static let notSafeToEraseWording = "This card is not safe to erase yet."
@@ -18,13 +24,22 @@ final class RemoteCommandExecutor {
     private let host: RemoteHostState
     private let admission: RemoteAdmissionStore
     private let safeToErase: @MainActor (UUID, MediaIncarnation) -> Bool
+    private let refreshRevisions: @MainActor () -> Void
 
     init(surface: any RemoteSurface, host: RemoteHostState, admission: RemoteAdmissionStore,
-         safeToErase: @escaping @MainActor (UUID, MediaIncarnation) -> Bool) {
+         safeToErase: @escaping @MainActor (UUID, MediaIncarnation) -> Bool,
+         refreshRevisions: @escaping @MainActor () -> Void = {}) {
         self.surface = surface
         self.host = host
         self.admission = admission
         self.safeToErase = safeToErase
+        self.refreshRevisions = refreshRevisions
+    }
+
+    /// The host's revisions as of the surface now.
+    private var revisions: ResourceRevisions {
+        refreshRevisions()
+        return host.revisions
     }
 
     func execute(_ command: RemoteCommand) async -> RemoteCommandOutcome {
@@ -64,27 +79,22 @@ final class RemoteCommandExecutor {
     private func run(_ body: RemoteCommandBody, request: RequestID) async -> RemoteCommandOutcome {
         switch body {
         case .selectSource(let cardID, let revision):
-            guard revision == host.revisions.selection else { return stale() }
+            guard revision == revisions.selection else { return stale() }
             guard let url = host.url(forCard: cardID) else { return refused("unknown card/backup") }
-            guard surface.applyPreparedSource(expectedSource: surface.sourceURL,
-                                              expectedDestinations: surface.destinationURLs,
-                                              newSource: url) else {
-                return refused("selection is locked")
-            }
-            return done(request)
+            return await selectSource(url, request: request)
 
         case .setDestinations(let backupIDs, let revision):
-            guard revision == host.revisions.selection else { return stale() }
-            return setDestinations(backupIDs, request: request)
+            guard revision == revisions.selection else { return stale() }
+            return await setDestinations(backupIDs, request: request)
 
         case .setVerificationMode(let mode, let revision):
-            guard revision == host.revisions.settings else { return stale() }
+            guard revision == revisions.settings else { return stale() }
             surface.verificationMode = mode
             surface.saveVerificationMode()
             return done(request)
 
         case .start(let revision):
-            guard revision == host.revisions.selection else { return stale() }
+            guard revision == revisions.selection else { return stale() }
             let enqueued: UUID?
             do {
                 enqueued = try await surface.startSetupTransfersPrepared()
@@ -100,7 +110,7 @@ final class RemoteCommandExecutor {
             return done(request)
 
         case .enqueue(let revision):
-            guard revision == host.revisions.selection else { return stale() }
+            guard revision == revisions.selection else { return stale() }
             do {
                 _ = try await surface.enqueueSelectionPrepared()
             } catch {
@@ -109,7 +119,7 @@ final class RemoteCommandExecutor {
             return done(request)
 
         case .startQueue(let revision):
-            guard revision == host.revisions.queue else { return stale() }
+            guard revision == revisions.queue else { return stale() }
             surface.startQueue()
             guard surface.queueIsRunning else { return refused(surface.queueMessage ?? "the queue did not start") }
             return done(request)
@@ -136,7 +146,7 @@ final class RemoteCommandExecutor {
             return done(request)
 
         case .retry(let recordID, let revision):
-            guard revision == host.revisions.queue else { return stale() }
+            guard revision == revisions.queue else { return stale() }
             guard let record = surface.transferJournal.records.first(where: { $0.id == recordID }) else {
                 return refused("no such record")
             }
@@ -151,7 +161,7 @@ final class RemoteCommandExecutor {
             return done(request)
 
         case .removeQueued(let recordID, let revision):
-            guard revision == host.revisions.queue else { return stale() }
+            guard revision == revisions.queue else { return stale() }
             do {
                 try surface.removeQueuedTransfer(recordID)
             } catch {
@@ -160,7 +170,7 @@ final class RemoteCommandExecutor {
             return done(request)
 
         case .reorderQueue(let recordIDs, let revision):
-            guard revision == host.revisions.queue else { return stale() }
+            guard revision == revisions.queue else { return stale() }
             // The coordinator moves only waiting cards, by their index among
             // waiting cards, so positions count waiting records only.
             let waiting = recordIDs.filter { id in
@@ -185,10 +195,37 @@ final class RemoteCommandExecutor {
         }
     }
 
+    static let selectionChangedWording = "the selection changed on the Mac"
+    static let selectionLockedWording = "selection is locked"
+
+    /// Through the intent the Mac's own Setup screen uses: the staged-card
+    /// check, `DestinationSelectionPolicy.evaluateSource` on the drive
+    /// worker, the project lock, and a compare-and-swap against the
+    /// selection captured in this turn. Its refusal is the outcome; a
+    /// selection that changed meanwhile, or a lock it skipped silently, is
+    /// refused too.
+    private func selectSource(_ url: URL, request: RequestID) async -> RemoteCommandOutcome {
+        let refusals: [String]
+        do {
+            refusals = try await surface.chooseSourcePrepared(
+                url, worker: surface.selectionWorker, jobKey: Self.jobKey(request, "source"))
+        } catch is CancellationError {
+            return refused(Self.selectionChangedWording)
+        } catch {
+            return refused(error.localizedDescription)
+        }
+        if let refusal = refusals.first { return refused(refusal) }
+        guard surface.sourceURL == url else { return refused(Self.selectionLockedWording) }
+        return done(request)
+    }
+
     /// Backup order is not part of the contract: the result is compared as a
     /// set. A current backup with no registered ID is one the client never
-    /// saw, so it is kept rather than removed.
-    private func setDestinations(_ backupIDs: [String], request: RequestID) -> RemoteCommandOutcome {
+    /// saw, so it is kept rather than removed. Backups are removed as on the
+    /// Mac, then added through the Setup screen's prepared intent
+    /// (`DestinationSelectionPolicy.evaluateBackup` on the drive worker, the
+    /// project lock, a compare-and-swap); its first refusal is reported.
+    private func setDestinations(_ backupIDs: [String], request: RequestID) async -> RemoteCommandOutcome {
         var target: [URL] = []
         for id in backupIDs {
             guard let url = host.url(forBackup: id) else { return refused("unknown card/backup") }
@@ -201,15 +238,25 @@ final class RemoteCommandExecutor {
         for url in original where !target.contains(url) {
             surface.removeDestinationFolder(url)
         }
-        for url in target where !original.contains(url) {
-            if let message = surface.addDestination(url, origin: .userChoice, facts: BackupTargetPolicy.VolumeFacts.read) {
-                refusal = refusal ?? message
+        let added = target.filter { !original.contains($0) }
+        if !added.isEmpty {
+            do {
+                refusal = try await surface.addBackupsPrepared(
+                    added, worker: surface.selectionWorker, jobKey: Self.jobKey(request, "backup")).first
+            } catch is CancellationError {
+                refusal = Self.selectionChangedWording
+            } catch {
+                refusal = error.localizedDescription
             }
         }
         let final = Set(surface.destinationURLs)
         if final == Set(target) { return done(request) }
-        if final == Set(original) { return refused(refusal ?? "selection is locked") }
-        return .unknown(reason: "backups partly changed: \(refusal ?? "selection is locked")")
+        if final == Set(original) { return refused(refusal ?? Self.selectionLockedWording) }
+        return .unknown(reason: "backups partly changed: \(refusal ?? Self.selectionLockedWording)")
+    }
+
+    private static func jobKey(_ request: RequestID, _ kind: String) -> String {
+        "remote.\(request.rawValue.uuidString).\(kind)"
     }
 
     private func retryAttempts(of recordID: UUID) -> Int {
@@ -252,12 +299,13 @@ final class RemoteCommandExecutor {
 
     // MARK: - Outcomes
 
+    /// The revisions after the intent's own effect.
     private func done(_ request: RequestID) -> RemoteCommandOutcome {
-        .done(RemoteCommandResult(request: request, revisions: host.revisions, payload: nil))
+        .done(RemoteCommandResult(request: request, revisions: revisions, payload: nil))
     }
 
     private func stale() -> RemoteCommandOutcome {
-        .rejected(.staleRevision(current: host.revisions))
+        .rejected(.staleRevision(current: revisions))
     }
 
     private func refused(_ wording: String) -> RemoteCommandOutcome {

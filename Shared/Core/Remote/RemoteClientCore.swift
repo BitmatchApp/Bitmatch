@@ -47,7 +47,7 @@ final class RemoteClientCore: RemoteCommandSender {
         self.replyTimeout = replyTimeout
         self.scheduler = scheduler
         self.now = now
-        view.useSender(self)
+        view.useSender(self, onGap: { [weak self] in self?.dropAfterGap() })
     }
 
     /// Sent requests nobody is waiting on any more (no reply, a `pending`
@@ -142,6 +142,16 @@ final class RemoteClientCore: RemoteCommandSender {
             }
         }
         view?.receive(envelope.message, at: now())
+    }
+
+    /// The installed state is behind and only a snapshot mends it, which the
+    /// Mac sends on attach: close the link so the transport reconnects.
+    /// Unlike `stop()`, late replies are kept for `retry`.
+    private func dropAfterGap() {
+        receiving?.cancel()
+        receiving = nil
+        link.close()
+        disconnect()
     }
 
     /// Open waits end `unknown` through the view; their commands stay retryable.

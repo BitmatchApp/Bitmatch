@@ -9,7 +9,8 @@ import BitMatchEngine
 @MainActor
 final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     enum Call: Equatable {
-        case applySource(URL)
+        case chooseSourcePrepared(URL)
+        case addBackupsPrepared([URL])
         case start
         case enqueue
         case startQueue
@@ -20,7 +21,6 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
         case removeQueued(UUID)
         case move(UUID, Int)
         case eject(UUID)
-        case addDestination(URL)
         case removeDestination(URL)
         case saveVerificationMode
     }
@@ -65,11 +65,25 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
         )
     }
 
-    func applyPreparedSource(expectedSource: URL?, expectedDestinations: [URL], newSource: URL) -> Bool {
-        guard !selectionLocked, sourceURL == expectedSource, destinationURLs == expectedDestinations else { return false }
-        calls.append(.applySource(newSource))
-        sourceURL = newSource
-        return true
+    let selectionWorker = DriveAccessWorker(maxConcurrent: 1, maxQueued: 4)
+    /// Returned by the prepared source and backup intents, as their policy
+    /// refusals; nothing is applied when it is non-empty.
+    var selectionRefusals: [String] = []
+
+    /// Like the coordinator's prepared intents: a locked selection is left
+    /// alone without a refusal.
+    func chooseSourcePrepared(_ url: URL, worker: DriveAccessWorker, jobKey: String) async throws -> [String] {
+        calls.append(.chooseSourcePrepared(url))
+        guard selectionRefusals.isEmpty else { return selectionRefusals }
+        if !selectionLocked { sourceURL = url }
+        return []
+    }
+
+    func addBackupsPrepared(_ urls: [URL], worker: DriveAccessWorker, jobKey: String) async throws -> [String] {
+        calls.append(.addBackupsPrepared(urls))
+        guard selectionRefusals.isEmpty else { return selectionRefusals }
+        if !selectionLocked { destinationURLs += urls }
+        return []
     }
 
     func startSetupTransfersPrepared() async throws -> UUID? {
@@ -107,16 +121,6 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
         return ejectResult
     }
     #endif
-
-    func addDestination(
-        _ url: URL,
-        origin: BackupTargetPolicy.Origin,
-        facts: (URL) -> BackupTargetPolicy.VolumeFacts?
-    ) -> String? {
-        calls.append(.addDestination(url))
-        destinationURLs.append(url)
-        return nil
-    }
 
     func moveQueuedTransfer(id: UUID, to destinationIndex: Int) throws { calls.append(.move(id, destinationIndex)) }
     func moveQueuedTransferToTop(_ id: UUID) throws {}

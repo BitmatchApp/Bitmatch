@@ -11,6 +11,8 @@ import BitMatchEngine
     private let raidURL = URL(fileURLWithPath: "/Volumes/RAID/Shoot", isDirectory: true)
     private let shuttleURL = URL(fileURLWithPath: "/Volumes/Shuttle/Shoot", isDirectory: true)
     private let media = MediaIncarnation(volumeIdentity: "vol-a001", mountGeneration: 1)
+    /// When the card's current mount was registered, before any test record.
+    private var mountedAt: Date { now.addingTimeInterval(-3600) }
 
     private func card(media: MediaIncarnation) -> RemoteCardSummary {
         RemoteCardSummary(id: "card-1", name: "A001", capacityBytes: 64_000, detectedCamera: nil,
@@ -22,7 +24,7 @@ import BitMatchEngine
         let surface = FakeRemoteSurface(journal: journal)
         let host = RemoteHostState(revisions: ResourceRevisions(selection: 3, queue: 2, operation: 1, settings: 4, state: 9))
         let cardURL = cardURL ?? self.cardURL
-        host.registerCard(card(media: media), url: cardURL)
+        host.registerCard(card(media: media), url: cardURL, registeredAt: mountedAt)
         host.registerBackup(RemoteBackupSummary(id: "backup-1", name: "RAID", freeBytes: nil, policyVerdict: "ok"), url: raidURL)
         host.registerBackup(RemoteBackupSummary(id: "backup-2", name: "Shuttle", freeBytes: nil, policyVerdict: "ok"), url: shuttleURL)
         surface.sourceURL = cardURL
@@ -163,7 +165,8 @@ import BitMatchEngine
         }
         defer { try? FileManager.default.removeItem(at: directory) }
         let folder = directory.appendingPathComponent("A001", isDirectory: true)
-        let (_, host, builder) = arranged(journal: journal, cardURL: folder)
+        let (surface, host, builder) = arranged(journal: journal, cardURL: folder)
+        surface.queueSessionRecordIDs = Set(journal.records.map(\.id))
 
         // The newer record at this path belongs to another card; only the
         // record with this card's identity may speak for it.
@@ -172,8 +175,74 @@ import BitMatchEngine
         #expect(claim.media == media)
 
         host.registerCard(card(media: MediaIncarnation(volumeIdentity: "vol-third-card", mountGeneration: 1)),
-                          url: folder)
+                          url: folder, registeredAt: mountedAt)
         #expect(builder.snapshot(now: now).safetyClaim == nil)
+    }
+
+    @Test func aRecordFromBeforeTheCurrentMountProducesNoClaim() throws {
+        let (directory, journal) = try journal { folder in
+            [try savedRecord(from: folder, volumeID: media.volumeIdentity, endedAt: now)]
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let folder = directory.appendingPathComponent("A001", isDirectory: true)
+        let (surface, host, builder) = arranged(journal: journal, cardURL: folder)
+        surface.queueSessionRecordIDs = Set(journal.records.map(\.id))
+        #expect(builder.snapshot(now: now).safetyClaim != nil)
+
+        // Registering the same mount again keeps its registration time.
+        host.registerCard(card(media: media), url: folder, registeredAt: now.addingTimeInterval(600))
+        #expect(builder.snapshot(now: now).safetyClaim != nil)
+
+        // Ejected and re-inserted, perhaps after more shooting: the volume
+        // identity is the same, but yesterday's record says nothing about it.
+        let remounted = MediaIncarnation(volumeIdentity: media.volumeIdentity, mountGeneration: 2)
+        host.registerCard(card(media: remounted), url: folder, registeredAt: now.addingTimeInterval(600))
+
+        #expect(builder.snapshot(now: now).safetyClaim == nil)
+    }
+
+    @Test func aRunningNewerAttemptSuppressesTheOlderClaim() throws {
+        // The card's identity is the test folder's real one, so the journal
+        // can run a new attempt from it.
+        var volumeID: String?
+        let (directory, journal) = try journal { folder in
+            volumeID = try LocalTransferResource(url: folder).volumeID
+            return [try savedRecord(from: folder, volumeID: try #require(volumeID), endedAt: now)]
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let folder = directory.appendingPathComponent("A001", isDirectory: true)
+        let backup = directory.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let (surface, host, builder) = arranged(journal: journal, cardURL: folder)
+        host.registerCard(card(media: MediaIncarnation(volumeIdentity: try #require(volumeID), mountGeneration: 1)),
+                          url: folder, registeredAt: mountedAt)
+        surface.queueSessionRecordIDs = Set(journal.records.map(\.id))
+        #expect(builder.snapshot(now: now).safetyClaim != nil)
+
+        // The card is queued again (more was shot onto it), then runs.
+        let newer = try journal.enqueue(sourceURL: folder, destinationURLs: [backup], verificationMode: .standard,
+                                        cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+                                        generateASCMHL: false)
+        surface.queueSessionRecordIDs.insert(newer)
+        #expect(builder.snapshot(now: now).safetyClaim == nil)
+        try journal.markRunning(id: newer)
+
+        #expect(journal.records.first { $0.id == newer }?.state == .running)
+        #expect(builder.snapshot(now: now).safetyClaim == nil)
+    }
+
+    @Test func aClaimRequiresAQueueSessionRecord() throws {
+        let (directory, journal) = try journal { folder in
+            [try savedRecord(from: folder, volumeID: media.volumeIdentity, endedAt: now)]
+        }
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let (surface, _, builder) = arranged(journal: journal, cardURL: directory.appendingPathComponent("A001", isDirectory: true))
+
+        // In History only: the Mac shows it as a past result, not as this card's verdict.
+        #expect(builder.snapshot(now: now).safetyClaim == nil)
+
+        surface.queueSessionRecordIDs = Set(journal.records.map(\.id))
+        #expect(builder.snapshot(now: now).safetyClaim != nil)
     }
 
     @Test func queueRowsFollowTheMacsRunOrderAndAReorderBumpsTheQueue() throws {
@@ -204,6 +273,7 @@ import BitMatchEngine
         }
         defer { try? FileManager.default.removeItem(at: directory) }
         let (surface, _, builder) = arranged(journal: journal, cardURL: directory.appendingPathComponent("A001", isDirectory: true))
+        surface.queueSessionRecordIDs = Set(journal.records.map(\.id))
         let first = builder.snapshot(now: now)
         #expect(first.safetyClaim != nil)
         surface.sourceURL = nil

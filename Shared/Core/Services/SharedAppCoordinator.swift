@@ -3829,4 +3829,23 @@ extension OperationReadinessAssessment {
     }
 }
 
-extension SharedAppCoordinator: RemoteSurface {}
+extension SharedAppCoordinator: RemoteSurface {
+    /// The Setup screen's prepared selection, so a remote choice gets the
+    /// same staged check, policy, project lock and worker. Discovery
+    /// bookkeeping is a platform view's concern and is not repeated here.
+    private var remoteLocationSelection: SetupLocationSelection {
+        SetupLocationSelection(
+            coordinator: self,
+            addBackup: { [weak self] in self?.addDestination($0) },
+            removeBackup: { [weak self] in self?.removeDestinationFolder($0) }
+        )
+    }
+
+    func chooseSourcePrepared(_ url: URL, worker: DriveAccessWorker, jobKey: String) async throws -> [String] {
+        try await remoteLocationSelection.chooseSourcePrepared(url, worker: worker, jobKey: jobKey)
+    }
+
+    func addBackupsPrepared(_ urls: [URL], worker: DriveAccessWorker, jobKey: String) async throws -> [String] {
+        try await remoteLocationSelection.addBackupsPrepared(urls, worker: worker, jobKey: jobKey)
+    }
+}

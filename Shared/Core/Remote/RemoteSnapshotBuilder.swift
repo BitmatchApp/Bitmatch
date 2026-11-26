@@ -139,7 +139,7 @@ struct RemoteSnapshotBuilder {
         let records = surface.transferJournal.records
         let order = surface.queueSessionRecordOrder
         let session = records.filter { surface.queueSessionRecordIDs.contains($0.id) }
-        let byID = Dictionary(uniqueKeysWithValues: session.map { ($0.id, $0) })
+        let byID = Dictionary(session.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let ordered = order.compactMap { byID[$0] }
         let ranked = Set(order)
         return (ordered + session.filter { !ranked.contains($0.id) }).map {
@@ -159,17 +159,26 @@ struct RemoteSnapshotBuilder {
                              isSuccess: record.state == .completed)
     }
 
-    /// The latest saved record of the selected card and the verdict the Mac
-    /// shows for it (the same check its eject uses). The record is chosen by
-    /// the card's volume identity, never by path: another card can mount at
-    /// the same path. No record with that identity means no claim.
+    /// The verdict the Mac currently presents for the selected card, and only
+    /// that: the card's latest ended record in the queue session (the rows the
+    /// Mac shows), with the card's volume identity (never its path: another
+    /// card can mount at the same path), created at or after this mount was
+    /// registered (volume identity survives eject and re-insert, so an older
+    /// record says nothing about what is on the card now). While any attempt
+    /// for the card is queued or running in the session, the Mac has no
+    /// settled verdict for it and there is no claim. A record whose source is
+    /// a folder on the card counts as the card's, as on the Mac, whose queue
+    /// rows and eject treat it so. The verdict is the eject's own check.
     private func safetyClaim(cardID: String?, revision: Int) -> RemoteSafetyClaim? {
-        guard let cardID, let media = host.media(forCard: cardID) else { return nil }
+        guard let cardID, let media = host.media(forCard: cardID),
+              let registeredAt = host.registeredAt(card: cardID) else { return nil }
         let records = surface.transferJournal.records
-        let saved = records.filter {
-            $0.endedAt != nil && $0.source.volumeID == media.volumeIdentity
+        let attempts = records.filter {
+            surface.queueSessionRecordIDs.contains($0.id) && $0.source.volumeID == media.volumeIdentity
         }
-        guard let record = saved.max(by: { $0.endedAt! < $1.endedAt! }) else { return nil }
+        guard !attempts.contains(where: { $0.state == .queued || $0.state == .running }) else { return nil }
+        let current = attempts.filter { $0.endedAt != nil && $0.createdAt >= registeredAt }
+        guard let record = current.max(by: { $0.endedAt! < $1.endedAt! }) else { return nil }
         let verdict = TransferLibraryPresentation.safetyState(for: record, in: records)
         return RemoteSafetyClaim(recordID: record.id, media: media, isSafeToErase: verdict == .safeToErase,
                                  wording: verdict.title, revision: revision)

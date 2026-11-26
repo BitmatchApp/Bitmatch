@@ -1095,6 +1095,7 @@ public final class TransferJournal: Sendable {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
-        try DurableJSONFile.write(try encoder.encode(updated), to: fileURL)
+        try DurableJSONFile.write(try encoder.encode(updated), to: fileURL,
+                                  what: "the journal", folder: "the history folder")
     }
 }

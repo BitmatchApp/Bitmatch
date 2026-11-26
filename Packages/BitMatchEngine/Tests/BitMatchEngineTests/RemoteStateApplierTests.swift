@@ -132,18 +132,39 @@ import Testing
         #expect(applier.installed?.safetyClaim == nil)
     }
 
-    @Test func aSnapshotAlwaysInstallsWhenOneWasRequested() {
+    @Test func aNewerSnapshotInstallsWhenOneWasRequested() {
         var applier = RemoteStateApplier()
         applier.install(snapshot(state: 5))
         _ = applier.apply(update(base: 9, new: 10))
         #expect(applier.needsSnapshot)
 
-        let older = snapshot(state: 4)
-        let result = applier.install(older)
+        let newer = snapshot(state: 10)
+        let result = applier.install(newer)
 
         #expect(result == .installed)
         #expect(applier.needsSnapshot == false)
-        #expect(applier.installed == older)
+        #expect(applier.installed == newer)
+    }
+
+    @Test func anOlderSnapshotIsIgnoredEvenDuringGapRecovery() {
+        var applier = RemoteStateApplier()
+        let original = snapshot(state: 5, withClaim: true)
+        applier.install(original)
+        _ = applier.apply(update(base: 9, new: 10))
+        #expect(applier.needsSnapshot)
+
+        let older = applier.install(snapshot(state: 4))
+        let same = applier.install(snapshot(state: 5))
+
+        #expect(older == .ignoredOlder)
+        #expect(same == .ignoredOlder)
+        #expect(applier.needsSnapshot)
+        #expect(applier.installed == original)
+        // Another session restarts revisions, so its snapshot still installs.
+        var restarted = snapshot(state: 1)
+        restarted.session = SessionID()
+        #expect(applier.install(restarted) == .installed)
+        #expect(applier.needsSnapshot == false)
     }
 
     @Test func anUpdateWhoseRevisionsDisagreeIsAGap() {

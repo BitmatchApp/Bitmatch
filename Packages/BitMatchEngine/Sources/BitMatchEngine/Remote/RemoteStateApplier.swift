@@ -23,12 +23,14 @@ public struct RemoteStateApplier: Sendable {
         needsSnapshot = false
     }
 
-    /// A snapshot always installs when one was requested or none is installed;
-    /// otherwise a same-session snapshot that is not newer is a delayed arrival
-    /// and is ignored so it cannot roll the client back.
+    /// A snapshot installs when none is installed or it comes from another
+    /// host or session. A same-host, same-session snapshot that is not newer
+    /// than the installed state is a delayed arrival and is ignored, even
+    /// while a snapshot is awaited, so it can never roll the client back;
+    /// `needsSnapshot` then stays set.
     @discardableResult
     public mutating func install(_ snapshot: RemoteSnapshot) -> InstallResult {
-        if let current = installed, !needsSnapshot,
+        if let current = installed,
            snapshot.host == current.host, snapshot.session == current.session,
            snapshot.revisions.state <= current.revisions.state {
             return .ignoredOlder

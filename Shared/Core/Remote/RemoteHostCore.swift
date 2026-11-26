@@ -31,7 +31,12 @@ final class RemoteHostCore {
     private let admission: RemoteAdmissionStore
     private let hostName: String
     private let heartbeatInterval: TimeInterval
-    private let executor: RemoteCommandExecutor
+    private let safeToErase: @MainActor (UUID, MediaIncarnation) -> Bool
+    /// Flushes a change still waiting for its deferred update before every
+    /// revision check and before `.done` reads the revisions.
+    private lazy var executor = RemoteCommandExecutor(
+        surface: surface, host: host, admission: admission, safeToErase: safeToErase,
+        refreshRevisions: { [weak self] in self?.flushPendingChanges() })
     private let scheduler: any RemoteScheduler
     private let now: @Sendable () -> Date
     private var attachments: [SessionID: Attachment] = [:]
@@ -59,7 +64,7 @@ final class RemoteHostCore {
         self.heartbeatInterval = heartbeatInterval
         self.scheduler = scheduler
         self.now = now
-        executor = RemoteCommandExecutor(surface: surface, host: host, admission: admission, safeToErase: safeToErase)
+        self.safeToErase = safeToErase
         // Each update names its own session, so the session here is only a placeholder.
         published = RemoteSnapshotBuilder(surface: surface, host: host, hostName: hostName, session: SessionID())
             .snapshot(now: now())
@@ -81,8 +86,15 @@ final class RemoteHostCore {
 
     // MARK: - Links
 
+    /// Sessions with an attached link.
+    var attachedSessions: Set<SessionID> { Set(attachments.keys) }
+
     func attach(_ link: any RemoteLink, session: SessionID) {
         detach(session: session)
+        // A change made earlier in this turn moves the revisions first, so
+        // the snapshot never pairs new values with the old revisions. Its
+        // update goes only to the links already attached.
+        flushPendingChanges()
         let (outgoing, outbox) = AsyncStream<RemoteEnvelope>.makeStream()
         let attachment = Attachment(link: link, outbox: outbox)
         attachments[session] = attachment
@@ -157,6 +169,9 @@ final class RemoteHostCore {
     /// knows it, so a retry across a reconnect still hears its answer.
     private func route(_ envelope: RemoteEnvelope, from session: SessionID) {
         guard case .command(let command) = envelope.message, let attachment = attachments[session] else { return }
+        // Clients hear about a change made earlier in this turn before this
+        // command's outcome, which is sent after it on the same link.
+        flushPendingChanges()
         if command.session != session,
            admission.existing(client: command.client, request: command.request,
                               contentHash: command.contentHash) == nil {
@@ -194,10 +209,20 @@ final class RemoteHostCore {
 
     /// `objectWillChange` fires before the change, so the update is built on
     /// a later turn, after it, and once for every change made in this turn.
+    /// Anything that reads the revisions sooner (a command's checks, an
+    /// attach) flushes first through `flushPendingChanges`.
     private func stateWillChange() {
         guard !flushScheduled else { return }
         flushScheduled = true
-        Task { [weak self] in self?.flushChanges() }
+        Task { [weak self] in self?.flushPendingChanges() }
+    }
+
+    /// Builds and sends the update now if a change is waiting for one. Only
+    /// call it from code that runs after the change itself, never from an
+    /// `objectWillChange` sink.
+    private func flushPendingChanges() {
+        guard flushScheduled else { return }
+        flushChanges()
     }
 
     private func flushChanges() {
@@ -228,6 +253,7 @@ final class RemoteHostCore {
     }
 
     private func beat() {
+        flushPendingChanges() // the heartbeat names the latest state revision
         let message = RemoteEnvelope(message: .heartbeat(
             RemoteHeartbeat(hostTime: now(), stateRevision: host.revisions.state)))
         for attachment in attachments.values { attachment.outbox.yield(message) }

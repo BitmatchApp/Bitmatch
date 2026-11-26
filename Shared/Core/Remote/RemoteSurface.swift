@@ -35,9 +35,20 @@ protocol RemoteSurface: AnyObject, ObservableObject {
     /// The ID `cancelOperation(ifCurrentTargetID:origin:)` accepts.
     var cancellationTargetID: UUID? { get }
 
+    /// The drive worker the Setup screen's selection checks run on.
+    var selectionWorker: DriveAccessWorker { get }
+
     // MARK: Intents
-    @discardableResult
-    func applyPreparedSource(expectedSource: URL?, expectedDestinations: [URL], newSource: URL) -> Bool
+    /// `SetupLocationSelection.chooseSourcePrepared`, the Setup screen's own
+    /// source choice: staged-card check, `evaluateSource` on the worker, the
+    /// project lock, then a compare-and-swap. Returns its refusals; throws
+    /// `CancellationError` when the selection changed meanwhile.
+    func chooseSourcePrepared(_ url: URL, worker: DriveAccessWorker, jobKey: String) async throws -> [String]
+    /// `SetupLocationSelection.addBackupsPrepared`, the Setup screen's own
+    /// backup add: `evaluateBackup` on the worker, the project lock, then a
+    /// compare-and-swap. Returns its refusals; throws `CancellationError`
+    /// when the selection changed meanwhile.
+    func addBackupsPrepared(_ urls: [URL], worker: DriveAccessWorker, jobKey: String) async throws -> [String]
     func startSetupTransfersPrepared() async throws -> UUID?
     func enqueueSelectionPrepared() async throws -> UUID
     func startQueue()
@@ -55,12 +66,6 @@ protocol RemoteSurface: AnyObject, ObservableObject {
         using ejector: @Sendable (URL) async -> String?
     ) async -> String?
     #endif
-    @discardableResult
-    func addDestination(
-        _ url: URL,
-        origin: BackupTargetPolicy.Origin,
-        facts: (URL) -> BackupTargetPolicy.VolumeFacts?
-    ) -> String?
     func moveQueuedTransfer(id: UUID, to destinationIndex: Int) throws
     func moveQueuedTransferToTop(_ id: UUID) throws
     func clearFinishedQueueRows()

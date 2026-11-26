@@ -253,9 +253,11 @@ private func settle() async {
         let surface = FakeRemoteSurface(journal: LocalTransferJournal(fileURL: journalFile))
         surface.sourceURL = card
         surface.destinationURLs = [raid]
+        // The records belong to the Mac's current queue session.
+        surface.queueSessionRecordIDs = Set(surface.transferJournal.records.map(\.id))
         let host = RemoteHostState()
         host.registerCard(RemoteCardSummary(id: "card-1", name: "A001", capacityBytes: nil, detectedCamera: nil,
-                                            hasAccess: true, media: media), url: card)
+                                            hasAccess: true, media: media), url: card, registeredAt: start)
         host.registerBackup(RemoteBackupSummary(id: "backup-1", name: "RAID", freeBytes: nil, policyVerdict: "ok"),
                             url: raid)
         host.registerBackup(RemoteBackupSummary(id: "backup-2", name: "Shuttle", freeBytes: nil, policyVerdict: "ok"),
@@ -456,7 +458,7 @@ private func settle() async {
         #expect(await eventually { h.host.revisions.selection == seen + 1 })
         #expect(h.view.snapshot?.revisions.selection == seen)
 
-        let outcome = await h.view.applyPreparedSource(cardID: "card-1")
+        let outcome = await h.view.chooseSourcePrepared(cardID: "card-1")
 
         #expect(outcome == .rejected(.staleRevision(current: h.host.revisions)))
         #expect(h.surface.calls.isEmpty)
@@ -715,7 +717,7 @@ private func settle() async {
         h.host.registerCard(RemoteCardSummary(id: "card-2", name: "B001", capacityBytes: nil, detectedCamera: nil,
                                               hasAccess: true,
                                               media: MediaIncarnation(volumeIdentity: "vol-b001", mountGeneration: 1)),
-                            url: second)
+                            url: second, registeredAt: h.scheduler.now)
         #expect(await eventually { h.host.revisions.selection == seen + 1 })
 
         let session = SessionID()
@@ -761,7 +763,7 @@ private func settle() async {
 
         // The same card ID now names another folder. It still contains the
         // selected source, so nothing a client sees differs.
-        h.host.registerCard(summary, url: h.directory)
+        h.host.registerCard(summary, url: h.directory, registeredAt: h.scheduler.now)
 
         #expect(await eventually { h.view.snapshot?.revisions.selection == seen + 1 })
         #expect(h.view.snapshot?.selectedCardID == "card-1")
@@ -779,8 +781,12 @@ private func settle() async {
         defer { try? FileManager.default.removeItem(at: h.directory) }
         try await h.connect()
 
+        #expect(h.hostCore.attachedSessions == [h.session])
+
         h.clientCore.stop()
-        await settle()
+
+        // The host notices the end of the link and drops its attachment.
+        #expect(await eventually { h.hostCore.attachedSessions.isEmpty })
         h.surface.objectWillChange.send()
         h.surface.destinationURLs = [h.shuttle]
         await settle()
@@ -789,5 +795,98 @@ private func settle() async {
 
         // No update or heartbeat is queued for the closed link.
         #expect(kinds(h.clientEnd) == ["snapshot"])
+        #expect(h.hostCore.attachedSessions.isEmpty)
+    }
+
+    // MARK: - Revisions describe the surface as it is now
+
+    @Test func aCommandRoutedBeforeASurfaceChangeInTheSameTurnIsRejectedAsStale() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        h.hostCore.attach(h.hostEnd, session: h.session)
+        let seen = h.host.revisions.selection
+        let request = RequestID()
+        let command = RemoteCommand(client: h.client, request: request, session: h.session,
+                                    body: .start(selectionRevision: seen))
+        let encoded = try JSONEncoder().encode(RemoteEnvelope(message: .command(command)))
+
+        // One main-actor turn: the command is routed, then the Mac's selection changes.
+        h.hostCore.receive(encoded: encoded, session: h.session)
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+
+        #expect(await eventually { outcomes(h.clientEnd)[request] != nil })
+        #expect(h.host.revisions.selection == seen + 1)
+        #expect(outcomes(h.clientEnd)[request] == .rejected(.staleRevision(current: h.host.revisions)))
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func doneCarriesPostEffectRevisions() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let before = try #require(h.view.snapshot).revisions
+        // Starting changes the selection, as the coordinator's start does.
+        h.surface.startHook = {
+            h.surface.objectWillChange.send()
+            h.surface.destinationURLs = [h.shuttle]
+        }
+
+        let outcome = await h.view.startSetupTransfersPrepared()
+
+        guard case .done(let result) = outcome else {
+            Issue.record("expected done, got \(outcome)")
+            return
+        }
+        #expect(result.revisions.selection == before.selection + 1)
+        #expect(result.revisions == h.host.revisions)
+        // The update describing the effect reached the client before the reply.
+        #expect(h.view.snapshot?.revisions == result.revisions)
+    }
+
+    @Test func anAttachSnapshotNeverCarriesNewValuesAtOldRevisions() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let seen = h.host.revisions
+
+        // One main-actor turn: the selection changes, then a second client attaches.
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+        let link = h.attachAnotherLink()
+
+        #expect(await eventually { !link.received.isEmpty })
+        guard case .snapshot(let snapshot) = link.received.first?.message else {
+            Issue.record("expected a snapshot first")
+            return
+        }
+        #expect(snapshot.selectedBackupIDs == ["backup-2"])
+        #expect(snapshot.revisions.selection == seen.selection + 1)
+        #expect(snapshot.revisions == h.host.revisions)
+        // The client already attached hears the same change as one update.
+        #expect(await eventually { h.view.snapshot?.revisions == snapshot.revisions })
+        await settle()
+        #expect(kinds(link) == ["snapshot"])
+    }
+
+    // MARK: - Gaps
+
+    @Test func aGapClosesTheLinkSoAReattachRepairsTheState() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let installed = try #require(h.view.snapshot)
+
+        // An update that skips a revision, as after a lost message.
+        var revisions = installed.revisions
+        revisions.state += 2
+        try await h.hostEnd.send(RemoteEnvelope(message: .update(RemoteStateUpdate(
+            baseRevision: installed.revisions.state + 1, newRevision: revisions.state,
+            snapshotPatch: RemoteSnapshotPatch(host: installed.host, session: installed.session,
+                                               takenAt: h.scheduler.now, revisions: revisions)))))
+
+        #expect(await eventually { h.view.connection == .disconnected })
+        #expect(await eventually { h.hostCore.attachedSessions.isEmpty })
+        #expect(h.view.applier.needsSnapshot)
     }
 }

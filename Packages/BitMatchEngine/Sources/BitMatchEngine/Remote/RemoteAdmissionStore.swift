@@ -152,6 +152,6 @@ public final class RemoteAdmissionStore: Sendable {
 
     private func persist(_ entries: [Key: Entry]) throws {
         let sorted = entries.values.sorted { $0.admittedAt < $1.admittedAt }
-        try DurableJSONFile.write(try JSONEncoder().encode(sorted), to: fileURL)
+        try DurableJSONFile.write(try JSONEncoder().encode(sorted), to: fileURL, what: "the remote command record")
     }
 }

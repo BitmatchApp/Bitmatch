@@ -43,9 +43,58 @@ struct RemoteCommandExecutorTests {
         h.host.registerCard(
             RemoteCardSummary(id: "card-1", name: name, capacityBytes: 64_000_000_000,
                               detectedCamera: nil, hasAccess: true, media: media),
-            url: url
+            url: url, registeredAt: Date()
         )
         return url
+    }
+
+    @Test func selectSourceGoesThroughThePreparedIntent() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let card = try registerCard(h)
+        let select = command(.selectSource(cardID: "card-1", selectionRevision: 3))
+
+        let outcome = await h.executor.execute(select)
+
+        #expect(outcome == done(select, h.host))
+        #expect(h.surface.calls == [.chooseSourcePrepared(card)])
+        #expect(h.surface.sourceURL == card)
+
+        // A refusal from the Mac's own selection rules is the outcome.
+        h.surface.sourceURL = nil
+        h.surface.selectionRefusals = ["This card is already staged."]
+        let refused = await h.executor.execute(command(.selectSource(cardID: "card-1", selectionRevision: 3)))
+        #expect(refused == .rejected(.hostRefused(wording: "This card is already staged.")))
+        #expect(h.surface.sourceURL == nil)
+
+        // A lock the intent skips silently is refused, not reported done.
+        h.surface.selectionRefusals = []
+        h.surface.selectionLocked = true
+        let locked = await h.executor.execute(command(.selectSource(cardID: "card-1", selectionRevision: 3)))
+        #expect(locked == .rejected(.hostRefused(wording: RemoteCommandExecutor.selectionLockedWording)))
+    }
+
+    @Test func setDestinationsGoesThroughThePreparedIntent() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let raid = URL(fileURLWithPath: "/Volumes/RAID/Shoot", isDirectory: true)
+        let shuttle = URL(fileURLWithPath: "/Volumes/Shuttle/Shoot", isDirectory: true)
+        h.host.registerBackup(RemoteBackupSummary(id: "backup-1", name: "RAID", freeBytes: nil, policyVerdict: "ok"), url: raid)
+        h.host.registerBackup(RemoteBackupSummary(id: "backup-2", name: "Shuttle", freeBytes: nil, policyVerdict: "ok"), url: shuttle)
+        h.surface.destinationURLs = [raid]
+        let set = command(.setDestinations(backupIDs: ["backup-2"], selectionRevision: 3))
+
+        let outcome = await h.executor.execute(set)
+
+        #expect(outcome == done(set, h.host))
+        #expect(h.surface.calls == [.removeDestination(raid), .addBackupsPrepared([shuttle])])
+        #expect(h.surface.destinationURLs == [shuttle])
+
+        h.surface.selectionRefusals = ["Choose a backup that is not on the card."]
+        let refused = await h.executor.execute(command(.setDestinations(backupIDs: ["backup-1", "backup-2"],
+                                                                        selectionRevision: 3)))
+        #expect(refused == .rejected(.hostRefused(wording: "Choose a backup that is not on the card.")))
+        #expect(h.surface.destinationURLs == [shuttle])
     }
 
     private func makeFolder(_ name: String, in h: Harness) throws -> URL {
@@ -105,7 +154,7 @@ struct RemoteCommandExecutorTests {
         let outcome = await h.executor.execute(set)
 
         #expect(outcome == done(set, h.host))
-        #expect(h.surface.calls == [.addDestination(raid)])
+        #expect(h.surface.calls == [.addBackupsPrepared([raid])])
         #expect(h.surface.destinationURLs == [unmanaged, raid])
     }
 
