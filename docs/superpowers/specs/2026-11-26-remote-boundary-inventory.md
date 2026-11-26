@@ -17,13 +17,14 @@ Wording used when not supported:
 
 ## Corrections to the brief's member list
 
-All 18 read members and 13 intents exist on the coordinator under the brief's names. Signature corrections only:
+All 18 read members and 19 intents exist on the coordinator under the brief's names. Signature corrections only:
 
 - `pauseOperation` takes `reason: PauseInfo.PauseReason` (default `.userRequested`). A defaulted parameter does not satisfy a no-argument requirement, so the protocol declares `pauseOperation(reason:)`.
-- `cancelOperation(ifCurrentTargetID:origin:)` and `addDestination(_:origin:facts:)` have defaulted parameters; the protocol declares them in full.
-- `addDestination` is `@discardableResult` and returns `String?` (a refusal message). `ejectQueueSource` returns `String?` and takes `using ejector:`.
+- `cancelOperation(ifCurrentTargetID:origin:)` has a defaulted parameter; the protocol declares it in full.
+- `ejectQueueSource` returns `String?` and takes `using ejector:`.
 - `ejectQueueSource` exists only on macOS (`#if os(macOS)`), so it sits inside the same conditional in the protocol.
-- Added for the command executor (Task 6): `applyPreparedSource(expectedSource:expectedDestinations:newSource:)` as an intent, and `verificationMode` as `{ get set }`. The protocol exposes no other way to choose a source or set the verification mode. Also `ejectingQueueSourceIDs` (macOS), so a remote eject can tell "already unmounting" from success.
+- Added for the command executor (Task 6): `verificationMode` as `{ get set }`, and `ejectingQueueSourceIDs` (macOS), so a remote eject can tell "already unmounting" from success.
+- Source and backup choice (final review): the protocol has the Setup screen's own prepared intents, `chooseSourcePrepared(_:worker:jobKey:)` and `addBackupsPrepared(_:worker:jobKey:)` (from `SetupLocationSelection`, `Shared/Views/Setup/CoordinatorSetupLocations.swift`; the coordinator forwards to them), and `selectionWorker`, the drive worker they run on. They apply the staged-card check, `DestinationSelectionPolicy.evaluateSource` / `evaluateBackup` off the main actor, the project lock and a compare-and-swap; a refusal they return becomes `hostRefused`. `applyPreparedSource` and `addDestination(_:origin:facts:)`, which Task 6 used, left the protocol: the first called alone skips those rules, the second reads volume facts on the main actor and skips `evaluateBackup`. Of the brief's 19 intents, 18 are in the protocol; `addDestination` is the exception.
 - `setDestinations` compares the backups as a set: their order is not part of the remote contract.
 - Added for the snapshot builder (Task 7): `transferReadiness` (read), so the snapshot's readiness wording comes from the shared `OperationReadinessAssessment` and the selection revision bumps when source preparation leaves `.analysing`; and `cancellationTargetID` (read, `activeStartID ?? stateService.currentOperationId`), the ID a remote `cancel` must carry. Both already exist on the coordinator under these names. Also `queueSessionRecordOrder` (read), the queue's run order, which the snapshot publishes and whose waiting cards `moveQueuedTransfer` indexes; the coordinator's stored property went from `private` to `private(set)` for it.
 - `queueIsRunning`, `queueMessage`, `queueSessionRecordIDs`, `queuePausedRecordID` are `private(set)`; `transferJournal` and `generalSettings` are `let`. All are `{ get }`.
@@ -46,7 +47,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | cameraLabelSettings | Setup, CopyAndVerify, ModularContent, Preferences | read | no (later slice: label settings stay per device) |
 | editingSetupTransferID | AdaptiveQueuePresentation, Setup, Queue | read | no (local UI: draft editing) |
 | queueIsRunning | AdaptiveQueuePresentation, Setup, ModularContent, PhoneContent, Queue | read | yes |
-| selectionWorker | Setup | read | no (local UI: source analysis runs where the card is) |
+| selectionWorker | Setup | read | yes (the drive worker the prepared source and backup intents run on; a remote `selectSource` or `setDestinations` passes it) |
 | liveProgress | AdaptiveQueuePresentation, ActionBar, ModularContent, Progress adapters, Queue, CompareFolders | read | no (derived from stateService and timingService) |
 | stagedSetupTransfers | Setup | read | no (local UI: draft staging) |
 | sourceFolderInfo | Setup | read | no (derived from source analysis on the Mac) |
@@ -96,7 +97,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | demoQueueAutoOpen | Content | read | no (local UI: demo) |
 | clearFinishedQueueRows | Queue | intent | yes |
 | checkAgainst | CompareFolders, ModularContent | intent | no (local-only: Compare and Check) |
-| applyPreparedDestinations | Setup | intent | no (local UI: picker result) |
+| applyPreparedDestinations | Setup | intent | no (the compare-and-swap inside `addBackupsPrepared`, which is yes) |
 | warningCount | Progress adapters | read | no (derived from stateService) |
 | transferReadiness | Setup | read | yes (snapshot readiness wording and status; its change bumps the selection revision) |
 | startSetupTransfers | Setup | intent | no (superseded by `startSetupTransfersPrepared`) |
@@ -140,8 +141,10 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | backgroundTimeRemainingSeconds | Progress adapters | read | no (local UI: the device's own lifecycle) |
 | autoEjectWhenSafe | Queue | read | yes, via `generalSettings.autoEjectWhenSafe` (the coordinator property forwards to it; not a separate protocol member) |
 | queueNewCardsAutomatically (auto-queue) | Queue, Preferences | read | yes, via `generalSettings.queueNewCardsAutomatically` |
-| applyPreparedSource | Setup (locations) | intent | yes (a remote `selectSource` passes the current source and destinations as the expected values, so the coordinator enforces only the destination lock; staleness comes from the command's `selectionRevision`) |
+| applyPreparedSource | Setup (locations) | intent | no (the compare-and-swap inside `chooseSourcePrepared`, which is yes; called alone it skips the Setup screen's rules) |
 | alreadyBackedUpLine | Setup | read | no (derived) |
-| addDestination | CopyAndVerify | intent | yes (`addDestination(_:origin:facts:)`) |
+| addDestination | CopyAndVerify | intent | no (reads volume facts on the main actor and skips `evaluateBackup`; a remote `setDestinations` adds through `addBackupsPrepared`) |
+| chooseSourcePrepared | Setup (locations, through `SetupLocationSelection`) | intent | yes (`chooseSourcePrepared(_:worker:jobKey:)`; a remote `selectSource`) |
+| addBackupsPrepared | Setup (locations, through `SetupLocationSelection`) | intent | yes (`addBackupsPrepared(_:worker:jobKey:)`; the adds of a remote `setDestinations`) |
 
 Members in the protocol but not seen in a view as `coordinator.x`: `currentOperation`, `timingService` (Progress state source, reached through the services). Both exist on the coordinator.

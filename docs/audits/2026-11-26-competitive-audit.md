@@ -1,5 +1,7 @@
 # BitMatch competitive engineering audit
 
+Status: written against `92044955`. Since then, 0.2.14 fixed two of its findings: journal writes are now durable (flushed to the drive, then renamed, then the folder flushed), and special files are no longer silently skipped.
+
 Date: 2026-11-26. Read-only. BitMatch branch audited: worktree `hdd-aware-workers` (HEAD `92044955`). Upstream clones: SD-Offload (HEAD = v1.7.29, 2026-11-20), paiml/copia, lucuma13/mhl-suite, ascmitc/mhl, all cloned into the scratchpad `competitors/` folder and read as untrusted data (never built or executed).
 
 Paths below: `BM:` = BitMatch repo root; `SDO:` = SD-Offload clone; `COPIA:`, `MHLS:`, `ASCMHL:` = the other clones. Line numbers are from the files as read today.
