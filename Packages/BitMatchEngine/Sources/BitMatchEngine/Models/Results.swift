@@ -48,6 +48,21 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
     /// The card holds an entry BitMatch does not copy: a symbolic link,
     /// named pipe, socket, device or whiteout. Never opened or followed.
     case unsupportedSourceEntry
+    /// The backup's file verified, then had a different identity (inode,
+    /// size, modification or change time) at the end of the run: something
+    /// else wrote to it, for example Finder saving a `.DS_Store`.
+    case destinationChangedAfterVerification
+    /// The backup's file verified, then was gone at the end of the run.
+    case destinationMissingAfterVerification
+    /// The backup's file verified, then had a different size at the end of the run.
+    case destinationSizeChangedAfterVerification
+    /// A different file already sat at the final name on the backup; BitMatch
+    /// never overwrites it. (`._*` names use `companionConflict`.)
+    case existingDestinationConflict
+    /// The end-of-run checks of a backup could not be completed: its files
+    /// could not be listed, its folder moved, its transfer status could not be
+    /// saved, or a fresh empty-file proof failed.
+    case destinationCheckFailed
     /// NSError userInfo key the writer sets on the errors it classifies.
     public static let userInfoKey = "BitMatchFailureReason"
 
@@ -60,6 +75,11 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
         case .sourceNotConnected: "the card was not connected"
         case .backupRefused: "a backup was refused before copying started"
         case .unsupportedSourceEntry: "the card holds an item BitMatch does not copy (a link, pipe, socket or device)"
+        case .destinationChangedAfterVerification: "the backup's copy changed after it verified; something else wrote to it, for example Finder"
+        case .destinationMissingAfterVerification: "the backup's copy was gone after it verified; something else moved or deleted it"
+        case .destinationSizeChangedAfterVerification: "the backup's copy changed size after it verified; something else wrote to it, for example Finder"
+        case .existingDestinationConflict: "a different file was already at that name on the backup; it was not overwritten"
+        case .destinationCheckFailed: "the backup could not be checked at the end of the run"
         }
     }
 
@@ -88,7 +108,12 @@ public struct ResultRow: Identifiable, Sendable {
     /// Canonical `ResultFailureReason` token for a failed file, when the
     /// engine could classify the failure; nil otherwise. Never error text.
     public let failureReason: String?
-    
+    /// The readback checksum this file had on this backup before an
+    /// end-of-run check failed it (it changed, vanished or changed size after
+    /// it verified). Evidence of what was verified, never a verified checksum:
+    /// `checksum` stays nil on such a row. Nil on every other row.
+    public let recordedChecksumBeforeFailure: String?
+
     public init(id: UUID = UUID(),
          path: String,
          status: String,
@@ -100,7 +125,8 @@ public struct ResultRow: Identifiable, Sendable {
          wasReused: Bool = false,
          failedOutputMarking: String? = nil,
          recopyOutcome: String? = nil,
-         failureReason: String? = nil) {
+         failureReason: String? = nil,
+         recordedChecksumBeforeFailure: String? = nil) {
         self.id = id
         self.path = path
         self.status = status
@@ -113,8 +139,9 @@ public struct ResultRow: Identifiable, Sendable {
         self.failedOutputMarking = failedOutputMarking
         self.recopyOutcome = recopyOutcome
         self.failureReason = failureReason
+        self.recordedChecksumBeforeFailure = recordedChecksumBeforeFailure
     }
-    
+
     /// Canonical History/report suffix for the marking outcome, shared by
     /// every surface so the words cannot drift.
     public var markingNote: String? {
@@ -257,7 +284,7 @@ public struct ReportPrefs: Codable, Sendable {
 
 extension ResultRow: Codable {
     public enum CodingKeys: String, CodingKey, Sendable {
-        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome, failureReason
+        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome, failureReason, recordedChecksumBeforeFailure
     }
 
     public init(from decoder: Decoder) throws {
@@ -283,8 +310,9 @@ extension ResultRow: Codable {
         let failedOutputMarking = try container.decodeIfPresent(String.self, forKey: .failedOutputMarking)
         let recopyOutcome = try container.decodeIfPresent(String.self, forKey: .recopyOutcome)
         let failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
+        let recordedChecksumBeforeFailure = try container.decodeIfPresent(String.self, forKey: .recordedChecksumBeforeFailure)
 
-        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome, failureReason: failureReason)
+        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome, failureReason: failureReason, recordedChecksumBeforeFailure: recordedChecksumBeforeFailure)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -301,5 +329,6 @@ extension ResultRow: Codable {
         try container.encodeIfPresent(failedOutputMarking, forKey: .failedOutputMarking)
         try container.encodeIfPresent(recopyOutcome, forKey: .recopyOutcome)
         try container.encodeIfPresent(failureReason, forKey: .failureReason)
+        try container.encodeIfPresent(recordedChecksumBeforeFailure, forKey: .recordedChecksumBeforeFailure)
     }
 }

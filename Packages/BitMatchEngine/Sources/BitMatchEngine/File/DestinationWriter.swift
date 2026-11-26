@@ -1734,7 +1734,7 @@ public final class DestinationWriter {
     #if canImport(Darwin)
     private static func reuseConflict(_ reason: String, relativePath: String) -> NSError {
         guard (relativePath as NSString).lastPathComponent.hasPrefix("._") else {
-            return existingDestinationConflictError(reason)
+            return existingDestinationConflictError(reason, failureReason: .existingDestinationConflict)
         }
         return existingDestinationConflictError(
             "A hidden companion file on the backup differs from the source. macOS can create or update these files on exFAT drives. BitMatch is refusing to overwrite it. Nothing was overwritten. Keep the source intact and export the results before retrying.",

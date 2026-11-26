@@ -272,6 +272,8 @@ public struct JSONReportItem: Codable, Sendable {
     public let byteCount: Int64?
     public let clipIntegrity: ClipIntegrityFinding?
     public let failureReason: String?
+    /// A failed row's earlier readback checksum (see `ResultRow`); never on a success.
+    public let recordedChecksumBeforeFailure: String?
 
     public init(from row: ResultRow) {
         self.path = row.path
@@ -282,6 +284,7 @@ public struct JSONReportItem: Codable, Sendable {
         self.byteCount = row.size
         self.clipIntegrity = row.clipIntegrity
         self.failureReason = row.isSuccessStatus ? nil : row.failureReason.flatMap(ResultFailureReason.init(rawValue:))?.rawValue
+        self.recordedChecksumBeforeFailure = row.isSuccessStatus ? nil : row.recordedChecksumBeforeFailure
     }
 }
 

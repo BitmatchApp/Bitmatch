@@ -146,6 +146,10 @@ public struct FileOperationResult: Sendable {
     public let recopyOutcome: String?
     
     public var excludedAppleDouble: Bool = false
+    /// Set only on a row an end-of-run check failed after this backup's
+    /// readback had verified the file: the checksum that readback recorded.
+    /// Never makes the row verified (`verificationResult` stays nil).
+    public var recordedChecksumBeforeFailure: String? = nil
 
     /// Canonical `ResultFailureReason` token the writer set on `error`.
     public var failureReason: String? {
@@ -161,6 +165,12 @@ public struct FileOperationResult: Sendable {
     }
 
     public var statusDescription: String { outcome.statusText }
+
+    /// The checksum a successful readback recorded; nil unless this row verified.
+    var verifiedChecksum: String? {
+        guard success, let verification = verificationResult, verification.isValid else { return nil }
+        return verification.sourceChecksum
+    }
 
     public init(sourceURL: URL, destinationURL: URL, success: Bool, error: Error?, fileSize: Int64, verificationResult: VerificationResult?, processingTime: TimeInterval, clipIntegrity: ClipIntegrityFinding? = nil, wasReused: Bool = false, failedOutputMarking: String? = nil, recopyOutcome: String? = nil) {
         self.sourceURL = sourceURL
@@ -186,6 +196,7 @@ public struct FileOperationResult: Sendable {
             recopyOutcome: recopyOutcome
         )
         result.excludedAppleDouble = excludedAppleDouble
+        result.recordedChecksumBeforeFailure = recordedChecksumBeforeFailure
         return result
     }
 }

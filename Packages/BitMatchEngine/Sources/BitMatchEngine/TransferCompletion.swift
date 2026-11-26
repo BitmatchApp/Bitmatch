@@ -21,7 +21,8 @@ public enum TransferCompletion: Sendable {
             wasReused: result.wasReused,
             failedOutputMarking: result.failedOutputMarking,
             recopyOutcome: result.recopyOutcome,
-            failureReason: result.failureReason
+            failureReason: result.failureReason,
+            recordedChecksumBeforeFailure: result.success ? nil : result.recordedChecksumBeforeFailure
         )
     }
 
@@ -50,13 +51,20 @@ public enum TransferCompletion: Sendable {
     private struct CoverageEntry: Sendable {
         let source: URL
         let destination: URL?
+        var failureReason: String? = nil
     }
 
     private struct DestinationCoverage: Sendable {
         let destination: URL
         let root: URL
         let entryIndices: [Int]
+        /// Expected files with no counted row, including `notVerifiedCount`.
         let missingCount: Int
+        /// Of `missingCount`, files that do have a row on this backup, one
+        /// that did not verify (or, in Quick, did not copy).
+        var notVerifiedCount = 0
+        /// The one reason every such row gives, when they all give the same.
+        var notVerifiedReason: ResultFailureReason? = nil
         let duplicateCount: Int
         let unexpectedCount: Int
 
@@ -79,7 +87,8 @@ public enum TransferCompletion: Sendable {
         sourceFiles: [URL]?,
         destinations: [URL],
         source: URL,
-        settings: CameraLabelSettings
+        settings: CameraLabelSettings,
+        notVerifiedEntries: [CoverageEntry] = []
     ) -> CoverageAnalysis {
         var destinationCoverage: [DestinationCoverage] = []
         var issues: [String] = []
@@ -90,6 +99,8 @@ public enum TransferCompletion: Sendable {
         let expectedPaths = Set((sourceFiles ?? []).map { folders.canonicalPath($0) })
         let canonicalSources = entries.map { folders.canonicalPath($0.source) }
         let canonicalDestinations = entries.map { $0.destination.map { folders.canonicalPath($0) } }
+        let notVerifiedSources = notVerifiedEntries.map { folders.canonicalPath($0.source) }
+        let notVerifiedDestinations = notVerifiedEntries.map { $0.destination.map { folders.canonicalPath($0) } }
         // A file's place on a backup is the backup root plus its own path
         // inside the card, so each result is checked against exactly that.
         let sourcePath = canonicalPath(source)
@@ -135,17 +146,37 @@ public enum TransferCompletion: Sendable {
                 }
                 matchedCounts[relativeSource, default: 0] += 1
             }
-            let missingCount = expectedRelativePaths.subtracting(matchedCounts.keys).count
+            let missingPaths = expectedRelativePaths.subtracting(matchedCounts.keys)
+            let missingCount = missingPaths.count
                 + (expectedPaths.count - expectedRelativePaths.count)
             let duplicateCount = matchedCounts.values.reduce(0) { $0 + max(0, $1 - 1) }
-            destinationCoverage.append(DestinationCoverage(
+            // A missing file that has a row here, one that did not count, is
+            // "not verified"; only a file with no row at all "has no result".
+            var notVerifiedReasons: [String: [String?]] = [:]
+            if !missingPaths.isEmpty {
+                for index in notVerifiedEntries.indices {
+                    guard let destinationPath = notVerifiedDestinations[index],
+                          destinationPath.hasPrefix(rootPrefix),
+                          let relativeSource = relativeToSource(notVerifiedSources[index]),
+                          missingPaths.contains(relativeSource),
+                          String(destinationPath.dropFirst(rootPrefix.count)) == relativeSource else { continue }
+                    notVerifiedReasons[relativeSource, default: []].append(notVerifiedEntries[index].failureReason)
+                }
+            }
+            var item = DestinationCoverage(
                 destination: destination,
                 root: root,
                 entryIndices: indices,
                 missingCount: missingCount,
                 duplicateCount: duplicateCount,
                 unexpectedCount: unexpectedCount
-            ))
+            )
+            item.notVerifiedCount = notVerifiedReasons.count
+            let reasons = notVerifiedReasons.values.flatMap { $0 }
+            if let first = reasons.first ?? nil, reasons.allSatisfy({ $0 == first }) {
+                item.notVerifiedReason = ResultFailureReason(rawValue: first)
+            }
+            destinationCoverage.append(item)
         }
 
         if sourceFiles == nil {
@@ -193,14 +224,27 @@ public enum TransferCompletion: Sendable {
         }
     }
 
-    private static func coverageIssues(_ coverage: CoverageAnalysis) -> [String] {
+    /// `explainReasons` adds a backup's one shared reason in parentheses;
+    /// the caller turns it off when its headline already says that reason.
+    private static func coverageIssues(_ coverage: CoverageAnalysis, notVerifiedWord: String = "not verified",
+                                       explainReasons: Bool = true) -> [String] {
         var issues = coverage.issues
         for item in coverage.destinations {
             let name = destinationLabel(for: item.destination, roots: [item.destination])
-            if item.missingCount > 0 {
-                issues.append(item.missingCount == 1
+            if item.notVerifiedCount > 0 {
+                var line = item.notVerifiedCount == 1
+                    ? "\(name): 1 file \(notVerifiedWord)"
+                    : "\(name): \(item.notVerifiedCount) files \(notVerifiedWord)"
+                if explainReasons, let reason = item.notVerifiedReason {
+                    line += " (\(reason.rowNote))"
+                }
+                issues.append(line)
+            }
+            let absentCount = item.missingCount - item.notVerifiedCount
+            if absentCount > 0 {
+                issues.append(absentCount == 1
                     ? "\(name): 1 file has no result"
-                    : "\(name): \(item.missingCount) files have no result")
+                    : "\(name): \(absentCount) files have no result")
             }
             if item.duplicateCount > 0 {
                 issues.append(item.duplicateCount == 1
@@ -219,10 +263,13 @@ public enum TransferCompletion: Sendable {
     public struct ASCMHLJob: Sendable {
         public let root: URL
         public let files: [ASCMHLGenerator.VerifiedFile]
+        /// The backup as summaries name it (its volume), from the selected destination.
+        public let label: String
 
-        public init(root: URL, files: [ASCMHLGenerator.VerifiedFile]) {
+        public init(root: URL, files: [ASCMHLGenerator.VerifiedFile], label: String? = nil) {
             self.root = root
             self.files = files
+            self.label = label ?? TransferCompletion.destinationLabel(for: root, roots: [root])
         }
     }
 
@@ -252,9 +299,18 @@ public enum TransferCompletion: Sendable {
         var issues = coverage.issues.map { "ASC MHL not created — \($0)" }
         for item in coverage.destinations {
             let rows = item.entryIndices.map { results[$0] }
-            guard sourceFiles != nil, item.isExact,
-                  rows.allSatisfy({ $0.success && $0.verificationResult?.isValid == true && $0.verificationResult?.checksumType == .sha256 }) else {
-                issues.append("\(item.destination.lastPathComponent): ASC MHL not created because verification is incomplete")
+            // Name the volume: two backups often use the same folder name.
+            let name = destinationLabel(for: item.destination, roots: [item.destination])
+            guard sourceFiles != nil, item.isExact else {
+                issues.append("ASC MHL not created on \(name) because verification is incomplete")
+                continue
+            }
+            let notVerified = rows.filter { !($0.success && $0.verificationResult?.isValid == true) }.count
+            let notSHA256 = rows.filter { $0.verificationResult?.checksumType != .sha256 }.count
+            guard notVerified == 0, notSHA256 == 0 else {
+                let count = notVerified > 0 ? notVerified : notSHA256
+                let files = count == 1 ? "1 file" : "\(count) files"
+                issues.append("ASC MHL not created on \(name): \(files) not verified\(notVerified > 0 ? "" : " with SHA-256")")
                 continue
             }
             let canonicalRoot = item.root.standardizedFileURL.resolvingSymlinksKeepingCase()
@@ -270,13 +326,16 @@ public enum TransferCompletion: Sendable {
                     verifiedMD5: verification?.destinationDigests?.md5,
                     destinationReadIdentity: verification?.destinationReadIdentity
                 )
-            }))
+            }, label: name))
         }
         return (jobs, issues)
     }
 
     /// Writes each planned history and returns every issue: the plan's and
-    /// any write failures. Blocking file I/O; run it off the main actor.
+    /// any write failures. When there is any issue, the list starts with the
+    /// backups that did get a history ("ASC MHL saved on B"), so a partial
+    /// handoff is never read as none; with no issue the list stays empty.
+    /// Blocking file I/O; run it off the main actor.
     public static func writeASCMHL(
         _ jobs: [ASCMHLJob],
         planIssues: [String],
@@ -290,6 +349,7 @@ public enum TransferCompletion: Sendable {
         let totalFiles = jobs.reduce(0) { $0 + $1.files.count }
         var precedingBytes: Int64 = 0
         var precedingFiles = 0
+        var saved: [String] = []
         for job in jobs {
             let byteOffset = precedingBytes
             let fileOffset = precedingFiles
@@ -308,17 +368,19 @@ public enum TransferCompletion: Sendable {
                             published: precedingJobsSucceeded && update.published && fileOffset + update.filesProcessed == totalFiles))
                     }, diagnosticRun: diagnosticRun, operatorName: operatorName, notes: notes
                 )
+                saved.append(job.label)
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
                 SharedLogger.transferError(error, run: diagnosticRun)
-                failures.append("\(job.root.lastPathComponent): ASC MHL — \(error.localizedDescription)")
+                failures.append("\(job.label): ASC MHL — \(error.localizedDescription)")
             }
             let last = observed.withLock { $0 }
             precedingBytes += last.bytes
             precedingFiles += last.files
         }
-        return failures
+        guard !failures.isEmpty, !saved.isEmpty else { return failures }
+        return ["ASC MHL saved on \(saved.joined(separator: ", "))"] + failures
     }
 
     // MARK: - Verdict
@@ -392,9 +454,17 @@ public enum TransferCompletion: Sendable {
         // Safe-to-erase modes count only independently verified readback rows.
         // Quick has no safe verdict; its copied rows remain eligible only for
         // the separate amber "copied, not verified" outcome.
-        let coverageRows = mode == .quick
-            ? rows.filter(\.isSuccessStatus)
-            : rows.filter(\.isVerifiedStatus)
+        let counts: (ResultRow) -> Bool = mode == .quick ? \.isSuccessStatus : \.isVerifiedStatus
+        let coverageRows = rows.filter(counts)
+        // Rows that exist but do not count, so coverage can say "not
+        // verified" for them and "has no result" only for absent files.
+        let notVerifiedEntries = rows
+            .filter { !counts($0) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+            .map {
+                CoverageEntry(source: URL(fileURLWithPath: $0.path),
+                              destination: $0.destinationPath.map { URL(fileURLWithPath: $0) },
+                              failureReason: $0.isSuccessStatus ? nil : $0.failureReason)
+            }
         let coverage = coverageAnalysis(
             entries: coverageRows.map {
                 CoverageEntry(
@@ -405,7 +475,8 @@ public enum TransferCompletion: Sendable {
             sourceFiles: sourceFiles,
             destinations: destinations,
             source: source,
-            settings: settings
+            settings: settings,
+            notVerifiedEntries: notVerifiedEntries
         )
         let excluded = rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
         let excludedCount = Set(excluded.map(\.path)).count
@@ -418,9 +489,11 @@ public enum TransferCompletion: Sendable {
             selectedCoverage = coverageAnalysis(entries: coverageRows.map {
                 CoverageEntry(source: URL(fileURLWithPath: $0.path),
                               destination: $0.destinationPath.map { URL(fileURLWithPath: $0) })
-            }, sourceFiles: selectedSources, destinations: destinations, source: source, settings: settings)
+            }, sourceFiles: selectedSources, destinations: destinations, source: source, settings: settings,
+               notVerifiedEntries: notVerifiedEntries)
         }
-        let incompleteCoverageIssues = coverageIssues(excludedCount > 0 ? selectedCoverage : coverage)
+        // Set when the headline below already names the one failure reason.
+        var headlineGivesReason = false
         let excludedDescription = "\(excludedCount) AppleDouble \(excludedCount == 1 ? "file" : "files") intentionally excluded"
         let actualIssueCount = rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count
         let issueCount = rows.filter { !$0.isSuccessStatus }.count
@@ -457,6 +530,7 @@ public enum TransferCompletion: Sendable {
             var failedMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
             let reasons = Set(rows.filter { !$0.isSuccessStatus }.map(\.failureReason))
             if reasons.count == 1, let token = reasons.first ?? nil, let reason = ResultFailureReason(rawValue: token) {
+                headlineGivesReason = true
                 switch reason {
                 case .outOfSpace:
                     failedMessage += "; a backup ran out of space"
@@ -473,10 +547,25 @@ public enum TransferCompletion: Sendable {
                 case .unsupportedSourceEntry:
                     let distinctItems = Set(rows.filter(\.isUnsupportedSourceEntry).map(\.path)).count
                     failedMessage += "; the card holds \(distinctItems == 1 ? "an item" : "items") BitMatch does not copy (a link, pipe, socket or device). Keep the card"
+                case .destinationChangedAfterVerification:
+                    failedMessage += "; a backup's copy changed after it verified (something else wrote to it, for example Finder). Keep the source"
+                case .destinationMissingAfterVerification:
+                    failedMessage += "; a backup's copy was gone after it verified. Keep the source"
+                case .destinationSizeChangedAfterVerification:
+                    failedMessage += "; a backup's copy changed size after it verified (something else wrote to it, for example Finder). Keep the source"
+                case .existingDestinationConflict:
+                    failedMessage += "; a different file was already at that name on a backup and was not overwritten. Keep the source"
+                case .destinationCheckFailed:
+                    failedMessage += "; a backup could not be checked at the end of the run. Keep the source"
                 }
             }
             fileResultsMessage = failedMessage
         }
+        let incompleteCoverageIssues = coverageIssues(
+            excludedCount > 0 ? selectedCoverage : coverage,
+            notVerifiedWord: mode == .quick ? "failed" : "not verified",
+            explainReasons: !headlineGivesReason
+        )
 
         let everythingElseHeld = fileResultsSucceeded && coverage.isExact && project.permitsSuccess && handoffIssues.isEmpty && reportIssue == nil
         let succeeded = everythingElseHeld && mode != .quick && everyRowVerified

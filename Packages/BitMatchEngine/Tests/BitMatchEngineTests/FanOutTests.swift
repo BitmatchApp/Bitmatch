@@ -283,7 +283,7 @@ struct FanOutTests {
                 let verdict = fixture.verdict(for: operation, settings: settings)
                 #expect(!verdict.success)
                 #expect(verdict.message.contains(fixture.destinations[1].lastPathComponent))
-                #expect(verdict.message.contains("1 file has no result"))
+                #expect(verdict.message.contains("1 file not verified"))
             }
             #else
             #expect(true)
@@ -345,7 +345,7 @@ struct FanOutTests {
                 #expect(!verdict.success)
                 #expect(!verdict.copiedNotVerified)
                 #expect(verdict.message.contains(fixture.destinations[1].lastPathComponent))
-                #expect(verdict.message.contains("1 file has no result"))
+                #expect(verdict.message.contains(mode == .quick ? ": 1 file failed" : ": 1 file not verified"), "\(verdict.message)")
             }
             #else
             #expect(true)
@@ -635,7 +635,7 @@ struct FanOutTests {
             #expect(!verdict.success)
             #expect(!verdict.copiedNotVerified)
             #expect(verdict.message.contains(fixture.destinations[1].lastPathComponent))
-            #expect(verdict.message.contains("1 file has no result"))
+            #expect(verdict.message.contains("1 file not verified"))
             #else
             #expect(true)
             #endif

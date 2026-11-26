@@ -1409,7 +1409,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         // publication. Never leave its tentative success in the ledger.
                         let failure = FileOperationResult(
                             sourceURL: entry.url, destinationURL: row.destinationURL, success: false,
-                            error: completionGateError("Destination changed or could not be checked during a fresh empty-file proof. Keep the source media."),
+                            error: completionGateError("Destination changed or could not be checked during a fresh empty-file proof. Keep the source media.", reason: .destinationCheckFailed),
                             fileSize: entry.size, verificationResult: nil, processingTime: 0
                         )
                         await ledger.record(failure, relativePath: entry.relativePath, destination: destIndex)
@@ -1471,7 +1471,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 actual = try uniqueDestinationMetadata(pinned.regularFileMetadata())
             } catch {
                 let reason = "\(destinationURL.lastPathComponent)'s files could not be checked after verification: \(error.localizedDescription)"
-                let failure = completionGateError(reason)
+                let failure = completionGateError(reason, reason: .destinationCheckFailed)
                 for entry in sourceManifest {
                     if await ledger.alreadyFailed(
                         relativePath: entry.relativePath,
@@ -1498,16 +1498,23 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 ) { continue }
                 guard let destinationEntry = actual[entry.relativePath],
                       destinationEntry.size == entry.size else {
-                    let reason = "\(destinationURL.lastPathComponent) is missing \(entry.relativePath) after verification."
-                    let failure = FileOperationResult(
+                    let present = actual[entry.relativePath] != nil
+                    let reason = present
+                        ? "\(destinationURL.lastPathComponent)'s \(entry.relativePath) changed size after verification. Keep the source media."
+                        : "\(destinationURL.lastPathComponent) is missing \(entry.relativePath) after verification."
+                    var failure = FileOperationResult(
                         sourceURL: entry.url,
                         destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                         success: false,
-                        error: completionGateError(reason),
+                        error: completionGateError(reason, reason: present
+                            ? .destinationSizeChangedAfterVerification : .destinationMissingAfterVerification),
                         fileSize: entry.size,
                         verificationResult: nil,
                         processingTime: 0
                     )
+                    failure.recordedChecksumBeforeFailure = await ledger.result(
+                        relativePath: entry.relativePath, destination: destIndex
+                    )?.verifiedChecksum
                     await ledger.record(
                         failure,
                         relativePath: entry.relativePath,
@@ -1533,15 +1540,21 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             recorded: verifiedIdentity, current: currentIdentity, lookupError: lookupError
                         )
                         let reason = "\(destinationURL.lastPathComponent)'s \(entry.relativePath) changed or could not be rechecked after verification. Keep the source media."
-                        let failure = FileOperationResult(
+                        // A changed identity means something else wrote the
+                        // file; no recorded identity or a failed lookup means
+                        // the check itself could not be made.
+                        let changed = verifiedIdentity != nil && currentIdentity != nil
+                        var failure = FileOperationResult(
                             sourceURL: entry.url,
                             destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                             success: false,
-                            error: completionGateError(reason),
+                            error: completionGateError(reason, reason: changed
+                                ? .destinationChangedAfterVerification : .destinationCheckFailed),
                             fileSize: entry.size,
                             verificationResult: nil,
                             processingTime: 0
                         )
+                        failure.recordedChecksumBeforeFailure = verifiedRow?.verifiedChecksum
                         await ledger.record(
                             failure,
                             relativePath: entry.relativePath,
@@ -1560,7 +1573,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             guard let pinned = pinnedDestinations[destIndex],
                   !pinned.logicalRootStillMatchesPinnedDirectory() else { continue }
             let reason = "\(destinationURL.lastPathComponent)'s folder was moved or renamed during the copy."
-            let error = completionGateError(reason)
+            let error = completionGateError(reason, reason: .destinationCheckFailed)
             for entry in sourceManifest {
                 if await ledger.alreadyFailed(
                     relativePath: entry.relativePath,
@@ -1606,7 +1619,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 try pinned.checkPublicationStatus(status)
             } catch {
                 let failure = completionGateError(
-                    "\(destinationURL.lastPathComponent)'s transfer status could not be saved or confirmed: \(error.localizedDescription). Keep the source."
+                    "\(destinationURL.lastPathComponent)'s transfer status could not be saved or confirmed: \(error.localizedDescription). Keep the source.",
+                    reason: .destinationCheckFailed
                 )
                 for entry in sourceManifest {
                     let row = FileOperationResult(

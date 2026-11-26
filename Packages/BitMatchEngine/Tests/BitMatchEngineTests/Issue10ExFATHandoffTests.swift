@@ -333,7 +333,11 @@ final class Issue10ExFATHandoffTests: XCTestCase {
         let issues = try TransferCompletion.writeASCMHL(
             [.init(root: first, files: files), .init(root: second, files: files)], planIssues: [],
             startTime: Date(), source: source, toolVersion: "test", progress: { updates.append($0) })
-        XCTAssertEqual(issues.count, 1)
+        // The refused history is the one issue; the list leads with the
+        // backup that did get one, so the partial handoff is stated.
+        XCTAssertEqual(issues.count, 2, issues.joined(separator: "; "))
+        XCTAssertTrue(issues.first?.hasPrefix("ASC MHL saved on ") == true, issues.joined(separator: "; "))
+        XCTAssertEqual(issues.filter { $0.contains(": ASC MHL — ") }.count, 1, issues.joined(separator: "; "))
         XCTAssertEqual(updates.values.last?.bytesProcessed, Int64(bytes.count))
         XCTAssertEqual(updates.values.last?.totalBytes, Int64(bytes.count * 2))
         XCTAssertFalse(updates.values.contains { $0.published })
