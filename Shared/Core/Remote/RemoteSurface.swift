@@ -49,6 +49,13 @@ protocol RemoteSurface: AnyObject, ObservableObject {
         origin: BackupTargetPolicy.Origin,
         facts: (URL) -> BackupTargetPolicy.VolumeFacts?
     ) -> String?
+    func moveQueuedTransfer(id: UUID, to destinationIndex: Int) throws
+    func moveQueuedTransferToTop(_ id: UUID) throws
+    func clearFinishedQueueRows()
+    func removeFinishedQueueRow(_ id: UUID) throws
+    func skipPausedCardAndContinue(_ expectedID: UUID)
+    func removePausedCardFromQueue(_ expectedID: UUID) throws
+    func markQueueTransferReviewed(_ id: UUID)
     func removeDestinationFolder(_ url: URL)
     func saveVerificationMode()
 }

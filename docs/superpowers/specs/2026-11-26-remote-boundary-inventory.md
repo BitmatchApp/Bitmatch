@@ -63,7 +63,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | resumeOperation | ActionBar, Queue | intent | yes |
 | queuePausedRecordID | ModularContent, PhoneContent, Queue | read | yes |
 | pauseOperation | ActionBar, Queue | intent | yes (`pauseOperation(reason:)`) |
-| moveQueuedTransfer | Setup, Queue | intent | no (later slice: queue ordering) |
+| moveQueuedTransfer | Setup, Queue | intent | yes (`moveQueuedTransfer(id:to:)`) |
 | isModeSwitchLocked | HeaderTabs | read | no (local UI) |
 | generateASCMHL | Setup, ModularContent, Queue | read | yes |
 | enqueueSelectionPrepared | Setup, ActionBar | intent | yes |
@@ -74,24 +74,24 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | stateService | ActionBar, Queue | read | yes |
 | startSetupTransfersPrepared | Setup, ActionBar | intent | yes |
 | startQueue | Queue | intent | yes |
-| skipPausedCardAndContinue | Queue | intent | no (later slice: paused-card recovery) |
+| skipPausedCardAndContinue | Queue | intent | yes |
 | saveVerificationMode | ModularContent, Preferences | intent | yes |
 | runningOneTimeTransfer | Queue | read | no (derived from queue state) |
 | retryTransferPrepared | TransferLibrary, Queue | intent | yes |
-| reauthorizationStatusPrepared | TransferLibrary | read | no (later slice: reauthorization needs the Mac's drives) |
+| reauthorizationStatusPrepared | TransferLibrary | read | no (Mac-only: reauthorization needs the Mac's drives) |
 | queueRunCommandEnabled | Queue | read | no (derived from queue state) |
 | queueMessage | TransferLibrary, Progress adapters | read | yes |
 | pickFolderForSource | CopyAndVerify | intent | no (local UI: the system picker runs on the device it opens on) |
-| moveQueuedTransferToTop | TransferLibrary, Queue | intent | no (later slice: queue ordering) |
+| moveQueuedTransferToTop | TransferLibrary, Queue | intent | yes |
 | lastCompareEnd | ModularContent, PhoneContent | read | no (local-only: Compare) |
 | isReplayingQueuedTransfer | ModularContent, Preferences | read | no (derived from queue state) |
 | isCommittingSelection | ActionBar | read | no (local UI) |
-| generalSettings | ModularContent, Preferences | read | yes |
+| generalSettings | ModularContent, Preferences | read | yes. Later slices must filter the snapshot: only `queueNewCardsAutomatically` and `autoEjectWhenSafe` are remote-editable; notification, sound and update settings stay Mac-local |
 | isAnalysingSource | Setup | read | no (derived from source analysis) |
 | errorCount | Progress adapters | read | no (derived from stateService) |
 | editSetupTransferPrepared | Setup, Queue | intent | no (local UI: draft editing) |
 | demoQueueAutoOpen | Content | read | no (local UI: demo) |
-| clearFinishedQueueRows | Queue | intent | no (later slice) |
+| clearFinishedQueueRows | Queue | intent | yes |
 | checkAgainst | CompareFolders, ModularContent | intent | no (local-only: Compare and Check) |
 | applyPreparedDestinations | Setup | intent | no (local UI: picker result) |
 | warningCount | Progress adapters | read | no (derived from stateService) |
@@ -103,10 +103,10 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | selectRightFolder | ModularContent | intent | no (local-only: Compare) |
 | selectLeftFolder | ModularContent | intent | no (local-only: Compare) |
 | results | Progress adapters | read | no (derived from stateService) |
-| removePausedCardFromQueue | Queue | intent | no (later slice: paused-card recovery) |
-| removeFinishedQueueRow | Queue | intent | no (later slice) |
+| removePausedCardFromQueue | Queue | intent | yes |
+| removeFinishedQueueRow | Queue | intent | yes |
 | removeDestinationFolder | CopyAndVerify | intent | yes |
-| reauthorizeTransferPrepared | TransferLibrary | intent | no (later slice) |
+| reauthorizeTransferPrepared | TransferLibrary | intent | no (Mac-only: reauthorization needs the Mac's drives) |
 | queueSessionStarted | Queue | read | no (derived from queueSessionRecordIDs) |
 | queueSessionRecordIDs | Queue | read | yes |
 | progressPresentation | Progress adapters | read | no (derived) |
@@ -120,7 +120,7 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | outcomeRecord | Progress adapters | read | no (derived from transferJournal) |
 | operationReadinessAssessment | Setup | read | no (derived) |
 | operationDuration | Progress adapters | read | no (derived from timingService) |
-| markQueueTransferReviewed | Queue | intent | no (later slice) |
+| markQueueTransferReviewed | Queue | intent | yes |
 | isInBackground | Progress adapters | read | no (local UI: the device's own lifecycle) |
 | hasUnresolvedQueueRecords | Setup | read | no (derived from transferJournal) |
 | hasErrors | Progress adapters | read | no (derived from stateService) |
@@ -134,7 +134,8 @@ All 18 read members and 13 intents exist on the coordinator under the brief's na
 | declineNotificationsFromPrompt | NotificationPermissionBanner | intent | no (later slice: per device) |
 | cancelSetupTransferEdit | Setup (locations) | intent | no (local UI: draft editing) |
 | backgroundTimeRemainingSeconds | Progress adapters | read | no (local UI: the device's own lifecycle) |
-| autoEjectWhenSafe | Queue | read | no (later slice: setting) |
+| autoEjectWhenSafe | Queue | read | yes, via `generalSettings.autoEjectWhenSafe` (the coordinator property forwards to it; not a separate protocol member) |
+| queueNewCardsAutomatically (auto-queue) | Queue, Preferences | read | yes, via `generalSettings.queueNewCardsAutomatically` |
 | applyPreparedSource | Setup (locations) | intent | no (local UI: picker result) |
 | alreadyBackedUpLine | Setup | read | no (derived) |
 | addDestination | CopyAndVerify | intent | yes (`addDestination(_:origin:facts:)`) |
