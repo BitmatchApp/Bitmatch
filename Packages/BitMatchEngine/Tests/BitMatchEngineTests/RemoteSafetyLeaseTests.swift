@@ -26,7 +26,41 @@ import Testing
         lease.noteState(revision: 5, claim: c, at: t0)
         #expect(lease.currentClaim(at: t0.addingTimeInterval(10.5)) == nil)
         lease.noteHeartbeat(RemoteHeartbeat(hostTime: t0, stateRevision: 5), at: t0.addingTimeInterval(11))
-        #expect(lease.currentClaim(at: t0.addingTimeInterval(12)) == c)
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(12)) == nil)
+    }
+
+    @Test func aDelayedOlderStateNeverRestoresItsClaim() {
+        var lease = RemoteSafetyLease(leaseLength: 10)
+        lease.noteMedia(media)
+        lease.noteHeartbeat(RemoteHeartbeat(hostTime: t0, stateRevision: 6), at: t0)
+        lease.noteState(revision: 5, claim: claim(revision: 5), at: t0.addingTimeInterval(1))
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(2)) == nil)
+    }
+
+    @Test func aMediaChangeHidesTheClaimUntilFreshStateEvenIfItReturns() {
+        var lease = RemoteSafetyLease(leaseLength: 10)
+        let c = claim(revision: 5)
+        let other = MediaIncarnation(volumeIdentity: "vol-b", mountGeneration: 1)
+        lease.noteMedia(media)
+        lease.noteState(revision: 5, claim: c, at: t0)
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(1)) == c)
+        lease.noteMedia(other)
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(2)) == nil)
+        lease.noteMedia(media)
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(3)) == nil)
+        lease.noteState(revision: 5, claim: c, at: t0.addingTimeInterval(4))
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(5)) == c)
+    }
+
+    @Test func aHeartbeatAfterTheLeaseLapsedDoesNotReviveTheClaim() {
+        var lease = RemoteSafetyLease(leaseLength: 10)
+        let c = claim(revision: 5)
+        lease.noteMedia(media)
+        lease.noteState(revision: 5, claim: c, at: t0)
+        lease.noteHeartbeat(RemoteHeartbeat(hostTime: t0, stateRevision: 5), at: t0.addingTimeInterval(30))
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(30)) == nil)
+        lease.noteState(revision: 5, claim: c, at: t0.addingTimeInterval(31))
+        #expect(lease.currentClaim(at: t0.addingTimeInterval(31)) == c)
     }
 
     @Test func aHeartbeatAloneDoesNotReviveAnOlderClaim() {

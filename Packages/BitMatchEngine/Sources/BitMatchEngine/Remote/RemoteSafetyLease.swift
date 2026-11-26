@@ -18,6 +18,7 @@ public struct RemoteSafetyLease: Sendable {
     }
 
     public mutating func noteState(revision: Int, claim: RemoteSafetyClaim?, at: Date) {
+        if let seen = stateRevision, revision < seen { return }
         stateRevision = revision
         self.claim = claim
         lastActivity = at
@@ -25,6 +26,9 @@ public struct RemoteSafetyLease: Sendable {
     }
 
     public mutating func noteHeartbeat(_ h: RemoteHeartbeat, at: Date) {
+        if let lastActivity, at.timeIntervalSince(lastActivity) > leaseLength {
+            isInterrupted = true
+        }
         lastActivity = at
         if h.stateRevision > (stateRevision ?? Int.min) {
             stateRevision = h.stateRevision
@@ -35,7 +39,10 @@ public struct RemoteSafetyLease: Sendable {
 
     public mutating func noteBackgrounded() { isInterrupted = true }
 
-    public mutating func noteMedia(_ media: MediaIncarnation?) { self.media = media }
+    public mutating func noteMedia(_ media: MediaIncarnation?) {
+        if media != self.media { isInterrupted = true }
+        self.media = media
+    }
 
     public func currentClaim(at: Date) -> RemoteSafetyClaim? {
         guard let claim, let lastActivity, !isInterrupted,
