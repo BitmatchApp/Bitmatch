@@ -16,21 +16,31 @@ final class RemoteCoordinatorView: ObservableObject {
     static let notConnectedWording = "Not connected to a Mac yet."
     static let noOperationWording = "No transfer is running on the Mac."
     static let unknownCardWording = "That card is no longer on the Mac."
+    static let unmanagedBackupWording = "the Mac has a backup this device cannot manage"
+    static let notWaitingWording = "Only waiting cards can be reordered."
+    static let disconnectedReason = "disconnected; check the Mac"
+    static let sessionChangedReason = "the Mac session changed; check the Mac"
 
     @Published private(set) var applier = RemoteStateApplier()
     @Published private(set) var latestProgress: RemoteProgressSample?
     @Published private(set) var connection: RemoteConnectionFreshness = .disconnected
+    /// Replies to commands. The sender registers a request here before it
+    /// transmits it; `receive(.outcome)` resolves it.
+    let pendingOutcomes = RemotePendingOutcomes()
 
     private let sender: any RemoteCommandSender
     private let leaseLength: TimeInterval
     private var lease: RemoteSafetyLease
     private var lastActivity: Date?
-    private var waiters: [RequestID: [CheckedContinuation<RemoteCommandOutcome, Never>]] = [:]
 
     init(sender: any RemoteCommandSender, leaseLength: TimeInterval = 10) {
         self.sender = sender
         self.leaseLength = leaseLength
         lease = RemoteSafetyLease(leaseLength: leaseLength)
+    }
+
+    isolated deinit {
+        pendingOutcomes.failAll(reason: Self.disconnectedReason)
     }
 
     // MARK: - Read side (names as in `RemoteSurface`)
@@ -57,19 +67,31 @@ final class RemoteCoordinatorView: ObservableObject {
             } ?? true
             guard applier.install(snapshot) == .installed else { return }
             // A new host or session restarts revisions; the lease never
-            // lowers the revision it has seen, so it starts over too.
-            if identityChanged { lease = RemoteSafetyLease(leaseLength: leaseLength) }
+            // lowers the revision it has seen, so it starts over too. Replies
+            // from the old session will never come.
+            if identityChanged {
+                lease = RemoteSafetyLease(leaseLength: leaseLength)
+                pendingOutcomes.failAll(reason: Self.sessionChangedReason)
+            }
             noteInstalled(at: now)
         case .update(let update):
-            guard applier.apply(update) == .applied else { return }
-            noteInstalled(at: now)
+            switch applier.apply(update) {
+            case .applied:
+                noteInstalled(at: now)
+            case .gap:
+                // The installed state is behind; only a fresh snapshot may
+                // show a claim again.
+                lease.noteDisconnected()
+            case .ignoredOlder:
+                break
+            }
         case .progress(let sample):
             latestProgress = sample
         case .heartbeat(let heartbeat):
             lease.noteHeartbeat(heartbeat, at: now)
             noteActivity(at: now)
         case .outcome(let request, let outcome):
-            resolvePending(request, with: outcome)
+            pendingOutcomes.resolve(request, outcome)
         case .command:
             break // Commands flow from client to host only.
         }
@@ -78,6 +100,7 @@ final class RemoteCoordinatorView: ObservableObject {
     func noteDisconnected() {
         lease.noteDisconnected()
         connection = .disconnected
+        pendingOutcomes.failAll(reason: Self.disconnectedReason)
     }
 
     func noteBackgrounded() {
@@ -104,30 +127,17 @@ final class RemoteCoordinatorView: ObservableObject {
         connection = .live
     }
 
-    // MARK: - Pending requests
-
-    /// Waits for the host's `.outcome` for `request`. The sender registers
-    /// the wait before it sends, so a fast reply is not missed.
-    func pendingOutcome(for request: RequestID) async -> RemoteCommandOutcome {
-        await withCheckedContinuation { waiters[request, default: []].append($0) }
-    }
-
-    /// Completes every wait for `request`: a host reply, or the sender's own
-    /// outcome (for example a timeout).
-    func resolvePending(_ request: RequestID, with outcome: RemoteCommandOutcome) {
-        for waiter in waiters.removeValue(forKey: request) ?? [] {
-            waiter.resume(returning: outcome)
-        }
-    }
-
     // MARK: - Intents (names as in `RemoteSurface`)
 
     func applyPreparedSource(cardID: String) async -> RemoteCommandOutcome {
         await send { .selectSource(cardID: cardID, selectionRevision: $0.revisions.selection) }
     }
 
+    /// Refused while the Mac has a backup this client has no ID for: the
+    /// command carries the whole list and would leave that backup out.
     func addDestination(backupID: String) async -> RemoteCommandOutcome {
-        await send { snapshot in
+        if let refusal = unmanagedBackupRefusal() { return refusal }
+        return await send { snapshot in
             let ids = snapshot.selectedBackupIDs.contains(backupID)
                 ? snapshot.selectedBackupIDs : snapshot.selectedBackupIDs + [backupID]
             return .setDestinations(backupIDs: ids, selectionRevision: snapshot.revisions.selection)
@@ -135,7 +145,8 @@ final class RemoteCoordinatorView: ObservableObject {
     }
 
     func removeDestinationFolder(backupID: String) async -> RemoteCommandOutcome {
-        await send {
+        if let refusal = unmanagedBackupRefusal() { return refusal }
+        return await send {
             .setDestinations(backupIDs: $0.selectedBackupIDs.filter { $0 != backupID },
                              selectionRevision: $0.revisions.selection)
         }
@@ -181,12 +192,14 @@ final class RemoteCoordinatorView: ObservableObject {
         await send { .removeQueued(recordID: id, queueRevision: $0.revisions.queue) }
     }
 
+    /// `destinationIndex` counts waiting cards only, as on the Mac.
     func moveQueuedTransfer(id: UUID, to destinationIndex: Int) async -> RemoteCommandOutcome {
-        await send { snapshot in
-            var order = snapshot.queue.map(\.recordID).filter { $0 != id }
-            order.insert(id, at: min(max(destinationIndex, 0), order.count))
-            return .reorderQueue(recordIDs: order, queueRevision: snapshot.revisions.queue)
-        }
+        guard let snapshot else { return notConnected() }
+        let waiting = snapshot.queue.filter { $0.stateRaw == LocalTransferState.queued.rawValue }.map(\.recordID)
+        guard waiting.contains(id) else { return .rejected(.hostRefused(wording: Self.notWaitingWording)) }
+        var order = waiting.filter { $0 != id }
+        order.insert(id, at: min(max(destinationIndex, 0), order.count))
+        return await sender.send(.reorderQueue(recordIDs: order, queueRevision: snapshot.revisions.queue))
     }
 
     /// Bound to the card's media as last installed, so a swapped card is refused.
@@ -207,6 +220,11 @@ final class RemoteCoordinatorView: ObservableObject {
 
     private func notConnected() -> RemoteCommandOutcome {
         .rejected(.unsupported(wording: Self.notConnectedWording))
+    }
+
+    private func unmanagedBackupRefusal() -> RemoteCommandOutcome? {
+        guard let count = snapshot?.unmanagedDestinationCount, count != 0 else { return nil }
+        return .rejected(.hostRefused(wording: Self.unmanagedBackupWording))
     }
 
     private func noOperation() -> RemoteCommandOutcome {

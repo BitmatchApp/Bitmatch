@@ -174,11 +174,13 @@ import Testing
             baseRevision: 5, newRevision: 6,
             snapshotPatch: RemoteSnapshotPatch(
                 host: host, session: session, takenAt: date, revisions: revisions(6),
-                operationID: .set(operation), cancellationTargetID: .set(nil))))
+                operationID: .set(operation), cancellationTargetID: .set(nil),
+                unmanagedDestinationCount: 1)))
 
         #expect(result == .applied)
         #expect(applier.installed?.operationID == operation)
         #expect(applier.installed?.cancellationTargetID == nil)
+        #expect(applier.installed?.unmanagedDestinationCount == 1)
     }
 
     @Test func applyingBeforeAnySnapshotIsAGap() {

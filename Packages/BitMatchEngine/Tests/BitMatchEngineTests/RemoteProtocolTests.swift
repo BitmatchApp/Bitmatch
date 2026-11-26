@@ -23,12 +23,13 @@ import Testing
             backups: [RemoteBackupSummary(id: "b1", name: "RAID", freeBytes: nil, policyVerdict: "ok")],
             selectedCardID: "c1", selectedBackupIDs: ["b1"],
             readinessWording: "Ready", readinessStatus: "ready",
-            queue: [RemoteQueueRow(recordID: record, title: "A001", stateLabel: "Queued", summary: "1 file")],
+            queue: [RemoteQueueRow(recordID: record, title: "A001", stateLabel: "Queued", summary: "1 file", stateRaw: "queued")],
             outcome: RemoteOutcome(recordID: record, title: "A001", message: "Done", isSuccess: true),
             safetyClaim: RemoteSafetyClaim(recordID: record, media: media, isSafeToErase: true,
                                            wording: "Safe", revision: 9),
             appleDoubleReview: RemoteAppleDoubleReview(reviewID: UUID(), paths: ["._a"]),
-            settings: settings(), operationID: UUID(), cancellationTargetID: UUID())
+            settings: settings(), operationID: UUID(), cancellationTargetID: UUID(),
+            unmanagedDestinationCount: 1)
     }
 
     private func roundTrip(_ message: RemoteMessage) throws -> RemoteMessage {
@@ -42,7 +43,7 @@ import Testing
         let patch = RemoteSnapshotPatch(host: host, session: session, takenAt: date,
                                         revisions: revisions, mode: "move", queue: [],
                                         settings: settings(), operationID: .set(UUID()),
-                                        cancellationTargetID: .set(nil))
+                                        cancellationTargetID: .set(nil), unmanagedDestinationCount: 2)
         let progress = OperationProgress(overallProgress: 0.5, currentFile: "a.mov",
                                          filesProcessed: 1, totalFiles: 2,
                                          currentStage: .copying, speed: 100)

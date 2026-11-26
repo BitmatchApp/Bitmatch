@@ -41,10 +41,7 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     var reportSettings = ReportPrefs()
     var generateASCMHL = false
     var usesProjectWorkflow = false
-    let transferJournal = LocalTransferJournal(
-        fileURL: FileManager.default.temporaryDirectory
-            .appendingPathComponent("FakeRemoteSurface-\(UUID().uuidString).json")
-    )
+    let transferJournal: LocalTransferJournal
     let stateService = OperationStateService()
     let timingService = OperationTimingService()
     let generalSettings = GeneralSettings(defaults: UserDefaults(suiteName: "FakeRemoteSurface-\(UUID().uuidString)")!)
@@ -58,6 +55,14 @@ final class FakeRemoteSurface: RemoteSurface, ObservableObject {
     /// False models `startQueue()` refusing inside a start that still enqueued.
     var startRunsQueue = true
     var ejectResult: String?
+
+    /// `journal` lets a test start from records it wrote itself.
+    init(journal: LocalTransferJournal? = nil) {
+        transferJournal = journal ?? LocalTransferJournal(
+            fileURL: FileManager.default.temporaryDirectory
+                .appendingPathComponent("FakeRemoteSurface-\(UUID().uuidString).json")
+        )
+    }
 
     func applyPreparedSource(expectedSource: URL?, expectedDestinations: [URL], newSource: URL) -> Bool {
         guard !selectionLocked, sourceURL == expectedSource, destinationURLs == expectedDestinations else { return false }

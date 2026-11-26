@@ -113,11 +113,14 @@ public struct RemoteQueueRow: Codable, Hashable, Sendable {
     public let title: String
     public let stateLabel: String
     public let summary: String
-    public init(recordID: UUID, title: String, stateLabel: String, summary: String) {
+    /// `LocalTransferState.rawValue`; only `queued` rows can be reordered.
+    public let stateRaw: String
+    public init(recordID: UUID, title: String, stateLabel: String, summary: String, stateRaw: String) {
         self.recordID = recordID
         self.title = title
         self.stateLabel = stateLabel
         self.summary = summary
+        self.stateRaw = stateRaw
     }
 }
 
@@ -189,6 +192,9 @@ public struct RemoteSnapshot: Codable, Hashable, Sendable {
     /// The ID `cancel` must carry: a start still preparing owns one before
     /// the operation exists.
     public var cancellationTargetID: UUID?
+    /// Backups selected on the Mac that this client has no ID for. While it
+    /// is non-zero a client cannot send a complete backup list.
+    public var unmanagedDestinationCount: Int
 
     public init(host: HostID, hostName: String, session: SessionID, takenAt: Date,
                 revisions: ResourceRevisions, mode: String, verificationMode: VerificationMode,
@@ -197,7 +203,8 @@ public struct RemoteSnapshot: Codable, Hashable, Sendable {
                 readinessWording: String, readinessStatus: String, queue: [RemoteQueueRow],
                 outcome: RemoteOutcome?, safetyClaim: RemoteSafetyClaim?,
                 appleDoubleReview: RemoteAppleDoubleReview?, settings: RemoteSettings,
-                operationID: UUID? = nil, cancellationTargetID: UUID? = nil) {
+                operationID: UUID? = nil, cancellationTargetID: UUID? = nil,
+                unmanagedDestinationCount: Int = 0) {
         self.host = host
         self.hostName = hostName
         self.session = session
@@ -218,6 +225,7 @@ public struct RemoteSnapshot: Codable, Hashable, Sendable {
         self.settings = settings
         self.operationID = operationID
         self.cancellationTargetID = cancellationTargetID
+        self.unmanagedDestinationCount = unmanagedDestinationCount
     }
 }
 
@@ -244,6 +252,7 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
     public var settings: RemoteSettings?
     public var operationID: RemotePatchValue<UUID>
     public var cancellationTargetID: RemotePatchValue<UUID>
+    public var unmanagedDestinationCount: Int?
 
     public init(host: HostID, session: SessionID, takenAt: Date, revisions: ResourceRevisions,
                 hostName: String? = nil, mode: String? = nil,
@@ -256,7 +265,8 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
                 appleDoubleReview: RemotePatchValue<RemoteAppleDoubleReview> = .unchanged,
                 settings: RemoteSettings? = nil,
                 operationID: RemotePatchValue<UUID> = .unchanged,
-                cancellationTargetID: RemotePatchValue<UUID> = .unchanged) {
+                cancellationTargetID: RemotePatchValue<UUID> = .unchanged,
+                unmanagedDestinationCount: Int? = nil) {
         self.host = host
         self.session = session
         self.takenAt = takenAt
@@ -277,12 +287,14 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         self.settings = settings
         self.operationID = operationID
         self.cancellationTargetID = cancellationTargetID
+        self.unmanagedDestinationCount = unmanagedDestinationCount
     }
 
     private enum CodingKeys: String, CodingKey {
         case host, session, takenAt, revisions, hostName, mode, verificationMode, cards, backups
         case selectedCardID, selectedBackupIDs, readinessWording, readinessStatus, queue
         case outcome, safetyClaim, appleDoubleReview, settings, operationID, cancellationTargetID
+        case unmanagedDestinationCount
     }
 
     public init(from decoder: Decoder) throws {
@@ -307,6 +319,7 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         settings = try c.decodeIfPresent(RemoteSettings.self, forKey: .settings)
         operationID = try c.contains(.operationID) ? c.decode(RemotePatchValue<UUID>.self, forKey: .operationID) : .unchanged
         cancellationTargetID = try c.contains(.cancellationTargetID) ? c.decode(RemotePatchValue<UUID>.self, forKey: .cancellationTargetID) : .unchanged
+        unmanagedDestinationCount = try c.decodeIfPresent(Int.self, forKey: .unmanagedDestinationCount)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -331,6 +344,7 @@ public struct RemoteSnapshotPatch: Codable, Hashable, Sendable {
         try c.encodeIfPresent(settings, forKey: .settings)
         if case .set = operationID { try c.encode(operationID, forKey: .operationID) }
         if case .set = cancellationTargetID { try c.encode(cancellationTargetID, forKey: .cancellationTargetID) }
+        try c.encodeIfPresent(unmanagedDestinationCount, forKey: .unmanagedDestinationCount)
     }
 }
 

@@ -77,6 +77,7 @@ public struct RemoteStateApplier: Sendable {
         if let value = patch.settings { snapshot.settings = value }
         if case .set(let value) = patch.operationID { snapshot.operationID = value }
         if case .set(let value) = patch.cancellationTargetID { snapshot.cancellationTargetID = value }
+        if let value = patch.unmanagedDestinationCount { snapshot.unmanagedDestinationCount = value }
 
         installed = snapshot
         return .applied

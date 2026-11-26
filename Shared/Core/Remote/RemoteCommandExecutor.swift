@@ -161,7 +161,12 @@ final class RemoteCommandExecutor {
 
         case .reorderQueue(let recordIDs, let revision):
             guard revision == host.revisions.queue else { return stale() }
-            for (index, id) in recordIDs.enumerated() {
+            // The coordinator moves only waiting cards, by their index among
+            // waiting cards, so positions count waiting records only.
+            let waiting = recordIDs.filter { id in
+                surface.transferJournal.records.contains { $0.id == id && $0.state == .queued }
+            }
+            for (index, id) in waiting.enumerated() {
                 do {
                     try surface.moveQueuedTransfer(id: id, to: index)
                 } catch {
@@ -180,7 +185,9 @@ final class RemoteCommandExecutor {
         }
     }
 
-    /// Backup order is not part of the contract: the result is compared as a set.
+    /// Backup order is not part of the contract: the result is compared as a
+    /// set. A current backup with no registered ID is one the client never
+    /// saw, so it is kept rather than removed.
     private func setDestinations(_ backupIDs: [String], request: RequestID) -> RemoteCommandOutcome {
         var target: [URL] = []
         for id in backupIDs {
@@ -188,6 +195,8 @@ final class RemoteCommandExecutor {
             target.append(url)
         }
         let original = surface.destinationURLs
+        let registered = Set(host.backups.keys.compactMap { host.url(forBackup: $0)?.standardizedFileURL.path })
+        target += original.filter { !registered.contains($0.standardizedFileURL.path) && !target.contains($0) }
         var refusal: String?
         for url in original where !target.contains(url) {
             surface.removeDestinationFolder(url)

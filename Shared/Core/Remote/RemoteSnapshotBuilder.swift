@@ -26,15 +26,16 @@ struct RemoteSnapshotBuilder {
 
     /// Nil when nothing a client sees has changed. Otherwise each changed
     /// field is set, the revision of each resource that changed is bumped
-    /// (selection: cards, backups, selection and readiness; queue: rows and
-    /// operation IDs; settings: settings and verification mode), `state`
-    /// is bumped, and the new revisions are stored in `RemoteHostState`.
+    /// (selection: cards, backups, selection and readiness; queue: rows;
+    /// operation: the operation IDs, so a phase change never stales a queue
+    /// command; settings: settings and verification mode), `state` is
+    /// bumped, and the new revisions are stored in `RemoteHostState`.
     func patch(from previous: RemoteSnapshot, now: Date) -> RemoteStateUpdate? {
         // Built at the previous revisions so an unchanged claim compares equal.
         let current = make(revisions: previous.revisions, now: now)
         var patch = RemoteSnapshotPatch(host: current.host, session: current.session,
                                         takenAt: now, revisions: previous.revisions)
-        var selection = false, queue = false, settings = false, other = false
+        var selection = false, queue = false, operation = false, settings = false, other = false
 
         if current.cards != previous.cards { patch.cards = current.cards; selection = true }
         if current.backups != previous.backups { patch.backups = current.backups; selection = true }
@@ -50,13 +51,17 @@ struct RemoteSnapshotBuilder {
         if current.readinessStatus != previous.readinessStatus {
             patch.readinessStatus = current.readinessStatus; selection = true
         }
+        if current.unmanagedDestinationCount != previous.unmanagedDestinationCount {
+            patch.unmanagedDestinationCount = current.unmanagedDestinationCount; selection = true
+        }
 
         if current.queue != previous.queue { patch.queue = current.queue; queue = true }
+
         if current.operationID != previous.operationID {
-            patch.operationID = .set(current.operationID); queue = true
+            patch.operationID = .set(current.operationID); operation = true
         }
         if current.cancellationTargetID != previous.cancellationTargetID {
-            patch.cancellationTargetID = .set(current.cancellationTargetID); queue = true
+            patch.cancellationTargetID = .set(current.cancellationTargetID); operation = true
         }
 
         if current.settings != previous.settings { patch.settings = current.settings; settings = true }
@@ -72,11 +77,12 @@ struct RemoteSnapshotBuilder {
         }
         let claimChanged = current.safetyClaim != previous.safetyClaim
 
-        guard selection || queue || settings || other || claimChanged else { return nil }
+        guard selection || queue || operation || settings || other || claimChanged else { return nil }
 
         var revisions = previous.revisions
         if selection { revisions.selection += 1 }
         if queue { revisions.queue += 1 }
+        if operation { revisions.operation += 1 }
         if settings { revisions.settings += 1 }
         revisions.state += 1
         patch.revisions = revisions
@@ -97,8 +103,9 @@ struct RemoteSnapshotBuilder {
     private func make(revisions: ResourceRevisions, now: Date) -> RemoteSnapshot {
         let cards = host.cards.values.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
         let backups = host.backups.values.sorted { ($0.name, $0.id) < ($1.name, $1.id) }
+        // The executor's containment rule: a source folder on a card selects that card.
         let selectedCardID = surface.sourceURL.flatMap { source in
-            cards.first { host.url(forCard: $0.id).map { Self.same($0, source) } ?? false }?.id
+            cards.first { host.url(forCard: $0.id).map { RemoteCommandExecutor.isInside(source, $0) } ?? false }?.id
         }
         let selectedBackupIDs = surface.destinationURLs.compactMap { destination in
             backups.first { host.url(forBackup: $0.id).map { Self.same($0, destination) } ?? false }?.id
@@ -118,17 +125,18 @@ struct RemoteSnapshotBuilder {
             appleDoubleReview: nil, // later slice
             settings: settings(),
             operationID: surface.stateService.currentOperationId,
-            cancellationTargetID: surface.cancellationTargetID)
+            cancellationTargetID: surface.cancellationTargetID,
+            unmanagedDestinationCount: surface.destinationURLs.count - selectedBackupIDs.count)
     }
 
-    /// The queue session's records in journal order, labelled as the Mac's
-    /// History labels them.
+    /// The queue session's records in run order (the journal keeps newest
+    /// first), labelled as the Mac's History labels them.
     private func queueRows() -> [RemoteQueueRow] {
         let records = surface.transferJournal.records
-        return records.filter { surface.queueSessionRecordIDs.contains($0.id) }.map {
+        return records.reversed().filter { surface.queueSessionRecordIDs.contains($0.id) }.map {
             RemoteQueueRow(recordID: $0.id, title: $0.title,
                            stateLabel: TransferLibraryPresentation.stateLabel(for: $0, in: records).title,
-                           summary: $0.summary)
+                           summary: $0.summary, stateRaw: $0.state.rawValue)
         }
     }
 
@@ -142,14 +150,15 @@ struct RemoteSnapshotBuilder {
                              isSuccess: record.state == .completed)
     }
 
-    /// The selected card's latest saved record and the verdict the Mac shows
-    /// for it (the same check its eject uses), bound to the card's media.
+    /// The latest saved record of the selected card and the verdict the Mac
+    /// shows for it (the same check its eject uses). The record is chosen by
+    /// the card's volume identity, never by path: another card can mount at
+    /// the same path. No record with that identity means no claim.
     private func safetyClaim(cardID: String?, revision: Int) -> RemoteSafetyClaim? {
-        guard let cardID, let cardURL = host.url(forCard: cardID),
-              let media = host.media(forCard: cardID) else { return nil }
+        guard let cardID, let media = host.media(forCard: cardID) else { return nil }
         let records = surface.transferJournal.records
         let saved = records.filter {
-            $0.endedAt != nil && RemoteCommandExecutor.isInside($0.source.url, cardURL)
+            $0.endedAt != nil && $0.source.volumeID == media.volumeIdentity
         }
         guard let record = saved.max(by: { $0.endedAt! < $1.endedAt! }) else { return nil }
         let verdict = TransferLibraryPresentation.safetyState(for: record, in: records)

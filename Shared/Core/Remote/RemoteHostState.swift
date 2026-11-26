@@ -4,6 +4,11 @@ import BitMatchEngine
 /// The host's remote bookkeeping: the current resource revisions and the
 /// cards and backups offered to remote clients under opaque IDs. A client
 /// never sends a path; the host resolves each ID here. No I/O.
+///
+/// A registered card's `media.volumeIdentity` must be the card volume's
+/// identity as the transfer journal records it (`LocalTransferResource
+/// .volumeID`, from `volumeIdentity(_:)`): the snapshot binds a saved
+/// record to a card only when the two are equal, never by path.
 @MainActor
 final class RemoteHostState {
     let id: HostID

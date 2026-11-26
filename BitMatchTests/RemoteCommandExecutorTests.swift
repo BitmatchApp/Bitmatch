@@ -63,6 +63,22 @@ struct RemoteCommandExecutorTests {
         )
     }
 
+    @Test func setDestinationsKeepsABackupWithNoRegisteredID() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        let unmanaged = URL(fileURLWithPath: "/Volumes/Unregistered/Shoot", isDirectory: true)
+        let raid = URL(fileURLWithPath: "/Volumes/RAID/Shoot", isDirectory: true)
+        h.host.registerBackup(RemoteBackupSummary(id: "backup-1", name: "RAID", freeBytes: nil, policyVerdict: "ok"), url: raid)
+        h.surface.destinationURLs = [unmanaged]
+        let set = command(.setDestinations(backupIDs: ["backup-1"], selectionRevision: 3))
+
+        let outcome = await h.executor.execute(set)
+
+        #expect(outcome == done(set, h.host))
+        #expect(h.surface.calls == [.addDestination(raid)])
+        #expect(h.surface.destinationURLs == [unmanaged, raid])
+    }
+
     @Test func startAtTheCurrentSelectionRevisionCallsTheSurfaceOnce() async throws {
         let h = try makeHarness()
         defer { try? FileManager.default.removeItem(at: h.directory) }
