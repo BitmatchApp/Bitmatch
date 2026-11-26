@@ -408,9 +408,9 @@ extension ResultFailureReason {
         case .sourceNotConnected: return "The card was not connected"
         case .backupRefused: return "A backup was refused before copying started"
         case .unsupportedSourceEntry: return "The card holds items BitMatch does not copy (a link, pipe, socket or device)"
-        case .destinationChangedAfterVerification: return "Something wrote to \(name) after its copies verified"
-        case .destinationMissingAfterVerification: return "Verified copies went missing from \(name)"
-        case .destinationSizeChangedAfterVerification: return "Verified copies changed size on \(name)"
+        case .destinationChangedAfterCheck: return "Something wrote to \(name) after BitMatch checked its copies"
+        case .destinationMissingAfterCheck: return "Copies went missing from \(name) after BitMatch checked them"
+        case .destinationSizeChangedAfterCheck: return "Copies changed size on \(name) after BitMatch checked them"
         case .existingDestinationConflict: return "\(name) already had different files at those names"
         case .destinationCheckFailed: return "\(name) could not be checked at the end of the run"
         }

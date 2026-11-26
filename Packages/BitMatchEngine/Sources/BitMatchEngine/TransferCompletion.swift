@@ -547,12 +547,12 @@ public enum TransferCompletion: Sendable {
                 case .unsupportedSourceEntry:
                     let distinctItems = Set(rows.filter(\.isUnsupportedSourceEntry).map(\.path)).count
                     failedMessage += "; the card holds \(distinctItems == 1 ? "an item" : "items") BitMatch does not copy (a link, pipe, socket or device). Keep the card"
-                case .destinationChangedAfterVerification:
-                    failedMessage += "; a backup's copy changed after it verified (something else wrote to it, for example Finder). Keep the source"
-                case .destinationMissingAfterVerification:
-                    failedMessage += "; a backup's copy was gone after it verified. Keep the source"
-                case .destinationSizeChangedAfterVerification:
-                    failedMessage += "; a backup's copy changed size after it verified (something else wrote to it, for example Finder). Keep the source"
+                case .destinationChangedAfterCheck:
+                    failedMessage += "; a backup's copy changed after BitMatch checked it (something else wrote to it, for example Finder). Keep the source"
+                case .destinationMissingAfterCheck:
+                    failedMessage += "; a backup's copy was gone when BitMatch checked it again. Keep the source"
+                case .destinationSizeChangedAfterCheck:
+                    failedMessage += "; a backup's copy changed size after BitMatch checked it. Keep the source"
                 case .existingDestinationConflict:
                     failedMessage += "; a different file was already at that name on a backup and was not overwritten. Keep the source"
                 case .destinationCheckFailed:

@@ -1470,7 +1470,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             do {
                 actual = try uniqueDestinationMetadata(pinned.regularFileMetadata())
             } catch {
-                let reason = "\(destinationURL.lastPathComponent)'s files could not be checked after verification: \(error.localizedDescription)"
+                let reason = "\(destinationURL.lastPathComponent)'s files could not be checked at the end of the run: \(error.localizedDescription)"
                 let failure = completionGateError(reason, reason: .destinationCheckFailed)
                 for entry in sourceManifest {
                     if await ledger.alreadyFailed(
@@ -1500,14 +1500,14 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                       destinationEntry.size == entry.size else {
                     let present = actual[entry.relativePath] != nil
                     let reason = present
-                        ? "\(destinationURL.lastPathComponent)'s \(entry.relativePath) changed size after verification. Keep the source media."
-                        : "\(destinationURL.lastPathComponent) is missing \(entry.relativePath) after verification."
+                        ? "\(destinationURL.lastPathComponent)'s \(entry.relativePath) changed size after BitMatch checked it. Keep the source media."
+                        : "\(destinationURL.lastPathComponent) is missing \(entry.relativePath) at the end of the run."
                     var failure = FileOperationResult(
                         sourceURL: entry.url,
                         destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                         success: false,
                         error: completionGateError(reason, reason: present
-                            ? .destinationSizeChangedAfterVerification : .destinationMissingAfterVerification),
+                            ? .destinationSizeChangedAfterCheck : .destinationMissingAfterCheck),
                         fileSize: entry.size,
                         verificationResult: nil,
                         processingTime: 0
@@ -1549,7 +1549,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                             success: false,
                             error: completionGateError(reason, reason: changed
-                                ? .destinationChangedAfterVerification : .destinationCheckFailed),
+                                ? .destinationChangedAfterCheck : .destinationCheckFailed),
                             fileSize: entry.size,
                             verificationResult: nil,
                             processingTime: 0

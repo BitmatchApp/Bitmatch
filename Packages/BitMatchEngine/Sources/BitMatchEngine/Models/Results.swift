@@ -48,14 +48,14 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
     /// The card holds an entry BitMatch does not copy: a symbolic link,
     /// named pipe, socket, device or whiteout. Never opened or followed.
     case unsupportedSourceEntry
-    /// The backup's file verified, then had a different identity (inode,
-    /// size, modification or change time) at the end of the run: something
+    /// The backup's file had a different identity (inode, size,
+    /// modification or change time) at the end of the run than when BitMatch checked it: something
     /// else wrote to it, for example Finder saving a `.DS_Store`.
-    case destinationChangedAfterVerification
-    /// The backup's file verified, then was gone at the end of the run.
-    case destinationMissingAfterVerification
-    /// The backup's file verified, then had a different size at the end of the run.
-    case destinationSizeChangedAfterVerification
+    case destinationChangedAfterCheck
+    /// The backup's file was gone at the end of the run, after BitMatch had checked it.
+    case destinationMissingAfterCheck
+    /// The backup's file had a different size at the end of the run than when BitMatch checked it.
+    case destinationSizeChangedAfterCheck
     /// A different file already sat at the final name on the backup; BitMatch
     /// never overwrites it. (`._*` names use `companionConflict`.)
     case existingDestinationConflict
@@ -75,9 +75,9 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
         case .sourceNotConnected: "the card was not connected"
         case .backupRefused: "a backup was refused before copying started"
         case .unsupportedSourceEntry: "the card holds an item BitMatch does not copy (a link, pipe, socket or device)"
-        case .destinationChangedAfterVerification: "the backup's copy changed after it verified; something else wrote to it, for example Finder"
-        case .destinationMissingAfterVerification: "the backup's copy was gone after it verified; something else moved or deleted it"
-        case .destinationSizeChangedAfterVerification: "the backup's copy changed size after it verified; something else wrote to it, for example Finder"
+        case .destinationChangedAfterCheck: "the backup's copy changed after BitMatch checked it; something else wrote to it, for example Finder"
+        case .destinationMissingAfterCheck: "the backup's copy was gone when BitMatch checked it again"
+        case .destinationSizeChangedAfterCheck: "the backup's copy changed size after BitMatch checked it"
         case .existingDestinationConflict: "a different file was already at that name on the backup; it was not overwritten"
         case .destinationCheckFailed: "the backup could not be checked at the end of the run"
         }

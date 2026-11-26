@@ -81,7 +81,7 @@ struct IssueNinetyThreeTests {
         case inPlaceLonger
 
         var expectedReason: ResultFailureReason {
-            self == .inPlaceLonger ? .destinationSizeChangedAfterVerification : .destinationChangedAfterVerification
+            self == .inPlaceLonger ? .destinationSizeChangedAfterCheck : .destinationChangedAfterCheck
         }
 
         func apply(to file: URL) throws {
@@ -178,6 +178,46 @@ struct IssueNinetyThreeTests {
         }
     }
 
+    /// Quick never verifies: the same end-of-run size gate gives a reason
+    /// that claims no verification, keeps no checksum, and the summary says
+    /// "failed", never "not verified".
+    @Test func quickModeSizeChangeClaimsNoVerification() async throws {
+        try await FileOperationsTestLock.shared.run {
+            #if os(macOS)
+            let fixture = try IssueNinetyThreeFixture(name: "quick")
+            defer { fixture.cleanup() }
+            let target = fixture.backupRoot(0).appendingPathComponent("AMB/.DS_Store")
+            let once = OnceFlag()
+            let operation = try await TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared)
+                .performFileOperation(
+                    sourceURL: fixture.source, destinationURLs: fixture.destinations, verificationMode: .quick,
+                    settings: fixture.settings, progressCallback: { _ in }, onFileResult: { result in
+                        guard result.success, result.destinationURL.lastPathComponent == ".DS_Store",
+                              result.destinationURL.path.contains("/DEST_A/"), once.take() else { return }
+                        do { try FinderWrite.inPlaceLonger.apply(to: target) } catch { Issue.record(error) }
+                    })
+            let rows = TransferCompletion.rows(from: operation)
+            let failed = try #require(rows.first { $0.destination == "DEST_A" && $0.fileName == ".DS_Store" })
+            #expect(ResultOutcome(statusText: failed.status) == .failed)
+            #expect(failed.failureReason == ResultFailureReason.destinationSizeChangedAfterCheck.rawValue)
+            #expect(failed.recordedChecksumBeforeFailure == nil, "Quick has no readback checksum to keep")
+            #expect(!ResultFailureReason.destinationSizeChangedAfterCheck.rowNote.contains("verif"))
+            let verdict = TransferCompletion.verdict(
+                rows: rows, sourceFiles: operation.sourceManifest, destinations: fixture.destinations,
+                source: fixture.source, settings: fixture.settings, mode: .quick, generateASCMHL: false,
+                handoffIssues: [], reportIssue: nil, project: .init(didPersist: true, locallySafe: nil)
+            )
+            #expect(!verdict.success)
+            #expect(verdict.message.contains("DEST_A: 1 file failed"), "\(verdict.message)")
+            // The only "verified" in Quick text is Quick's own "Not verified" note.
+            let withoutQuickNote = verdict.message.replacingOccurrences(of: TransferCompletion.quickModeNote, with: "")
+            #expect(!withoutQuickNote.lowercased().contains("verif"), "\(verdict.message)")
+            #else
+            #expect(true)
+            #endif
+        }
+    }
+
     /// A different `.DS_Store` already at the final name on DEST_A when
     /// BitMatch publishes: never overwritten, and the row says so.
     @Test func plantedConflictAtPublishCarriesItsReason() async throws {
@@ -243,14 +283,14 @@ struct IssueNinetyThreeSummaryTests {
 
     @Test func failedRowAndAbsentRowAreWordedDifferently() {
         let result = verdict([
-            row(clip, on: backupA), row(finder, on: backupA, .failed, reason: .destinationChangedAfterVerification),
+            row(clip, on: backupA), row(finder, on: backupA, .failed, reason: .destinationChangedAfterCheck),
             row(clip, on: backupB),
         ], files: [clip, finder])
         #expect(!result.success)
         #expect(result.message.contains("DEST_A: 1 file not verified"), "\(result.message)")
         #expect(result.message.contains("DEST_B: 1 file has no result"), "\(result.message)")
         #expect(!result.message.contains("DEST_A: 1 file has no result"), "\(result.message)")
-        #expect(result.message.contains("1 file failed; a backup's copy changed after it verified"), "\(result.message)")
+        #expect(result.message.contains("1 file failed; a backup's copy changed after BitMatch checked it"), "\(result.message)")
     }
 
     /// The reported run: AppleDouble excluded, so the headline gives no
@@ -258,11 +298,11 @@ struct IssueNinetyThreeSummaryTests {
     @Test func sharedReasonIsAppendedWhenTheHeadlineDoesNotSayIt() {
         let result = verdict([
             row(companion, on: backupA, .excludedAppleDouble), row(companion, on: backupB, .excludedAppleDouble),
-            row(clip, on: backupA), row(finder, on: backupA, .failed, reason: .destinationChangedAfterVerification),
+            row(clip, on: backupA), row(finder, on: backupA, .failed, reason: .destinationChangedAfterCheck),
             row(clip, on: backupB), row(finder, on: backupB),
         ], files: [clip, finder, companion])
         #expect(!result.success)
-        let note = ResultFailureReason.destinationChangedAfterVerification.rowNote
+        let note = ResultFailureReason.destinationChangedAfterCheck.rowNote
         #expect(result.message.contains("DEST_A: 1 file not verified (\(note))"), "\(result.message)")
         #expect(!result.message.contains("has no result"), "\(result.message)")
     }
@@ -272,7 +312,7 @@ struct IssueNinetyThreeSummaryTests {
         let result = verdict([
             row(companion, on: backupA, .excludedAppleDouble), row(companion, on: backupB, .excludedAppleDouble),
             row(clip, on: backupA, .failed, reason: .existingDestinationConflict),
-            row(finder, on: backupA, .failed, reason: .destinationChangedAfterVerification),
+            row(finder, on: backupA, .failed, reason: .destinationChangedAfterCheck),
             row(other, on: backupA, .failed),
             row(clip, on: backupB), row(finder, on: backupB), row(other, on: backupB),
         ], files: [clip, finder, other, companion])
