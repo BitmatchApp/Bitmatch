@@ -1074,6 +1074,13 @@ public final class TransferJournal: Sendable {
                 try Self.persist(updated, to: fileURL)
                 state.records = updated
                 state.persistenceError = nil
+            } catch let failure as FlushAfterPublishFailure {
+                // The new journal is already the file on disk. Memory follows it,
+                // so a later write cannot resurrect the old records, and the
+                // unconfirmed durability is still reported.
+                state.records = updated
+                state.persistenceError = failure.localizedDescription
+                throw failure
             } catch {
                 state.persistenceError = error.localizedDescription
                 throw error
@@ -1135,9 +1142,22 @@ public final class TransferJournal: Sendable {
             let fd = open(path!, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             return (fd, errno)
         }
-        guard directoryFD >= 0 else { throw posixError("Could not open the history folder to flush it", code: directoryFailure) }
+        guard directoryFD >= 0 else {
+            throw FlushAfterPublishFailure(underlying: posixError("Could not open the history folder to flush it", code: directoryFailure))
+        }
         defer { _ = Darwin.close(directoryFD) }
-        try flushToDrive(directoryFD, what: "the history folder")
+        do {
+            try flushToDrive(directoryFD, what: "the history folder")
+        } catch {
+            throw FlushAfterPublishFailure(underlying: error as NSError)
+        }
+    }
+
+    /// The journal was renamed into place but the folder flush did not confirm
+    /// it durable. `commit` keeps memory in step with the file for this case.
+    private struct FlushAfterPublishFailure: LocalizedError {
+        let underlying: NSError
+        var errorDescription: String? { underlying.localizedDescription }
     }
 
     /// F_FULLFSYNC reaches the drive's platters or flash. Only a filesystem

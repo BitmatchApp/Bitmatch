@@ -711,7 +711,11 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         }
         // Validate these captured paths before exclusions or String-keyed maps.
         // A later live scan cannot prove this manifest has unambiguous names.
-        try SafetyValidator.validatePortableRelativePaths(completeSourceManifest.map(\.relativePath))
+        // Entries BitMatch does not copy take part: a link whose name is only
+        // a normalisation away from a real file must refuse the run, not share
+        // its row.
+        try SafetyValidator.validatePortableRelativePaths(
+            completeSourceManifest.map(\.relativePath) + unsupportedEntries.map(\.relativePath))
         let excluded = try AppleDoubleSelection.excluded(in: completeSourceManifest, reviewedPaths: operation.settings.excludedAppleDoublePaths)
         if !excluded.isEmpty {
             SharedLogger.transferEvent(.appleDoubleExcluded, run: TransferDiagnostics.runID ?? operation.id, code: excluded.count)
