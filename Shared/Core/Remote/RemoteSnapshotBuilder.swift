@@ -30,12 +30,15 @@ struct RemoteSnapshotBuilder {
     /// operation: the operation IDs, so a phase change never stales a queue
     /// command; settings: settings and verification mode), `state` is
     /// bumped, and the new revisions are stored in `RemoteHostState`.
-    func patch(from previous: RemoteSnapshot, now: Date) -> RemoteStateUpdate? {
+    /// `registrationsChanged` (a card or backup ID re-registered since
+    /// `previous`) bumps selection even when no field differs: the ID may
+    /// name another folder now, so a command from before must be stale.
+    func patch(from previous: RemoteSnapshot, registrationsChanged: Bool = false, now: Date) -> RemoteStateUpdate? {
         // Built at the previous revisions so an unchanged claim compares equal.
         let current = make(revisions: previous.revisions, now: now)
         var patch = RemoteSnapshotPatch(host: current.host, session: current.session,
                                         takenAt: now, revisions: previous.revisions)
-        var selection = false, queue = false, operation = false, settings = false, other = false
+        var selection = registrationsChanged, queue = false, operation = false, settings = false, other = false
 
         if current.cards != previous.cards { patch.cards = current.cards; selection = true }
         if current.backups != previous.backups { patch.backups = current.backups; selection = true }

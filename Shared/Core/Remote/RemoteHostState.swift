@@ -23,6 +23,9 @@ final class RemoteHostState: ObservableObject {
     private(set) var backups: [String: RemoteBackupSummary] = [:]
     private var cardURLs: [String: URL] = [:]
     private var backupURLs: [String: URL] = [:]
+    /// Moves on every register or remove, including one that changes only
+    /// the folder behind an ID, which no snapshot field shows.
+    private(set) var registrationGeneration = 0
 
     init(id: HostID = HostID(),
          revisions: ResourceRevisions = ResourceRevisions(selection: 0, queue: 0, operation: 0, settings: 0, state: 0)) {
@@ -31,27 +34,32 @@ final class RemoteHostState: ObservableObject {
     }
 
     func registerCard(_ card: RemoteCardSummary, url: URL) {
-        objectWillChange.send()
+        registrationsWillChange()
         cards[card.id] = card
         cardURLs[card.id] = url
     }
 
     func removeCard(id: String) {
-        objectWillChange.send()
+        registrationsWillChange()
         cards[id] = nil
         cardURLs[id] = nil
     }
 
     func registerBackup(_ backup: RemoteBackupSummary, url: URL) {
-        objectWillChange.send()
+        registrationsWillChange()
         backups[backup.id] = backup
         backupURLs[backup.id] = url
     }
 
     func removeBackup(id: String) {
-        objectWillChange.send()
+        registrationsWillChange()
         backups[id] = nil
         backupURLs[id] = nil
+    }
+
+    private func registrationsWillChange() {
+        objectWillChange.send()
+        registrationGeneration += 1
     }
 
     func url(forCard id: String) -> URL? { cardURLs[id] }

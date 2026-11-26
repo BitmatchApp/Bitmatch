@@ -13,12 +13,15 @@ final class RemoteHostCore {
     static let protocolVersionWording = "protocol version"
 
     private final class Attachment {
+        let link: any RemoteLink
         let outbox: AsyncStream<RemoteEnvelope>.Continuation
         /// Clients that sent a command on this link; their admissions are kept.
         var clients: Set<ClientID> = []
+        var sending: Task<Void, Never>?
         var receiving: Task<Void, Never>?
 
-        init(outbox: AsyncStream<RemoteEnvelope>.Continuation) {
+        init(link: any RemoteLink, outbox: AsyncStream<RemoteEnvelope>.Continuation) {
+            self.link = link
             self.outbox = outbox
         }
     }
@@ -37,6 +40,8 @@ final class RemoteHostCore {
     /// a change made offline still moves the revisions and a command from
     /// before a disconnect is stale after it.
     private var published: RemoteSnapshot
+    /// `host.registrationGeneration` when `published` was built.
+    private var publishedGeneration: Int
     private var changes: AnyCancellable?
     private var flushScheduled = false
     private var heartbeat: RemoteScheduledAction?
@@ -58,6 +63,7 @@ final class RemoteHostCore {
         // Each update names its own session, so the session here is only a placeholder.
         published = RemoteSnapshotBuilder(surface: surface, host: host, hostName: hostName, session: SessionID())
             .snapshot(now: now())
+        publishedGeneration = host.registrationGeneration
         // A card or backup registered in `host` changes the snapshot as a
         // surface change does. Both are main-actor isolated, so their
         // `objectWillChange` is sent on the main actor; this traps if that
@@ -78,18 +84,16 @@ final class RemoteHostCore {
     func attach(_ link: any RemoteLink, session: SessionID) {
         detach(session: session)
         let (outgoing, outbox) = AsyncStream<RemoteEnvelope>.makeStream()
-        let attachment = Attachment(outbox: outbox)
+        let attachment = Attachment(link: link, outbox: outbox)
         attachments[session] = attachment
         outbox.yield(RemoteEnvelope(message: .snapshot(builder(for: session).snapshot(now: now()))))
         // One sender per link, so envelopes arrive in the order they were made.
-        // When `detach` finishes the outbox, what is queued is still sent,
-        // then the link is closed so the client knows it is no longer heard.
-        Task { [weak self] in
-            defer { link.close() }
+        attachment.sending = Task { [weak self] in
             for await envelope in outgoing {
                 do {
                     try await link.send(envelope)
                 } catch {
+                    guard !Task.isCancelled else { return } // `detach` stopped it
                     // The client has lost its place in the stream, and only a
                     // snapshot mends that: drop the link, so the transport
                     // reconnects and `attach` sends a fresh one.
@@ -106,10 +110,15 @@ final class RemoteHostCore {
         if heartbeat == nil { scheduleHeartbeat() }
     }
 
+    /// Stops reading and sending at once, even a send that is stalled, and
+    /// closes the link so the client knows it is no longer heard. Called too
+    /// when a send fails or the client's side of the link ends.
     func detach(session: SessionID) {
         guard let attachment = attachments.removeValue(forKey: session) else { return }
         attachment.outbox.finish()
+        attachment.sending?.cancel()
         attachment.receiving?.cancel()
+        attachment.link.close()
         if attachments.isEmpty {
             heartbeat?.cancel()
             heartbeat = nil
@@ -195,8 +204,11 @@ final class RemoteHostCore {
         flushScheduled = false
         let builder = builder(for: published.session)
         let now = now()
-        guard let update = builder.patch(from: published, now: now) else { return }
+        let generation = host.registrationGeneration
+        guard let update = builder.patch(from: published, registrationsChanged: generation != publishedGeneration,
+                                         now: now) else { return }
         self.published = builder.snapshot(now: now)
+        publishedGeneration = generation
         for (session, attachment) in attachments {
             var patch = update.snapshotPatch
             patch.session = session

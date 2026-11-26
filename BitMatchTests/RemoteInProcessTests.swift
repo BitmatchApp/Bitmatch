@@ -28,6 +28,7 @@ final class InMemoryRemoteLink: RemoteLink {
         var dropNextReply = false
         var failNextSend = false
         var isSilent = false
+        var stallsSends = false
         var delay: Duration = .zero
     }
 
@@ -79,9 +80,17 @@ final class InMemoryRemoteLink: RemoteLink {
         }
         if fail { throw SendFailure() }
         if drop || isSilent { return }
+        // A stalled transport: the send returns only by being cancelled.
+        if stallsSends { try await Task.sleep(for: .seconds(86_400)) }
         if delay > .zero { try await Task.sleep(for: delay) }
         let wire = try JSONEncoder().encode(envelope)
         outbox.deliver(try JSONDecoder().decode(RemoteEnvelope.self, from: wire))
+    }
+
+    /// Each send on this end waits until its task is cancelled.
+    var stallsSends: Bool {
+        get { settings.withLock { $0.stallsSends } }
+        set { settings.withLock { $0.stallsSends = newValue } }
     }
 
     /// Everything this end sends is lost while true, though the link stays open.
@@ -725,5 +734,60 @@ private func settle() async {
         #expect(await eventually { outcomes(link)[request] != nil })
         #expect(outcomes(link)[request] == .rejected(.staleRevision(current: h.host.revisions)))
         #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func aStalledSendDoesNotKeepADetachedLinkOpen() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        h.hostEnd.stallsSends = true
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+        #expect(await eventually { h.host.revisions.state > (h.view.snapshot?.revisions.state ?? .max) })
+        await settle()
+
+        h.hostCore.detach(session: h.session)
+
+        #expect(await eventually { h.view.connection == .disconnected })
+    }
+
+    @Test func aReRegisteredCardWithANewURLBumpsTheSelectionRevision() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+        let snapshot = try #require(h.view.snapshot)
+        let seen = snapshot.revisions.selection
+        let summary = try #require(snapshot.cards.first { $0.id == "card-1" })
+
+        // The same card ID now names another folder. It still contains the
+        // selected source, so nothing a client sees differs.
+        h.host.registerCard(summary, url: h.directory)
+
+        #expect(await eventually { h.view.snapshot?.revisions.selection == seen + 1 })
+        #expect(h.view.snapshot?.selectedCardID == "card-1")
+        #expect(h.view.snapshot?.cards == snapshot.cards)
+        let request = RequestID()
+        try await send(.selectSource(cardID: "card-1", selectionRevision: seen), request: request,
+                       session: h.session, client: h.client, on: h.clientEnd)
+        #expect(await eventually { outcomes(h.clientEnd)[request] != nil })
+        #expect(outcomes(h.clientEnd)[request] == .rejected(.staleRevision(current: h.host.revisions)))
+        #expect(h.surface.calls.isEmpty)
+    }
+
+    @Test func aClientThatClosesIsDetachedOnTheHost() async throws {
+        let h = try makeHarness()
+        defer { try? FileManager.default.removeItem(at: h.directory) }
+        try await h.connect()
+
+        h.clientCore.stop()
+        await settle()
+        h.surface.objectWillChange.send()
+        h.surface.destinationURLs = [h.shuttle]
+        await settle()
+        h.scheduler.advance(by: 2)
+        await settle()
+
+        // No update or heartbeat is queued for the closed link.
+        #expect(kinds(h.clientEnd) == ["snapshot"])
     }
 }
