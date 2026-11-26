@@ -726,9 +726,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         guard !sourceManifest.isEmpty else {
             if !excluded.isEmpty || !unsupportedEntries.isEmpty {
                 var parts: [String] = []
-                if !excluded.isEmpty { parts.append("No files remain after AppleDouble exclusions") }
-                if !unsupportedEntries.isEmpty { parts.append("the source holds only items BitMatch does not copy (\(Self.describe(unsupportedEntries)))") }
-                throw FileOperationError.unsafeOperation(parts.joined(separator: "; ") + ". Nothing was copied; keep the source.")
+                if !excluded.isEmpty { parts.append("\(excluded.count) AppleDouble \(excluded.count == 1 ? "file" : "files") excluded") }
+                if !unsupportedEntries.isEmpty { parts.append("\(Self.describe(unsupportedEntries)) BitMatch does not copy") }
+                throw FileOperationError.unsafeOperation("No files remain to copy: " + parts.joined(separator: " and ") + ". Nothing was copied; keep the source.")
             }
             throw FileOperationError.unsafeOperation("Source folder is empty. Choose a source that contains files.")
         }
@@ -1389,8 +1389,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         }
         // An entry BitMatch does not copy that appeared or vanished during the
         // run is a changed card too; the regular-file comparison cannot see it.
-        let unsupportedChanged = Set(finalSourceEnumeration.unsupported.map(\.relativePath))
-            != Set(unsupportedEntries.map(\.relativePath))
+        let unsupportedChanged = Set(finalSourceEnumeration.unsupported) != Set(unsupportedEntries)
         if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceEnumeration.files)
             ?? (unsupportedChanged ? "The source's links, pipes or devices changed during the transfer" : nil) {
             let error = completionGateError(reason, reason: .sourceUnstable)

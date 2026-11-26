@@ -170,7 +170,7 @@ public enum CardSource: Sendable {
         case unsupported(UnsupportedEntryKind)
     }
 
-    public struct UnsupportedEntry: Equatable, Sendable {
+    public struct UnsupportedEntry: Hashable, Sendable {
         public let url: URL
         public let relativePath: String
         public let kind: UnsupportedEntryKind
