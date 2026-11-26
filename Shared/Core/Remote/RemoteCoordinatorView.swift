@@ -28,15 +28,21 @@ final class RemoteCoordinatorView: ObservableObject {
     /// transmits it; `receive(.outcome)` resolves it.
     let pendingOutcomes = RemotePendingOutcomes()
 
-    private let sender: any RemoteCommandSender
+    private var sender: (any RemoteCommandSender)?
     private let leaseLength: TimeInterval
     private var lease: RemoteSafetyLease
     private var lastActivity: Date?
 
-    init(sender: any RemoteCommandSender, leaseLength: TimeInterval = 10) {
+    init(sender: (any RemoteCommandSender)? = nil, leaseLength: TimeInterval = 10) {
         self.sender = sender
         self.leaseLength = leaseLength
         lease = RemoteSafetyLease(leaseLength: leaseLength)
+    }
+
+    /// A client core needs the view to deliver replies, so it is created
+    /// after the view and installs itself here.
+    func useSender(_ sender: any RemoteCommandSender) {
+        self.sender = sender
     }
 
     isolated deinit {
@@ -221,6 +227,7 @@ final class RemoteCoordinatorView: ObservableObject {
     /// Registers the request before transmitting it, so a reply that beats
     /// the await is kept, then waits for the host's `.outcome`.
     private func transmit(_ body: RemoteCommandBody) async -> RemoteCommandOutcome {
+        guard let sender else { return notConnected() }
         let request = RequestID()
         let pending = pendingOutcomes.register(request)
         do {
