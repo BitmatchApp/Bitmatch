@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+- Each backup drive verifies in its own lane again. 0.2.14 gave a run with a spinning drive one verify worker in total, so two backups read back one after the other; now each backup reads back side by side while still reading its own files in order, and a fast SSD backup is no longer paced by a hard drive sharing the run. Verify workers in Settings are per backup drive; Auto on SSDs shares the previous pool across the backups (GitHub issue #92).
 - Groundwork for BitMatch Remote: the protocol, admission store, safety-claim lease and in-process host and client cores. No user-visible change yet.
 
 ## [0.2.14] - 2026-11-26

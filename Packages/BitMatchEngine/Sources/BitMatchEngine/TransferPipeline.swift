@@ -188,6 +188,18 @@ private struct VerifyJob: Sendable {
     let ordinal: Int
 }
 
+extension TransferPipeline {
+    /// One verify lane per backup drive: backups on the same volume share a
+    /// lane so a spinning drive never reads two of its files at once. A
+    /// volume that cannot be identified gets a lane of its own.
+    static func verifyLaneKeys(for destinations: [URL], detector: any StorageMediumDetecting) -> [String] {
+        destinations.enumerated().map { index, url in
+            if let identity = detector.driveIdentity(for: url) { return "drive:\(identity)" }
+            return "destination:\(index)"
+        }
+    }
+}
+
 /// Files this attempt did not write (pre-existing files proven identical and
 /// reused). A reused file must never be marked or moved after a failed
 /// readback: this attempt does not own it.
@@ -798,9 +810,13 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let storageMedia: [StorageMediumKind] = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
             ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
         }
+        let verifyLaneKeys = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
+            Self.verifyLaneKeys(for: operation.destinationURLs, detector: storageMediumDetector)
+        }
         let concurrencyPlan = TransferConcurrencyPlan.resolve(
             settings: concurrencyChoice, media: storageMedia,
-            processorCount: ProcessInfo.processInfo.activeProcessorCount)
+            processorCount: ProcessInfo.processInfo.activeProcessorCount,
+            verifyLanes: Set(verifyLaneKeys).count)
         // Perf 5: pipelined verification on by default for checksum/byte-compare modes; user can disable
         let shouldPipelineVerify = operation.verificationMode != .quick
             && concurrencyChoice.verifyWhileCopying
@@ -815,7 +831,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             verifyWorkers: shouldPipelineVerify ? concurrencyPlan.verifyWorkers : (operation.verificationMode == .quick ? 0 : 1),
             limitedForRotationalMedia: concurrencyPlan.limitedForRotationalMedia && autoDecidedAStage)
         SharedLogger.info(
-            "Workers: copy \(recordedConcurrency.copyWorkers), verify \(recordedConcurrency.verifyWorkers)"
+            "Workers: copy \(recordedConcurrency.copyWorkers), verify \(recordedConcurrency.verifyWorkers) per backup"
                 + (shouldPipelineVerify || operation.verificationMode == .quick ? "" : " (verify after copy, one pass)")
                 + (recordedConcurrency.limitedForRotationalMedia ? " (Auto, limited for a spinning drive)" : "")
                 + "; storage \(storageMedia.map(\.rawValue))",
@@ -990,30 +1006,44 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             }
         }
 
-        // Copies hand verify jobs to one consumer for the whole run, which
-        // keeps at most `verifyConcurrency` verifies in flight, so a backup
-        // verifies while the next one copies. The stream never drops a job.
+        // Copies hand verify jobs to one lane per backup drive. Each lane keeps
+        // at most `verifyConcurrency` verifies in flight, so a backup verifies
+        // while the next one copies, two backups read back side by side, and a
+        // spinning drive still reads its own files in order (GitHub #92). Two
+        // backups on one volume share a lane. The streams never drop a job.
         // Every verify is a child of this group: however the run ends, it
         // cannot return while one is still running (I3).
-        let (verifyJobs, submitVerify) = AsyncStream<VerifyJob>.makeStream()
+        let laneKeys = verifyLaneKeys
+        var laneStreams: [String: AsyncStream<VerifyJob>] = [:]
+        var laneSubmitters: [String: AsyncStream<VerifyJob>.Continuation] = [:]
+        for key in Set(laneKeys) {
+            let (stream, continuation) = AsyncStream<VerifyJob>.makeStream()
+            laneStreams[key] = stream
+            laneSubmitters[key] = continuation
+        }
+        let submitVerify: @Sendable (VerifyJob) -> Void = { [laneSubmitters] job in
+            laneSubmitters[laneKeys[job.destinationIndex]]?.yield(job)
+        }
         try await withThrowingTaskGroup(of: Void.self) { run in
-            // Close the job stream however the copy loop exits, so the
-            // consumer never waits on a stream nobody will finish. (The
-            // group's cancellation also ends it; this does not rely on that.)
-            defer { submitVerify.finish() }
+            // Close the job streams however the copy loop exits, so no lane
+            // waits on a stream nobody will finish. (The group's cancellation
+            // also ends them; this does not rely on that.)
+            defer { for continuation in laneSubmitters.values { continuation.finish() } }
             if shouldPipelineVerify {
-                run.addTask {
-                    try await withThrowingTaskGroup(of: Void.self) { verifiers in
-                        var inFlight = 0
-                        for await job in verifyJobs {
-                            if inFlight >= verifyConcurrency {
-                                try await verifiers.next()
-                                inFlight -= 1
+                for lane in laneStreams.values {
+                    run.addTask {
+                        try await withThrowingTaskGroup(of: Void.self) { verifiers in
+                            var inFlight = 0
+                            for await job in lane {
+                                if inFlight >= verifyConcurrency {
+                                    try await verifiers.next()
+                                    inFlight -= 1
+                                }
+                                verifiers.addTask { try await verify(job) }
+                                inFlight += 1
                             }
-                            verifiers.addTask { try await verify(job) }
-                            inFlight += 1
+                            try await verifiers.waitForAll()
                         }
-                        try await verifiers.waitForAll()
                     }
                 }
             }
@@ -1153,7 +1183,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     await onFileResult?(copyResult)
 
                     if shouldPipelineVerify {
-                        submitVerify.yield(VerifyJob(
+                        submitVerify(VerifyJob(
                             source: srcURL, destination: dstURL, relativePath: relativePath,
                             fileSize: max(0, fileSize), destinationIndex: destIndex,
                             pinnedRoot: pinnedDestination,
@@ -1315,7 +1345,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             }
 
             SharedLogger.transferEvent(.copyDrained, run: TransferDiagnostics.runID ?? operation.id, taskCancelled: Task.isCancelled)
-            submitVerify.finish()
+            for continuation in laneSubmitters.values { continuation.finish() }
             try await run.waitForAll()
             SharedLogger.transferEvent(.verificationDrained, run: TransferDiagnostics.runID ?? operation.id, taskCancelled: Task.isCancelled)
         }

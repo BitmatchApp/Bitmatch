@@ -9,6 +9,17 @@ public protocol StorageMediumDetecting: Sendable {
     /// The storage behind the volume that holds `url`. Unknown when the
     /// system does not say; a guess is never returned.
     func mediumKind(for url: URL) -> StorageMediumKind
+    /// Identifies the drive that holds `url`, so two backups on one drive,
+    /// even on different partitions, share a verify lane. The volume when
+    /// the drive cannot be told; nil when the system cannot say at all.
+    func driveIdentity(for url: URL) -> String?
+}
+
+public extension StorageMediumDetecting {
+    func driveIdentity(for url: URL) -> String? {
+        guard let identifier = try? url.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier else { return nil }
+        return "\(identifier)"
+    }
 }
 
 /// Reads the volume's locality and, on macOS, the nearest IOKit Device
@@ -17,6 +28,20 @@ public protocol StorageMediumDetecting: Sendable {
 /// flash from spinning platters.
 public struct SystemStorageMediumDetector: StorageMediumDetecting {
     public init() {}
+
+    /// On macOS the whole disk behind the volume, so partitions of one drive
+    /// share a lane; elsewhere, or when Disk Arbitration cannot say, the
+    /// volume identifier. Network volumes fall back to the volume too.
+    public func driveIdentity(for url: URL) -> String? {
+        guard url.isFileURL else { return nil }
+#if os(macOS)
+        let scoped = url.startAccessingSecurityScopedResource()
+        defer { if scoped { url.stopAccessingSecurityScopedResource() } }
+        if let whole = SystemDriveConnectionInfoProvider.wholeDiskName(for: url) { return "disk:\(whole)" }
+#endif
+        guard let identifier = try? url.resourceValues(forKeys: [.volumeIdentifierKey]).volumeIdentifier else { return nil }
+        return "volume:\(identifier)"
+    }
 
     public func mediumKind(for url: URL) -> StorageMediumKind {
         guard url.isFileURL else { return .unknown }

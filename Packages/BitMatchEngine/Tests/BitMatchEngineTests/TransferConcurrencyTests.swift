@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import BitMatchEngine
 
@@ -12,6 +13,33 @@ struct TransferConcurrencyPlanTests {
         #expect(plan.copyWorkers == 4)
         #expect(plan.verifyWorkers == 6)
         #expect(!plan.limitedForRotationalMedia)
+    }
+
+    /// Verify workers are per backup: each backup drive gets its own lane,
+    /// so two backups read back side by side. Auto on solid state shares the
+    /// established pool across the backups so the hashing load stays as it was.
+    @Test func automaticOnSolidStateSharesTheVerifyPoolAcrossBackups() {
+        let two = TransferConcurrencyPlan.resolve(
+            settings: .automatic, media: [.solidState, .solidState, .solidState], processorCount: 12)
+        #expect(two.verifyWorkers == 3)
+        let four = TransferConcurrencyPlan.resolve(
+            settings: .automatic, media: [.solidState, .solidState, .solidState, .solidState, .solidState], processorCount: 4)
+        #expect(four.verifyWorkers == 1, "a lane never drops below one worker")
+        let noDestinations = TransferConcurrencyPlan.resolve(settings: .automatic, media: [.solidState], processorCount: 12)
+        #expect(noDestinations.verifyWorkers == 6)
+        let oneDrive = TransferConcurrencyPlan.resolve(
+            settings: .automatic, media: [.solidState, .solidState, .solidState], processorCount: 12, verifyLanes: 1)
+        #expect(oneDrive.verifyWorkers == 6, "two backups on one drive share one lane and keep the whole pool")
+    }
+
+    @Test func automaticWithASpinningDriveUsesOneVerifyWorkerPerBackupNotPerRun() {
+        let plan = TransferConcurrencyPlan.resolve(
+            settings: .automatic, media: [.solidState, .rotational, .solidState], processorCount: 12)
+        #expect(plan.verifyWorkers == 1, "one per backup lane; the lanes run side by side")
+        #expect(plan.copyWorkers == 1)
+        let explicit = TransferConcurrencyPlan.resolve(
+            settings: TransferConcurrencySettings(verifyWorkers: 2), media: [.rotational, .rotational, .rotational], processorCount: 12)
+        #expect(explicit.verifyWorkers == 2, "an explicit choice is per backup too")
     }
 
     @Test func automaticOnSmallMachinesNeverDropsBelowOneCopyAndTwoVerify() {
@@ -125,7 +153,43 @@ struct StorageMediumRegistryWalkTests {
 
 private struct FixedMediumDetector: StorageMediumDetecting {
     let kind: StorageMediumKind
+    /// Each folder counts as its own drive unless the test says otherwise.
+    var driveByPath: [String: String] = [:]
     func mediumKind(for url: URL) -> StorageMediumKind { kind }
+    func driveIdentity(for url: URL) -> String? { driveByPath[url.path] ?? url.path }
+}
+
+/// Two backups on one drive share a lane; a drive the system cannot identify
+/// gets a lane of its own.
+struct VerifyLaneTests {
+    @Test func theSystemDetectorNamesTheWholeDiskForTwoFoldersOnOneVolume() throws {
+        let fm = FileManager.default
+        let a = fm.temporaryDirectory.appendingPathComponent("bitmatch_lane_a_\(UUID().uuidString)")
+        let b = fm.temporaryDirectory.appendingPathComponent("bitmatch_lane_b_\(UUID().uuidString)")
+        try fm.createDirectory(at: a, withIntermediateDirectories: true)
+        try fm.createDirectory(at: b, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: a); try? fm.removeItem(at: b) }
+        let detector = SystemStorageMediumDetector()
+        let identity = try #require(detector.driveIdentity(for: a))
+        #expect(detector.driveIdentity(for: b) == identity)
+#if os(macOS)
+        #expect(identity.hasPrefix("disk:disk"), "\(identity)")
+#endif
+        #expect(TransferPipeline.verifyLaneKeys(for: [a, b], detector: detector).count == 2)
+        #expect(Set(TransferPipeline.verifyLaneKeys(for: [a, b], detector: detector)).count == 1)
+    }
+
+    @Test func backupsOnOneVolumeShareALaneAndUnidentifiedOnesDoNot() {
+        let a = URL(fileURLWithPath: "/Volumes/A/one"), b = URL(fileURLWithPath: "/Volumes/A/two")
+        let c = URL(fileURLWithPath: "/Volumes/C")
+        let detector = FixedMediumDetector(kind: .rotational, driveByPath: [a.path: "vol-a", b.path: "vol-a"])
+        #expect(TransferPipeline.verifyLaneKeys(for: [a, b, c], detector: detector) == ["drive:vol-a", "drive:vol-a", "drive:/Volumes/C"])
+        struct Blind: StorageMediumDetecting {
+            func mediumKind(for url: URL) -> StorageMediumKind { .unknown }
+            func driveIdentity(for url: URL) -> String? { nil }
+        }
+        #expect(TransferPipeline.verifyLaneKeys(for: [a, b], detector: Blind()) == ["destination:0", "destination:1"])
+    }
 }
 
 /// A run records the workers it actually used, so reports can say so.
@@ -155,6 +219,48 @@ struct TransferConcurrencyPipelineTests {
                 estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
             #expect(operation.results.allSatisfy { $0.success })
             #expect(operation.concurrency == TransferConcurrencyPlan(copyWorkers: 1, verifyWorkers: 1, limitedForRotationalMedia: true))
+        }
+    }
+
+    /// GitHub #92 follow-up: with one verify worker for the whole run, two
+    /// backups read back one after the other. Each backup is its own lane, so
+    /// the first backup's read-back must be able to wait for the second's to
+    /// begin; a single shared worker would never get there.
+    @Test func twoBackupsOnASpinningDriveRunReadBackSideBySide() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            let second = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch_conc_dst2_\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+            defer {
+                try? FileManager.default.removeItem(at: tree.source)
+                try? FileManager.default.removeItem(at: tree.destination)
+                try? FileManager.default.removeItem(at: second)
+            }
+            let firstIsWaiting = Mutex(false)
+            let overlapped = Mutex(false)
+            let hooks = DestinationWriter.FanOutHooks(beforeDestinationRead: { destination, _ in
+                if destination == 1 {
+                    // Counts only while destination 0 is holding its read-back.
+                    if firstIsWaiting.withLock({ $0 }) { overlapped.withLock { $0 = true } }
+                    return
+                }
+                guard !overlapped.withLock({ $0 }) else { return }
+                firstIsWaiting.withLock { $0 = true }
+                defer { firstIsWaiting.withLock { $0 = false } }
+                for _ in 0..<300 where !overlapped.withLock({ $0 }) {
+                    try await Task.sleep(for: .milliseconds(10))
+                }
+            })
+            let pipeline = TransferPipeline(
+                fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                storageMediumDetector: FixedMediumDetector(kind: .rotational), fanOutHooks: hooks)
+            let operation = try await pipeline.performFileOperation(
+                sourceURL: tree.source, destinationURLs: [tree.destination, second],
+                verificationMode: .standard, settings: CameraLabelSettings(),
+                estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            #expect(operation.results.allSatisfy { $0.success })
+            #expect(operation.concurrency?.verifyWorkers == 1)
+            #expect(overlapped.withLock { $0 }, "the second backup never read back while the first waited")
         }
     }
 

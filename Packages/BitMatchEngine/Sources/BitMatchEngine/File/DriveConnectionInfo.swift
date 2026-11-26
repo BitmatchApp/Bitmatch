@@ -73,7 +73,10 @@ public struct SystemDriveConnectionInfoProvider: DriveConnectionInfoProviding {
 
 #if os(macOS)
     /// The returned registry handle is owned by the caller.
-    static func mediaService(for url: URL) -> io_service_t? {
+    /// The BSD name of the whole disk behind the volume holding `url`
+    /// ("disk4" for a partition disk4s2; the container disk for an APFS
+    /// volume), or nil when Disk Arbitration cannot resolve it.
+    static func wholeDiskName(for url: URL) -> String? {
         guard let session = DASessionCreate(kCFAllocatorDefault),
               let disk = SelectedVolumeDiskResolver.disk(
                 for: url,
@@ -83,8 +86,12 @@ public struct SystemDriveConnectionInfoProvider: DriveConnectionInfoProviding {
             return nil
         }
         let whole = DADiskCopyWholeDisk(disk) ?? disk
-        guard let description = DADiskCopyDescription(whole) as? [String: Any],
-              let name = description[kDADiskDescriptionMediaBSDNameKey as String] as? String,
+        guard let description = DADiskCopyDescription(whole) as? [String: Any] else { return nil }
+        return description[kDADiskDescriptionMediaBSDNameKey as String] as? String
+    }
+
+    static func mediaService(for url: URL) -> io_service_t? {
+        guard let name = wholeDiskName(for: url),
               let matching = name.withCString({ IOBSDNameMatching(kIOMainPortDefault, 0, $0) }) else {
             return nil
         }

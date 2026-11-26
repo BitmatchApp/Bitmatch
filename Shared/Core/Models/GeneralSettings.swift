@@ -194,12 +194,12 @@ enum GeneralSettingsPresentation {
     static let playSounds = "Play sounds"
     static let performanceSection = "Performance"
     static let copyWorkers = "Copy workers"
-    static let verifyWorkers = "Verify workers"
+    static let verifyWorkers = "Verify workers per backup"
     static let verifyWhileCopying = "Verify while copying"
     #if os(macOS)
-    static let performanceFootnote = "Auto uses one worker per stage when macOS reports the card or a backup as a spinning hard drive, so the drive reads and writes in order instead of seeking between files. Otherwise it uses up to 4 copy workers and half your cores to verify. Some USB enclosures do not report the drive type; choose 1 for both stages if a hard drive still thrashes. Changes apply to the next transfer."
+    static let performanceFootnote = "Auto uses one worker per stage when macOS reports the card or a backup as a spinning hard drive, so the drive reads and writes in order instead of seeking between files. Verify workers are per backup drive: every backup reads back in its own lane, side by side with the others. Otherwise Auto uses up to 4 copy workers and half your cores to verify, shared across the backups. Some USB enclosures do not report the drive type; choose 1 for both stages if a hard drive still thrashes. Changes apply to the next transfer."
     #else
-    static let performanceFootnote = "Auto uses up to 4 copy workers and half your cores to verify. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
+    static let performanceFootnote = "Auto uses up to 4 copy workers and half your cores to verify, shared across the backups; verify workers are per backup drive. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
     #endif
     static let verifyWhileCopyingFootnote = "Off verifies each backup in one pass after all of its files are copied, so the verify workers setting does not apply. On a hard drive this avoids reading back while it is still writing."
     static func workerChoice(_ value: Int) -> String { value == 0 ? "Auto" : "\(value)" }
