@@ -45,13 +45,14 @@ struct ReportSummary {
 
 extension ReportSummary {
     /// "2 copy · 1 verify" for runs that recorded both stages, "2 copy · 1 verify
-    /// × 2 drives" when the backups verified in lanes; older evidence carries
-    /// one figure.
+    /// × 2 lanes" when the backups verified in lanes (lanes, not drives: a
+    /// drive the system could not identify gets a lane of its own); older
+    /// evidence carries one figure.
     var workersDescription: String? {
         guard let workers else { return nil }
         guard let verifyWorkers else { return "\(workers) parallel" }
         guard verifyWorkers > 0 else { return "\(workers) copy · no verify" }
-        if let verifyLanes, verifyLanes > 1 { return "\(workers) copy · \(verifyWorkers) verify × \(verifyLanes) drives" }
+        if let verifyLanes, verifyLanes > 1 { return "\(workers) copy · \(verifyWorkers) verify × \(verifyLanes) lanes" }
         return "\(workers) copy · \(verifyWorkers) verify"
     }
 }
