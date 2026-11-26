@@ -22,6 +22,13 @@ public enum SharedLogger: Sendable {
           logger(for: category).info("\(message)")
       }
 
+      /// A destination chose direct publication (final names under a status
+      /// marker) because its filesystem cannot hard link. Type and reason are
+      /// public so release logs say which mode ran; the path stays private.
+      public static func destinationPublishesDirectly(_ fileSystemType: String, path: String) {
+          logger(for: .transfer).notice("event=destinationPublishesDirectly filesystem=\(fileSystemType, privacy: .public) reason=no_hard_links path=\(path)")
+      }
+
       public static func debug(_ message: String, category: Category = .general) {
           logger(for: category).debug("\(message)")
       }

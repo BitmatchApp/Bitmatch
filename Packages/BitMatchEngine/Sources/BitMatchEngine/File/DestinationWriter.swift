@@ -2,18 +2,19 @@
 // no-replace links where supported, durable direct final files on FAT-family
 // drives and measured network shares, reuse checks, and verified reads.
 import Foundation
+import Synchronization
 
 /// The filesystems that publish by writing the final name directly under a
 /// visible status marker, because they cannot hard link. Only measured
-/// types are listed: anything else keeps the link path and fails closed.
-/// The ASC MHL generator claims histories the same way on the same types.
-public enum DirectPublicationFilesystems {
-    public static let fatFamily: Set<String> = ["exfat", "msdos", "msdosfs", "fat", "fat32"]
+/// types are listed: anything else keeps the link path and fails closed if
+/// the link is refused. The ASC MHL generator claims histories the same
+/// way on the same types.
+enum DirectPublicationFilesystems {
+    static let fatFamily: Set<String> = ["exfat", "msdos", "msdosfs", "fat", "fat32"]
     /// Measured 2026-11-26 against the macOS SMB server: `linkat` returns
     /// ENOTSUP and RENAME_EXCL is unsupported (docs/TRANSFER_MATRIX.md).
-    public static let measuredWithoutHardLinks: Set<String> = ["smbfs"]
+    static let measuredWithoutHardLinks: Set<String> = ["smbfs"]
 }
-import Synchronization
 import CryptoKit
 #if canImport(Darwin)
 import Darwin
@@ -64,7 +65,7 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
                 || (DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystem)
                     && hardLinkSupport(directoryFD: destinationFD) == false)
             if direct, !forceDirectFinalPublication {
-                SharedLogger.info("Destination \(destination.path) publishes directly: \(fileSystem) cannot hard link", category: .transfer)
+                SharedLogger.destinationPublishesDirectly(fileSystem, path: destination.path)
             }
             for component in rootComponents {
                 try validate(component: component)
