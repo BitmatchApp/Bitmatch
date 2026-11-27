@@ -19,16 +19,30 @@ final class HistoryMemoryAppProbeTests: XCTestCase {
         let source = root.appendingPathComponent("card"), backup = root.appendingPathComponent("backup")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
         try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
-        let journal = LocalTransferJournal(fileURL: root.appendingPathComponent("history.json"))
-        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+        let historyURL = root.appendingPathComponent("history.json")
+        let store = TransferJournal(fileURL: historyURL, recoverReportsOnInit: false)
+        let id = try store.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
                                      cameraSettings: .init(), reportSettings: .init())
-        try journal.markRunning(id: id)
-        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable",
+        try store.markRunning(id: id)
+        try store.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable",
                               pendingWithdrawalPaths: [backup.appendingPathComponent("Reports/report.json").path])
+        // Manual handling is reserved for older records without volume identity.
+        var saved = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: historyURL)) as? [[String: Any]])
+        var destinations = try XCTUnwrap(saved[0]["destinations"] as? [[String: Any]])
+        destinations[0].removeValue(forKey: "volumeID")
+        saved[0]["destinations"] = destinations
+        try JSONSerialization.data(withJSONObject: saved).write(to: historyURL)
+        let journal = LocalTransferJournal(fileURL: historyURL)
+        for _ in 0..<100 where journal.withdrawalRetryIsInFlight(id: id) { try await Task.sleep(for: .milliseconds(10)) }
         let before = try XCTUnwrap(journal.records.first { $0.id == id })
         let verdict = TransferLibraryPresentation.safetyState(for: before, in: [before])
         for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
-        try await journal.markReportsHandled(id: id)
+        guard journal.canMarkReportsHandled(id: id) else {
+            XCTFail("The identity-free fixture must be eligible for manual report handling")
+            return
+        }
+        let displayed = try XCTUnwrap(journal.records.first { $0.id == id })
+        try await journal.markReportsHandled(id: id, displayedPaths: displayed.pendingWithdrawalPaths ?? [], displayedRevision: displayed.revision)
         let after = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertNil(after.pendingWithdrawalPaths)
         XCTAssertTrue(after.summary.contains("reports marked handled by the user on"))

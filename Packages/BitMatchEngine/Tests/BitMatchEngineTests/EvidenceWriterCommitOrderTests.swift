@@ -1,10 +1,47 @@
 import Foundation
+import Darwin
 import CryptoKit
 import Synchronization
 import Testing
 @testable import BitMatchEngine
 
 struct EvidenceWriterCommitOrderTests {
+    @Test func pinnedReportRefusesSameInodeRewriteWithRestoredMtime() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("report.pdf")
+        try Data("ours".utf8).write(to: path)
+        var original = stat()
+        #expect(lstat(path.path, &original) == 0)
+        let pinned = try PinnedReportFile(url: path)
+        try Data("evil".utf8).write(to: path)
+        var times = [original.st_atimespec, original.st_mtimespec]
+        #expect(utimensat(AT_FDCWD, path.path, &times, 0) == 0)
+        var rewritten = stat()
+        #expect(lstat(path.path, &rewritten) == 0)
+        #expect(rewritten.st_ino == original.st_ino)
+        #expect(rewritten.st_size == original.st_size)
+        #expect(rewritten.st_mtimespec.tv_sec == original.st_mtimespec.tv_sec)
+        #expect(rewritten.st_mtimespec.tv_nsec == original.st_mtimespec.tv_nsec)
+        #expect(throws: PinnedReportFile.IdentityChanged.self) { try pinned.remove() }
+        #expect(try Data(contentsOf: path) == Data("evil".utf8))
+    }
+
+    @Test func pinnedReportClosesDescriptorsBeforeRename() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("report.pdf")
+        try Data("ours".utf8).write(to: path)
+        var descriptors: [Int32] = []
+        let pinned = try PinnedReportFile(url: path, didOpen: { descriptors.append($0) })
+        try pinned.rename(to: root.appendingPathComponent("hidden"), beforeAction: {
+            #expect(!descriptors.isEmpty)
+            #expect(descriptors.allSatisfy { fcntl($0, F_GETFD) == -1 && errno == EBADF })
+        })
+    }
+
     @Test func pinnedReportRefusesReplacementAfterDigest() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -55,6 +92,23 @@ struct EvidenceWriterCommitOrderTests {
         }
     }
 
+    @Test func rollbackReadFailureAfterHashIsNotReportedAsChange() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root], pdfData: Data("ours".utf8), results: [], finished: Date(), checksumAlgorithm: nil, jobID: UUID(), started: Date(), duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true, beforePublish: { url in
+                if url.pathExtension == "json" { throw DeliberateFailure.encode }
+            }, beforeRollbackRemoval: { url in
+                if url.pathExtension == "pdf" { try FileManager.default.removeItem(at: url) }
+            })
+            Issue.record("Publication must fail")
+        } catch let error as ReportExportError {
+            #expect(error.localizedDescription.contains("could not be verified"))
+            #expect(!error.localizedDescription.contains("changed during publication"))
+        }
+    }
+
     private func recordFixtureFacts(_ journal: TransferJournal, id: UUID, files: [URL]) throws {
         let facts = try files.map { url in
             let data = try Data(contentsOf: url)
@@ -63,6 +117,32 @@ struct EvidenceWriterCommitOrderTests {
         }
         try journal.recordIntendedReportFacts(id: id, facts: facts, publicationID: id)
         try journal.promoteIntendedReportFacts(id: id, paths: files.map(\.path))
+    }
+
+    @Test func replacementRefusesSwapDuringOwnershipValidation() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil, results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+        try recordFixtureFacts(journal, id: id, files: files)
+        let snapshot = try #require(journal.records.first)
+        let csv = try #require(files.first { $0.pathExtension == "csv" })
+        let visits = Mutex(0)
+        await #expect(throws: ReportReplacementOwnershipError.self) {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil, results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false, replacing: files, validateReplacement: { url in
+                try TransferJournal.validateReportReplacement(record: snapshot, paths: files.map(\.path), target: url.path)
+                if url == csv && visits.withLock({ $0 += 1; return $0 }) == 2 {
+                    try Data("foreign".utf8).write(to: url, options: .atomic)
+                }
+            })
+        }
+        #expect(try Data(contentsOf: csv) == Data("foreign".utf8))
     }
 
     @Test func successfulExportClearsRecordedStagingPath() async throws {
@@ -536,11 +616,37 @@ struct EvidenceWriterCommitOrderTests {
             try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable")
             try journal.retryPendingReportWithdrawals(id: id)
             #expect(journal.records.first { $0.id == id }?.pendingWithdrawalPaths == nil)
+            let recorded = try #require(journal.records.first { $0.id == id }?.lastWithdrawnReportPaths)
+            #expect(recorded.contains(collision.path + "-1"))
+            #expect(recorded.allSatisfy { FileManager.default.fileExists(atPath: $0) })
             #expect(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
             #expect(try Data(contentsOf: collision) == Data("previous".utf8))
             priorFiles = files
         }
     }
+    @Test func withdrawalRetriesWhenHiddenNameAppearsAfterProbe() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("card"), backup = root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil, results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+        try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        let record = try #require(journal.records.first)
+        let csv = try #require(files.first { $0.pathExtension == "csv" })
+        let hidden = csv.deletingLastPathComponent().appendingPathComponent(ReportName.withdrawnName(report: csv.lastPathComponent, recordID: id))
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path), beforeWithdrawalMove: { url in
+            if url == csv { try? Data("collision".utf8).write(to: hidden) }
+        }, volumeIdentityAt: { _ in record.destinations.first?.volumeID })
+        #expect(files.allSatisfy { outcomes[$0.path] == .withdrawn })
+        #expect(try Data(contentsOf: hidden) == Data("collision".utf8))
+        #expect(FileManager.default.fileExists(atPath: hidden.path + "-1"))
+    }
+
     private enum DeliberateFailure: Error { case encode }
 
     private struct FailingProject: Codable, Sendable {

@@ -4,53 +4,98 @@ import Foundation
 import CryptoKit
 
 
-/// Holds the descriptor used for hashing until the caller performs its final
-/// path identity check immediately before removal or rename.
+/// Pins report identity and bytes before a path-based operation. The final
+/// lstat and re-hash close before unlink or rename, including on SMB. Darwin
+/// has no conditional rename/unlink by identity: another process can still
+/// replace the path between the final check and the path-based operation.
 final class PinnedReportFile {
     struct IdentityChanged: LocalizedError {
         let path: String
         var errorDescription: String? { "A file at \(path) changed and was left in place." }
     }
     private let url: URL
-    private let handle: FileHandle
     private let identity: stat
+    private let didOpen: (Int32) -> Void
     let sha256: String
     var size: UInt64 { UInt64(identity.st_size) }
     var modificationDate: Date { Date(timeIntervalSince1970: Double(identity.st_mtimespec.tv_sec) + Double(identity.st_mtimespec.tv_nsec) / 1_000_000_000) }
 
-    init(url: URL) throws {
-        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-        var initial = stat()
-        guard fstat(fd, &initial) == 0, (initial.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), initial.st_size >= 0 else {
-            throw FileOperationError.unsafeOperation("Report could not be identified at \(url.path)")
-        }
-        var hash = SHA256()
-        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
-        var after = stat()
-        guard fstat(fd, &after) == 0, Self.same(initial, after) else {
-            throw FileOperationError.unsafeOperation("Report changed while being read at \(url.path)")
-        }
+    init(url: URL, didOpen: @escaping (Int32) -> Void = { _ in }) throws {
+        let snapshot = try Self.read(url, didOpen: didOpen)
         self.url = url
-        self.handle = handle
-        self.identity = initial
-        self.sha256 = hash.finalize().map { String(format: "%02x", $0) }.joined()
+        self.didOpen = didOpen
+        self.identity = snapshot.0
+        self.sha256 = snapshot.1
     }
 
     private static func same(_ a: stat, _ b: stat) -> Bool {
         a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
         a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+        a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec &&
         (b.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+    }
+
+    static func readContents(_ url: URL, maximumSize: Int? = nil) throws -> Data {
+        try read(url, didOpen: { _ in }, captureContents: true, maximumSize: maximumSize).2
+    }
+
+    private static func read(_ url: URL, didOpen: (Int32) -> Void, captureContents: Bool = false, maximumSize: Int? = nil) throws -> (stat, String, Data) {
+        var pathInfo = stat()
+        guard lstat(url.path, &pathInfo) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard (pathInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), pathInfo.st_size >= 0 else {
+            throw FileOperationError.unsafeOperation("Report is not a regular file at \(url.path)")
+        }
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        didOpen(fd)
+        defer { _ = close(fd) }
+        var initial = stat()
+        guard fstat(fd, &initial) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard (initial.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), initial.st_size >= 0 else {
+            throw FileOperationError.unsafeOperation("Report is not a regular file at \(url.path)")
+        }
+        guard same(pathInfo, initial) else { throw IdentityChanged(path: url.path) }
+        if let maximumSize, initial.st_size > maximumSize {
+            throw FileOperationError.unsafeOperation("Report exceeds the allowed size at \(url.path)")
+        }
+        var hash = SHA256()
+        var contents = Data()
+        var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+        while true {
+            let count = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.read(fd, bytes.baseAddress!, bytes.count)
+            }
+            if count < 0 {
+                if errno == EINTR { continue }
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            if count == 0 { break }
+            let chunk = Data(buffer.prefix(count))
+            hash.update(data: chunk)
+            if captureContents {
+                if let maximumSize, count > maximumSize - contents.count {
+                    throw FileOperationError.unsafeOperation("Report exceeds the allowed size at \(url.path)")
+                }
+                contents.append(chunk)
+            }
+        }
+        var after = stat()
+        guard fstat(fd, &after) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard same(initial, after) else { throw IdentityChanged(path: url.path) }
+        return (initial, hash.finalize().map { String(format: "%02x", $0) }.joined(), contents)
     }
 
     func requireUnchanged() throws {
         var current = stat()
-        var descriptor = stat()
-        guard fstat(handle.fileDescriptor, &descriptor) == 0, Self.same(identity, descriptor),
-              lstat(url.path, &current) == 0, Self.same(identity, current) else {
-            throw IdentityChanged(path: url.path)
+        guard lstat(url.path, &current) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard (current.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+            throw FileOperationError.unsafeOperation("Report is not a regular file at \(url.path)")
         }
+        guard Self.same(identity, current) else { throw IdentityChanged(path: url.path) }
+        let verified = try Self.read(url, didOpen: didOpen)
+        guard Self.same(identity, verified.0), sha256 == verified.1 else { throw IdentityChanged(path: url.path) }
+        guard lstat(url.path, &current) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard Self.same(identity, current) else { throw IdentityChanged(path: url.path) }
     }
 
     func remove() throws {
@@ -58,11 +103,17 @@ final class PinnedReportFile {
         guard unlink(url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     }
 
-    func rename(to destination: URL) throws {
+    func rename(to destination: URL, beforeAction: () -> Void = {}) throws {
         try requireUnchanged()
+        beforeAction()
         guard renameatx_np(AT_FDCWD, url.path, AT_FDCWD, destination.path, UInt32(RENAME_EXCL)) == 0 else {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
+    }
+
+    func replace(with source: URL) throws {
+        try requireUnchanged()
+        guard Darwin.rename(source.path, url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
     }
 }
 
@@ -601,25 +652,10 @@ public enum EvidenceWriter: Sendable {
         }
         func staged(_ url: URL) -> URL { stagingDirectory.appendingPathComponent(url.lastPathComponent) }
         func backup(_ url: URL) -> URL { stagingDirectory.appendingPathComponent("backup-" + url.lastPathComponent) }
-        func renameReplacing(_ from: URL, _ to: URL) throws {
-            let failure = from.withUnsafeFileSystemRepresentation { source in
-                to.withUnsafeFileSystemRepresentation { destination in
-                    rename(source!, destination!) == 0 ? 0 : errno
-                }
-            }
-            guard failure == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure)) }
-        }
         func reportFact(_ file: URL, publicURL: URL) throws -> ReportFileFact {
-            var info = stat()
-            guard lstat(file.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
-                throw FileOperationError.unsafeOperation("Report could not be identified at \(file.path)")
-            }
-            let handle = try FileHandle(forReadingFrom: file)
-            defer { try? handle.close() }
-            var hash = SHA256()
-            while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
-            return ReportFileFact(path: publicURL.path, size: UInt64(info.st_size), modificationDate: nil,
-                                  sha256: hash.finalize().map { String(format: "%02x", $0) }.joined())
+            let pinned = try PinnedReportFile(url: file)
+            return ReportFileFact(path: publicURL.path, size: pinned.size, modificationDate: nil,
+                                  sha256: pinned.sha256)
         }
         var published: [URL] = []
         var intendedFacts: [String: ReportFileFact] = [:]
@@ -708,7 +744,8 @@ public enum EvidenceWriter: Sendable {
             for url in finalURLs where replacing?.contains(url) == true {
                 try validatePublication?()
                 try validateReplacement?(url)
-                try FileManager.default.copyItem(at: url, to: backup(url))
+                let previousBytes = try PinnedReportFile.readContents(url)
+                try previousBytes.write(to: backup(url), options: .withoutOverwriting)
                 previousFacts[url.path] = try reportFact(backup(url), publicURL: url)
             }
             for url in finalURLs {
@@ -716,10 +753,17 @@ public enum EvidenceWriter: Sendable {
                 try beforePublish?(url)
                 try validatePublication?()
                 if replacing?.contains(url) == true {
+                    let occupant: PinnedReportFile
+                    do { occupant = try PinnedReportFile(url: url) }
+                    catch is PinnedReportFile.IdentityChanged { throw ReportReplacementOwnershipError(path: url.path, changed: true) }
+                    catch { throw ReportReplacementOwnershipError(path: url.path) }
+                    guard occupant.sha256 == previousFacts[url.path]?.sha256 else {
+                        throw ReportReplacementOwnershipError(path: url.path, changed: true)
+                    }
                     try validateReplacement?(url)
-                    // rename replaces one file atomically; never remove the old
-                    // report before its replacement has been fully generated.
-                    try renameReplacing(staged(url), url)
+                    do { try occupant.replace(with: staged(url)) }
+                    catch is PinnedReportFile.IdentityChanged { throw ReportReplacementOwnershipError(path: url.path, changed: true) }
+                    catch { throw ReportReplacementOwnershipError(path: url.path) }
                 } else {
                     try FileManager.default.moveItem(at: staged(url), to: url)
                 }
@@ -749,6 +793,7 @@ public enum EvidenceWriter: Sendable {
                     try validatePublication?()
                     let pinned: PinnedReportFile
                     do { pinned = try PinnedReportFile(url: url) }
+                    catch is PinnedReportFile.IdentityChanged { changed(url); continue }
                     catch {
                         cleanupErrors.append("a file at \(url.path) could not be verified and was left in place")
                         pendingPaths.append(url.path)
@@ -763,7 +808,7 @@ public enum EvidenceWriter: Sendable {
                     do { try pinned.remove() }
                     catch is PinnedReportFile.IdentityChanged { changed(url); continue }
                     catch {
-                        cleanupErrors.append("a file at \(url.path) could not be safely removed and was left in place")
+                        cleanupErrors.append("a file at \(url.path) could not be verified and was left in place")
                         pendingPaths.append(url.path)
                         continue
                     }

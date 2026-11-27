@@ -59,6 +59,93 @@ final class JournalStartupPersistenceTests: XCTestCase {
         XCTAssertThrowsError(try TransferJournal.validateReportPublication(record: record, paths: paths, volumeIdentityAt: { _ in nil }))
     }
 
+    func testStagingRecoveryReadsAndCleansInsideReportAccess() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        let staging = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        let json = reports.appendingPathComponent("report.json"), pdf = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("report.json"))
+        try Data("ours".utf8).write(to: pdf)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        record.runSourceURL = nil
+        record.pendingReportPaths = [json.path, pdf.path]
+        record.reportStagingPath = staging.path
+        record.reportFileFacts = [try reportFact(for: pdf)]
+        record.pendingWithdrawalPaths = [json.path, pdf.path, staging.path]
+        var depth = 0
+        var stagingChecks = 0
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: record.pendingWithdrawalPaths!,
+            volumeIdentityAt: { _ in record.destinations[0].volumeID },
+            reportAccessChanged: { depth += $0 ? 1 : -1 },
+            beforeStagingAccess: { _ in
+                stagingChecks += 1
+                guard depth > 0 else { throw NSError(domain: "Outside report access", code: 1) }
+            })
+        XCTAssertEqual(outcomes[pdf.path], .withdrawn)
+        XCTAssertEqual(outcomes[staging.path], .withdrawn)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        XCTAssertGreaterThanOrEqual(stagingChecks, 2)
+        XCTAssertEqual(depth, 0)
+    }
+
+    func testWithdrawalFIFOIsPendingWithReason() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup"), reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        record.runSourceURL = nil
+        let json = reports.appendingPathComponent("report.json"), pdf = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        XCTAssertEqual(mkfifo(pdf.path, 0o600), 0)
+        record.pendingReportPaths = [json.path, pdf.path]
+        let finished = expectation(description: "FIFO withdrawal returns")
+        let result = Mutex<TransferJournal.ReportWithdrawalOutcome?>(nil)
+        let snapshot = record
+        DispatchQueue.global().async {
+            let outcomes = TransferJournal.withdrawReports(record: snapshot, paths: [pdf.path], volumeIdentityAt: { _ in snapshot.destinations[0].volumeID })
+            result.withLock { $0 = outcomes[pdf.path] }
+            finished.fulfill()
+        }
+        let completion = XCTWaiter.wait(for: [finished], timeout: 1)
+        if completion != .completed {
+            // Release a blocked FIFO reader so a failing regression cannot strand the test process.
+            let writer = open(pdf.path, O_WRONLY | O_NONBLOCK)
+            if writer >= 0 { _ = close(writer) }
+        }
+        XCTAssertEqual(completion, .completed)
+        guard case .pending(let reason) = result.withLock({ $0 }) else { return XCTFail("FIFO must stay pending") }
+        XCTAssertTrue(reason.contains("not a regular file"), reason)
+        XCTAssertTrue(reason.contains("left in place"), reason)
+    }
+
+    func testWithdrawalReadFailureAfterHashIsNotReportedAsChange() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup"), reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        record.runSourceURL = nil
+        let json = reports.appendingPathComponent("report.json"), pdf = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        try Data("ours".utf8).write(to: pdf)
+        record.pendingReportPaths = [json.path, pdf.path]
+        record.reportFileFacts = try [reportFact(for: json), reportFact(for: pdf)]
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [pdf.path], beforeWithdrawalMove: { url in
+            try? FileManager.default.removeItem(at: url)
+        }, volumeIdentityAt: { _ in record.destinations[0].volumeID })
+        guard case .pending(let reason) = outcomes[pdf.path] else { return XCTFail("Unverifiable file must stay pending") }
+        XCTAssertTrue(reason.contains("could not be verified"), reason)
+        XCTAssertFalse(reason.contains("changed"), reason)
+    }
+
     func testWithdrawalLeavesReplacementAfterHash() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         var record = try fixture.record(state: .interrupted)
