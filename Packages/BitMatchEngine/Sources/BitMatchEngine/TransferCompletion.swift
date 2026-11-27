@@ -46,6 +46,45 @@ public enum TransferCompletion: Sendable {
         return root?.lastPathComponent ?? file.deletingLastPathComponent().lastPathComponent
     }
 
+    /// One label per destination, each distinct within the list. A backup
+    /// whose `destinationLabel` (its volume) no other shares keeps it; a
+    /// group that shares one adds its trailing path components, one at a
+    /// time, until no two read alike: "RAID/ProjectA/Backup", "RAID/ProjectB/Backup".
+    static func distinctDestinationLabels(for destinations: [URL]) -> [String] {
+        let bases = destinations.map { destinationLabel(for: $0, roots: [$0]) }
+        var labels = bases
+        for base in Set(bases) {
+            let group = bases.indices.filter { bases[$0] == base }
+            guard group.count > 1 else { continue }
+            // The components after the base: below the volume for /Volumes
+            // paths, otherwise the folders above the named last component.
+            let tails: [[String]] = group.map { index in
+                let comps = destinations[index].standardizedFileURL.pathComponents
+                if let volume = comps.firstIndex(of: "Volumes"), volume + 1 < comps.count, comps[volume + 1] == base {
+                    return Array(comps.dropFirst(volume + 2))
+                }
+                return Array(comps.dropFirst().dropLast())
+            }
+            let isVolume = group.map { index -> Bool in
+                let comps = destinations[index].standardizedFileURL.pathComponents
+                return comps.firstIndex(of: "Volumes").map { $0 + 1 < comps.count && comps[$0 + 1] == base } ?? false
+            }
+            let longest = tails.map(\.count).max() ?? 0
+            for depth in 1...max(1, longest) {
+                let candidates = group.indices.map { position -> String in
+                    let part = tails[position].suffix(depth)
+                    guard !part.isEmpty else { return base }
+                    return isVolume[position]
+                        ? ([base] + part).joined(separator: "/")
+                        : (part + [base]).joined(separator: "/")
+                }
+                for (position, index) in group.enumerated() { labels[index] = candidates[position] }
+                if Set(candidates).count == candidates.count { break }
+            }
+        }
+        return labels
+    }
+
     // MARK: - ASC MHL
 
     private struct CoverageEntry: Sendable {
@@ -297,16 +336,12 @@ public enum TransferCompletion: Sendable {
         )
         var jobs: [ASCMHLJob] = []
         var issues = coverage.issues.map { "ASC MHL not created — \($0)" }
-        // Name the volume: two backups often use the same folder name. Two
-        // backups on one volume would then read alike, so those become
-        // "VOLUME/folder".
-        let volumeLabels = coverage.destinations.map { destinationLabel(for: $0.destination, roots: [$0.destination]) }
-        let sharedLabels = Set(volumeLabels.filter { label in volumeLabels.filter { $0 == label }.count > 1 })
+        // Name the volume, not the folder two backups often share; backups
+        // that would still read alike get just enough of their path.
+        let labels = distinctDestinationLabels(for: coverage.destinations.map(\.destination))
         for (position, item) in coverage.destinations.enumerated() {
             let rows = item.entryIndices.map { results[$0] }
-            let volume = volumeLabels[position]
-            let name = sharedLabels.contains(volume) && volume != item.destination.lastPathComponent
-                ? "\(volume)/\(item.destination.lastPathComponent)" : volume
+            let name = labels[position]
             guard sourceFiles != nil, item.isExact else {
                 issues.append("ASC MHL not created on \(name) because verification is incomplete")
                 continue

@@ -383,4 +383,25 @@ struct IssueNinetyThreeSummaryTests {
         #expect(plan.jobs.map(\.label) == ["RAID/B", "DEST_A"])
         #expect(plan.issues == ["ASC MHL not created on RAID/A: 1 file not verified"])
     }
+
+    /// Same volume and same final folder name: labels grow until they differ.
+    @Test func ascmhlPlanAddsPathUntilBackupsOnOneVolumeDiffer() throws {
+        let first = URL(fileURLWithPath: "/Volumes/RAID/ProjectA/Backup")
+        let second = URL(fileURLWithPath: "/Volumes/RAID/ProjectB/Backup")
+        let results = [
+            sha256Result(clip, on: first, verified: true), sha256Result(finder, on: first, verified: false),
+            sha256Result(clip, on: second, verified: true), sha256Result(finder, on: second, verified: true),
+            sha256Result(clip, on: backupA, verified: true), sha256Result(finder, on: backupA, verified: true),
+        ]
+        let plan = TransferCompletion.ascmhlPlan(
+            results: results, sourceFiles: [clip, finder], destinations: [first, second, backupA],
+            source: source, settings: CameraLabelSettings()
+        )
+        #expect(plan.jobs.map(\.label) == ["RAID/ProjectB/Backup", "DEST_A"])
+        #expect(plan.issues == ["ASC MHL not created on RAID/ProjectA/Backup: 1 file not verified"])
+        #expect(TransferCompletion.distinctDestinationLabels(for: [
+            URL(fileURLWithPath: "/Volumes/RAID/A/x/Backup"), URL(fileURLWithPath: "/Volumes/RAID/B/x/Backup"),
+            URL(fileURLWithPath: "/Volumes/T7"),
+        ]) == ["RAID/A/x/Backup", "RAID/B/x/Backup", "T7"])
+    }
 }
