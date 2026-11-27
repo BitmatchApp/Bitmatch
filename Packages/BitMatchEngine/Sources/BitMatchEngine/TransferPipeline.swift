@@ -839,6 +839,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             sourceManifest.map { ($0.relativePath, $0.url) },
             uniquingKeysWith: { first, _ in first }
         )
+        let manifestSizeByRelativePath = Dictionary(
+            sourceManifest.map { ($0.relativePath, $0.size) },
+            uniquingKeysWith: { first, _ in first }
+        )
         let manifestBytes = try sourceManifest.reduce(Int64(0)) { total, entry in
             let (sum, overflow) = total.addingReportingOverflow(max(0, entry.size))
             guard !overflow else {
@@ -1208,7 +1212,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             destinationURL: fallbackRoot.appendingPathComponent(entry.relativePath),
                             success: false,
                             error: error,
-                            fileSize: 0,
+                            fileSize: entry.size,
                             verificationResult: nil,
                             processingTime: 0
                         )
@@ -1318,7 +1322,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         destinationURL: dstURL,
                         success: false,
                         error: error,
-                        fileSize: (try? self.fileSystem.getFileSize(for: srcURL)) ?? 0,
+                        fileSize: manifestSizeByRelativePath[relativePath] ?? 0,
                         verificationResult: nil,
                         processingTime: 0
                     )
@@ -1436,7 +1440,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     destinationURL: destinationFileURL,
                                     success: false,
                                     error: error,
-                                    fileSize: 0,
+                                    fileSize: entry.size,
                                     verificationResult: nil,
                                     processingTime: Date().timeIntervalSince(fileStartTime)
                                 )

@@ -404,16 +404,19 @@ public enum LocalTransferJournalError: LocalizedError, Sendable {
 /// work itself. Safe to use from any thread; one process holds the file lock.
 public final class TransferJournal: Sendable {
     private struct SettlementMarker: Codable {
+        enum Phase: String, Codable { case writing, flushed }
         let id: UUID
         let state: LocalTransferState
         let digest: String
+        // Legacy markers have no phase and cannot prove a successful flush.
+        let phase: Phase?
     }
 
-    private static func settlementMarker(for record: LocalTransferRecord) throws -> SettlementMarker {
+    private static func settlementMarker(for record: LocalTransferRecord, phase: SettlementMarker.Phase = .writing) throws -> SettlementMarker {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let digest = SHA256.hash(data: try encoder.encode(record)).map { String(format: "%02x", $0) }.joined()
-        return SettlementMarker(id: record.id, state: record.state, digest: digest)
+        return SettlementMarker(id: record.id, state: record.state, digest: digest, phase: phase)
     }
     private struct State {
         var records: [LocalTransferRecord] = []
@@ -425,13 +428,19 @@ public final class TransferJournal: Sendable {
     private let fileURL: URL
     private let lockDescriptor: Int32
     private let afterJournalRename: (@Sendable () throws -> Void)?
+    private let afterFlushedMarkerRename: (@Sendable () throws -> Void)?
+    private let beforeSettlementMarkerRemoval: (@Sendable () throws -> Void)?
 
     public var records: [LocalTransferRecord] { state.withLock { $0.records } }
     public var persistenceError: String? { state.withLock { $0.persistenceError } }
 
     public init(fileURL: URL? = nil, recoverReportsOnInit: Bool = true,
-                afterJournalRename: (@Sendable () throws -> Void)? = nil) {
+                afterJournalRename: (@Sendable () throws -> Void)? = nil,
+                afterFlushedMarkerRename: (@Sendable () throws -> Void)? = nil,
+                beforeSettlementMarkerRemoval: (@Sendable () throws -> Void)? = nil) {
         self.afterJournalRename = afterJournalRename
+        self.afterFlushedMarkerRename = afterFlushedMarkerRename
+        self.beforeSettlementMarkerRemoval = beforeSettlementMarkerRemoval
         let fileURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
         let markerPrefix = ".\(fileURL.lastPathComponent).settling-"
@@ -458,11 +467,13 @@ public final class TransferJournal: Sendable {
                 })
                 let unsettledIDs = Set(markerIDs.filter { id in
                     let markerURL = fileURL.deletingLastPathComponent().appendingPathComponent(markerPrefix + id.uuidString)
+                    let witness = fileURL.deletingLastPathComponent().appendingPathComponent(markerPrefix + "witness-" + id.uuidString)
+                    if FileManager.default.fileExists(atPath: witness.path) { return true }
                     guard let data = try? Data(contentsOf: markerURL),
                           let marker = try? JSONDecoder().decode(SettlementMarker.self, from: data),
                           marker.id == id, let record = recovered.first(where: { $0.id == id }),
                           let expected = try? Self.settlementMarker(for: record) else { return true }
-                    return marker.state != expected.state || marker.digest != expected.digest
+                    return marker.phase != .flushed || marker.state != expected.state || marker.digest != expected.digest
                 })
                 var recoveredInterruption = false
                 for index in recovered.indices {
@@ -496,6 +507,8 @@ public final class TransferJournal: Sendable {
                 }
                 for id in markerIDs {
                     let marker = fileURL.deletingLastPathComponent().appendingPathComponent(markerPrefix + id.uuidString)
+                    let witness = fileURL.deletingLastPathComponent().appendingPathComponent(markerPrefix + "witness-" + id.uuidString)
+                    try? FileManager.default.removeItem(at: witness)
                     if (try? FileManager.default.removeItem(at: marker)) != nil {
                         try? DurableJSONFile.flushDirectory(fileURL.deletingLastPathComponent(), folder: "the history folder")
                     }
@@ -545,6 +558,55 @@ public final class TransferJournal: Sendable {
         case withdrawn
         case absentOnVerifiedBackup
         case pending(String)
+    }
+
+    /// Check the exact recorded paths before publishing or replacing reports.
+    /// A bookmark may follow a moved folder; publication must not follow it
+    /// while continuing to write through the old absolute path.
+    public static func validateReportPublication(record: LocalTransferRecord, paths: [String]) throws {
+        try validateReportPublication(record: record, paths: paths) { url in
+            var fresh = url
+            fresh.removeAllCachedResourceValues()
+            guard let values = try? fresh.resourceValues(forKeys: LocalTransferResource.identityKeys) else { return nil }
+            return LocalTransferResource.volumeIdentity(values)
+        }
+    }
+
+    static func validateReportPublication(record: LocalTransferRecord, paths: [String],
+                                          volumeIdentityAt: (URL) -> String?) throws {
+        let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
+        let mappings = record.relativeReportPaths ?? relativePaths(record.pendingReportPaths ?? paths, record: record)
+        func failure(_ path: String) -> NSError {
+            NSError(domain: "BitMatch.ReportPublication", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "The original destination or report volume could not be confirmed at \(path). Keep the card."
+            ])
+        }
+        for path in paths {
+            guard let index = roots.indices.first(where: { reportRelativePath(path, root: roots[$0]) != nil }),
+                  index < record.destinations.count,
+                  let relative = reportRelativePath(path, root: roots[index]), !relative.isEmpty,
+                  !relative.split(separator: "/").contains("..") else { throw failure(path) }
+            let destination = record.destinations[index]
+            let access = try destination.beginReadAccess()
+            defer { access.release() }
+            let root = roots[index].standardizedFileURL.resolvingSymlinksInPath()
+            try destination.validateIdentity(at: root)
+            let recorded = URL(fileURLWithPath: path).standardizedFileURL
+            let parent = recorded.deletingLastPathComponent().resolvingSymlinksInPath()
+            let target = parent.appendingPathComponent(recorded.lastPathComponent)
+            guard mappings.contains(where: { $0.destinationIndex == index && $0.path == relative }),
+                  PathContainment.isStrictlyWithin(target.path, root: root.path),
+                  PathContainment.isWithin(parent.path, root: root.path),
+                  let volumeID = destination.volumeID else { throw failure(path) }
+            guard (try? parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                  volumeIdentityAt(parent) == volumeID else { throw failure(path) }
+            var info = stat()
+            if lstat(target.path, &info) == 0 {
+                let resolved = target.resolvingSymlinksInPath()
+                guard PathContainment.isStrictlyWithin(resolved.path, root: root.path),
+                      volumeIdentityAt(resolved) == volumeID else { throw failure(path) }
+            } else if errno != ENOENT { throw failure(path) }
+        }
     }
 
     /// Withdraw only recorded files on the original, identity-checked backup.
@@ -1539,6 +1601,9 @@ public final class TransferJournal: Sendable {
 
     private func removeSettlementMarker(id: UUID) {
         let marker = fileURL.deletingLastPathComponent().appendingPathComponent(".\(fileURL.lastPathComponent).settling-\(id.uuidString)")
+        let witness = fileURL.deletingLastPathComponent().appendingPathComponent(".\(fileURL.lastPathComponent).settling-witness-\(id.uuidString)")
+        do { try beforeSettlementMarkerRemoval?() } catch { return }
+        try? FileManager.default.removeItem(at: witness)
         if (try? FileManager.default.removeItem(at: marker)) != nil {
             try? DurableJSONFile.flushDirectory(fileURL.deletingLastPathComponent(), folder: "the history folder")
         }
@@ -1582,8 +1647,27 @@ public final class TransferJournal: Sendable {
                     let marker = fileURL.deletingLastPathComponent().appendingPathComponent(".\(fileURL.lastPathComponent).settling-\(settlementID.uuidString)")
                     try DurableJSONFile.write(try JSONEncoder().encode(Self.settlementMarker(for: record)), to: marker,
                                               what: "the settlement marker", folder: "the history folder")
+                    try Self.persist(updated, to: fileURL, afterRename: afterJournalRename)
+                    // Keep a durable writing-phase witness while the flushed
+                    // stamp is installed: its own rename may land before its
+                    // directory flush fails, and rollback can fail too.
+                    let witness = fileURL.deletingLastPathComponent().appendingPathComponent(".\(fileURL.lastPathComponent).settling-witness-\(settlementID.uuidString)")
+                    try DurableJSONFile.write(try JSONEncoder().encode(Self.settlementMarker(for: record)), to: witness,
+                                              what: "the settlement witness", folder: "the history folder")
+                    do {
+                        try DurableJSONFile.write(try JSONEncoder().encode(Self.settlementMarker(for: record, phase: .flushed)), to: marker,
+                                                  what: "the settlement marker", folder: "the history folder", afterRename: afterFlushedMarkerRename)
+                        try FileManager.default.removeItem(at: witness)
+                    } catch {
+                        // A re-stamp can itself fail after rename. Restore the
+                        // conservative phase before propagating the failure.
+                        try? DurableJSONFile.write(try JSONEncoder().encode(Self.settlementMarker(for: record)), to: marker,
+                                                   what: "the settlement marker", folder: "the history folder")
+                        throw error
+                    }
+                } else {
+                    try Self.persist(updated, to: fileURL, afterRename: afterJournalRename)
                 }
-                try Self.persist(updated, to: fileURL, afterRename: afterJournalRename)
                 state.records = updated
                 state.persistenceError = nil
             } catch let failure as FlushAfterPublishFailure {

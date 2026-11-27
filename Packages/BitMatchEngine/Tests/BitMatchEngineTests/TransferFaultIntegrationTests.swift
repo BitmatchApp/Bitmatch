@@ -6,6 +6,57 @@ import Darwin
 @testable import BitMatchEngine
 
 final class TransferFaultIntegrationTests: XCTestCase {
+    func testDestinationOpenFailurePreservesManifestSize() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try DisposableTransferFixture(seed: 501, fileCount: 1, bytesPerFile: 4096)
+            defer { fixture.cleanup() }
+            let service = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                destinationSetupHook: { _ in throw NSError(domain: "DestinationOpen", code: 1) })
+            let operation = try await service.performFileOperation(sourceURL: fixture.source,
+                destinationURLs: [fixture.destinations[0]], verificationMode: .standard,
+                settings: CameraLabelSettings(), estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            let sourcePath = canonicalFileURL(fixture.source).appendingPathComponent("DCIM/100MEDIA/MEDIA_0000.bin").path
+            let result = try XCTUnwrap(operation.results.first { $0.sourceURL.path == sourcePath })
+            XCTAssertFalse(result.success)
+            XCTAssertEqual(result.fileSize, 4096)
+        }
+    }
+
+    func testSequentialVerificationErrorPreservesManifestSize() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try DisposableTransferFixture(seed: 502, fileCount: 1, bytesPerFile: 4096)
+            defer { fixture.cleanup() }
+            let service = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                pipelinedVerification: false,
+                fanOutHooks: .init(beforeDestinationRead: { _, _ in throw NSError(domain: "VerifyRead", code: 1) }))
+            let operation = try await service.performFileOperation(sourceURL: fixture.source,
+                destinationURLs: [fixture.destinations[0]], verificationMode: .standard,
+                settings: CameraLabelSettings(), estimatedTotalBytes: nil, progressCallback: { _ in },
+                onFileResult: nil)
+            let sourcePath = canonicalFileURL(fixture.source).appendingPathComponent("DCIM/100MEDIA/MEDIA_0000.bin").path
+            let result = try XCTUnwrap(operation.results.first { $0.sourceURL.path == sourcePath })
+            XCTAssertFalse(result.success)
+            XCTAssertEqual(result.fileSize, 4096)
+        }
+    }
+
+    func testCopySetupFailurePreservesManifestSize() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let fixture = try DisposableTransferFixture(seed: 503, fileCount: 1, bytesPerFile: 4096)
+            defer { fixture.cleanup() }
+            let service = TransferPipeline(fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                fanOutHooks: .init(forceDirectFinalPublication: { _ in true },
+                    beforeMarkerFileFlush: { _ in throw NSError(domain: "MarkerFlush", code: 1) }))
+            let operation = try await service.performFileOperation(sourceURL: fixture.source,
+                destinationURLs: [fixture.destinations[0]], verificationMode: .standard,
+                settings: CameraLabelSettings(), estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            let sourcePath = canonicalFileURL(fixture.source).appendingPathComponent("DCIM/100MEDIA/MEDIA_0000.bin").path
+            let result = try XCTUnwrap(operation.results.first { $0.sourceURL.path == sourcePath })
+            XCTAssertFalse(result.success)
+            XCTAssertEqual((result.error as NSError?)?.domain, "MarkerFlush")
+            XCTAssertEqual(result.fileSize, 4096)
+        }
+    }
     private static let serializationGate = DispatchSemaphore(value: 1)
 
     override func setUp() {

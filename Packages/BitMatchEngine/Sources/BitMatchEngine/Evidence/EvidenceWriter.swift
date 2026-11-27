@@ -412,6 +412,7 @@ public enum EvidenceWriter: Sendable {
                                         excludedFromFileCounts: Set<UUID> = [],
                                         beforePDFWrite: (@Sendable () throws -> Void)? = nil,
                                         replacing: [URL]? = nil,
+                                        validatePublication: (@Sendable () throws -> Void)? = nil,
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeRestore: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil,
@@ -434,6 +435,7 @@ public enum EvidenceWriter: Sendable {
             saveDirectory = fallbackDir.appendingPathComponent("Reports", isDirectory: true)
         }
 
+        try validatePublication?()
         // Create reports directory if it doesn't exist
         do {
             try FileManager.default.createDirectory(at: saveDirectory, withIntermediateDirectories: true)
@@ -566,11 +568,13 @@ public enum EvidenceWriter: Sendable {
                 throw ReportExportError.replacementFilesChanged
             }
             for url in finalURLs where replacing?.contains(url) == true {
+                try validatePublication?()
                 try FileManager.default.copyItem(at: url, to: backup(url))
             }
             for url in finalURLs {
                 try Task.checkCancellation()
                 try beforePublish?(url)
+                try validatePublication?()
                 if replacing?.contains(url) == true {
                     // rename replaces one file atomically; never remove the old
                     // report before its replacement has been fully generated.
@@ -593,6 +597,7 @@ public enum EvidenceWriter: Sendable {
             var cleanupErrors: [String] = []
             for url in published.reversed() {
                 do {
+                    try validatePublication?()
                     // Withdraw the new verdict before attempting restoration.
                     // If restoration fails, a newly safe PDF must not remain.
                     try FileManager.default.removeItem(at: url)

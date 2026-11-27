@@ -57,9 +57,67 @@ final class JournalStartupPersistenceTests: XCTestCase {
             XCTAssertNotNil(journal.persistenceError)
         }
         let reopened = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false)
-        XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .completed, "A marker for the exact landed record must not cause a false red")
+        XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .interrupted, "An unconfirmed flush must remain unsafe after restart")
+        XCTAssertTrue(reopened.records.first { $0.id == id }?.summary.lowercased().contains("interrupted") == true)
         let marker = fixture.store.appendingPathComponent(".\(fixture.journal.lastPathComponent).settling-\(id.uuidString)")
         XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testFlushedMarkerForLandedRecordSurvivesFailedMarkerRemoval() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        let source = fixture.root.appendingPathComponent("card")
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let id: UUID
+        do {
+            let journal = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false,
+                beforeSettlementMarkerRemoval: { throw NSError(domain: "MarkerRemoval", code: 1) })
+            id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
+            let row = ResultRow(path: source.appendingPathComponent("clip.mov").path,
+                status: ResultOutcome.verified.statusText, size: 4, checksum: "abc",
+                destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("clip.mov").path)
+            try journal.finish(id: id, results: [row], summary: "Finished", hadIssues: false)
+            let marker = fixture.store.appendingPathComponent(".\(fixture.journal.lastPathComponent).settling-\(id.uuidString)")
+            let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: marker)) as? [String: Any])
+            XCTAssertEqual(object["phase"] as? String, "flushed")
+        }
+        let reopened = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false)
+        XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .completed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.store.appendingPathComponent(".\(fixture.journal.lastPathComponent).settling-\(id.uuidString)").path))
+    }
+
+    func testFailedFlushedRestampRecoversAsInterrupted() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        let source = fixture.root.appendingPathComponent("card")
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let id: UUID
+        do {
+            let journal = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false,
+                afterFlushedMarkerRename: { throw NSError(domain: "MarkerFlush", code: 1) })
+            id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
+            let row = ResultRow(path: source.appendingPathComponent("clip.mov").path,
+                status: ResultOutcome.verified.statusText, size: 4, checksum: "abc",
+                destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("clip.mov").path)
+            XCTAssertThrowsError(try journal.finish(id: id, results: [row], summary: "Finished", hadIssues: false))
+            XCTAssertEqual(journal.records.first { $0.id == id }?.state, .running)
+            // Model a failed rollback too: a visibly flushed marker must not
+            // defeat the durable writing-phase witness left by the failure.
+            let marker = fixture.store.appendingPathComponent(".\(fixture.journal.lastPathComponent).settling-\(id.uuidString)")
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: marker)) as? [String: Any])
+            object["phase"] = "flushed"
+            try JSONSerialization.data(withJSONObject: object).write(to: marker)
+        }
+        let reopened = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false)
+        XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .interrupted)
     }
 
     func testSettlementMarkerWithOldRecordRecoversConservatively() throws {
@@ -109,6 +167,10 @@ final class JournalStartupPersistenceTests: XCTestCase {
                 destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("clip.mov").path)
             gate.fail = true
             XCTAssertThrowsError(try journal.finish(id: id, results: [row], summary: "Finished", hadIssues: false))
+            let marker = fixture.store.appendingPathComponent(".\(fixture.journal.lastPathComponent).settling-\(id.uuidString)", isDirectory: false)
+            var object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: marker)) as? [String: Any])
+            object["phase"] = "flushed"
+            try JSONSerialization.data(withJSONObject: object).write(to: marker)
             var records = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: fixture.journal))
             records[0].summary = "Older completed revision"
             try JSONEncoder().encode(records).write(to: fixture.journal)
@@ -160,6 +222,26 @@ final class JournalStartupPersistenceTests: XCTestCase {
         record.pendingReportPaths = [path]
         let outcomes = TransferJournal.withdrawReports(record: record, paths: [path], volumeIdentityAt: { _ in "different-volume" })
         guard case .pending = outcomes[path] else { return XCTFail("A different report volume must remain pending") }
+    }
+
+    func testReportPublicationRejectsDifferentParentVolume() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        let resource = try LocalTransferResource(url: backup)
+        record.destinations = [resource]
+        record.runDestinationURLs = [backup]
+        let report = reports.appendingPathComponent("report.json")
+        let sentinel = Data("replacement volume".utf8)
+        try sentinel.write(to: report)
+        record.pendingReportPaths = [report.path]
+        XCTAssertThrowsError(try TransferJournal.validateReportPublication(record: record, paths: [report.path],
+            volumeIdentityAt: { _ in "different-volume" }))
+        XCTAssertEqual(try Data(contentsOf: report), sentinel)
+        XCTAssertNoThrow(try TransferJournal.validateReportPublication(record: record, paths: [report.path],
+            volumeIdentityAt: { _ in resource.volumeID }))
     }
 
     func testExistingReportOnDifferentVolumeIsNotWithdrawn() throws {

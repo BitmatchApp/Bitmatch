@@ -405,7 +405,6 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 for name in try FileManager.default.contentsOfDirectory(atPath: originalReports.path) {
                     try Data("replacement".utf8).write(to: replacement.appendingPathComponent(name))
                 }
-                throw NSError(domain: "BitMatchTestOffline", code: 2)
             })
         coordinator.startQueue()
         let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
@@ -418,12 +417,41 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         for path in paths {
             XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data("replacement".utf8))
         }
-        if !(record.pendingWithdrawalPaths ?? []).isEmpty {
-            XCTAssertNotNil(record.withdrawalReason)
-        } else {
-            // A bookmark can follow the original folder to its new location.
-            XCTAssertTrue(record.summary.contains("withdrawn"))
+        XCTAssertFalse((record.pendingWithdrawalPaths ?? []).isEmpty)
+        XCTAssertNotNil(record.withdrawalReason)
+        XCTAssertTrue(record.summary.contains("reports could not be replaced"))
+    }
+
+    func testFinalReportSettlementDoesNotPublishToReplacementDestination() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let offline = f.root.appendingPathComponent("offline-backup")
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
+                try FileManager.default.moveItem(at: f.destination, to: offline)
+                let replacement = f.destination.appendingPathComponent("Reports")
+                try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+                for name in try FileManager.default.contentsOfDirectory(atPath: offline.appendingPathComponent("Reports").path) {
+                    try Data("replacement".utf8).write(to: replacement.appendingPathComponent(name))
+                }
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .issues && !coordinator.isOperationInProgress
         }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first(where: { $0.id == id }))
+        let paths = try XCTUnwrap(record.pendingReportPaths)
+        XCTAssertFalse(paths.isEmpty)
+        for path in paths { XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data("replacement".utf8)) }
+        XCTAssertFalse((record.pendingWithdrawalPaths ?? []).isEmpty)
+        XCTAssertNotNil(record.withdrawalReason)
+        XCTAssertTrue(record.summary.contains("report export failed"))
     }
     /// Polls a semaphore without blocking; `wait` itself is unavailable from async contexts.
     nonisolated static func semaphoreWasSignalled(_ semaphore: DispatchSemaphore) -> Bool {

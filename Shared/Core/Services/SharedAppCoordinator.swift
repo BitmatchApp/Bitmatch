@@ -2839,7 +2839,7 @@ class SharedAppCoordinator: ObservableObject {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
             let belongsToQueueSession = runBelongsToQueueSession
             if startCancellationRequested {
-                try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer cancelled")
+                try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer cancelled", record: transferJournal.storedRecord(id: recordID))
                 try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: runResults.rows)
                 SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
@@ -2850,7 +2850,7 @@ class SharedAppCoordinator: ObservableObject {
                     let reportPaths = copyVerifyExecutor.pendingPublishedReportPaths
                     if !reportPaths.isEmpty { try transferJournal.recordPendingReportPaths(id: recordID, paths: reportPaths, publicationID: recordID) }
                     try beforeFinalReportSettlement?()
-                    try await copyVerifyExecutor.settleReportAfterHistory(failure: nil)
+                    try await copyVerifyExecutor.settleReportAfterHistory(failure: nil, record: transferJournal.storedRecord(id: recordID))
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -2859,7 +2859,7 @@ class SharedAppCoordinator: ObservableObject {
                     var recoveryError: String?
                     do {
                         try beforeRecoveryReportSettlement?()
-                        try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer report export failed: \(exportError.localizedDescription)")
+                        try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer report export failed: \(exportError.localizedDescription)", record: transferJournal.storedRecord(id: recordID))
                     } catch {
                         let deletion = withdrawPublishedReports()
                         recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
@@ -2882,7 +2882,7 @@ class SharedAppCoordinator: ObservableObject {
                         var recoveryError: String?
                         do {
                             try beforeRecoveryReportSettlement?()
-                            try await copyVerifyExecutor.settleReportAfterHistory(failure: "Project card could not be saved: \(cardError.localizedDescription)")
+                            try await copyVerifyExecutor.settleReportAfterHistory(failure: "Project card could not be saved: \(cardError.localizedDescription)", record: transferJournal.storedRecord(id: recordID))
                         } catch {
                             let deletion = withdrawPublishedReports()
                             recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
@@ -2940,7 +2940,7 @@ class SharedAppCoordinator: ObservableObject {
                     "Transfer did not finish: \(originalError.localizedDescription)"
                 try beforeRecoveryReportSettlement?()
                 await beforeRecoveryReportSettlementAsync?()
-                try await copyVerifyExecutor.settleReportAfterHistory(failure: reason)
+                try await copyVerifyExecutor.settleReportAfterHistory(failure: reason, record: transferJournal.storedRecord(id: recordID))
             } catch {
                 let deletion = withdrawPublishedReports()
                 reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"

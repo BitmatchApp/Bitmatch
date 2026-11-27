@@ -753,6 +753,7 @@ final class CopyVerifyExecutor {
         skipsProven: Bool,
         additionalNotes: String? = nil,
         replacing: [URL]? = nil,
+        publicationRecord: LocalTransferRecord? = nil,
         recovery: Bool = false
     ) async throws -> String? {
         if !recovery { try checkCancellation() }
@@ -808,6 +809,18 @@ final class CopyVerifyExecutor {
         let reportOperation = operation
         let reportContext = photographerContext
         let reportJobID = config.reportJobID ?? reportOperation.id
+        let validatePublication: (@Sendable () throws -> Void)? = replacing.map { files in
+            let paths = files.map(\.path)
+            return {
+                guard var snapshot = publicationRecord else {
+                    throw FileOperationError.unsafeOperation("The original report destination identity is unavailable. Keep the card.")
+                }
+                if snapshot.pendingReportPaths != paths { snapshot.relativeReportPaths = nil }
+                snapshot.pendingReportPaths = paths
+                try TransferJournal.validateReportPublication(record: snapshot, paths: paths)
+            }
+        }
+        try validatePublication?()
 
         let work = Task.detached(priority: .utility) {
             try await ReportExporter.export(
@@ -836,7 +849,8 @@ final class CopyVerifyExecutor {
                 plannedRows: plannedRows,
                 skipsProven: skipsProven,
                 excludedFromFileCounts: excludedFromFileCounts,
-                replacing: replacing
+                replacing: replacing,
+                validatePublication: validatePublication
             )
         }
         if !recovery { reportTask = work }
@@ -874,7 +888,7 @@ final class CopyVerifyExecutor {
 
     /// Publish the final report before History settles. Keep its inputs until
     /// the journal write succeeds so a failed write can publish a warning.
-    func settleReportAfterHistory(failure: String?) async throws {
+    func settleReportAfterHistory(failure: String?, record: LocalTransferRecord?) async throws {
         guard let pending = pendingReport else { return }
         let issue = try await generateReport(
             operation: pending.operation, results: pending.results, config: pending.config,
@@ -885,7 +899,7 @@ final class CopyVerifyExecutor {
             phaseDurations: pending.phaseDurations, verdictMessage: pending.verdictMessage,
             skipsProven: pending.skipsProven,
             additionalNotes: failure.map { "\($0). Keep the card." },
-            replacing: pending.files, recovery: failure != nil
+            replacing: pending.files, publicationRecord: record, recovery: failure != nil
         )
         if let issue {
             throw FileOperationError.unsafeOperation("Could not replace transfer reports: \(issue)")
@@ -902,6 +916,11 @@ final class CopyVerifyExecutor {
         snapshot.pendingReportPaths = paths
         // The executor may have published before paths were persisted.
         if record.pendingReportPaths != paths { snapshot.relativeReportPaths = nil }
+        do {
+            try TransferJournal.validateReportPublication(record: snapshot, paths: paths)
+        } catch {
+            return Dictionary(uniqueKeysWithValues: paths.map { ($0, .pending(error.localizedDescription)) })
+        }
         return TransferJournal.withdrawReports(record: snapshot, paths: paths)
     }
 
