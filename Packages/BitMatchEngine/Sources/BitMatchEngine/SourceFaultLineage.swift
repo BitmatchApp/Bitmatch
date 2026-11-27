@@ -47,7 +47,10 @@ public enum SourceFaultLineage {
     /// evidence the card read fine. A cancellation is the person's choice,
     /// and a classified non-source failure says the card read fine.
     static func predecessorIsUnclassified(_ record: LocalTransferRecord) -> Bool {
-        let unsuccessful = record.results.filter { !$0.isSuccessStatus }
+        // A skipped Finder view file or a reviewed AppleDouble exclusion is a
+        // deliberate omission, not a failure: it carries no reason, and it
+        // neither needs explaining nor explains anything.
+        let unsuccessful = record.results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
         // Every unsuccessful row must say why, whatever the record's state:
         // one explained row never explains another.
         // A reason that leaves the card unproven (an existing backup file

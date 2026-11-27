@@ -221,6 +221,38 @@ struct SourceFaultLineageTests {
         #expect(SourceFaultLineage.assess(for: retry2, in: [retry2, explainedRecord]) == .lineageIncomplete([]))
     }
 
+    private func omittedRows() -> [ResultRow] {
+        [
+            ResultRow(path: ".DS_Store", status: ResultOutcome.skippedFinderMetadata.statusText,
+                      size: 6_148, checksum: nil, destination: "backup"),
+            ResultRow(path: "CLIPS/._clip.MOV", status: ResultOutcome.excludedAppleDouble.statusText,
+                      size: 4_096, checksum: nil, destination: "backup"),
+        ]
+    }
+
+    /// A skipped Finder view file and a reviewed AppleDouble exclusion are
+    /// deliberate omissions, not failures. They carry no reason and must not
+    /// make an otherwise explained attempt unknown, or a clean retry could
+    /// never reach safe to erase.
+    @Test(arguments: [LocalTransferState.failed, .interrupted, .issues, .cancelled])
+    func omittedRowsDoNotMakeAnExplainedAttemptUnknown(state: LocalTransferState) throws {
+        let first = try record(rows: [successRow(), faultRow(.outOfSpace)] + omittedRows(), state: state)
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .noFaultObserved)
+    }
+
+    /// Omitted rows never explain a stop either: a genuinely unexplained
+    /// failed row beside them still leaves the attempt unknown, and a failed
+    /// attempt whose only non-success rows are omissions says nothing.
+    @Test func omittedRowsNeverExplainAnUnexplainedFailure() throws {
+        let first = try record(rows: [failedRowWithoutReason()] + omittedRows(), state: .failed)
+        let retry = try record(retryOf: first.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, first]) == .lineageIncomplete([]))
+        let onlyOmitted = try record(rows: [successRow()] + omittedRows(), state: .failed)
+        let afterOmitted = try record(retryOf: onlyOmitted.id, rows: [successRow()])
+        #expect(SourceFaultLineage.assess(for: afterOmitted, in: [afterOmitted, onlyOmitted]) == .lineageIncomplete([]))
+    }
+
     /// A cancelled attempt is the person's choice, but a row that failed
     /// unexplained before the cancel is still unexplained.
     @Test func cancelledAttemptWithAnUnexplainedRowIsIncomplete() throws {
