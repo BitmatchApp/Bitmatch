@@ -2572,7 +2572,8 @@ class SharedAppCoordinator: ObservableObject {
                 independentDestinationCount: initialContext.independentDestinationCount,
                 sourceURL: initialContext.sourceURL,
                 destinationURLs: initialContext.destinationURLs,
-                sessionRecordIDs: Set(queueSessionRecordIDs)
+                sessionRecordIDs: Set(queueSessionRecordIDs),
+                operationID: startID
             )
             context = initialContext.recording(in: recordID)
             activeJournalRecordID = recordID
@@ -2801,6 +2802,8 @@ class SharedAppCoordinator: ObservableObject {
         var finalizingProject = false
         var firstInterruptWriteFailure: String?
         var publicationFailure: String?
+        var pendingWithdrawalReason: String?
+        var withdrawalPaths: [String]?
         do {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
             let belongsToQueueSession = runBelongsToQueueSession
@@ -2814,7 +2817,7 @@ class SharedAppCoordinator: ObservableObject {
                 // If publication fails, the first terminal journal write is issues.
                 do {
                     let reportPaths = copyVerifyExecutor.pendingPublishedReportPaths
-                    if !reportPaths.isEmpty { try transferJournal.recordPendingReportPaths(id: recordID, paths: reportPaths) }
+                    if !reportPaths.isEmpty { try transferJournal.recordPendingReportPaths(id: recordID, paths: reportPaths, publicationID: recordID) }
                     try beforeFinalReportSettlement?()
                     try await copyVerifyExecutor.settleReportAfterHistory(failure: nil)
                 } catch is CancellationError {
@@ -2829,6 +2832,10 @@ class SharedAppCoordinator: ObservableObject {
                     } catch {
                         let failures = copyVerifyExecutor.deletePendingReports()
                         let deletion = failures.isEmpty ? "Published reports were deleted." : "Could not delete published reports: \(failures.joined(separator: ", "))."
+                        if !failures.isEmpty {
+                            pendingWithdrawalReason = "Could not delete published reports: \(failures.joined(separator: ", "))"
+                            withdrawalPaths = copyVerifyExecutor.pendingPublishedReportPaths
+                        }
                         recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
                     }
                     publicationFailure = (["Transfer report export failed: \(exportError.localizedDescription). Keep the card.", recoveryError]
@@ -2852,7 +2859,8 @@ class SharedAppCoordinator: ObservableObject {
                     performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,
                     sourceFingerprint: currentOperation?.sourceFingerprint,
                     skippedFinderMetadataPaths: currentOperation?.skippedFinderMetadataPaths,
-                    projectCardSnapshot: pendingProjectCardSnapshot
+                    projectCardSnapshot: pendingProjectCardSnapshot,
+                    pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths
                 )
                 attemptingJournalFinish = false
                 if publicationFailure == nil, (info.success || info.expectedExclusionQueueQualification != nil),
@@ -2886,6 +2894,10 @@ class SharedAppCoordinator: ObservableObject {
                 let failures = copyVerifyExecutor.deletePendingReports()
                 let deletion = failures.isEmpty ? "Published reports were deleted." :
                     "Could not delete published reports: \(failures.joined(separator: ", "))."
+                if !failures.isEmpty {
+                    pendingWithdrawalReason = "Could not delete published reports: \(failures.joined(separator: ", "))"
+                    withdrawalPaths = copyVerifyExecutor.pendingPublishedReportPaths
+                }
                 reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"
             }
             pendingProjectFinalization = nil
@@ -2900,7 +2912,7 @@ class SharedAppCoordinator: ObservableObject {
             do {
                 if startCancellationRequested {
                     let summary = ["Cancelled by user (\(cancellationOrigin.rawValue)).", reportFailure].compactMap { $0 }.joined(separator: " ")
-                    try transferJournal.cancel(id: recordID, summary: summary, results: runResults.rows)
+                    try transferJournal.cancel(id: recordID, summary: summary, results: runResults.rows, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
                     SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 } else {
                     let baseSummary = originalError is CancellationError || originalError is TransferInterruption
@@ -2914,15 +2926,15 @@ class SharedAppCoordinator: ObservableObject {
                     if let record = transferJournal.records.first(where: { $0.id == recordID }),
                        record.state == .completed || record.state == .issues {
                         // A flush may fail after the new journal was published.
-                        try transferJournal.recordReportPublicationFailure(id: recordID, summary: summary)
+                        try transferJournal.recordReportPublicationFailure(id: recordID, summary: summary, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
                     } else {
                         do {
                             try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
-                                                          reason: Self.taggedFailureReason(of: originalError))
+                                                          reason: Self.taggedFailureReason(of: originalError), pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
                         } catch {
                             firstInterruptWriteFailure = error.localizedDescription
                             try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
-                                                          reason: Self.taggedFailureReason(of: originalError))
+                                                          reason: Self.taggedFailureReason(of: originalError), pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
                         }
                     }
                     SharedLogger.transferEvent(.journalInterrupted, run: startID, code: (originalError as NSError).code,

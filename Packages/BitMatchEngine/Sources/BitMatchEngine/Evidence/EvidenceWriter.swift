@@ -11,11 +11,13 @@ import CryptoKit
 public enum ReportExportError: LocalizedError, Sendable {
     case noSaveLocation
     case missingChecksum(String)
+    case replacementFilesChanged
     case cleanupFailed(String)
     public var errorDescription: String? {
         switch self {
         case .noSaveLocation: "Cannot find a valid directory to save reports"
         case .missingChecksum(let path): "No recorded checksum for \(path)."
+        case .replacementFilesChanged: "The replacement report does not match the recorded report files."
         case .cleanupFailed(let details): "Report cleanup failed: \(details)"
         }
     }
@@ -442,13 +444,22 @@ public enum EvidenceWriter: Sendable {
         func replacement(_ ext: String) -> URL? {
             replacing?.first { $0.lastPathComponent.hasSuffix(".\(ext)") }
         }
-        let pdfURL = replacement("pdf") ?? saveDirectory.appendingPathComponent(fileName).nonConflictingSibling()
-        let csvURL = replacement("csv") ?? pdfURL.deletingPathExtension().appendingPathExtension("csv").nonConflictingSibling()
-        let jsonURL = replacement("json") ?? pdfURL.deletingPathExtension().appendingPathExtension("json").nonConflictingSibling()
         let checksumExtension = "\(checksumAlgorithm?.rawValue.lowercased() ?? "").txt"
-        let checksumURL = replacement(checksumExtension) ?? pdfURL.deletingPathExtension()
-            .appendingPathExtension("\(checksumAlgorithm?.rawValue.lowercased() ?? "").txt")
-            .nonConflictingSibling()
+        let base = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        var suffix = 1
+        var stem: URL
+        while true {
+            stem = saveDirectory.appendingPathComponent(base + (suffix == 1 ? "" : "-\(suffix)"))
+            let extensions = ["pdf", "csv", "json", checksumExtension]
+            if extensions.allSatisfy({ ext in
+                replacement(ext) != nil || !FileManager.default.fileExists(atPath: stem.appendingPathExtension(ext).path)
+            }) { break }
+            suffix += 1
+        }
+        let pdfURL = replacement("pdf") ?? stem.appendingPathExtension("pdf")
+        let csvURL = replacement("csv") ?? stem.appendingPathExtension("csv")
+        let jsonURL = replacement("json") ?? stem.appendingPathExtension("json")
+        let checksumURL = replacement(checksumExtension) ?? stem.appendingPathExtension(checksumExtension)
         let stagingDirectory = saveDirectory.resolvingSymlinksInPath()
             .appendingPathComponent(".BitMatch-report-staging-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
@@ -531,6 +542,11 @@ public enum EvidenceWriter: Sendable {
             if generateFullReport, checksumAlgorithm != nil { finalURLs.append(checksumURL) }
             if generateFullReport, pdfData != nil { finalURLs.append(pdfURL) }
             finalURLs.append(jsonURL)
+            // The journal already recorded the provisional export. A replacement
+            // must not publish an additional path that recovery cannot withdraw.
+            if let replacing, Set(finalURLs) != Set(replacing) {
+                throw ReportExportError.replacementFilesChanged
+            }
             for url in finalURLs where replacing?.contains(url) == true {
                 try FileManager.default.copyItem(at: url, to: backup(url))
             }

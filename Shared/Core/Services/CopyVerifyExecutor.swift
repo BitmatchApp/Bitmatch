@@ -900,13 +900,14 @@ final class CopyVerifyExecutor {
     func deletePendingReports() -> [String] {
         let paths = pendingPublishedReportPaths
         func priority(_ path: String) -> Int {
-            if path.hasSuffix(".json") { return 0 }
-            if path.hasSuffix(".pdf") { return 1 }
-            return 2
+            if path.hasSuffix(".json") { return 2 }
+            if path.hasSuffix(".pdf") { return 0 }
+            return 1
         }
         let ordered = paths.sorted { priority($0) < priority($1) }
         var failures: [String] = []
         for path in ordered {
+            if path.hasSuffix(".json") && !failures.isEmpty { failures.append(path); continue }
             do { try FileManager.default.removeItem(atPath: path) }
             catch {
                 let nsError = error as NSError

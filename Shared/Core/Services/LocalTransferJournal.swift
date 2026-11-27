@@ -1,6 +1,9 @@
 import Foundation
 import Combine
 import BitMatchEngine
+#if os(macOS)
+import AppKit
+#endif
 
 struct PersistedQueueSession: Codable, Equatable, Sendable {
     var recordIDs: [UUID]
@@ -36,6 +39,9 @@ final class LocalTransferJournal: ObservableObject {
     private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
     private var interruptedOverrides: [UUID: LocalTransferRecord] = [:]
     private var isRefreshingRecords = false
+    private var withdrawalRetriesInFlight: Set<UUID> = []
+    private var withdrawalRetriesRequested: Set<UUID> = []
+    private var mountObserver: AnyCancellable?
     /// Counts expensive derivations, so performance tests need no timing limit.
     private(set) var completedQueueRowBuildCount = 0
     var completedQueueRowCacheCount: Int { completedQueueRows.count }
@@ -58,8 +64,16 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeRecordPlan = beforeRecordPlan
         self.beforeFinish = beforeFinish
         self.beforeInterrupt = beforeInterrupt
-        store = TransferJournal(fileURL: selectedURL)
+        store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false)
         refresh()
+        retryAllPendingReportWithdrawals()
+        #if os(macOS)
+        mountObserver = NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.didMountNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.retryAllPendingReportWithdrawals() }
+            }
+        #endif
     }
 
     func loadQueueSession() -> PersistedQueueSession? {
@@ -367,11 +381,11 @@ final class LocalTransferJournal: ObservableObject {
 
     func markRunning(id: UUID, independentDestinationCount: Int? = nil,
                      sourceURL: URL? = nil, destinationURLs: [URL]? = nil,
-                     sessionRecordIDs: Set<UUID> = []) throws {
+                     sessionRecordIDs: Set<UUID> = [], operationID: UUID? = nil) throws {
         defer { refresh() }
         try beforeMarkRunning?(id)
         try store.markRunning(id: id, independentDestinationCount: independentDestinationCount,
-                              sourceURL: sourceURL, destinationURLs: destinationURLs, sessionRecordIDs: sessionRecordIDs)
+                              sourceURL: sourceURL, destinationURLs: destinationURLs, sessionRecordIDs: sessionRecordIDs, operationID: operationID)
     }
 
     func recordPlan(id: UUID, fileCounts: [Int], selectedSourceBytes: Int64? = nil) throws {
@@ -423,14 +437,34 @@ final class LocalTransferJournal: ObservableObject {
         try store.reorderQueued(idsInRunOrder: orderedIDs)
     }
 
-    func recordPendingReportPaths(id: UUID, paths: [String]) throws {
+    func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
         defer { refresh() }
-        try store.recordPendingReportPaths(id: id, paths: paths)
+        try store.recordPendingReportPaths(id: id, paths: paths, publicationID: publicationID)
     }
 
-    func retryPendingReportWithdrawals(id: UUID) throws {
-        defer { refresh() }
-        try store.retryPendingReportWithdrawals(id: id)
+    func retryAllPendingReportWithdrawals() {
+        for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
+            retryPendingReportWithdrawals(id: record.id)
+        }
+    }
+
+    func retryPendingReportWithdrawals(id: UUID) {
+        guard withdrawalRetriesInFlight.insert(id).inserted else {
+            withdrawalRetriesRequested.insert(id)
+            return
+        }
+        let store = self.store
+        Task { [weak self] in
+            do { try await store.retryPendingReportWithdrawalsAsync(id: id) }
+            catch { /* The store publishes its persistence error on refresh. */ }
+            guard let self else { return }
+            self.withdrawalRetriesInFlight.remove(id)
+            self.refresh()
+            if self.withdrawalRetriesRequested.remove(id) != nil,
+               self.records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) {
+                self.retryPendingReportWithdrawals(id: id)
+            }
+        }
     }
 
     func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow]) {
@@ -465,7 +499,8 @@ final class LocalTransferJournal: ObservableObject {
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         sourceFingerprint: String? = nil,
         skippedFinderMetadataPaths: [String]? = nil,
-        projectCardSnapshot: Data? = nil
+        projectCardSnapshot: Data? = nil,
+        pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil
     ) throws {
         defer { refresh() }
         try beforeFinish?(id)
@@ -481,28 +516,29 @@ final class LocalTransferJournal: ObservableObject {
             performanceTelemetry: performanceTelemetry,
             sourceFingerprint: sourceFingerprint,
             skippedFinderMetadataPaths: skippedFinderMetadataPaths,
-            projectCardSnapshot: projectCardSnapshot
+            projectCardSnapshot: projectCardSnapshot,
+            pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths
         )
     }
 
-    func recordReportPublicationFailure(id: UUID, summary: String) throws {
+    func recordReportPublicationFailure(id: UUID, summary: String, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
         defer { refresh() }
-        try store.recordReportPublicationFailure(id: id, summary: summary)
+        try store.recordReportPublicationFailure(id: id, summary: summary, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths)
     }
 
     func matchingVerifiedRecord(sourceFingerprint: String) -> LocalTransferRecord? {
         store.matchingVerifiedRecord(sourceFingerprint: sourceFingerprint)
     }
 
-    func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil) throws {
+    func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
         defer { refresh() }
         try beforeInterrupt?(id)
-        try store.interrupt(id: id, summary: summary, results: results, reason: reason)
+        try store.interrupt(id: id, summary: summary, results: results, reason: reason, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths)
     }
 
-    func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil) throws {
+    func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
         defer { refresh() }
         try beforeCancel?(id)
-        try store.cancel(id: id, summary: summary, results: results)
+        try store.cancel(id: id, summary: summary, results: results, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths)
     }
 }

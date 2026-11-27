@@ -11,6 +11,37 @@ struct EvidenceWriterCommitOrderTests {
         func encode(to _: Encoder) throws { throw DeliberateFailure.encode }
     }
 
+    @Test func orphanJSONReservesTheSameSuffixForEveryReportFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("report-names-\(UUID())")
+        let source = root.appendingPathComponent("card")
+        let backup = root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let finished = Date()
+        let name = EvidenceWriter.reportFileName(finished: finished, pathExtension: "json")
+        try Data("orphan".utf8).write(to: reports.appendingPathComponent(name))
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup],
+            pdfData: Data("PDF".utf8), results: [], finished: finished, checksumAlgorithm: .sha256,
+            jobID: id, started: finished, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+            generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        let stems = files.map { $0.lastPathComponent.components(separatedBy: ".").first! }
+        #expect(Set(stems).count == 1)
+        #expect(stems[0].hasSuffix("-2"))
+        try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "backup unavailable")
+        try journal.retryPendingReportWithdrawals(id: id)
+        #expect(journal.records[0].pendingWithdrawalPaths == nil)
+        #expect(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+        #expect(FileManager.default.fileExists(atPath: reports.appendingPathComponent(name).path))
+    }
+
     @Test func stagingUsesResolvedReportsDirectoryAndIsInvisibleToScanner() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-staging-volume-\(UUID())")
         let destination = root.appendingPathComponent("Backup", isDirectory: true)
@@ -62,6 +93,30 @@ struct EvidenceWriterCommitOrderTests {
         #expect(try original.map { try Data(contentsOf: $0) } == oldContents)
         let scan = await EvidenceReader.scanReports(at: root)
         #expect(scan.reports.count == 1)
+    }
+
+    @Test func replacementCannotPublishAnUnrecordedFile() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-replace-files-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let finished = Date()
+        let original = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+            pdfData: Data("PDF".utf8), results: [], finished: finished, checksumAlgorithm: nil,
+            jobID: UUID(), started: finished, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+            generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        let contents = try original.map { try Data(contentsOf: $0) }
+        await #expect(throws: (any Error).self) {
+            try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+                pdfData: Data("PDF".utf8), results: [], finished: finished, checksumAlgorithm: .sha256,
+                jobID: UUID(), started: finished, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, replacing: original)
+        }
+        #expect(try original.map { try Data(contentsOf: $0) } == contents)
+        let entries = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        #expect(Set(entries.map(\.lastPathComponent)) == Set(original.map(\.lastPathComponent)))
     }
 
     @Test func jsonIsPublishedLastAndFailedRestoreDoesNotLeaveSafePDF() async throws {

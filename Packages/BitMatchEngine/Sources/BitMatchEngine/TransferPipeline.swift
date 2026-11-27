@@ -1102,7 +1102,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     destinationURL: job.destination,
                     success: false,
                     error: error,
-                    fileSize: 0,
+                    fileSize: job.fileSize,
                     verificationResult: nil,
                     processingTime: Date().timeIntervalSince(verificationStarted)
                 )

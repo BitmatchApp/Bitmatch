@@ -225,11 +225,6 @@ struct TransferLibraryView: View {
                 .accessibilityLabel("More actions for \(record.title)")
             }
         }
-        .onAppear {
-            guard !(record.pendingWithdrawalPaths ?? []).isEmpty else { return }
-            do { try journal.retryPendingReportWithdrawals(id: record.id) }
-            catch { errorMessage = error.localizedDescription }
-        }
         .contextMenu { menuItems(record, actions: actions) }
         #if os(iOS)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -251,8 +246,6 @@ struct TransferLibraryView: View {
             get: { expandedIDs.contains(id) },
             set: { isExpanded in
                 if isExpanded {
-                    do { try journal.retryPendingReportWithdrawals(id: id) }
-                    catch { errorMessage = error.localizedDescription }
                     expandedIDs.insert(id)
                 } else { expandedIDs.remove(id) }
             }
