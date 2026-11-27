@@ -13,6 +13,8 @@ All notable changes to this project will be documented in this file.
 - For anyone reading reports by machine, the JSON report gains these keys: `performance.verifyLanes`, `statistics.skippedFinderViewFiles`, a failed item's `recordedChecksumBeforeFailure`, and `verificationScope.recordedSkippedFinderMetadata`, `skipFinderViewFiles` and `finderViewFilesSetting`; the History CSV summary adds `recordedSkippedFinderViewFiles`, `finderViewFiles` and `finderViewFilesSetting`; the History JSON adds `finderViewFiles` and carries the count and the setting inside `verificationScope` as `recordedSkippedFinderMetadata` and `finderViewFilesSetting`. Every new run writes `verifyLanes`, `skipFinderViewFiles` and `finderViewFilesSetting`; the others appear only when they have a value (a skipped file, a row that changed after it was checked). Reports written by earlier versions are unchanged.
 - Groundwork for BitMatch Remote: the protocol, admission store, safety-claim lease and in-process host and client cores. No user-visible change yet.
 
+- Known, not fixed: the same two iPhone/iPad report-text tests fail as in 0.2.13 and 0.2.14 (a History export line and the AppleDouble exclusion note in the details report), as recorded in docs/TODO.md. The iPhone/iPad suite otherwise passes on an iPad simulator.
+
 ## [0.2.14] - 2026-11-26
 
 - A symbolic link, named pipe, socket or device on the card is no longer skipped in silence. Each one is a failed row on every backup ("the card holds an item BitMatch does not copy"), so the transfer ends with "Keep the card" instead of "All files copied and verified". Nothing opens or follows such entries. A source holding only such items is refused before copying. Compare and Check still list regular files only.

@@ -79,7 +79,7 @@ struct PortableTransferSettingsIOSTests {
     @Test func mobileDecoderRejectsUnsupportedAndOversizedFiles() throws {
         let valid = try mobileSettingsProposal().encoded()
         var object = try #require(JSONSerialization.jsonObject(with: valid) as? [String: Any])
-        object["schemaVersion"] = 3
+        object["schemaVersion"] = PortableTransferSettings.schemaVersion + 1
         #expect(throws: TransferSettingsImportError.unsupportedVersion) {
             _ = try PortableTransferSettings.decode(JSONSerialization.data(withJSONObject: object))
         }
