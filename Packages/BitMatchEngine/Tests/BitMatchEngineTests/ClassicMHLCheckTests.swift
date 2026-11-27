@@ -90,6 +90,31 @@ struct ClassicMHLCheckTests {
         #expect(try fixture.snapshot() == before)
     }
 
+    @Test func workingExtrasRequireProofAndRecordedWorkingNamesRemainVisible() async throws {
+        let id = UUID(), other = UUID()
+        let recorded = "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"
+        let recordedStaging = "Reports/.bitmatch-staging-\(id.uuidString)/recorded.mov"
+        let fixture = try ClassicFixture(files: [(recorded, Data("recorded".utf8)),
+                                                  (recordedStaging, Data("media".utf8))])
+        defer { fixture.remove() }
+        let reports = fixture.media.appendingPathComponent("Reports")
+        let owned = reports.appendingPathComponent(".bitmatch-staging-" + id.uuidString)
+        try Data(id.uuidString.utf8).write(to: owned.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data().write(to: owned.appendingPathComponent("extra"))
+        let foreign = reports.appendingPathComponent(".bitmatch-staging-" + other.uuidString)
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: foreign.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data().write(to: foreign.appendingPathComponent("extra"))
+        try Data().write(to: reports.appendingPathComponent(".unsettled-notes"))
+        try Data().write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.pdf"))
+        let result = try await run(fixture.media)
+        #expect(result.isIntact)
+        #expect(Set(result.matchingPaths) == [recorded, recordedStaging])
+        #expect(Set(result.newPaths) == ["Reports/.unsettled-notes",
+            "Reports/.bitmatch-staging-\(other.uuidString)/.bitmatch-owner",
+            "Reports/.bitmatch-staging-\(other.uuidString)/extra"])
+    }
+
     /// Plant: resolve every classic path against the selected root instead of
     /// its own manifest directory, or stop after the first nested inventory.
     @Test func nestedInventoriesUseTheirOwnDirectoriesAndRetainEveryRecord() async throws {

@@ -36,29 +36,108 @@ final class ComparisonDiagnosticTests: XCTestCase {
         XCTAssertEqual(records.last?["mismatchedCount"] as? Int, 1)
         XCTAssertFalse(String(decoding: try JSONSerialization.data(withJSONObject: records), as: UTF8.self).contains(marker))
     }
-    func testCompareIgnoresOnlyBitMatchWorkingEntries() async throws {
+    func testCompareKeepsSourceFilesWithWorkingNames() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }
         let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
-        for directory in [left, right] { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
-        for directory in [left, right] { try Data("same".utf8).write(to: directory.appendingPathComponent("clip")) }
-        let staging = right.appendingPathComponent(".bitmatch-staging-test")
-        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
-        try Data("private".utf8).write(to: staging.appendingPathComponent("report.json"))
-        try Data("private".utf8).write(to: right.appendingPathComponent(".unsettled-report.json"))
+        for directory in [left, right] {
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("same".utf8).write(to: directory.appendingPathComponent("clip.mov"))
+        }
+        try Data("real".utf8).write(to: left.appendingPathComponent(".unsettled-notes"))
+        let id = UUID()
+        let name = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"
+        let sourceReport = left.appendingPathComponent("Reports").appendingPathComponent(name)
+        try FileManager.default.createDirectory(at: sourceReport.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try Data("real".utf8).write(to: sourceReport)
+        let sourceStaging = left.appendingPathComponent("Reports/.bitmatch-staging-" + id.uuidString)
+        try FileManager.default.createDirectory(at: sourceStaging, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: sourceStaging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data("real".utf8).write(to: sourceStaging.appendingPathComponent("clip.mov"))
         let result = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
             .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
-        XCTAssertEqual(result.onlyInRightCount, 0)
-        XCTAssertEqual(result.mismatchedCount, 0)
-        // Transfer manifests must never silently discard a card's files.
-        let sourceListing = try CardSource.enumerateRegularFiles(base: right).map(\.relativePath)
-        XCTAssertTrue(sourceListing.contains(".bitmatch-staging-test/report.json"))
-        XCTAssertTrue(sourceListing.contains(".unsettled-report.json"))
-        try Data().write(to: right.appendingPathComponent(".other-hidden"))
-        let other = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
-            .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
-        XCTAssertEqual(other.onlyInRightCount, 1)
+        XCTAssertEqual(Set(result.onlyInLeftPaths), [".unsettled-notes", "Reports/" + name,
+            "Reports/.bitmatch-staging-\(id.uuidString)/.bitmatch-owner", "Reports/.bitmatch-staging-\(id.uuidString)/clip.mov"])
     }
+
+    func testCompareSuppressesOnlyProvenBackupWorkingEntries() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        for directory in [left, right] {
+            try fm.createDirectory(at: directory, withIntermediateDirectories: true)
+            try Data("same".utf8).write(to: directory.appendingPathComponent("clip"))
+        }
+        let id = UUID(), other = UUID()
+        let reports = right.appendingPathComponent("Reports")
+        let staging = reports.appendingPathComponent(".bitmatch-staging-" + id.uuidString)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data("private".utf8).write(to: staging.appendingPathComponent("report.json"))
+        for ext in ["json", "pdf", "csv", "sha-256.txt"] {
+            try Data().write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.\(ext)"))
+        }
+        let compare = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let clean = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertEqual(clean.onlyInRightPaths, [])
+        let foreign = reports.appendingPathComponent(".bitmatch-staging-" + other.uuidString)
+        try fm.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: foreign.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data().write(to: foreign.appendingPathComponent("real"))
+        let rootStaging = right.appendingPathComponent(".bitmatch-staging-" + id.uuidString)
+        try fm.createDirectory(at: rootStaging, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: rootStaging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data().write(to: rootStaging.appendingPathComponent("real"))
+        for path in [".unsettled-notes", "Reports/.unsettled-notes", "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_invalid.json", ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"] {
+            try Data().write(to: right.appendingPathComponent(path))
+        }
+        let result = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertEqual(Set(result.onlyInRightPaths), [
+            "Reports/.bitmatch-staging-\(other.uuidString)/.bitmatch-owner", "Reports/.bitmatch-staging-\(other.uuidString)/real",
+            ".bitmatch-staging-\(id.uuidString)/.bitmatch-owner", ".bitmatch-staging-\(id.uuidString)/real",
+            ".unsettled-notes", "Reports/.unsettled-notes", "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_invalid.json",
+            ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"
+        ])
+    }
+    func testMatchingWorkingNameIsComparedWhenPresentOnBothSides() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        let name = ".unsettled-\(UUID().uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"
+        for (directory, contents) in [(left, "left"), (right, "right")] {
+            let reports = directory.appendingPathComponent("Reports")
+            try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+            try Data(contents.utf8).write(to: reports.appendingPathComponent(name))
+        }
+        let result = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertEqual(result.mismatchedPaths, ["Reports/" + name])
+    }
+
+    func testWorkingNamePatternsRejectLookalikes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let base = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        for ext in ["json", "pdf", "csv", "sha-256.txt"] {
+            XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "nested/Reports/\(base).\(ext)", root: root))
+        }
+        for path in ["Reports/\(base).json.bak", "Reports/\(base).txt", "Reports/\(base)-2.json",
+                     "Reports/.unsettled-not-a-uuid-BitMatch_Report_2026-11-27T12-00-00Z.json",
+                     "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_2026-99-27T12-00-00Z.json",
+                     "Reports/nested/\(base).json", "reports/\(base).json"] {
+            XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: path, root: root), path)
+        }
+        let stagingName = ".bitmatch-staging-" + id.uuidString
+        let staging = root.appendingPathComponent("Reports/" + stagingName)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/file", root: root))
+        try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/nested/file", root: root))
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)-1/file", root: root))
+    }
+
     func testReadFailureRetainsPhaseAndDoesNotLogSuccessfulCompletion() async throws {
         let run = UUID()
         let marker = "PRIVATE_PATH_\(UUID())"

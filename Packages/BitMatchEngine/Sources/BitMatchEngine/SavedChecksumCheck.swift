@@ -259,11 +259,13 @@ public struct SavedChecksumCheck: Sendable {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
             let path = try resolver.resolve(file)
-            // Unrecorded Finder state is noise. A preserved companion named in
-            // the evidence is part of the transfer set and must be checked.
-            if (discovery.classicEvidence.isEmpty && Self.isReservedEvidence(path))
+            let recorded = discovery.expectedFiles[path] != nil
+            let working = WorkingReportEntry.isWorkingFile(path: path, root: root)
+            // Reserved evidence stays outside the checked set, except for a
+            // recorded working entry. Unrecorded Finder state remains noise.
+            if (discovery.classicEvidence.isEmpty && Self.isReservedEvidence(path) && !(recorded && working))
                 || classicManifestURLs.contains(file.standardizedFileURL)
-                || (FolderComparer.isFinderMetadata(path) && discovery.expectedFiles[path] == nil) { continue }
+                || (!recorded && (FolderComparer.isFinderMetadata(path) || working)) { continue }
             #if canImport(Darwin)
             if discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }

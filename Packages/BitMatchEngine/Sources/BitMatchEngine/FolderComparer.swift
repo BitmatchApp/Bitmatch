@@ -72,7 +72,8 @@ public struct FolderComparer: Sendable {
         // closed. Files present on both sides are never content-compared.
         let onlyInSource = sourceSet.subtracting(destSet)
         let onlyInDest = destSet.subtracting(sourceSet).filter { path in
-            guard !Self.isOffloadManifest(path), !Self.isFinderMetadata(path) else { return false }
+            guard !Self.isOffloadManifest(path), !Self.isFinderMetadata(path),
+                  !WorkingReportEntry.isWorkingFile(path: path, root: right) else { return false }
             #if canImport(Darwin)
             if let item = destMap[path], TransferStatusMarker.validatedStatus(at: item.url, relativePath: path) != nil {
                 return false
@@ -200,5 +201,55 @@ public struct FolderComparer: Sendable {
             map[key] = (fileURL, size)
         }
         return map
+    }
+}
+
+/// Working reports are ignored only as destination extras. A name alone never
+/// establishes ownership of a staging directory.
+enum WorkingReportEntry {
+    static func isWorkingFile(path: String, root: URL) -> Bool {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 2 else { return false }
+        if parts[parts.count - 2] == "Reports", isUnsettledReport(parts[parts.count - 1]) {
+            return true
+        }
+        for index in 1..<(parts.count - 1) where parts[index - 1] == "Reports" {
+            let prefix = ".bitmatch-staging-"
+            let name = parts[index]
+            guard name.hasPrefix(prefix), let id = exactUUID(String(name.dropFirst(prefix.count))) else { continue }
+            let directory = parts[...index].reduce(root) { $0.appendingPathComponent($1) }
+            if TransferJournal.ownsStagingDirectory(directory, recordID: id) { return true }
+        }
+        return false
+    }
+
+    private static func exactUUID(_ text: String) -> UUID? {
+        guard let id = UUID(uuidString: text), id.uuidString.caseInsensitiveCompare(text) == .orderedSame else { return nil }
+        return id
+    }
+
+    private static func isUnsettledReport(_ name: String) -> Bool {
+        let prefix = ".unsettled-"
+        guard name.hasPrefix(prefix) else { return false }
+        let remainder = String(name.dropFirst(prefix.count))
+        guard remainder.count > 37 else { return false }
+        let uuidEnd = remainder.index(remainder.startIndex, offsetBy: 36)
+        guard exactUUID(String(remainder[..<uuidEnd])) != nil,
+              remainder[uuidEnd...].hasPrefix("-BitMatch_Report_") else { return false }
+        let tail = String(remainder[uuidEnd...].dropFirst("-BitMatch_Report_".count))
+        guard let ext = [".sha-256.txt", ".json", ".pdf", ".csv"].first(where: { tail.hasSuffix($0) }) else { return false }
+        let timestamp = String(tail.dropLast(ext.count))
+        let bytes = Array(timestamp.utf8)
+        guard bytes.count == 20 else { return false }
+        let separators: [Int: UInt8] = [4: 45, 7: 45, 10: 84, 13: 45, 16: 45, 19: 90]
+        for (index, byte) in bytes.enumerated() {
+            if let expected = separators[index] { if byte != expected { return false } }
+            else if !(48...57).contains(byte) { return false }
+        }
+        let iso = timestamp.replacingOccurrences(of: "-", with: ":", range: timestamp.index(timestamp.startIndex, offsetBy: 13)..<timestamp.index(timestamp.startIndex, offsetBy: 19))
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = .withInternetDateTime
+        guard let date = formatter.date(from: iso) else { return false }
+        return formatter.string(from: date) == iso
     }
 }

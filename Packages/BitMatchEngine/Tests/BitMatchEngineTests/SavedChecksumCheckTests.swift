@@ -137,6 +137,43 @@ struct SavedChecksumCheckTests {
         }
     }
 
+    @Test func recordedWorkingNamesAreCheckedWhileOnlyProvenExtrasAreIgnored() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let recorded = "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"
+        let file = try writeFile(recorded, text: "recorded", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
+        let staging = "Reports/.bitmatch-staging-\(id.uuidString)"
+        _ = try writeFile(staging + "/.bitmatch-owner", text: id.uuidString, under: root)
+        _ = try writeFile(staging + "/partial.json", text: "working", under: root)
+        _ = try writeFile(".unsettled-notes", text: "extra", under: root)
+        let result = try await run(root)
+        #expect(result.isIntact)
+        #expect(result.matchingPaths == [recorded])
+        #expect(result.missingPaths.isEmpty)
+        #expect(result.newPaths == [".unsettled-notes"])
+        try Data("changed".utf8).write(to: file)
+        let changed = try await run(root)
+        #expect(changed.changedPaths == [recorded])
+        #expect(changed.missingPaths.isEmpty)
+    }
+
+    @Test func recordedFileInOwnedStagingDirectoryIsStillChecked() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        let staging = "Reports/.bitmatch-staging-\(id.uuidString)"
+        let path = staging + "/recorded.mov"
+        let file = try writeFile(path, text: "recorded", under: root)
+        _ = try writeFile(staging + "/.bitmatch-owner", text: id.uuidString, under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
+        let result = try await run(root)
+        #expect(result.isIntact)
+        #expect(result.matchingPaths == [path])
+        #expect(result.missingPaths.isEmpty)
+    }
+
     @Test func allRecordedFilesMatchAndReportsBeatMHL() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }

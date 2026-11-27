@@ -252,10 +252,9 @@ public enum CardSource: Sendable {
     public static func enumerateRegularFiles(
         base: URL,
         checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
-        isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile,
-        skipWorkingEntries: Bool = false
+        isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile
     ) throws -> [FileEntry] {
-        try enumerateSource(base: base, checkCancellation: checkCancellation, isDataless: isDataless, skipWorkingEntries: skipWorkingEntries).files
+        try enumerateSource(base: base, checkCancellation: checkCancellation, isDataless: isDataless).files
     }
 
     /// The regular files plus every entry the card holds that BitMatch does
@@ -265,14 +264,13 @@ public enum CardSource: Sendable {
     public static func enumerateSource(
         base: URL,
         checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
-        isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile,
-        skipWorkingEntries: Bool = false
+        isDataless: @Sendable (URL) -> Bool = CardSource.isDatalessFile
     ) throws -> SourceEnumeration {
         try checkCancellation()
         if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
             throw CloudManagedSourceError()
         }
-        let tree = try enumerateTree(base: base, checkCancellation: checkCancellation, skipWorkingEntries: skipWorkingEntries)
+        let tree = try enumerateTree(base: base, checkCancellation: checkCancellation)
         var entries: [FileEntry] = []
         var unsupported: [UnsupportedEntry] = []
         var datalessPaths: [String] = []
@@ -306,7 +304,7 @@ public enum CardSource: Sendable {
 
     /// Enumerates through directory descriptors because Foundation hides every
     /// `._` name on Apple filesystems. Symlinks are never followed.
-    static func enumerateTree(base: URL, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }, skipWorkingEntries: Bool = false) throws -> [TreeEntry] {
+    static func enumerateTree(base: URL, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> [TreeEntry] {
         try checkCancellation()
         if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
             throw CloudManagedSourceError()
@@ -331,9 +329,9 @@ public enum CardSource: Sendable {
             throw BitMatchError.fileNotFound(base)
         }
 
-        return try enumerateTree(directoryFD: rootFD, root: root, checkCancellation: checkCancellation, skipWorkingEntries: skipWorkingEntries)
+        return try enumerateTree(directoryFD: rootFD, root: root, checkCancellation: checkCancellation)
 #else
-        return try foundationTree(base: base, checkCancellation: checkCancellation, skipWorkingEntries: skipWorkingEntries)
+        return try foundationTree(base: base, checkCancellation: checkCancellation)
 #endif
     }
 
@@ -344,8 +342,7 @@ public enum CardSource: Sendable {
         directoryFD: Int32,
         root: URL,
         checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
-        onRootEntryRead: ((String) throws -> Void)? = nil,
-        skipWorkingEntries: Bool = false
+        onRootEntryRead: ((String) throws -> Void)? = nil
     ) throws -> [TreeEntry] {
         var entries: [TreeEntry] = []
         try walk(
@@ -355,7 +352,6 @@ public enum CardSource: Sendable {
             depth: 0,
             onRootEntryRead: onRootEntryRead,
             checkCancellation: checkCancellation,
-            skipWorkingEntries: skipWorkingEntries,
             entries: &entries
         )
         try checkCancellation()
@@ -369,7 +365,6 @@ public enum CardSource: Sendable {
         depth: Int,
         onRootEntryRead: ((String) throws -> Void)?,
         checkCancellation: @Sendable () throws -> Void,
-        skipWorkingEntries: Bool,
         entries: inout [TreeEntry]
     ) throws {
         let scanFD = Darwin.dup(directoryFD)
@@ -429,7 +424,7 @@ public enum CardSource: Sendable {
             let itemURL = root.appendingPathComponent(relativePath)
             let type = info.st_mode & S_IFMT
             if type == S_IFDIR {
-                if (depth == 0 && skippedVolumeMetadataDirectories.contains(name)) || (skipWorkingEntries && name.hasPrefix(".bitmatch-staging-")) { continue }
+                if depth == 0 && skippedVolumeMetadataDirectories.contains(name) { continue }
                 entries.append(TreeEntry(
                     url: itemURL,
                     relativePath: relativePath,
@@ -452,7 +447,6 @@ public enum CardSource: Sendable {
                         depth: depth + 1,
                         onRootEntryRead: onRootEntryRead,
                         checkCancellation: checkCancellation,
-                        skipWorkingEntries: skipWorkingEntries,
                         entries: &entries
                     )
                     _ = Darwin.close(childFD)
@@ -461,7 +455,6 @@ public enum CardSource: Sendable {
                     throw error
                 }
             } else if type == S_IFREG {
-                if skipWorkingEntries && name.hasPrefix(".unsettled-") { continue }
                 entries.append(TreeEntry(
                     url: itemURL,
                     relativePath: relativePath,
@@ -509,7 +502,7 @@ public enum CardSource: Sendable {
         )
     }
 #else
-    private static func foundationTree(base: URL, checkCancellation: @Sendable () throws -> Void, skipWorkingEntries: Bool) throws -> [TreeEntry] {
+    private static func foundationTree(base: URL, checkCancellation: @Sendable () throws -> Void) throws -> [TreeEntry] {
         let keys: Set<URLResourceKey> = [
             .isRegularFileKey, .isDirectoryKey, .isSymbolicLinkKey,
             .fileSizeKey, .contentModificationDateKey,
@@ -534,11 +527,6 @@ public enum CardSource: Sendable {
                 continue
             }
             let values = try item.resourceValues(forKeys: keys)
-            if skipWorkingEntries && values.isDirectory == true && item.lastPathComponent.hasPrefix(".bitmatch-staging-") {
-                enumerator.skipDescendants()
-                continue
-            }
-            if skipWorkingEntries && values.isRegularFile == true && item.lastPathComponent.hasPrefix(".unsettled-") { continue }
             let kind: TreeEntryKind
             if values.isSymbolicLink == true { kind = .unsupported(.symbolicLink) }
             else if values.isRegularFile == true { kind = .regularFile }
