@@ -235,6 +235,10 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     /// Physical drives represented by `destinations`. Nil for older records
     /// whose disk independence was never assessed.
     public var independentDestinationCount: Int?
+    /// Card-relative paths of the Finder view files (`.DS_Store`) this
+    /// attempt skipped. Nil when none were skipped and for records written
+    /// before this field existed.
+    public var skippedFinderMetadataPaths: [String]? = nil
 
     public var title: String { source.url.lastPathComponent }
     public var canRetry: Bool { state.canRetry && projectID == nil }
@@ -262,7 +266,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, failureReason, estimatedSourceBytes
-        case expectedExclusionQueueQualification
+        case expectedExclusionQueueQualification, skippedFinderMetadataPaths
     }
 
     public init(from decoder: Decoder) throws {
@@ -298,6 +302,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         estimatedSourceBytes = try c.decodeIfPresent(Int64.self, forKey: .estimatedSourceBytes)
         quickOnlyUnverified = try c.decodeIfPresent(Bool.self, forKey: .quickOnlyUnverified)
         failureReason = try c.decodeIfPresent(String.self, forKey: .failureReason)
+        skippedFinderMetadataPaths = try c.decodeIfPresent([String].self, forKey: .skippedFinderMetadataPaths)
         // Unknown future qualifications are not permission to advance.
         expectedExclusionQueueQualification = try? c.decodeIfPresent(
             ExpectedExclusionQueueQualification.self, forKey: .expectedExclusionQueueQualification

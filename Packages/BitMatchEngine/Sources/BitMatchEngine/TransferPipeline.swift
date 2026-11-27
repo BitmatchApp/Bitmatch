@@ -1384,6 +1384,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                             processingTime: row.processingTime, clipIntegrity: row.clipIntegrity, wasReused: row.wasReused
                         )
                         rewritten.excludedAppleDouble = row.excludedAppleDouble
+                        rewritten.skippedFinderMetadata = row.skippedFinderMetadata
                         row = rewritten
                         // Only test-supplied evidence is changed. The strict
                         // pass must see it even if this prototype is disabled.

@@ -405,6 +405,7 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         case .verified: return "Verified"
         case .copiedUnverified: return "Copied, not verified"
         case .excludedAppleDouble: return "Excluded AppleDouble"
+        case .skippedFinderMetadata: return "Skipped Finder view file"
         case .checksumMismatch: return "Checksum mismatch"
         case .failed: return "Failed"
         }

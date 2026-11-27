@@ -14,7 +14,7 @@ public enum TransferCompletion: Sendable {
             path: result.sourceURL.path,
             status: result.statusDescription,
             size: result.fileSize,
-            checksum: result.verificationResult?.sourceChecksum,
+            checksum: result.skippedFinderMetadata ? nil : result.verificationResult?.sourceChecksum,
             destination: destinationLabel(for: result.destinationURL, roots: destinationRoots),
             destinationPath: result.destinationURL.path,
             clipIntegrity: result.clipIntegrity,

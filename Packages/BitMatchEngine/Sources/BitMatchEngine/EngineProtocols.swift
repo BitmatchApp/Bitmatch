@@ -99,6 +99,10 @@ public struct FileOperation: Sendable {
     /// Classifier-backed paths for this run. Public/manual operations have no
     /// such fact; only the pipeline can record it after validating the review.
     public internal(set) var reviewedAppleDoubleExclusionPaths: [String]? = nil
+    /// Card-relative paths of the Finder view files (`.DS_Store`) this run
+    /// skipped. Nil when none were skipped or the run predates the setting;
+    /// only the pipeline records it.
+    public internal(set) var skippedFinderMetadataPaths: [String]? = nil
     /// The copy and verify workers this run used, decided from the user's
     /// choice and the storage it found. Only the pipeline records it.
     public internal(set) var concurrency: TransferConcurrencyPlan? = nil
@@ -146,6 +150,9 @@ public struct FileOperationResult: Sendable {
     public let recopyOutcome: String?
     
     public var excludedAppleDouble: Bool = false
+    /// A Finder view file (`.DS_Store`) skipped by the user's setting. Never
+    /// copied, never a success.
+    public var skippedFinderMetadata: Bool = false
     /// Set only on a row an end-of-run check failed after this backup's
     /// readback had verified the file: the checksum that readback recorded.
     /// Never makes the row verified (`verificationResult` stays nil).
@@ -158,6 +165,7 @@ public struct FileOperationResult: Sendable {
 
     public var outcome: ResultOutcome {
         if excludedAppleDouble { return .excludedAppleDouble }
+        if skippedFinderMetadata { return .skippedFinderMetadata }
         if let verification = verificationResult {
             return verification.isValid ? .verified : .checksumMismatch
         }
@@ -196,6 +204,7 @@ public struct FileOperationResult: Sendable {
             recopyOutcome: recopyOutcome
         )
         result.excludedAppleDouble = excludedAppleDouble
+        result.skippedFinderMetadata = skippedFinderMetadata
         result.recordedChecksumBeforeFailure = recordedChecksumBeforeFailure
         return result
     }

@@ -13,6 +13,30 @@ public struct CameraLabelSettings: Codable, Sendable {
     /// Reviewed selection carried by this legacy transfer-settings container.
     /// nil preserves all files and decodes older queued transfers safely.
     public var excludedAppleDoublePaths: [String]? = nil
+    /// Skip a card's Finder view files (`.DS_Store`) when the classifier
+    /// proves they hold only window and icon layout. On by default; settings
+    /// saved before this existed decode as on.
+    public var skipFinderViewFiles: Bool = true
+
+    private enum CodingKeys: String, CodingKey {
+        case label, position, separator, autoNumber, groupByCamera, generateUniqueName
+        case destinationPathComponents, excludedAppleDoublePaths, skipFinderViewFiles
+    }
+
+    /// Matches the synthesized decoding for every older key (required stay
+    /// required, optionals stay optional); only the new toggle may be absent.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        label = try c.decode(String.self, forKey: .label)
+        position = try c.decode(LabelPosition.self, forKey: .position)
+        separator = try c.decode(Separator.self, forKey: .separator)
+        autoNumber = try c.decode(Bool.self, forKey: .autoNumber)
+        groupByCamera = try c.decode(Bool.self, forKey: .groupByCamera)
+        generateUniqueName = try c.decode(Bool.self, forKey: .generateUniqueName)
+        destinationPathComponents = try c.decodeIfPresent([String].self, forKey: .destinationPathComponents)
+        excludedAppleDoublePaths = try c.decodeIfPresent([String].self, forKey: .excludedAppleDoublePaths)
+        skipFinderViewFiles = try c.decodeIfPresent(Bool.self, forKey: .skipFinderViewFiles) ?? true
+    }
 
     /// Sanitizes a string for safe use as a folder/file name component.
     /// Prevents path traversal attacks and removes dangerous characters.

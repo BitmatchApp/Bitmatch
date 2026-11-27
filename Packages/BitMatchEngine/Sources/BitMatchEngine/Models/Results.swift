@@ -11,6 +11,9 @@ public enum ResultOutcome: CaseIterable, Equatable, Sendable {
     case copiedUnverified
     /// Intentionally omitted by the reviewed selection; never a success.
     case excludedAppleDouble
+    /// A Finder view file (`.DS_Store`) the classifier proved holds only
+    /// window and icon layout, skipped by the user's setting; never a success.
+    case skippedFinderMetadata
     case checksumMismatch
     case failed
 
@@ -19,6 +22,7 @@ public enum ResultOutcome: CaseIterable, Equatable, Sendable {
         case .verified: "✅ Verified"
         case .copiedUnverified: "✅ Copied"
         case .excludedAppleDouble: "⏭ Excluded AppleDouble (selected by user)"
+        case .skippedFinderMetadata: "⏭ Skipped Finder view file (.DS_Store)"
         case .checksumMismatch: "⚠️ Checksum Mismatch"
         case .failed: "❌ Failed"
         }
@@ -189,11 +193,18 @@ public struct ResultRow: Identifiable, Sendable {
         failureReason == ResultFailureReason.unsupportedSourceEntry.rawValue
     }
 
+    /// A Finder view file (`.DS_Store`) skipped by the user's setting. Not a
+    /// success, not a failure, and not a selected file.
+    public var isSkippedFinderMetadata: Bool {
+        ResultOutcome(statusText: status) == .skippedFinderMetadata
+    }
+
     /// Rows the saved selected-file plan counts: not a reviewed AppleDouble
-    /// exclusion and not an entry that could never be copied. Both stay in
-    /// History as evidence; neither makes a complete plan look long or short.
+    /// exclusion, not a skipped Finder view file and not an entry that could
+    /// never be copied. All stay in History as evidence; none makes a
+    /// complete plan look long or short.
     public var isInSelectedPlan: Bool {
-        ResultOutcome(statusText: status) != .excludedAppleDouble && !isUnsupportedSourceEntry
+        ResultOutcome(statusText: status) != .excludedAppleDouble && !isSkippedFinderMetadata && !isUnsupportedSourceEntry
     }
 
     /// Single source of truth for whether a result row represents a verified
