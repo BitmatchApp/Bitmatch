@@ -304,7 +304,8 @@ public enum CardSource: Sendable {
 
     /// Enumerates through directory descriptors because Foundation hides every
     /// `._` name on Apple filesystems. Symlinks are never followed.
-    static func enumerateTree(base: URL, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> [TreeEntry] {
+    static func enumerateTree(base: URL, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
+                              includeVolumeMetadataDirectories: Bool = false) throws -> [TreeEntry] {
         try checkCancellation()
         if BackupTargetPolicy.isCloudManagedPath(base.standardizedFileURL.path) {
             throw CloudManagedSourceError()
@@ -329,7 +330,8 @@ public enum CardSource: Sendable {
             throw BitMatchError.fileNotFound(base)
         }
 
-        return try enumerateTree(directoryFD: rootFD, root: root, checkCancellation: checkCancellation)
+        return try enumerateTree(directoryFD: rootFD, root: root, checkCancellation: checkCancellation,
+                                 includeVolumeMetadataDirectories: includeVolumeMetadataDirectories)
 #else
         return try foundationTree(base: base, checkCancellation: checkCancellation)
 #endif
@@ -342,7 +344,8 @@ public enum CardSource: Sendable {
         directoryFD: Int32,
         root: URL,
         checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
-        onRootEntryRead: ((String) throws -> Void)? = nil
+        onRootEntryRead: ((String) throws -> Void)? = nil,
+        includeVolumeMetadataDirectories: Bool = false
     ) throws -> [TreeEntry] {
         var entries: [TreeEntry] = []
         try walk(
@@ -352,6 +355,7 @@ public enum CardSource: Sendable {
             depth: 0,
             onRootEntryRead: onRootEntryRead,
             checkCancellation: checkCancellation,
+            includeVolumeMetadataDirectories: includeVolumeMetadataDirectories,
             entries: &entries
         )
         try checkCancellation()
@@ -365,6 +369,7 @@ public enum CardSource: Sendable {
         depth: Int,
         onRootEntryRead: ((String) throws -> Void)?,
         checkCancellation: @Sendable () throws -> Void,
+        includeVolumeMetadataDirectories: Bool,
         entries: inout [TreeEntry]
     ) throws {
         let scanFD = Darwin.dup(directoryFD)
@@ -424,7 +429,7 @@ public enum CardSource: Sendable {
             let itemURL = root.appendingPathComponent(relativePath)
             let type = info.st_mode & S_IFMT
             if type == S_IFDIR {
-                if depth == 0 && skippedVolumeMetadataDirectories.contains(name) { continue }
+                if depth == 0 && !includeVolumeMetadataDirectories && skippedVolumeMetadataDirectories.contains(name) { continue }
                 entries.append(TreeEntry(
                     url: itemURL,
                     relativePath: relativePath,
@@ -447,6 +452,7 @@ public enum CardSource: Sendable {
                         depth: depth + 1,
                         onRootEntryRead: onRootEntryRead,
                         checkCancellation: checkCancellation,
+                        includeVolumeMetadataDirectories: includeVolumeMetadataDirectories,
                         entries: &entries
                     )
                     _ = Darwin.close(childFD)

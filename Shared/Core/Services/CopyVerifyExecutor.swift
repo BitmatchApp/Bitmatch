@@ -181,6 +181,9 @@ final class CopyVerifyExecutor {
     private var pendingReport: PendingReport?
     private var unsettledStagingPaths: Set<String> = []
     private(set) var removedStagingPaths: Set<String> = []
+    private(set) var stagingGeneration = 0
+    private(set) var stagingIntentVersions: [String: Int] = [:]
+    private(set) var stagingCleanupNotes: [String: String] = [:]
     private var unsettledOriginalPaths: Set<String> = []
     private var unsettledExportPaths: Set<String> = []
     private(set) var withdrawnReportPaths: [String: String] = [:]
@@ -250,6 +253,9 @@ final class CopyVerifyExecutor {
         pendingReport = nil
         unsettledStagingPaths.removeAll()
         removedStagingPaths.removeAll()
+        stagingGeneration = 0
+        stagingIntentVersions.removeAll()
+        stagingCleanupNotes.removeAll()
         unsettledOriginalPaths.removeAll()
         unsettledExportPaths.removeAll()
         withdrawnReportPaths.removeAll()
@@ -864,9 +870,18 @@ final class CopyVerifyExecutor {
         let pathsToValidate = Mutex(initialPaths ?? [])
         let intendedPaths = Mutex<[String]>([])
         let removedStaging = Mutex<Set<String>>([])
+        let retainedNotes = Mutex<[String: String]>([:])
         defer {
-            removedStagingPaths.subtract(intendedPaths.withLock { $0 })
-            removedStagingPaths.formUnion(removedStaging.withLock { $0 })
+            let intents = Set(intendedPaths.withLock { $0 }.filter { URL(fileURLWithPath: $0).lastPathComponent.hasPrefix(".bitmatch-staging-") })
+            if !intents.isEmpty {
+                stagingGeneration += 1
+                for path in intents { stagingIntentVersions[path] = stagingGeneration }
+            }
+            removedStagingPaths.subtract(intents)
+            let removed = removedStaging.withLock { $0 }
+            removedStagingPaths.formUnion(removed)
+            for path in removed { stagingCleanupNotes.removeValue(forKey: path) }
+            stagingCleanupNotes.merge(retainedNotes.withLock { $0 }) { _, latest in latest }
         }
         // Spelled as if-let rather than Optional.map returning a closure: the
         // compiler cannot type-check the nested @Sendable closure form.
@@ -932,13 +947,15 @@ final class CopyVerifyExecutor {
                 recordIntendedPaths: recordIntendedPaths,
                 recordIntendedFacts: factRecorder,
                 didRemoveStaging: { path in _ = removedStaging.withLock { $0.insert(path) } },
+                didRetainStaging: { path, note in retainedNotes.withLock { $0[path] = note } },
                 validatePublication: validatePublication,
                 validateReplacement: validateReplacement,
                 beforePublish: beforePublish,
                 beforeRestore: beforeRestore
             )
-            // EvidenceWriter records the current staging directory last.
-            let staged = intendedPaths.withLock { Array($0.suffix(1)) }
+            // Promote only staging paths the writer actually removed. A retained
+            // directory stays recorded for cleanup without undoing publication.
+            let staged = Array(removedStaging.withLock { $0 })
             try publishedRecorder?(files.map(\.path), staged)
             return files
         }

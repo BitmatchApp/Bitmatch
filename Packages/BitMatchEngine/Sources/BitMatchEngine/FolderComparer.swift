@@ -82,17 +82,27 @@ public struct FolderComparer: Sendable {
         // closed. Files present on both sides are never content-compared.
         let onlyInSource = sourceSet.subtracting(destSet)
         var workingEntries = WorkingReportEntry(markerRead: stagingMarkerRead)
-        let onlyInDest = destSet.subtracting(sourceSet).filter { path in
-            guard !Self.isOffloadManifest(path), !Self.isFinderMetadata(path),
-                  !workingEntries.isWorkingFile(path: path, root: right) else { return false }
+        var onlyInDest = destSet.subtracting(sourceSet).filter { path in
+            let insideStaging = workingEntries.isOwnedStagingDescendant(path: path, root: right)
+            guard !workingEntries.isWorkingFile(path: path, root: right),
+                  insideStaging || (!Self.isOffloadManifest(path) && !Self.isFinderMetadata(path)) else { return false }
             #if canImport(Darwin)
-            if let item = destMap[path], TransferStatusMarker.validatedStatus(at: item.url, relativePath: path) != nil {
+            if !insideStaging, let item = destMap[path], TransferStatusMarker.validatedStatus(at: item.url, relativePath: path) != nil {
                 return false
             }
             #endif
             return true
         }
-        let common = sourceSet.intersection(destSet).filter { !Self.isFinderMetadata($0) }
+        let stagingEntries = try workingEntries.nonFileStagingEntries(files: destFiles, root: right)
+        onlyInDest.formUnion(stagingEntries.compactMap { path, isDirectory in
+            var sourceInfo = stat()
+            if isDirectory, lstat(left.appendingPathComponent(path).path, &sourceInfo) == 0,
+               (sourceInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) { return nil }
+            return path
+        })
+        let common = sourceSet.intersection(destSet).filter {
+            !Self.isFinderMetadata($0) || workingEntries.isOwnedStagingDescendant(path: $0, root: right)
+        }
 
         var mismatched: Set<String> = []
         // One plan for engine and screen: Paranoid is byte-by-byte plus SHA-256.
@@ -263,6 +273,45 @@ struct WorkingReportEntry {
             withdrawnOwnership[key] = owned
             return owned
         }
+        // Only immediate, grammar-named reports and the marker are ours.
+        guard let index = ownedStagingIndex(path: path, root: root), index + 2 == parts.count else { return false }
+        let directoryName = parts[index]
+        let text = String(directoryName.dropFirst(".bitmatch-staging-".count).prefix(36))
+        guard let id = UUID(uuidString: text) else { return false }
+        let entry = parts[index + 1]
+        if entry == TransferJournal.stagingOwnerMarker { return true }
+        let report = entry.hasPrefix("backup-") ? String(entry.dropFirst(7)) : entry
+        return ReportName.withdrawnReport(ReportName.withdrawnName(report: report, recordID: id)) == report
+    }
+
+    /// The usual file listing omits directories and special entries. They
+    /// remain visible when they occur inside an owned staging directory.
+    mutating func nonFileStagingEntries(files: [URL], root: URL) throws -> [String: Bool] {
+        let resolver = RelativePathResolver(base: root)
+        var result: [String: Bool] = [:]
+        for file in files where file.lastPathComponent == TransferJournal.stagingOwnerMarker {
+            let markerPath = try resolver.resolve(file)
+            guard isWorkingFile(path: markerPath, root: root) else { continue }
+            let directory = file.deletingLastPathComponent()
+            let prefix = String(markerPath.dropLast(TransferJournal.stagingOwnerMarker.count + 1))
+            for entry in try CardSource.enumerateTree(base: directory, includeVolumeMetadataDirectories: true) {
+                switch entry.kind {
+                case .directory: result[prefix + "/" + entry.relativePath] = true
+                case .unsupported: result[prefix + "/" + entry.relativePath] = false
+                case .regularFile: break
+                }
+            }
+        }
+        return result
+    }
+
+    mutating func isOwnedStagingDescendant(path: String, root: URL) -> Bool {
+        ownedStagingIndex(path: path, root: root) != nil
+    }
+
+    private mutating func ownedStagingIndex(path: String, root: URL) -> Int? {
+        let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
+        guard parts.count >= 3 else { return nil }
         for index in 1..<(parts.count - 1) where parts[index - 1] == "Reports" {
             let prefix = ".bitmatch-staging-"
             let name = parts[index]
@@ -279,8 +328,8 @@ struct WorkingReportEntry {
                 owned = TransferJournal.ownsStagingDirectory(directory, recordID: id, markerRead: markerRead)
                 ownership[directory] = owned
             }
-            if owned { return true }
+            if owned { return index }
         }
-        return false
+        return nil
     }
 }

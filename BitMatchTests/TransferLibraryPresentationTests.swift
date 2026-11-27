@@ -9,6 +9,31 @@ import BitMatchEngine
 struct TransferLibraryPresentationTests {
     private let allStates: [LocalTransferState] = [.queued, .running, .interrupted, .completed, .issues, .failed, .cancelled]
 
+    @Test func recreatedStagingPathIsNotDroppedFromTheNextSettlement() {
+        var tracker = StagingWithdrawalTracker()
+        let reused = "/backup/Reports/.bitmatch-staging-job"
+        let older = "/backup/Reports/.bitmatch-staging-older"
+        tracker.synchronize(generation: 1, intents: [reused: 1, older: 1])
+        tracker.recordWithdrawn([reused, older])
+        tracker.synchronize(generation: 2, intents: [reused: 2, older: 1])
+        #expect(tracker.withdrawn == [older])
+        tracker.recordWithdrawn([reused])
+        #expect(tracker.withdrawn == [reused, older])
+        tracker.synchronize(generation: 4, intents: [reused: 3, older: 4])
+        #expect(tracker.withdrawn.isEmpty)
+    }
+
+    @Test func retainedStagingCleanupDoesNotChangeVerifiedVerdict() {
+        var record = PresentationTestSupport.record(state: .completed)
+        record.results = [PresentationTestSupport.row(.verified, destination: record.destinations[0].url)]
+        let stage = record.destinations[0].url.appendingPathComponent("Reports/.bitmatch-staging-" + record.id.uuidString).path
+        record.reportStagingPaths = [stage]
+        record.cleanupOnlyStagingPaths = [stage]
+        record.summary = "Verified. unexpected file(s) in \(stage) were left in place."
+        #expect(record.hasPendingReportRecovery)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .safeToErase)
+    }
+
     @Test func markingReportsHandledDoesNotChangeSafetyVerdict() {
         for state in [LocalTransferState.interrupted, .completed, .issues, .failed, .cancelled] {
             var record = PresentationTestSupport.record(state: state)

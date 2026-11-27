@@ -77,17 +77,32 @@ final class JournalStartupPersistenceTests: XCTestCase {
         record.reportStagingPath = staging.path
         try FileManager.default.moveItem(at: backup, to: moved)
         record.runDestinationURLs = [moved]
-        guard let access = try? record.destinations[0].beginReadAccess() else {
-            throw XCTSkip("This filesystem did not resolve the moved bookmark")
-        }
-        defer { access.release() }
-        guard access.url.standardizedFileURL == moved.standardizedFileURL else {
-            throw XCTSkip("This filesystem did not resolve the moved bookmark")
-        }
-        let result = TransferJournal.withdrawReports(record: record, paths: [staging.path])
+        let result = TransferJournal.withdrawReports(record: record, paths: [staging.path],
+            volumeIdentityAt: { _ in record.destinations[0].volumeID },
+            reportAccess: { _, _ in LocalTransferReadAccess(url: moved, scoped: false) })
         XCTAssertEqual(result[staging.path], .withdrawn)
         XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("Reports/" + staging.lastPathComponent).path))
     }
+    func testNilIdentityPromotionChecksOwnedJSONAndContainedStaging() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalTransferResource(url: backup))) as? [String: Any])
+        encoded.removeValue(forKey: "volumeID")
+        record.destinations = [try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: encoded))]
+        record.runDestinationURLs = [backup]
+        let json = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json")
+        let staging = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
+        record.pendingReportPaths = [json.path]
+        XCTAssertFalse(TransferJournal.currentStagingIsAbsent(staging.path, record: record))
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        XCTAssertTrue(TransferJournal.currentStagingIsAbsent(staging.path, record: record))
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        XCTAssertFalse(TransferJournal.currentStagingIsAbsent(staging.path, record: record))
+    }
+
     func testNilIdentityReportPublicationReplacementAndWithdrawalUseContainment() async throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         var record = try fixture.record(state: .running)

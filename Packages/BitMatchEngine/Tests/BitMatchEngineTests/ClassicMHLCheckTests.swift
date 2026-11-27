@@ -116,6 +116,7 @@ struct ClassicMHLCheckTests {
         #expect(result.isIntact)
         #expect(Set(result.matchingPaths) == [recorded, recordedStaging])
         #expect(Set(result.newPaths) == ["Reports/.unsettled-notes", "Reports/\(workingBase)-2.json-x",
+            "Reports/.bitmatch-staging-\(id.uuidString)/extra",
             "Reports/.bitmatch-staging-\(other.uuidString)/.bitmatch-owner",
             "Reports/.bitmatch-staging-\(other.uuidString)/extra"])
     }

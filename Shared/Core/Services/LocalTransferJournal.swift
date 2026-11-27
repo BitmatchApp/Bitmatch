@@ -657,7 +657,7 @@ final class LocalTransferJournal: ObservableObject {
 
     func historyAppeared() {
         refresh()
-        for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
+        for record in records where record.hasPendingReportRecovery {
             retryPendingReportWithdrawalsFromView(id: record.id)
         }
     }
@@ -666,14 +666,14 @@ final class LocalTransferJournal: ObservableObject {
 
     func retryAllPendingReportWithdrawals() {
         if !persistencePending.isEmpty { refresh() }
-        for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
+        for record in records where record.hasPendingReportRecovery {
             retryPendingReportWithdrawals(id: record.id)
         }
     }
 
     func retryPendingReportWithdrawals(id: UUID) {
         invalidateReportHandling(id: id)
-        guard records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
+        guard records.contains(where: { $0.id == id && $0.hasPendingReportRecovery }) else { return }
         guard withdrawalRetriesInFlight.insert(id).inserted else {
             withdrawalRetriesRequested.insert(id)
             return
@@ -689,6 +689,8 @@ final class LocalTransferJournal: ObservableObject {
         Task { [weak self] in
             let recovered = await TransferJournal.recoverPendingWithdrawals(snapshot, beforeIO: beforeIO)
             let changed = snapshot.pendingWithdrawalPaths != recovered.pendingWithdrawalPaths
+                || snapshot.reportStagingPaths != recovered.reportStagingPaths
+                || snapshot.cleanupOnlyStagingPaths != recovered.cleanupOnlyStagingPaths
                 || snapshot.withdrawalReason != recovered.withdrawalReason || snapshot.summary != recovered.summary
             guard let self else { return }
             if changed, let current = self.interruptedOverrides[id] ?? store.records.first(where: { $0.id == id }) {
@@ -723,7 +725,7 @@ final class LocalTransferJournal: ObservableObject {
                 if previousError != store.persistenceError { self.persistenceError = store.persistenceError }
             }
             if self.withdrawalRetriesRequested.remove(id) != nil,
-               self.records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) {
+               self.records.contains(where: { $0.id == id && $0.hasPendingReportRecovery }) {
                 self.retryPendingReportWithdrawals(id: id)
             }
         }
@@ -731,7 +733,7 @@ final class LocalTransferJournal: ObservableObject {
 
     func retryPendingReportWithdrawalsFromView(id: UUID, now: Date = Date()) {
         invalidateReportHandling(id: id)
-        guard records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
+        guard records.contains(where: { $0.id == id && $0.hasPendingReportRecovery }) else { return }
         if let last = withdrawalViewLastAttempt[id], now.timeIntervalSince(last) < 30 { updateReportHandlingEligibility(records); return }
         withdrawalViewLastAttempt[id] = now
         guard !withdrawalRetriesInFlight.contains(id) else { return }
@@ -789,6 +791,7 @@ final class LocalTransferJournal: ObservableObject {
         sourceFingerprint: String? = nil,
         skippedFinderMetadataPaths: [String]? = nil,
         projectCardSnapshot: Data? = nil,
+        cleanupOnlyStagingPaths: [String] = [],
         pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil, removedStagingPaths: [String] = []
     ) throws {
         defer { refresh() }
@@ -806,6 +809,7 @@ final class LocalTransferJournal: ObservableObject {
             sourceFingerprint: sourceFingerprint,
             skippedFinderMetadataPaths: skippedFinderMetadataPaths,
             projectCardSnapshot: projectCardSnapshot,
+            cleanupOnlyStagingPaths: cleanupOnlyStagingPaths,
             pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths, removedStagingPaths: removedStagingPaths
         )
     }

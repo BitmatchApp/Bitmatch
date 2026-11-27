@@ -182,12 +182,15 @@ struct SavedChecksumCheckTests {
         let staging = "Reports/.bitmatch-staging-\(id.uuidString)"
         _ = try writeFile(staging + "/.bitmatch-owner", text: id.uuidString, under: root)
         _ = try writeFile(staging + "/partial.json", text: "working", under: root)
+        _ = try writeFile(staging + "/._foreign", text: "sidecar", under: root)
+        _ = try writeFile(staging + "/nested/BitMatch_Report_2026-11-27T12-00-00Z.json", text: "nested", under: root)
         _ = try writeFile(".unsettled-notes", text: "extra", under: root)
         let result = try await run(root)
         #expect(result.isIntact)
         #expect(result.matchingPaths == [recorded])
         #expect(result.missingPaths.isEmpty)
-        #expect(result.newPaths == [".unsettled-notes"])
+        #expect(Set(result.newPaths) == [".unsettled-notes", staging + "/partial.json", staging + "/._foreign",
+            staging + "/nested", staging + "/nested/BitMatch_Report_2026-11-27T12-00-00Z.json"])
         try Data("changed".utf8).write(to: file)
         let changed = try await run(root)
         #expect(changed.changedPaths == [recorded])

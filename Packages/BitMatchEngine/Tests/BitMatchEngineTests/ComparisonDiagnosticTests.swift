@@ -121,13 +121,23 @@ final class ComparisonDiagnosticTests: XCTestCase {
         try fm.createDirectory(at: staging, withIntermediateDirectories: true)
         try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
         try Data("private".utf8).write(to: staging.appendingPathComponent("report.json"))
+        try Data().write(to: staging.appendingPathComponent(".DS_Store"))
+        let nested = staging.appendingPathComponent("nested")
+        try fm.createDirectory(at: nested, withIntermediateDirectories: true)
+        try fm.createDirectory(at: staging.appendingPathComponent("empty"), withIntermediateDirectories: true)
+        try Data().write(to: nested.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json"))
+        try Data().write(to: staging.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json"))
         for ext in ["json", "pdf", "csv", "sha-256.txt"] {
             try Data().write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.\(ext)"))
         }
         try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"))
         let compare = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
         let clean = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
-        XCTAssertEqual(clean.onlyInRightPaths, [])
+        XCTAssertEqual(Set(clean.onlyInRightPaths), ["Reports/.bitmatch-staging-\(id.uuidString)/report.json",
+            "Reports/.bitmatch-staging-\(id.uuidString)/.DS_Store",
+            "Reports/.bitmatch-staging-\(id.uuidString)/empty",
+            "Reports/.bitmatch-staging-\(id.uuidString)/nested",
+            "Reports/.bitmatch-staging-\(id.uuidString)/nested/BitMatch_Report_2026-11-27T12-00-00Z.json"])
         let foreign = reports.appendingPathComponent(".bitmatch-staging-" + other.uuidString)
         try fm.createDirectory(at: foreign, withIntermediateDirectories: true)
         try Data(id.uuidString.utf8).write(to: foreign.appendingPathComponent(TransferJournal.stagingOwnerMarker))
@@ -141,6 +151,11 @@ final class ComparisonDiagnosticTests: XCTestCase {
         }
         let result = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
         XCTAssertEqual(Set(result.onlyInRightPaths), [
+            "Reports/.bitmatch-staging-\(id.uuidString)/report.json",
+            "Reports/.bitmatch-staging-\(id.uuidString)/.DS_Store",
+            "Reports/.bitmatch-staging-\(id.uuidString)/empty",
+            "Reports/.bitmatch-staging-\(id.uuidString)/nested",
+            "Reports/.bitmatch-staging-\(id.uuidString)/nested/BitMatch_Report_2026-11-27T12-00-00Z.json",
             "Reports/.bitmatch-staging-\(other.uuidString)/.bitmatch-owner", "Reports/.bitmatch-staging-\(other.uuidString)/real",
             ".bitmatch-staging-\(id.uuidString)/.bitmatch-owner", ".bitmatch-staging-\(id.uuidString)/real",
             ".unsettled-notes", "Reports/.unsettled-notes", "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_invalid.json",
@@ -184,7 +199,10 @@ final class ComparisonDiagnosticTests: XCTestCase {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/file", root: root))
         try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
-        XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/nested/file", root: root))
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/nested/file", root: root))
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/foreign", root: root))
+        XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/.bitmatch-owner", root: root))
+        XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/backup-BitMatch_Report_2026-11-27T12-00-00Z.json", root: root))
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)-x/file", root: root))
     }
 
@@ -247,7 +265,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
         }
         let result = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
             .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
-        let expected = nearMisses.map { "Reports/" + $0 } + invalidNames.flatMap {
+        let expected = ["Reports/.bitmatch-staging-\(id.uuidString)-2/partial"] + nearMisses.map { "Reports/" + $0 } + invalidNames.flatMap {
             ["Reports/\($0)/.bitmatch-owner", "Reports/\($0)/partial"]
         }
         XCTAssertEqual(Set(result.onlyInRightPaths), Set(expected))
@@ -288,7 +306,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
                                       stagingMarkerRead: { try reads.read($0) })
         for expectedCount in 1...2 {
             let result = try await comparer.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
-            XCTAssertTrue(result.onlyInRightPaths.isEmpty)
+            XCTAssertEqual(result.onlyInRightPaths.count, 50)
             XCTAssertEqual(reads.count, expectedCount)
         }
     }

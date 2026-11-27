@@ -262,6 +262,7 @@ public struct SavedChecksumCheck: Sendable {
             let path = try resolver.resolve(file)
             let recorded = discovery.expectedFiles[path] != nil
             let working = !recorded && workingEntries.isWorkingFile(path: path, root: root)
+            let insideStaging = !recorded && workingEntries.isOwnedStagingDescendant(path: path, root: root)
             let reserved = Self.isReservedEvidence(path)
             let resemblesWorkingEntry = path.split(separator: "/").contains {
                 $0.hasPrefix(".unsettled-") || $0.hasPrefix(".bitmatch-staging-")
@@ -269,9 +270,9 @@ public struct SavedChecksumCheck: Sendable {
             // Recorded entries always take precedence over extra-file policies.
             if !recorded && ((discovery.classicEvidence.isEmpty && reserved && !resemblesWorkingEntry)
                 || classicManifestURLs.contains(file.standardizedFileURL)
-                || FolderComparer.isFinderMetadata(path) || working) { continue }
+                || (FolderComparer.isFinderMetadata(path) && !insideStaging) || working) { continue }
             #if canImport(Darwin)
-            if discovery.expectedFiles[path] == nil,
+            if !insideStaging, discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }
             #endif
             // Two listed files whose names differ only by Unicode normalization
@@ -331,7 +332,8 @@ public struct SavedChecksumCheck: Sendable {
                 throw CheckError.unreadableEvidence
             }
         }
-        let newPaths = Set(actual.keys).subtracting(expected.keys).sorted()
+        let stagingEntries = try workingEntries.nonFileStagingEntries(files: files, root: root)
+        let newPaths = Set(actual.keys).union(stagingEntries.keys).subtracting(expected.keys).sorted()
         let used = Set(expected.values.map(\.record.url))
         return Result(
             root: root,

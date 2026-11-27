@@ -199,7 +199,7 @@ public struct LocalTransferResource: Codable, Sendable {
 public final class LocalTransferReadAccess: Sendable {
     public let url: URL
     private let scoped: Mutex<Bool>
-    fileprivate init(url: URL, scoped: Bool) { self.url = url; self.scoped = Mutex(scoped) }
+    init(url: URL, scoped: Bool) { self.url = url; self.scoped = Mutex(scoped) }
     public func release() {
         let wasScoped = scoped.withLock { scoped in defer { scoped = false }; return scoped }
         if wasScoped { url.stopAccessingSecurityScopedResource() }
@@ -274,6 +274,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     }
     /// Every staging directory remains recorded until removed or proven absent.
     public var reportStagingPaths: [String]? = nil
+    /// Settled exports with only unrecognized staging contents left to clean.
+    public var cleanupOnlyStagingPaths: [String]? = nil
     /// Indexed by the original destination selection; paths are relative to its run root.
     public var relativeReportPaths: [RelativeReportPath]? = nil
     public var pendingWithdrawalPaths: [String]? = nil
@@ -288,6 +290,10 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     public var withdrawalReason: String? = nil
     /// Paths actually withdrawn by the latest recovery attempt, for merging.
     public var lastWithdrawnReportPaths: [String]? = nil
+    public var hasPendingReportRecovery: Bool {
+        state != .running && state != .queued &&
+            (!(pendingWithdrawalPaths ?? []).isEmpty || !(cleanupOnlyStagingPaths ?? []).isEmpty)
+    }
     public var pendingWithdrawalNote: String? {
         guard let paths = pendingWithdrawalPaths, !paths.isEmpty else { return nil }
         return TransferJournal.pendingReportExplanation + " Pending: " + paths.joined(separator: ", ") + ". " + (withdrawalReason ?? "Withdrawal could not be confirmed.")
@@ -324,7 +330,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt, revision
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, failureReason, estimatedSourceBytes
-        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs, pendingReportPaths, reportStagingPath, reportStagingPaths, relativeReportPaths, pendingWithdrawalPaths, withdrawalReportsNotFound, operationID, reportPublicationID, reportFileFacts, intendedReportFileFacts, withdrawalReason, lastWithdrawnReportPaths, projectCardSnapshot
+        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs, pendingReportPaths, reportStagingPath, reportStagingPaths, cleanupOnlyStagingPaths, relativeReportPaths, pendingWithdrawalPaths, withdrawalReportsNotFound, operationID, reportPublicationID, reportFileFacts, intendedReportFileFacts, withdrawalReason, lastWithdrawnReportPaths, projectCardSnapshot
     }
 
     public init(from decoder: Decoder) throws {
@@ -368,6 +374,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         reportStagingPath = try c.decodeIfPresent(String.self, forKey: .reportStagingPath)
         let staging = (try c.decodeIfPresent([String].self, forKey: .reportStagingPaths) ?? []) + [reportStagingPath].compactMap { $0 }
         reportStagingPaths = staging.isEmpty ? nil : Array(Set(staging)).sorted()
+        cleanupOnlyStagingPaths = try c.decodeIfPresent([String].self, forKey: .cleanupOnlyStagingPaths)
         relativeReportPaths = try c.decodeIfPresent([RelativeReportPath].self, forKey: .relativeReportPaths)
         pendingWithdrawalPaths = try c.decodeIfPresent([String].self, forKey: .pendingWithdrawalPaths)
         withdrawalReportsNotFound = try c.decodeIfPresent(Bool.self, forKey: .withdrawalReportsNotFound)
@@ -553,10 +560,11 @@ public final class TransferJournal: Sendable {
                         recoveredInterruption = true
                     }
                     if recovered[index].state != .queued && recovered[index].state != .running,
-                       !(recovered[index].reportStagingPaths ?? []).isEmpty,
+                       !(recovered[index].reportStagingPaths ?? []).filter({ !(recovered[index].cleanupOnlyStagingPaths ?? []).contains($0) }).isEmpty,
                        (recovered[index].pendingWithdrawalPaths ?? []).isEmpty,
                        !recovered[index].summary.contains("reports marked handled by the user") {
-                        recovered[index].pendingWithdrawalPaths = recovered[index].reportStagingPaths
+                        let cleanupOnly = Set(recovered[index].cleanupOnlyStagingPaths ?? [])
+                        recovered[index].pendingWithdrawalPaths = recovered[index].reportStagingPaths?.filter { !cleanupOnly.contains($0) }
                         recovered[index].withdrawalReason = "Withdrawal has not yet been checked"
                         recoveredInterruption = true
                     }
@@ -568,6 +576,9 @@ public final class TransferJournal: Sendable {
                     }
                     if recoverReportsOnInit && !(recovered[index].pendingWithdrawalPaths ?? []).isEmpty {
                         Self.recoverReports(&recovered[index])
+                        recoveredInterruption = true
+                    } else if recoverReportsOnInit && !(recovered[index].cleanupOnlyStagingPaths ?? []).isEmpty {
+                        Self.recoverSettledStaging(&recovered[index])
                         recoveredInterruption = true
                     }
                 }
@@ -730,59 +741,136 @@ public final class TransferJournal: Sendable {
         return text == recordID.uuidString
     }
 
-    /// A directory marker does not establish ownership of its contents.
-    /// Keep the marker while any unrecognized entry remains so recovery can retry.
-    static func removeOwnedStagingDirectory(_ directory: URL, recordID: UUID, facts: [ReportFileFact]) throws {
-        let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+    enum StagingCleanupResult: Equatable {
+        case removed
+        case retained(String)
+    }
+
+    /// All entry operations are anchored to the opened directory, even if a
+    /// different directory or a symlink is substituted at its old pathname.
+    @discardableResult
+    static func removeOwnedStagingDirectory(_ directory: URL, recordID: UUID, facts: [ReportFileFact],
+                                            afterOpening: () throws -> Void = {},
+                                            beforeDirectoryRemoval: () throws -> Void = {}) throws -> StagingCleanupResult {
+        let parent = directory.deletingLastPathComponent()
+        let name = directory.lastPathComponent
+        let parentFD = open(parent.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
+        guard parentFD >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        defer { close(parentFD) }
+        let fd = openat(parentFD, name, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
         defer { close(fd) }
         var opened = stat(), named = stat()
-        guard fstat(fd, &opened) == 0, lstat(directory.path, &named) == 0,
-              opened.st_dev == named.st_dev, opened.st_ino == named.st_ino else {
+        guard fstat(fd, &opened) == 0, fstatat(parentFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
+              (named.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
             throw FileOperationError.unsafeOperation("Staging directory changed")
         }
-        guard ownsStagingDirectory(directory, recordID: recordID) else {
+        try afterOpening()
+        func same(_ a: stat, _ b: stat) -> Bool {
+            a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
+            a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+            a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec &&
+            (b.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+        }
+        func snapshot(_ entry: String) throws -> (stat, String) {
+            var pathInfo = stat()
+            guard fstatat(fd, entry, &pathInfo, AT_SYMLINK_NOFOLLOW) == 0,
+                  (pathInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+                throw FileOperationError.unsafeOperation("Staging entry is not a regular file")
+            }
+            let file = openat(fd, entry, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard file >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            defer { close(file) }
+            var initial = stat(), final = stat()
+            guard fstat(file, &initial) == 0, same(pathInfo, initial) else {
+                throw FileOperationError.unsafeOperation("Staging entry changed")
+            }
+            var hash = SHA256()
+            var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+            while true {
+                let count = buffer.withUnsafeMutableBytes { Darwin.read(file, $0.baseAddress!, $0.count) }
+                if count < 0 {
+                    if errno == EINTR { continue }
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+                }
+                if count == 0 { break }
+                hash.update(data: Data(buffer.prefix(count)))
+            }
+            guard fstat(file, &final) == 0, same(initial, final) else {
+                throw FileOperationError.unsafeOperation("Staging entry changed")
+            }
+            return (initial, hash.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+        func remove(_ entry: String, expected: (stat, String)) throws {
+            let current = try snapshot(entry)
+            var namedEntry = stat()
+            guard same(expected.0, current.0), expected.1 == current.1,
+                  fstatat(fd, entry, &namedEntry, AT_SYMLINK_NOFOLLOW) == 0, same(expected.0, namedEntry) else {
+                throw FileOperationError.unsafeOperation("Staging entry changed")
+            }
+            guard unlinkat(fd, entry, 0) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        }
+        let marker = try snapshot(stagingOwnerMarker)
+        let markerDigest = SHA256.hash(data: Data(recordID.uuidString.utf8)).map { String(format: "%02x", $0) }.joined()
+        guard marker.1 == markerDigest else {
             throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
         }
-        let marker = directory.appendingPathComponent(stagingOwnerMarker)
-        let names = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        let duplicate = dup(fd)
+        guard duplicate >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard let stream = fdopendir(duplicate) else {
+            close(duplicate)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+        var names: [String] = []
+        errno = 0
+        while let entry = readdir(stream) {
+            let entryName = withUnsafePointer(to: &entry.pointee.d_name) {
+                $0.withMemoryRebound(to: CChar.self, capacity: Int(NAME_MAX) + 1) { String(cString: $0) }
+            }
+            if entryName != "." && entryName != ".." { names.append(entryName) }
+            errno = 0
+        }
+        let readError = errno
+        closedir(stream)
+        guard readError == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(readError)) }
         var unexpected = false
-        for name in names where name != stagingOwnerMarker {
-            let reportName = name.hasPrefix("backup-") ? String(name.dropFirst(7)) : name
+        for entry in names where entry != stagingOwnerMarker {
+            let reportName = entry.hasPrefix("backup-") ? String(entry.dropFirst(7)) : entry
             let grammarName = ReportName.withdrawnName(report: reportName, recordID: recordID)
             let matchingFacts = facts.filter {
                 URL(fileURLWithPath: $0.path).lastPathComponent == reportName && $0.sha256 != nil
             }
-            guard ReportName.withdrawnReport(grammarName) == reportName, !matchingFacts.isEmpty,
-                  let pinned = try? PinnedReportFile(url: directory.appendingPathComponent(name)),
-                  matchingFacts.contains(where: { $0.sha256 == pinned.sha256 }) else {
+            let noise = entry == ".DS_Store" || entry.hasPrefix("._")
+            guard let pinned = try? snapshot(entry),
+                  noise || (ReportName.withdrawnReport(grammarName) == reportName &&
+                            matchingFacts.contains(where: { $0.sha256 == pinned.1 })) else {
                 unexpected = true
                 continue
             }
-            try pinned.remove()
+            try remove(entry, expected: pinned)
         }
-        guard !unexpected else {
-            throw FileOperationError.unsafeOperation("unexpected file(s) in \(directory.path) were left in place")
-        }
-        let pinnedMarker = try PinnedReportFile(url: marker)
-        let markerDigest = SHA256.hash(data: Data(recordID.uuidString.utf8)).map { String(format: "%02x", $0) }.joined()
-        guard pinnedMarker.sha256 == markerDigest else {
-            throw FileOperationError.unsafeOperation("Staging ownership marker changed")
-        }
-        guard lstat(directory.path, &named) == 0, opened.st_dev == named.st_dev, opened.st_ino == named.st_ino else {
+        let note = "unexpected file(s) in \(directory.path) were left in place"
+        if unexpected { return .retained(note) }
+        guard fstatat(parentFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
+              opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
+              (named.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
             throw FileOperationError.unsafeOperation("Staging directory changed")
         }
-        try pinnedMarker.remove()
-        guard rmdir(directory.path) == 0 else {
-            // Preserve retryable ownership if an entry appeared during cleanup.
+        try remove(stagingOwnerMarker, expected: marker)
+        try beforeDirectoryRemoval()
+        guard unlinkat(parentFD, name, AT_REMOVEDIR) == 0 else {
+            let removalError = errno
             let markerFD = openat(fd, stagingOwnerMarker, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0o600)
-            if markerFD >= 0 {
-                let bytes = Array(recordID.uuidString.utf8)
-                _ = bytes.withUnsafeBytes { Darwin.write(markerFD, $0.baseAddress, $0.count) }
-                close(markerFD)
-            }
-            throw FileOperationError.unsafeOperation("unexpected file(s) in \(directory.path) were left in place")
+            guard markerFD >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            let bytes = Array(recordID.uuidString.utf8)
+            let written = bytes.withUnsafeBytes { Darwin.write(markerFD, $0.baseAddress, $0.count) }
+            close(markerFD)
+            guard written == bytes.count else { throw FileOperationError.unsafeOperation("Could not restore staging ownership marker") }
+            if removalError == ENOTEMPTY || removalError == EEXIST { return .retained(note) }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(removalError))
         }
+        return .removed
     }
 
     public enum ReportWithdrawalOutcome: Sendable, Equatable {
@@ -804,6 +892,7 @@ public final class TransferJournal: Sendable {
     }
 
     static func validateReportPublication(record: LocalTransferRecord, paths: [String],
+                                          reportAccess: (LocalTransferResource, URL) throws -> LocalTransferReadAccess = { try $0.beginReportAccess(at: $1) },
                                           volumeIdentityAt: (URL) -> String?) throws {
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
         let mappings = record.relativeReportPaths ?? relativePaths(record.pendingReportPaths ?? paths, record: record)
@@ -818,7 +907,7 @@ public final class TransferJournal: Sendable {
                   let relative = reportRelativePath(path, root: roots[index]), !relative.isEmpty,
                   !relative.split(separator: "/").contains("..") else { throw failure(path) }
             let destination = record.destinations[index]
-            let access = try destination.beginReportAccess(at: roots[index])
+            let access = try reportAccess(destination, roots[index])
             defer { access.release() }
             let root = roots[index].standardizedFileURL.resolvingSymlinksInPath()
             if destination.volumeID != nil { try destination.validateIdentity(at: root) }
@@ -921,11 +1010,12 @@ public final class TransferJournal: Sendable {
                                 volumeIdentityAt: (URL) -> String?,
                                 reportAccessChanged: (Bool) -> Void = { _ in },
                                 beforeStagingAccess: (URL) throws -> Void = { _ in },
+                                reportAccess: (LocalTransferResource, URL) throws -> LocalTransferReadAccess = { try $0.beginReportAccess(at: $1) },
                                 didWithdraw: (String, String) -> Void = { _, _ in }) -> [String: ReportWithdrawalOutcome] {
         let stagingPaths = paths.filter { isStagingName(URL(fileURLWithPath: $0).lastPathComponent, recordID: record.id) }
         if !stagingPaths.isEmpty {
             let rest = paths.filter { !stagingPaths.contains($0) }
-            var outcomes = rest.isEmpty ? [:] : withdrawReports(record: record, paths: rest, beforeWithdrawalMove: beforeWithdrawalMove, volumeIdentityAt: volumeIdentityAt, reportAccessChanged: reportAccessChanged, beforeStagingAccess: beforeStagingAccess, didWithdraw: didWithdraw)
+            var outcomes = rest.isEmpty ? [:] : withdrawReports(record: record, paths: rest, beforeWithdrawalMove: beforeWithdrawalMove, volumeIdentityAt: volumeIdentityAt, reportAccessChanged: reportAccessChanged, beforeStagingAccess: beforeStagingAccess, reportAccess: reportAccess, didWithdraw: didWithdraw)
             let unexaminedPending = (record.pendingWithdrawalPaths ?? []).contains { candidate in
                 !stagingPaths.contains(candidate) && !rest.contains(candidate)
             }
@@ -946,7 +1036,7 @@ public final class TransferJournal: Sendable {
                     guard matches.count == 1, let index = matches.first, record.destinations.indices.contains(index) else {
                         throw FileOperationError.unsafeOperation("Invalid staging location")
                     }
-                    let access = try record.destinations[index].beginReportAccess(at: roots[index])
+                    let access = try reportAccess(record.destinations[index], roots[index])
                     reportAccessChanged(true)
                     defer { access.release(); reportAccessChanged(false) }
                     let currentRoot = access.url.standardizedFileURL.resolvingSymlinksInPath()
@@ -958,7 +1048,7 @@ public final class TransferJournal: Sendable {
                     stagingRecord.runDestinationURLs = currentRoots
                     stagingRecord.pendingReportPaths = [url.path]
                     stagingRecord.relativeReportPaths = nil
-                    try validateReportPublication(record: stagingRecord, paths: [url.path], volumeIdentityAt: volumeIdentityAt)
+                    try validateReportPublication(record: stagingRecord, paths: [url.path], reportAccess: reportAccess, volumeIdentityAt: volumeIdentityAt)
                     var info = stat()
                     if lstat(url.path, &info) != 0 {
                         guard errno == ENOENT else { throw FileOperationError.unsafeOperation("Cannot inspect staging directory") }
@@ -983,13 +1073,16 @@ public final class TransferJournal: Sendable {
                         guard ownsStagingDirectory(url, recordID: record.id) else {
                             throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
                         }
-                        try removeOwnedStagingDirectory(url, recordID: record.id,
+                        let cleanup = try removeOwnedStagingDirectory(url, recordID: record.id,
                             facts: ((record.intendedReportFileFacts ?? []) + (record.reportFileFacts ?? [])).filter {
                                 let parent = URL(fileURLWithPath: $0.path).deletingLastPathComponent()
                                 return reportComparablePath(parent) == reportComparablePath(recordedURL.deletingLastPathComponent())
                                     || reportComparablePath(parent) == reportComparablePath(url.deletingLastPathComponent())
                             })
-                        outcomes[path] = .withdrawn
+                        switch cleanup {
+                        case .removed: outcomes[path] = .withdrawn
+                        case .retained(let note): outcomes[path] = .pending(note)
+                        }
                     }
                 } catch { outcomes[path] = .pending(error.localizedDescription) }
             }
@@ -1034,7 +1127,7 @@ public final class TransferJournal: Sendable {
                 var snapshot = record
                 snapshot.pendingReportPaths = members.filter { !stagingJSONs.contains($0) }
                 snapshot.relativeReportPaths = nil
-                outcomes.merge(withdrawReports(record: snapshot, paths: selected, beforeWithdrawalMove: beforeWithdrawalMove, volumeIdentityAt: volumeIdentityAt, reportAccessChanged: reportAccessChanged, beforeStagingAccess: beforeStagingAccess, didWithdraw: didWithdraw)) { _, new in new }
+                outcomes.merge(withdrawReports(record: snapshot, paths: selected, beforeWithdrawalMove: beforeWithdrawalMove, volumeIdentityAt: volumeIdentityAt, reportAccessChanged: reportAccessChanged, beforeStagingAccess: beforeStagingAccess, reportAccess: reportAccess, didWithdraw: didWithdraw)) { _, new in new }
             }
             return outcomes
         }
@@ -1052,7 +1145,7 @@ public final class TransferJournal: Sendable {
             guard index < record.destinations.count else { fail(group, "Destination is unknown"); continue }
             let destination = record.destinations[index]
             let access: LocalTransferReadAccess
-            do { access = try destination.beginReportAccess(at: root) }
+            do { access = try reportAccess(destination, root) }
             catch { fail(group, "Destination could not be confirmed: \(error.localizedDescription)"); continue }
             reportAccessChanged(true)
             defer { access.release(); reportAccessChanged(false) }
@@ -1243,6 +1336,23 @@ public final class TransferJournal: Sendable {
         return outcomes
     }
 
+    /// Settled reports remain public; retry only the recorded cleanup directories.
+    private static func recoverSettledStaging(_ record: inout LocalTransferRecord) {
+        let paths = record.cleanupOnlyStagingPaths ?? []
+        guard !paths.isEmpty else { return }
+        let outcomes = withdrawReports(record: record, paths: paths)
+        let retained = paths.filter { outcomes[$0] != .withdrawn && outcomes[$0] != .absentOnVerifiedBackup }
+        let removed = Set(paths).subtracting(retained)
+        record.cleanupOnlyStagingPaths = retained.isEmpty ? nil : retained
+        let staging = (record.reportStagingPaths ?? []).filter { !removed.contains($0) }
+        record.reportStagingPaths = staging.isEmpty ? nil : staging
+        record.reportStagingPath = staging.last
+        for path in retained {
+            guard case .pending(let note) = outcomes[path], !record.summary.contains(note) else { continue }
+            record.summary += " " + note + "."
+        }
+    }
+
     /// The recorded paths, not filename conventions, define the withdrawal set.
     private static func recoverReports(_ record: inout LocalTransferRecord) {
         let paths = Array(Set((record.pendingWithdrawalPaths ?? []) + (record.reportStagingPaths ?? []))).sorted()
@@ -1267,6 +1377,8 @@ public final class TransferJournal: Sendable {
         }
         record.reportStagingPaths = remainingStaging.isEmpty ? nil : remainingStaging
         record.reportStagingPath = remainingStaging.last
+        let cleanupOnly = (record.cleanupOnlyStagingPaths ?? []).filter { remainingStaging.contains($0) }
+        record.cleanupOnlyStagingPaths = cleanupOnly.isEmpty ? nil : cleanupOnly
         record.withdrawalReason = unresolved.isEmpty ? nil : reasons.joined(separator: "; ")
         record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
@@ -1288,9 +1400,10 @@ public final class TransferJournal: Sendable {
     }
 
     public func retryPendingReportWithdrawals(id: UUID) throws {
-        guard let snapshot = records.first(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
+        guard let snapshot = records.first(where: { $0.id == id && $0.hasPendingReportRecovery }) else { return }
         var recovered = snapshot
-        Self.recoverReports(&recovered)
+        if (snapshot.pendingWithdrawalPaths ?? []).isEmpty { Self.recoverSettledStaging(&recovered) }
+        else { Self.recoverReports(&recovered) }
         guard Self.withdrawalChanged(snapshot, recovered) else { return }
         try applyWithdrawalRecovery(id: id, snapshot: snapshot, recovered: recovered)
     }
@@ -1298,7 +1411,7 @@ public final class TransferJournal: Sendable {
     @MainActor
     @discardableResult
     public func retryPendingReportWithdrawalsAsync(id: UUID, beforeIO: (@Sendable () -> Void)? = nil) async throws -> Bool {
-        guard let snapshot = records.first(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return false }
+        guard let snapshot = records.first(where: { $0.id == id && $0.hasPendingReportRecovery }) else { return false }
         let recovered = await Self.recoverPendingWithdrawals(snapshot, beforeIO: beforeIO)
         guard Self.withdrawalChanged(snapshot, recovered) else { return false }
         try applyWithdrawalRecovery(id: id, snapshot: snapshot, recovered: recovered)
@@ -1309,7 +1422,8 @@ public final class TransferJournal: Sendable {
         let worker = Task.detached {
             beforeIO?()
             var recovered = snapshot
-            Self.recoverReports(&recovered)
+            if (snapshot.pendingWithdrawalPaths ?? []).isEmpty { Self.recoverSettledStaging(&recovered) }
+            else { Self.recoverReports(&recovered) }
             return recovered
         }
         return await withTaskCancellationHandler {
@@ -1320,13 +1434,24 @@ public final class TransferJournal: Sendable {
     }
 
     private static func withdrawalChanged(_ a: LocalTransferRecord, _ b: LocalTransferRecord) -> Bool {
-        a.pendingWithdrawalPaths != b.pendingWithdrawalPaths || a.reportStagingPaths != b.reportStagingPaths || a.withdrawalReason != b.withdrawalReason || a.summary != b.summary
+        a.pendingWithdrawalPaths != b.pendingWithdrawalPaths || a.reportStagingPaths != b.reportStagingPaths || a.cleanupOnlyStagingPaths != b.cleanupOnlyStagingPaths || a.withdrawalReason != b.withdrawalReason || a.summary != b.summary
     }
 
     /// Apply only the paths examined by this attempt to the latest record.
     public static func mergeWithdrawalRecovery(current: LocalTransferRecord, snapshot: LocalTransferRecord,
                                                 recovered: LocalTransferRecord) -> LocalTransferRecord {
         var merged = current
+        if (snapshot.pendingWithdrawalPaths ?? []).isEmpty, !(snapshot.cleanupOnlyStagingPaths ?? []).isEmpty {
+            // Never apply an old cleanup result to a later export that reused
+            // a staging name while this asynchronous I/O was in flight.
+            guard current.revision == snapshot.revision, current.state == snapshot.state,
+                  (current.pendingWithdrawalPaths ?? []).isEmpty else { return current }
+            merged.reportStagingPaths = recovered.reportStagingPaths
+            merged.reportStagingPath = recovered.reportStagingPath
+            merged.cleanupOnlyStagingPaths = recovered.cleanupOnlyStagingPaths
+            merged.summary = recovered.summary
+            return merged
+        }
         let handled = Set((snapshot.pendingWithdrawalPaths ?? []) + (snapshot.reportStagingPaths ?? []))
         let unresolved = Set(recovered.pendingWithdrawalPaths ?? [])
         let currentPending = current.pendingWithdrawalPaths ?? []
@@ -1345,6 +1470,8 @@ public final class TransferJournal: Sendable {
         let remainingStaging = (current.reportStagingPaths ?? []).filter { !removedStaging.contains($0) }
         merged.reportStagingPaths = remainingStaging.isEmpty ? nil : remainingStaging
         merged.reportStagingPath = remainingStaging.last
+        let cleanupOnly = (current.cleanupOnlyStagingPaths ?? []).filter { remainingStaging.contains($0) }
+        merged.cleanupOnlyStagingPaths = cleanupOnly.isEmpty ? nil : cleanupOnly
         let otherPending = currentPaths.contains { !handled.contains($0) }
         let reasons = [otherPending ? current.withdrawalReason : nil,
                        !unresolved.isEmpty ? recovered.withdrawalReason : nil].compactMap { $0 }
@@ -1444,7 +1571,7 @@ public final class TransferJournal: Sendable {
 
     /// Check the exact destination opened by this run, without following an
     /// older bookmark to a different mount or attempting recovery of old paths.
-    private static func currentStagingIsAbsent(_ path: String, record: LocalTransferRecord) -> Bool {
+    static func currentStagingIsAbsent(_ path: String, record: LocalTransferRecord) -> Bool {
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
         let target = URL(fileURLWithPath: path).standardizedFileURL
         guard isStagingName(target.lastPathComponent, recordID: record.id) else { return false }
@@ -1457,15 +1584,25 @@ public final class TransferJournal: Sendable {
         let scoped = root.startAccessingSecurityScopedResource()
         defer { if scoped { root.stopAccessingSecurityScopedResource() } }
         let destination = record.destinations[index]
-        guard (try? destination.validateIdentity(at: root)) != nil else { return false }
+        if destination.volumeID != nil {
+            guard (try? destination.validateIdentity(at: root)) != nil else { return false }
+        }
         let resolvedRoot = root.standardizedFileURL.resolvingSymlinksInPath()
         let parent = target.deletingLastPathComponent().resolvingSymlinksInPath()
         guard PathContainment.isStrictlyWithin(parent.path, root: resolvedRoot.path),
               (try? parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return false }
         var freshParent = parent
         freshParent.removeAllCachedResourceValues()
-        guard let values = try? freshParent.resourceValues(forKeys: LocalTransferResource.identityKeys),
-              LocalTransferResource.volumeIdentity(values) == destination.volumeID else { return false }
+        if let volumeID = destination.volumeID {
+            guard let values = try? freshParent.resourceValues(forKeys: LocalTransferResource.identityKeys),
+                  LocalTransferResource.volumeIdentity(values) == volumeID else { return false }
+        } else {
+            // Without a volume identity, an owned public JSON on the contained
+            // destination is the proof used by report recovery as well.
+            let jsons = (record.pendingReportPaths ?? []).map { URL(fileURLWithPath: $0).standardizedFileURL }
+                .filter { $0.pathExtension == "json" && reportComparablePath($0.deletingLastPathComponent()) == reportComparablePath(parent) }
+            guard jsons.contains(where: { isOwnedReportJSON($0, record: record) }) else { return false }
+        }
         let resolvedTarget = parent.appendingPathComponent(target.lastPathComponent)
         var info = stat()
         return lstat(resolvedTarget.path, &info) != 0 && errno == ENOENT
@@ -1969,6 +2106,7 @@ public final class TransferJournal: Sendable {
         sourceFingerprint: String? = nil,
         skippedFinderMetadataPaths: [String]? = nil,
         projectCardSnapshot: Data? = nil,
+        cleanupOnlyStagingPaths: [String] = [],
         pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil, removedStagingPaths: [String] = []
     ) throws {
         try commit(settlementID: id) { records in try Self.updated(records, id: id) { record in
@@ -2031,6 +2169,10 @@ public final class TransferJournal: Sendable {
                 record.summary = truthfulSummary
             }
             Self.setPendingWithdrawal(&record, reason: pendingWithdrawalReason, paths: pendingWithdrawalPaths, removedStagingPaths: removedStagingPaths)
+            if pendingWithdrawalReason == nil {
+                let retained = cleanupOnlyStagingPaths.filter { (record.reportStagingPaths ?? []).contains($0) }
+                record.cleanupOnlyStagingPaths = retained.isEmpty ? nil : Array(Set(retained)).sorted()
+            }
             if pendingWithdrawalReason != nil { record.state = .issues; Self.appendPendingNote(&record) }
             record.endedAt = Date()
             record.expectedExclusionQueueQualification = expectedExclusionQueueQualification
@@ -2266,6 +2408,8 @@ public final class TransferJournal: Sendable {
         let remaining = (record.reportStagingPaths ?? []).filter { !removedStagingPaths.contains($0) }
         record.reportStagingPaths = remaining.isEmpty ? nil : remaining
         record.reportStagingPath = remaining.last
+        let cleanupOnly = (record.cleanupOnlyStagingPaths ?? []).filter { remaining.contains($0) }
+        record.cleanupOnlyStagingPaths = cleanupOnly.isEmpty ? nil : cleanupOnly
         guard let reason else { return }
         let paths = Array(Set((paths ?? record.pendingReportPaths ?? []) + (record.reportStagingPaths ?? [])))
             .filter { !removedStagingPaths.contains($0) }.sorted()

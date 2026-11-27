@@ -567,6 +567,7 @@ public enum EvidenceWriter: Sendable {
                                         recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil,
                                         recordIntendedFacts: (@Sendable ([ReportFileFact]) throws -> Void)? = nil,
                                         didRemoveStaging: (@Sendable (String) -> Void)? = nil,
+                                        didRetainStaging: (@Sendable (String, String) -> Void)? = nil,
                                         beforeStagedReportRead: (@Sendable (URL) -> Void)? = nil,
                                         validatePublication: (@Sendable () throws -> Void)? = nil,
                                         validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
@@ -663,10 +664,7 @@ public enum EvidenceWriter: Sendable {
             guard errno == EEXIST else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
             if recordIntendedPaths != nil, TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) {
                 let names = try FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path)
-                guard names == [TransferJournal.stagingOwnerMarker] else {
-                    throw FileOperationError.unsafeOperation("An earlier owned staging directory still contains report evidence. Recover it before retrying.")
-                }
-                break
+                if names == [TransferJournal.stagingOwnerMarker] { break }
             }
             suffixNumber += 1
             stagingDirectory = stagingParent.appendingPathComponent(stagingBase + "-\(suffixNumber)", isDirectory: true)
@@ -678,7 +676,7 @@ public enum EvidenceWriter: Sendable {
         do { try recordIntendedPaths?((intendedURLs + [stagingDirectory]).map(\.path)) }
         catch {
             if createdStaging && (recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID)) {
-                if (try? TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID, facts: [])) != nil {
+                if (try? TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID, facts: [])) == .removed {
                     didRemoveStaging?(stagingDirectory.path)
                 }
             }
@@ -694,9 +692,13 @@ public enum EvidenceWriter: Sendable {
         var published: [URL] = []
         var intendedFacts: [String: ReportFileFact] = [:]
         var previousFacts: [String: ReportFileFact] = [:]
+        var stagedFiles: [String: PinnedReportFile] = [:]
+        var stagedSourceChanged = false
         func rememberStaged(_ url: URL) throws {
             beforeStagedReportRead?(staged(url))
-            let fact = try reportFact(staged(url), publicURL: url)
+            let pinned = try PinnedReportFile(url: staged(url))
+            let fact = ReportFileFact(path: url.path, size: pinned.size, modificationDate: nil, sha256: pinned.sha256)
+            stagedFiles[url.path] = pinned
             try recordIntendedFacts?([fact])
             intendedFacts[url.path] = fact
         }
@@ -790,6 +792,20 @@ public enum EvidenceWriter: Sendable {
                 try Task.checkCancellation()
                 try beforePublish?(url)
                 try validatePublication?()
+                let source: PinnedReportFile
+                do {
+                    guard let pinned = stagedFiles[url.path] else {
+                        throw PinnedReportFile.IdentityChanged(path: staged(url).path)
+                    }
+                    source = pinned
+                    try source.requireUnchanged()
+                    guard source.sha256 == intendedFacts[url.path]?.sha256 else {
+                        throw PinnedReportFile.IdentityChanged(path: staged(url).path)
+                    }
+                } catch {
+                    stagedSourceChanged = true
+                    throw error
+                }
                 if replacing?.contains(url) == true {
                     let occupant: PinnedReportFile
                     do { occupant = try PinnedReportFile(url: url) }
@@ -799,12 +815,17 @@ public enum EvidenceWriter: Sendable {
                         throw ReportReplacementOwnershipError(path: url.path, changed: true)
                     }
                     try validateReplacement?(url)
-                    do { try occupant.replace(with: staged(url), beforeAction: { try beforeReplacementAction?(url) }) }
+                    do { try occupant.replace(with: staged(url), beforeAction: {
+                        try beforeReplacementAction?(url)
+                        do { try source.requireUnchanged() }
+                        catch { stagedSourceChanged = true; throw error }
+                    }) }
                     catch is PinnedReportFile.IdentityChanged { throw ReportReplacementOwnershipError(path: url.path, changed: true) }
                     catch let error as PinnedReportFile.ActionFailed { throw error }
                     catch { throw ReportReplacementOwnershipError(path: url.path) }
                 } else {
-                    try FileManager.default.moveItem(at: staged(url), to: url)
+                    do { try source.rename(to: url) }
+                    catch { stagedSourceChanged = true; throw error }
                 }
                 published.append(url)
             }
@@ -812,9 +833,12 @@ public enum EvidenceWriter: Sendable {
             // Cleanup is part of publication: a failed removal must not be
             // reported as success while provisional evidence remains behind.
             try beforeStagingRemoval?(stagingDirectory)
-            try TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID,
+            let cleanup = try TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID,
                 facts: Array(intendedFacts.values) + Array(previousFacts.values))
-            didRemoveStaging?(stagingDirectory.path)
+            switch cleanup {
+            case .removed: didRemoveStaging?(stagingDirectory.path)
+            case .retained(let note): didRetainStaging?(stagingDirectory.path, note)
+            }
             SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")
             return published
 
@@ -886,11 +910,17 @@ public enum EvidenceWriter: Sendable {
                     pendingPaths.append(url.path)
                 }
             }
+            if stagedSourceChanged {
+                cleanupErrors.append("staged report changed and was left in place at \(stagingDirectory.path)")
+            }
             if cleanupErrors.isEmpty && FileManager.default.fileExists(atPath: stagingDirectory.path) {
                 do {
-                    try TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID,
+                    let cleanup = try TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID,
                         facts: Array(intendedFacts.values) + Array(previousFacts.values))
-                    didRemoveStaging?(stagingDirectory.path)
+                    switch cleanup {
+                    case .removed: didRemoveStaging?(stagingDirectory.path)
+                    case .retained(let note): cleanupErrors.append(note)
+                    }
                 }
                 catch { cleanupErrors.append("\(stagingDirectory.path): \(error.localizedDescription)") }
             }

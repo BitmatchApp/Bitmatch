@@ -569,25 +569,131 @@ struct EvidenceWriterCommitOrderTests {
 
     @Test func normalCleanupLeavesForeignFileInOwnedStaging() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let history = root.appendingPathComponent("history.json"), date = Date()
+        let stage = Mutex<URL?>(nil), notes = Mutex<[String]>([])
+        do {
+            let journal = TransferJournal(fileURL: history, recoverReportsOnInit: false)
+            let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            let published = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0) },
+                recordIntendedFacts: { try journal.recordIntendedReportFacts(id: id, facts: $0) },
+                didRetainStaging: { _, note in notes.withLock { $0.append(note) } },
+                beforeStagingRemoval: { directory in
+                    stage.withLock { $0 = directory }
+                    try Data("keep".utf8).write(to: directory.appendingPathComponent("foreign"))
+                })
+            #expect(published.allSatisfy { FileManager.default.fileExists(atPath: $0.path) })
+            let directory = try #require(stage.withLock { $0 })
+            let note = try #require(notes.withLock { $0.first })
+            #expect(note.contains("unexpected file(s)"))
+            try journal.promoteIntendedReportFacts(id: id, paths: published.map(\.path))
+            try journal.recordPlan(id: id, fileCounts: [1])
+            let row = ResultRow(path: "clip.mov", status: ResultOutcome.verified.statusText, size: 4,
+                checksum: "abc", destination: "Backup", destinationPath: backup.appendingPathComponent("clip.mov").path)
+            try journal.finish(id: id, results: [row], summary: "Verified. " + note, hadIssues: false,
+                               cleanupOnlyStagingPaths: [directory.path])
+            #expect(journal.records.first?.state == .completed)
+            #expect(journal.records.first?.reportStagingPaths == [directory.path])
+            #expect(journal.records.first?.cleanupOnlyStagingPaths == [directory.path])
+            #expect(try Data(contentsOf: directory.appendingPathComponent("foreign")) == Data("keep".utf8))
+        }
+        let reopened = TransferJournal(fileURL: history)
+        #expect(reopened.records.first?.state == .completed)
+        #expect(reopened.records.first?.summary.contains("unexpected file(s)") == true)
+        #expect(reopened.records.first?.pendingWithdrawalPaths == nil)
+        #expect(reopened.records.first?.reportStagingPaths == stage.withLock { $0.map { [$0.path] } })
+        let directory = try #require(stage.withLock { $0 })
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("foreign"))
+        let id = try #require(reopened.records.first?.id)
+        let reports = reopened.records.first?.pendingReportPaths ?? []
+        try reopened.retryPendingReportWithdrawals(id: id)
+        #expect(reopened.records.first?.reportStagingPaths == nil)
+        #expect(reopened.records.first?.cleanupOnlyStagingPaths == nil)
+        #expect(reopened.records.first?.state == .completed)
+        #expect(reports.allSatisfy { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    @Test func substitutedStagedReportCannotBePublished() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
-        let date = Date(), id = UUID()
-        let stage = Mutex<URL?>(nil)
+        let id = UUID(), date = Date()
+        let swapped = Mutex<URL?>(nil)
         do {
             _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root], pdfData: nil,
                 results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
                 sourceURL: nil, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
                 prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
-                safeToErase: false, beforeStagingRemoval: { directory in
-                    stage.withLock { $0 = directory }
-                    try Data("keep".utf8).write(to: directory.appendingPathComponent("foreign"))
+                safeToErase: false, recordIntendedPaths: { _ in }, beforePublish: { url in
+                    guard url.pathExtension == "json" else { return }
+                    let stage = url.deletingLastPathComponent().appendingPathComponent(".bitmatch-staging-" + id.uuidString)
+                    let source = stage.appendingPathComponent(url.lastPathComponent)
+                    try Data("foreign safe verdict".utf8).write(to: source, options: .atomic)
+                    swapped.withLock { $0 = source }
                 })
-            Issue.record("Foreign entry must keep export unsettled")
-        } catch {
-            #expect(error.localizedDescription.contains("unexpected file(s)"))
+            Issue.record("A substituted staged report was published")
+        } catch { }
+        let path = try #require(swapped.withLock { $0 })
+        #expect(try Data(contentsOf: path) == Data("foreign safe verdict".utf8))
+        #expect(!FileManager.default.fileExists(atPath: path.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(path.lastPathComponent).path))
+    }
+
+    @Test func stagingCleanupDoesNotFollowSwappedDirectorySymlink() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let stage = root.appendingPathComponent("staging"), moved = root.appendingPathComponent("moved")
+        let outside = root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: stage, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        try Data(id.uuidString.utf8).write(to: stage.appendingPathComponent(".bitmatch-owner"))
+        try Data("owned".utf8).write(to: stage.appendingPathComponent(name))
+        try Data("owned".utf8).write(to: outside.appendingPathComponent(name))
+        let pinned = try PinnedReportFile(url: stage.appendingPathComponent(name))
+        let fact = ReportFileFact(path: root.appendingPathComponent(name).path, size: pinned.size,
+                                  modificationDate: nil, sha256: pinned.sha256)
+        #expect(throws: (any Error).self) {
+            try TransferJournal.removeOwnedStagingDirectory(stage, recordID: id, facts: [fact], afterOpening: {
+                try FileManager.default.moveItem(at: stage, to: moved)
+                try FileManager.default.createSymbolicLink(at: stage, withDestinationURL: outside)
+            })
         }
-        let directory = try #require(stage.withLock { $0 })
-        #expect(try Data(contentsOf: directory.appendingPathComponent("foreign")) == Data("keep".utf8))
+        #expect(try Data(contentsOf: outside.appendingPathComponent(name)) == Data("owned".utf8))
+    }
+
+    @Test func stagingEntryArrivingBeforeRemovalRemainsPending() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
+        let outcome = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [],
+            beforeDirectoryRemoval: { try Data("late".utf8).write(to: root.appendingPathComponent("foreign")) })
+        guard case .retained(let note) = outcome else { Issue.record("Expected a pending cleanup note"); return }
+        #expect(note.contains("unexpected file(s)"))
+        #expect(try Data(contentsOf: root.appendingPathComponent("foreign")) == Data("late".utf8))
+        #expect(TransferJournal.ownsStagingDirectory(root, recordID: id))
+    }
+
+    @Test func stagingCleanupRemovesFinderNoise() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID()
+        try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
+        try Data().write(to: root.appendingPathComponent(".DS_Store"))
+        try Data().write(to: root.appendingPathComponent("._report"))
+        try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [])
+        #expect(!FileManager.default.fileExists(atPath: root.path))
     }
 
     @Test func promotionIgnoresOlderStagingAndSettlementClearsRemovedAttempt() throws {
