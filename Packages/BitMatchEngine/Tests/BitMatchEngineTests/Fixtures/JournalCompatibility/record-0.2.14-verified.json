@@ -1,0 +1,91 @@
+[
+  {
+    "id" : "6F1C2B0E-3A4D-4E8B-9C21-0D5E7A1B2C30",
+    "createdAt" : 786000000,
+    "source" : {
+      "url" : "file:///Volumes/A001/",
+      "bookmark" : "",
+      "volumeID" : "fixture-card-volume",
+      "resourceID" : "fixture-card-folder"
+    },
+    "destinations" : [
+      {
+        "url" : "file:///Volumes/BackupA/",
+        "bookmark" : "",
+        "volumeID" : "fixture-backup-a",
+        "resourceID" : "fixture-backup-a-folder"
+      },
+      {
+        "url" : "file:///Volumes/BackupB/",
+        "bookmark" : "",
+        "volumeID" : "fixture-backup-b",
+        "resourceID" : "fixture-backup-b-folder"
+      }
+    ],
+    "verificationMode" : "Standard",
+    "cameraSettings" : {
+      "label" : "",
+      "position" : "Prefix",
+      "separator" : "_",
+      "autoNumber" : true,
+      "groupByCamera" : false,
+      "generateUniqueName" : true
+    },
+    "reportSettings" : {
+      "makeReport" : false,
+      "verifyWithChecksum" : true,
+      "checksumAlgorithm" : "SHA-256"
+    },
+    "generateASCMHL" : false,
+    "state" : "completed",
+    "startedAt" : 786000010,
+    "endedAt" : 786000100,
+    "summary" : "All files copied and verified",
+    "sourceFingerprint" : "fixture-0.2.14-card",
+    "plannedFileCounts" : [2, 2],
+    "independentDestinationCount" : 2,
+    "quickOnlyUnverified" : null,
+    "results" : [
+      {
+        "id" : "0A6A5C1E-1111-4C11-8A11-000000000001",
+        "path" : "/Volumes/A001/A001C001.mov",
+        "status" : "✅ Verified",
+        "size" : 4096,
+        "checksum" : "a1b2c3",
+        "destination" : "BackupA",
+        "destinationPath" : "/Volumes/BackupA/A001/A001C001.mov",
+        "wasReused" : false
+      },
+      {
+        "id" : "0A6A5C1E-1111-4C11-8A11-000000000002",
+        "path" : "/Volumes/A001/.DS_Store",
+        "status" : "✅ Verified",
+        "size" : 6148,
+        "checksum" : "d4e5f6",
+        "destination" : "BackupA",
+        "destinationPath" : "/Volumes/BackupA/A001/.DS_Store",
+        "wasReused" : false
+      },
+      {
+        "id" : "0A6A5C1E-1111-4C11-8A11-000000000003",
+        "path" : "/Volumes/A001/A001C001.mov",
+        "status" : "✅ Verified",
+        "size" : 4096,
+        "checksum" : "a1b2c3",
+        "destination" : "BackupB",
+        "destinationPath" : "/Volumes/BackupB/A001/A001C001.mov",
+        "wasReused" : false
+      },
+      {
+        "id" : "0A6A5C1E-1111-4C11-8A11-000000000004",
+        "path" : "/Volumes/A001/.DS_Store",
+        "status" : "✅ Verified",
+        "size" : 6148,
+        "checksum" : "d4e5f6",
+        "destination" : "BackupB",
+        "destinationPath" : "/Volumes/BackupB/A001/.DS_Store",
+        "wasReused" : false
+      }
+    ]
+  }
+]

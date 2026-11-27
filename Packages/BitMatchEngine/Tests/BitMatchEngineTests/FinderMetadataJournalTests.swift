@@ -128,31 +128,44 @@ import Testing
         #expect(TransferJournal(fileURL: f.journalURL).matchingVerifiedRecord(sourceFingerprint: "card") == nil)
     }
 
-    /// A record written before skipping existed (no `skippedFinderMetadataPaths`,
-    /// no `skipFinderViewFiles`): the `.DS_Store` was copied and verified like
-    /// any file, and the record keeps its verdict.
+    /// A checked-in 0.2.14-era journal, written by hand from the pre-Task-2
+    /// keys (no `skippedFinderMetadataPaths`, no `skipFinderViewFiles`): the
+    /// `.DS_Store` was copied and verified like any file on two backups, and
+    /// the record keeps its verdict.
     @Test func aZeroPointTwoFixtureKeepsItsVerdict() throws {
         let f = try Fixture(); defer { f.cleanup() }
-        let rows = f.destinations.flatMap { [f.verified("A001.mov", on: $0), f.verified(".DS_Store", on: $0)] }
-        do {
-            let journal = TransferJournal(fileURL: f.journalURL)
-            try f.finish(journal, rows: rows, plan: [2, 2], proven: nil, fingerprint: "old-card")
-        }
-        var objects = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: f.journalURL)) as? [[String: Any]])
-        var settings = try #require(objects[0]["cameraSettings"] as? [String: Any])
-        settings.removeValue(forKey: "skipFinderViewFiles")
-        objects[0]["cameraSettings"] = settings
-        objects[0].removeValue(forKey: "skippedFinderMetadataPaths")
-        try JSONSerialization.data(withJSONObject: objects).write(to: f.journalURL)
-        let text = try String(contentsOf: f.journalURL, encoding: .utf8)
+        let fixture = try #require(Bundle.module.resourceURL)
+            .appendingPathComponent("Fixtures/JournalCompatibility/record-0.2.14-verified.json")
+        let text = try String(contentsOf: fixture, encoding: .utf8)
         #expect(!text.contains("skippedFinderMetadataPaths"))
         #expect(!text.contains("skipFinderViewFiles"))
+        try FileManager.default.copyItem(at: fixture, to: f.journalURL)
 
         let old = TransferJournal(fileURL: f.journalURL)
         let record = try #require(old.records.first)
         #expect(record.skippedFinderMetadataPaths == nil)
+        #expect(record.cameraSettings.skipFinderViewFiles, "a missing toggle decodes as on")
         #expect(record.state == .completed)
-        #expect(old.matchingVerifiedRecord(sourceFingerprint: "old-card")?.id == record.id)
+        #expect(record.plannedFileCounts == [2, 2])
+        #expect(record.results.count == 4)
+        #expect(record.results.allSatisfy { $0.isVerifiedStatus })
+        #expect(TransferJournal.finderMetadataSkipsProven(record), "no skipped row and no list: nothing to prove")
+        #expect(old.matchingVerifiedRecord(sourceFingerprint: "fixture-0.2.14-card")?.id == record.id)
+    }
+
+    /// The rebuilt-manifest gate on its own: rows and list consistent, but no
+    /// saved plan, so the record's rows cannot stand in for the manifest.
+    @Test func aRecordWithoutAPlanCannotProveItsSkips() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let journal = TransferJournal(fileURL: f.journalURL)
+        let record = try f.finish(journal, rows: f.provenRows, proven: [".DS_Store"], fingerprint: "card")
+        #expect(TransferJournal.finderMetadataSkipsProven(record))
+        var withoutPlan = record
+        withoutPlan.plannedFileCounts = nil
+        #expect(!TransferJournal.finderMetadataSkipsProven(withoutPlan))
+        var shortPlan = record
+        shortPlan.plannedFileCounts = [2, 2]
+        #expect(!TransferJournal.finderMetadataSkipsProven(shortPlan))
     }
 
     // MARK: - Real runs
