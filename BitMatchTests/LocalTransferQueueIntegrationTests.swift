@@ -10,6 +10,65 @@ import Testing
 
 @MainActor
 final class LocalTransferQueueIntegrationTests: XCTestCase {
+    func testRepeatedHistoryRowsDoNotRetryOrPublishUnchangedWithdrawal() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        var attempts = 0
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeWithdrawalRetry: { _ in attempts += 1 })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let path = f.destination.appendingPathComponent("missing/report.json").path
+        try journal.recordPendingReportPaths(id: id, paths: [path])
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable", pendingWithdrawalPaths: [path])
+        let now = Date()
+        journal.retryPendingReportWithdrawalsFromView(id: id, now: now)
+        _ = await waitUntil(timeout: .seconds(10)) { attempts == 1 && journal.withdrawalRetryIsInFlight(id: id) == false }
+        var publications = 0
+        let subscription = journal.$records.dropFirst().sink { _ in publications += 1 }
+        defer { subscription.cancel() }
+        for _ in 0..<10 { journal.retryPendingReportWithdrawalsFromView(id: id, now: now.addingTimeInterval(29)) }
+        await Task.yield()
+        XCTAssertEqual(attempts, 1)
+        XCTAssertEqual(publications, 0)
+        journal.retryPendingReportWithdrawals(id: id)
+        _ = await waitUntil(timeout: .seconds(10)) { attempts == 2 && journal.withdrawalRetryIsInFlight(id: id) == false }
+        XCTAssertEqual(publications, 0, "An unchanged explicit retry must not republish History")
+        journal.retryPendingReportWithdrawalsFromView(id: id, now: now.addingTimeInterval(30))
+        _ = await waitUntil(timeout: .seconds(10)) { attempts == 3 && journal.withdrawalRetryIsInFlight(id: id) == false }
+        XCTAssertEqual(publications, 0)
+    }
+
+    func testFailedTerminalWritesRetainWithdrawalForHistoryRetry() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let reports = f.destination.appendingPathComponent("Reports")
+        let offline = f.destination.appendingPathComponent("offline-reports")
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            throw NSError(domain: "Finish", code: 1)
+        }, beforeInterrupt: { _ in throw NSError(domain: "Interrupt", code: 1) })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: true))
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults, beforeRecoveryReportSettlement: {
+                try FileManager.default.moveItem(at: reports, to: offline)
+                throw NSError(domain: "Offline", code: 1)
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { !coordinator.isOperationInProgress && coordinator.operationState == .failed }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        let paths = try XCTUnwrap(record.pendingWithdrawalPaths)
+        XCTAssertFalse(paths.isEmpty)
+        XCTAssertNotNil(record.withdrawalReason)
+        try FileManager.default.moveItem(at: offline, to: reports)
+        journal.historyAppeared()
+        let withdrawn = await waitUntil(timeout: .seconds(20)) { journal.records.first { $0.id == id }?.pendingWithdrawalPaths == nil }
+        XCTAssertTrue(withdrawn)
+        XCTAssertTrue(paths.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+        let saved = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
+        XCTAssertEqual(saved.first { $0.id == id }?.state, .interrupted)
+        XCTAssertNil(saved.first { $0.id == id }?.pendingWithdrawalPaths)
+    }
     func testReviewLegacyCompletedRecordUsesDerivedCautionWithoutChangingSavedSummary() throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -434,6 +493,41 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase)
     }
 
+    func testProjectCardCommitFailureWritesIssuesOnceAndKeepCardReports() async throws {
+        let f = try CoordinatorFolders(); defer { f.cleanup() }
+        let store = InMemoryPhotographerJobStore()
+        var finishes = 0
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in finishes += 1 })
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, projectStore: store, defaults: f.defaults,
+            physicalDiskIdentityProvider: SharedProjectFixture.DistinctFixtureDisks(),
+            beforeProjectCardCommit: { throw NSError(domain: "CardCommit", code: 1) })
+        coordinator.destinationURLs = [f.primary, f.secondary]
+        coordinator.sourceURL = f.source
+        coordinator.generateASCMHL = false
+        coordinator.reportSettings.makeReport = true
+        let scanned = await waitUntil(timeout: .seconds(30)) {
+            coordinator.sourceFolderInfo?.url == f.source && !coordinator.isFolderInfoLoading(for: f.source)
+                && !coordinator.appleDoubleSelection.isReviewing && !coordinator.isAnalysingSource && coordinator.transferReadiness.isReady
+        }
+        guard scanned else { return XCTFail("Source analysis did not settle") }
+        let jobs = coordinator.photographerJobViewModel
+        jobs.createWeddingJob(clientName: "Smith", jobName: "Smith Wedding", eventDate: Date(timeIntervalSince1970: 100))
+        try jobs.prepareCard(photographerName: "Mike", cameraName: "Sony A7 IV", sourceURL: f.source,
+            setupSignature: PhotographerSetupSignature(clientName: "Smith", jobName: "Smith Wedding", eventDate: Date(timeIntervalSince1970: 100),
+                photographerName: "Mike", cameraName: "Sony A7 IV", cardNumber: 1, recipe: .wedding),
+            analysis: CardAnalysis(fingerprint: "preliminary", fileCount: 1, totalBytes: 4,
+                companionGroups: [], sourcePaths: [f.source.appendingPathComponent("A.ARW").path]))
+        let started = await coordinator.startProjectOperation()
+        XCTAssertTrue(started)
+        XCTAssertEqual(finishes, 1)
+        XCTAssertEqual(journal.records.first?.state, .issues)
+        let scan = await EvidenceReader.scanReports(at: f.primary)
+        XCTAssertFalse(scan.reports.isEmpty)
+        XCTAssertTrue(scan.reports.allSatisfy { $0.snapshot.safeToErase == false })
+    }
+
     func testProjectCardDowngradesWhenFinalJournalWriteFails() async throws {
         let f = try CoordinatorFolders()
         defer { f.cleanup() }
@@ -456,7 +550,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             beforeFinalReportSettlement: {
                 reportSettlementPending = true
                 cardWasSafeAtReportSettlement = project?.activeCard?.localState == .locallySafe
-            })
+            }, beforeProjectCardCommit: { reportSettlementPending = false })
         let jobs = coordinator.photographerJobViewModel
         let subscription = jobs.$activeCardDraft.sink { card in
             if reportSettlementPending && card?.localState == .locallySafe { observedSafeWhileReportPending = true }
@@ -493,7 +587,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(idle)
         XCTAssertFalse(cardWasSafeAtReportSettlement, "The card must stay in progress while reports are pending")
         XCTAssertFalse(observedSafeWhileReportPending, "No Locally Safe card may be published while report settlement is pending")
-        XCTAssertFalse(cardWasSafeAtFinish, "The card must remain in progress until History is saved")
+        XCTAssertTrue(cardWasSafeAtFinish, "The card must be committed before the terminal History write")
         XCTAssertEqual(journal.records.first?.state, .interrupted)
         XCTAssertEqual(jobs.activeCard?.localState, .issues)
         XCTAssertNil(jobs.activeCard?.locallySafeAt)

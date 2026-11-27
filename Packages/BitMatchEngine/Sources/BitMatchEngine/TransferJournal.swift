@@ -411,13 +411,17 @@ public final class TransferJournal: Sendable {
     private let state: Mutex<State>
     private let fileURL: URL
     private let lockDescriptor: Int32
+    private let afterJournalRename: (@Sendable () throws -> Void)?
 
     public var records: [LocalTransferRecord] { state.withLock { $0.records } }
     public var persistenceError: String? { state.withLock { $0.persistenceError } }
 
-    public init(fileURL: URL? = nil, recoverReportsOnInit: Bool = true) {
+    public init(fileURL: URL? = nil, recoverReportsOnInit: Bool = true,
+                afterJournalRename: (@Sendable () throws -> Void)? = nil) {
+        self.afterJournalRename = afterJournalRename
         let fileURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
+        let markerPrefix = ".\(fileURL.lastPathComponent).settling-"
         var initial = State()
         var lockDescriptor: Int32 = -1
         do {
@@ -434,9 +438,15 @@ public final class TransferJournal: Sendable {
                 let decoder = JSONDecoder()
                 decoder.userInfo[JournalDecodingMigrations.userInfoKey] = migrations
                 var recovered = try decoder.decode([LocalTransferRecord].self, from: Data(contentsOf: fileURL))
+                let markerNames = try FileManager.default.contentsOfDirectory(atPath: fileURL.deletingLastPathComponent().path)
+                let unsettledIDs = Set(markerNames.compactMap { name -> UUID? in
+                    guard name.hasPrefix(markerPrefix) else { return nil }
+                    return UUID(uuidString: String(name.dropFirst(markerPrefix.count)))
+                })
                 var recoveredInterruption = false
                 for index in recovered.indices {
-                    if recovered[index].state == .running {
+                    if recovered[index].state == .running || (unsettledIDs.contains(recovered[index].id)
+                        && (recovered[index].state == .completed || recovered[index].state == .issues)) {
                         recovered[index].state = .interrupted
                         recovered[index].endedAt = Date()
                         recovered[index].summary = Self.interruptedSummary
@@ -462,6 +472,9 @@ public final class TransferJournal: Sendable {
                 initial.records = recovered
                 if recoveredInterruption || migrations.requiresPersistence {
                     try Self.persist(recovered, to: fileURL)
+                }
+                for id in unsettledIDs {
+                    try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent().appendingPathComponent(markerPrefix + id.uuidString))
                 }
             }
         } catch let failure as FlushAfterPublishFailure {
@@ -607,7 +620,13 @@ public final class TransferJournal: Sendable {
                 guard let url = resolved(path), verifiedParent(url), verifiedParent(json) else {
                     fail([path], "Report parent or its volume could not be confirmed"); failed = true; continue
                 }
-                let hidden = url.deletingLastPathComponent().appendingPathComponent(".unsettled-" + url.lastPathComponent)
+                let base = ".unsettled-" + record.id.uuidString + "-" + url.lastPathComponent
+                var suffix = 0
+                var hidden = url.deletingLastPathComponent().appendingPathComponent(base)
+                while FileManager.default.fileExists(atPath: hidden.path) {
+                    suffix += 1
+                    hidden = url.deletingLastPathComponent().appendingPathComponent(base + "-\(suffix)")
+                }
                 do { try FileManager.default.moveItem(at: url, to: hidden); outcomes[path] = .withdrawn }
                 catch { fail([path], "\(url.path): \(error.localizedDescription)"); failed = true }
             }
@@ -640,6 +659,7 @@ public final class TransferJournal: Sendable {
         guard let snapshot = records.first(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
         var recovered = snapshot
         Self.recoverReports(&recovered)
+        guard Self.withdrawalChanged(snapshot, recovered) else { return }
         try update(id: id) { record in
             guard record.pendingWithdrawalPaths == snapshot.pendingWithdrawalPaths else { return }
             record.pendingWithdrawalPaths = recovered.pendingWithdrawalPaths
@@ -649,20 +669,45 @@ public final class TransferJournal: Sendable {
     }
 
     @MainActor
-    public func retryPendingReportWithdrawalsAsync(id: UUID, beforeIO: (@Sendable () -> Void)? = nil) async throws {
-        guard let snapshot = records.first(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
-        let recovered = await Task.detached {
-            beforeIO?()
-            var recovered = snapshot
-            Self.recoverReports(&recovered)
-            return recovered
-        }.value
+    @discardableResult
+    public func retryPendingReportWithdrawalsAsync(id: UUID, beforeIO: (@Sendable () -> Void)? = nil) async throws -> Bool {
+        guard let snapshot = records.first(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return false }
+        let recovered = await Self.recoverPendingWithdrawals(snapshot, beforeIO: beforeIO)
+        guard Self.withdrawalChanged(snapshot, recovered),
+              records.first(where: { $0.id == id })?.pendingWithdrawalPaths == snapshot.pendingWithdrawalPaths else { return false }
         try update(id: id) { record in
             guard record.pendingWithdrawalPaths == snapshot.pendingWithdrawalPaths else { return }
             record.pendingWithdrawalPaths = recovered.pendingWithdrawalPaths
             record.withdrawalReason = recovered.withdrawalReason
             record.summary = recovered.summary
         }
+        return true
+    }
+
+    public static func recoverPendingWithdrawals(_ snapshot: LocalTransferRecord, beforeIO: (@Sendable () -> Void)? = nil) async -> LocalTransferRecord {
+        await Task.detached {
+            beforeIO?()
+            var recovered = snapshot
+            Self.recoverReports(&recovered)
+            return recovered
+        }.value
+    }
+
+    private static func withdrawalChanged(_ a: LocalTransferRecord, _ b: LocalTransferRecord) -> Bool {
+        a.pendingWithdrawalPaths != b.pendingWithdrawalPaths || a.withdrawalReason != b.withdrawalReason || a.summary != b.summary
+    }
+
+    public func persistInterruptedOverride(_ override: LocalTransferRecord) throws {
+        try update(id: override.id) { record in
+            record.state = .interrupted
+            record.summary = override.summary
+            record.results = override.results
+            record.endedAt = override.endedAt
+            record.expectedExclusionQueueQualification = nil
+            record.pendingWithdrawalPaths = override.pendingWithdrawalPaths
+            record.withdrawalReason = override.withdrawalReason
+        }
+        removeSettlementMarker(id: override.id)
     }
 
     public func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
@@ -1170,6 +1215,12 @@ public final class TransferJournal: Sendable {
         projectCardSnapshot: Data? = nil,
         pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil
     ) throws {
+        // A rename can succeed even when its directory flush fails. Keep a
+        // durable guard until the terminal write is confirmed, so restart
+        // cannot mistake that ambiguous completed record for settled safety.
+        let marker = fileURL.deletingLastPathComponent()
+            .appendingPathComponent(".\(fileURL.lastPathComponent).settling-\(id.uuidString)")
+        try DurableJSONFile.write(Data(id.uuidString.utf8), to: marker, what: "the settlement marker", folder: "the history folder")
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.results = results
@@ -1237,6 +1288,7 @@ public final class TransferJournal: Sendable {
                 record.expectedExclusionQueueQualification = nil
             }
         }
+        removeSettlementMarker(id: id)
     }
 
     /// Recheck durable selected-file scope without opening old source media.
@@ -1418,6 +1470,7 @@ public final class TransferJournal: Sendable {
             record.quickOnlyUnverified = false
             record.expectedExclusionQueueQualification = nil
         }
+        removeSettlementMarker(id: id)
     }
 
     public func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
@@ -1432,6 +1485,7 @@ public final class TransferJournal: Sendable {
             if let results { record.results = results }
             record.endedAt = Date()
         }
+        removeSettlementMarker(id: id)
     }
 
     public func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
@@ -1445,6 +1499,12 @@ public final class TransferJournal: Sendable {
             if let results { record.results = results }
             record.endedAt = Date()
         }
+        removeSettlementMarker(id: id)
+    }
+
+    private func removeSettlementMarker(id: UUID) {
+        let marker = fileURL.deletingLastPathComponent().appendingPathComponent(".\(fileURL.lastPathComponent).settling-\(id.uuidString)")
+        try? FileManager.default.removeItem(at: marker)
     }
 
     private static func setPendingWithdrawal(_ record: inout LocalTransferRecord, reason: String?, paths: [String]?) {
@@ -1481,7 +1541,7 @@ public final class TransferJournal: Sendable {
             guard !state.loadFailed else { throw LocalTransferJournalError.unreadableJournal(state.persistenceError ?? "Unknown error") }
             let updated = try change(state.records)
             do {
-                try Self.persist(updated, to: fileURL)
+                try Self.persist(updated, to: fileURL, afterRename: afterJournalRename)
                 state.records = updated
                 state.persistenceError = nil
             } catch let failure as FlushAfterPublishFailure {
@@ -1498,11 +1558,12 @@ public final class TransferJournal: Sendable {
         }
     }
 
-    private static func persist(_ updated: [LocalTransferRecord], to fileURL: URL) throws {
+    private static func persist(_ updated: [LocalTransferRecord], to fileURL: URL,
+                                afterRename: (@Sendable () throws -> Void)? = nil) throws {
         try FileManager.default.createDirectory(at: fileURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         try DurableJSONFile.write(try encoder.encode(updated), to: fileURL,
-                                  what: "the journal", folder: "the history folder")
+                                  what: "the journal", folder: "the history folder", afterRename: afterRename)
     }
 }

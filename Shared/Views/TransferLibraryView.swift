@@ -213,7 +213,7 @@ struct TransferLibraryView: View {
         return DisclosureGroup(isExpanded: expandedBinding(record.id)) {
             if expandedIDs.contains(record.id) {
                 detailsView(record, actions: actions)
-                    .onAppear { journal.retryPendingReportWithdrawals(id: record.id) }
+                    .onAppear { journal.retryPendingReportWithdrawalsFromView(id: record.id) }
             }
         } label: {
             TransferRecordRow(record: record, history: journal.records, clipMatchLine: clipLine) {
@@ -229,7 +229,7 @@ struct TransferLibraryView: View {
                 .accessibilityLabel("More actions for \(record.title)")
             }
         }
-        .onAppear { journal.retryPendingReportWithdrawals(id: record.id) }
+        .onAppear { journal.retryPendingReportWithdrawalsFromView(id: record.id) }
         .contextMenu { menuItems(record, actions: actions) }
         #if os(iOS)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -251,7 +251,7 @@ struct TransferLibraryView: View {
             get: { expandedIDs.contains(id) },
             set: { isExpanded in
                 if isExpanded {
-                    journal.retryPendingReportWithdrawals(id: id)
+                    journal.retryPendingReportWithdrawalsFromView(id: id)
                     expandedIDs.insert(id)
                 } else { expandedIDs.remove(id) }
             }

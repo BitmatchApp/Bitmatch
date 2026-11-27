@@ -31,6 +31,7 @@ final class LocalTransferJournal: ObservableObject {
     private let beforeRecordPlan: ((UUID) throws -> Void)?
     private let beforeFinish: ((UUID) throws -> Void)?
     private let beforeInterrupt: ((UUID) throws -> Void)?
+    private let beforeWithdrawalRetry: ((UUID) -> Void)?
     /// Cache only derived finish fields, with a stable newest-first admission
     /// window. Older rows bypass it instead of evicting every other row on a
     /// large queue's next render.
@@ -43,6 +44,7 @@ final class LocalTransferJournal: ObservableObject {
     private var isRefreshingRecords = false
     private var withdrawalRetriesInFlight: Set<UUID> = []
     private var withdrawalRetriesRequested: Set<UUID> = []
+    private var withdrawalViewLastAttempt: [UUID: Date] = [:]
     private var mountObserver: AnyCancellable?
     private var foregroundObserver: AnyCancellable?
     /// Counts expensive derivations, so performance tests need no timing limit.
@@ -55,7 +57,8 @@ final class LocalTransferJournal: ObservableObject {
         beforeCancel: ((UUID) throws -> Void)? = nil,
         beforeRecordPlan: ((UUID) throws -> Void)? = nil,
         beforeFinish: ((UUID) throws -> Void)? = nil,
-        beforeInterrupt: ((UUID) throws -> Void)? = nil
+        beforeInterrupt: ((UUID) throws -> Void)? = nil,
+        beforeWithdrawalRetry: ((UUID) -> Void)? = nil
     ) {
         let selectedURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
@@ -67,6 +70,7 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeRecordPlan = beforeRecordPlan
         self.beforeFinish = beforeFinish
         self.beforeInterrupt = beforeInterrupt
+        self.beforeWithdrawalRetry = beforeWithdrawalRetry
         store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false)
         refresh()
         retryAllPendingReportWithdrawals()
@@ -104,7 +108,15 @@ final class LocalTransferJournal: ObservableObject {
         try FileManager.default.removeItem(at: queueSessionFileURL)
     }
 
-    private func refresh() {
+    private func refresh(persistOverrides: Bool = true) {
+        if persistOverrides && store.persistenceError == nil {
+            for (id, record) in interruptedOverrides {
+                do {
+                    try store.persistInterruptedOverride(record)
+                    interruptedOverrides.removeValue(forKey: id)
+                } catch { break }
+            }
+        }
         // All record mutation goes through this owner, including failed calls.
         // Invalidate without comparing/hashing potentially huge result arrays.
         completedQueueRows.removeAll(keepingCapacity: true)
@@ -462,7 +474,11 @@ final class LocalTransferJournal: ObservableObject {
         try store.recordPendingReportPaths(id: id, paths: paths, publicationID: publicationID)
     }
 
-    func historyAppeared() { retryAllPendingReportWithdrawals() }
+    func historyAppeared() {
+        for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
+            retryPendingReportWithdrawalsFromView(id: record.id)
+        }
+    }
 
     func applicationWillEnterForeground() { retryAllPendingReportWithdrawals() }
 
@@ -479,12 +495,36 @@ final class LocalTransferJournal: ObservableObject {
             return
         }
         let store = self.store
+        let override = interruptedOverrides[id]
+        let previousError = persistenceError
+        beforeWithdrawalRetry?(id)
         Task { [weak self] in
-            do { try await store.retryPendingReportWithdrawalsAsync(id: id) }
-            catch { /* The store publishes its persistence error on refresh. */ }
+            var changed = false
+            var recoveredOverride: LocalTransferRecord?
+            if let override {
+                let recovered = await TransferJournal.recoverPendingWithdrawals(override)
+                recoveredOverride = recovered
+                changed = override.pendingWithdrawalPaths != recovered.pendingWithdrawalPaths
+                    || override.withdrawalReason != recovered.withdrawalReason || override.summary != recovered.summary
+            } else {
+                do { changed = try await store.retryPendingReportWithdrawalsAsync(id: id) }
+                catch { /* Publish a changed persistence error below. */ }
+            }
             guard let self else { return }
+            if let override, let recoveredOverride,
+               self.interruptedOverrides[id]?.pendingWithdrawalPaths == override.pendingWithdrawalPaths {
+                self.interruptedOverrides[id] = recoveredOverride
+                do {
+                    try store.persistInterruptedOverride(recoveredOverride)
+                    self.interruptedOverrides.removeValue(forKey: id)
+                } catch { /* Retain the recovered override for the next successful write. */ }
+            }
             self.withdrawalRetriesInFlight.remove(id)
-            self.refresh()
+            if changed {
+                self.refresh()
+            } else if previousError != store.persistenceError {
+                self.persistenceError = store.persistenceError
+            }
             if self.withdrawalRetriesRequested.remove(id) != nil,
                self.records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) {
                 self.retryPendingReportWithdrawals(id: id)
@@ -492,15 +532,28 @@ final class LocalTransferJournal: ObservableObject {
         }
     }
 
-    func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow]) {
+    func retryPendingReportWithdrawalsFromView(id: UUID, now: Date = Date()) {
+        guard records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
+        if let last = withdrawalViewLastAttempt[id], now.timeIntervalSince(last) < 30 { return }
+        withdrawalViewLastAttempt[id] = now
+        guard !withdrawalRetriesInFlight.contains(id) else { return }
+        retryPendingReportWithdrawals(id: id)
+    }
+
+    func withdrawalRetryIsInFlight(id: UUID) -> Bool { withdrawalRetriesInFlight.contains(id) }
+
+    func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow],
+                                   pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) {
         guard var record = records.first(where: { $0.id == id }) else { return }
         record.state = .interrupted
         record.summary = summary
         record.results = results
         record.endedAt = Date()
         record.expectedExclusionQueueQualification = nil
+        record.pendingWithdrawalPaths = pendingWithdrawalPaths
+        record.withdrawalReason = pendingWithdrawalReason
         interruptedOverrides[id] = record
-        refresh()
+        refresh(persistOverrides: false)
     }
 
     /// Exit settlement must check the stored record, not a presentation override.

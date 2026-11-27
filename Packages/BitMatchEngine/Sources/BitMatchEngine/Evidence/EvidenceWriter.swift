@@ -446,13 +446,25 @@ public enum EvidenceWriter: Sendable {
         }
         let checksumExtension = "\(checksumAlgorithm?.rawValue.lowercased() ?? "").txt"
         let base = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
+        let existingNames = try FileManager.default.contentsOfDirectory(atPath: saveDirectory.path)
+        func withdrawnNameExists(_ filename: String) -> Bool {
+            existingNames.contains { name in
+                guard name.hasPrefix(".unsettled-") else { return false }
+                let remainder = String(name.dropFirst(".unsettled-".count))
+                if remainder == filename { return true } // Names written by older versions.
+                guard let range = remainder.range(of: "-" + filename, options: .backwards) else { return false }
+                let tail = remainder[range.upperBound...]
+                return tail.isEmpty || (tail.first == "-" && !tail.dropFirst().isEmpty && tail.dropFirst().allSatisfy(\.isNumber))
+            }
+        }
         var suffix = 1
         var stem: URL
         while true {
             stem = saveDirectory.appendingPathComponent(base + (suffix == 1 ? "" : "-\(suffix)"))
             let extensions = ["pdf", "csv", "json", checksumExtension]
             if extensions.allSatisfy({ ext in
-                replacement(ext) != nil || !FileManager.default.fileExists(atPath: stem.appendingPathExtension(ext).path)
+                replacement(ext) != nil || (!FileManager.default.fileExists(atPath: stem.appendingPathExtension(ext).path)
+                    && !withdrawnNameExists(stem.appendingPathExtension(ext).lastPathComponent))
             }) { break }
             suffix += 1
         }

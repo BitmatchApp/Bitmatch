@@ -18,7 +18,8 @@ enum DurableJSONFile {
     /// Each caller must be the only writer of its file.
     /// `what` and `folder` name the file and its folder in error messages.
     static func write(_ data: Data, to fileURL: URL,
-                      what: String = "this file", folder: String = "its folder") throws {
+                      what: String = "this file", folder: String = "its folder",
+                      afterRename: (@Sendable () throws -> Void)? = nil) throws {
         let directory = fileURL.deletingLastPathComponent()
 
         // A crash between create and rename leaves a temporary file behind;
@@ -63,6 +64,8 @@ enum DurableJSONFile {
             _ = temporary.withUnsafeFileSystemRepresentation { unlink($0!) }
             throw posixError("Could not replace \(what)", code: renameFailure)
         }
+        do { try afterRename?() }
+        catch { throw FlushAfterPublishFailure(underlying: error as NSError) }
         // The rename is durable only once the folder is. The new file is
         // already in place, so a failure here is reported as one: the caller
         // records that the file was not safely saved rather than assuming it.

@@ -3,6 +3,38 @@ import Testing
 @testable import BitMatchEngine
 
 struct EvidenceWriterCommitOrderTests {
+    @Test func withdrawnExportsReserveNamesAndRepeatedWithdrawalAvoidsCollisions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("withdrawn-exports-\(UUID())")
+        let source = root.appendingPathComponent("card")
+        let backup = root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let finished = Date()
+        var priorFiles: [URL] = []
+        for iteration in 0..<2 {
+            let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup],
+                pdfData: Data("PDF".utf8), results: [], finished: finished, checksumAlgorithm: .sha256,
+                jobID: id, started: finished, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+            if iteration == 1 { #expect(Set(files).isDisjoint(with: Set(priorFiles))) }
+            try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+            // A pre-existing hidden name for this record must not block withdrawal.
+            let collision = files[0].deletingLastPathComponent().appendingPathComponent(".unsettled-\(id.uuidString)-\(files[0].lastPathComponent)")
+            try Data("previous".utf8).write(to: collision)
+            try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable")
+            try journal.retryPendingReportWithdrawals(id: id)
+            #expect(journal.records.first { $0.id == id }?.pendingWithdrawalPaths == nil)
+            #expect(files.allSatisfy { !FileManager.default.fileExists(atPath: $0.path) })
+            #expect(try Data(contentsOf: collision) == Data("previous".utf8))
+            priorFiles = files
+        }
+    }
     private enum DeliberateFailure: Error { case encode }
 
     private struct FailingProject: Codable, Sendable {
