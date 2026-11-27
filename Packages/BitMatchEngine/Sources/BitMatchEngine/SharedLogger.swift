@@ -56,6 +56,9 @@ extension SharedLogger {
         case compareStarted, comparePhase, compareProgress, compareFinished
         case appleDoubleExcluded
         case finderMetadataSkipped
+        /// A `.DS_Store` at Start that could not be classified; copied as
+        /// ordinary data. Code: the POSIX error, or -1 for a file that changed.
+        case finderMetadataUnclassified
         case destinationIdentityRejected
         case sourceStabilityRejected
     }

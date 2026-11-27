@@ -40,6 +40,10 @@ import Testing
             ("offsets", FinderMetadataFixtures.bud1(size: 6148, offset: 0x800, repeatedOffset: 0x900)),
             ("beyond", FinderMetadataFixtures.bud1(size: 6148, offset: 0x1000, rootSize: 0x1000)),
             ("zero", FinderMetadataFixtures.bud1(size: 6148, rootSize: 0)),
+            // A consistent header whose root block lacks the DSDB entry.
+            ("no-dsdb", FinderMetadataFixtures.bud1(size: 6148, rootMarker: false)),
+            // The smallest header-only file: offsets fit, root block is zeros.
+            ("header-only", FinderMetadataFixtures.bud1(size: 36, offset: 16, rootSize: 16)),
             ("oversize", FinderMetadataFixtures.bud1(size: Int(FinderMetadataSelection.maximumSize) + 1))
         ]
         for (name, data) in cases {
@@ -93,12 +97,55 @@ import Testing
         let path = file.path
         let entry = try #require(try CardSource.enumerateRegularFiles(base: root).first)
         let calls = Mutex(0)
-        #expect(throws: FileOperationError.self) {
+        #expect(throws: FinderMetadataSelection.MetadataChanged.self) {
             try FinderMetadataSelection.skipped(in: [entry], checkCancellation: {
                 // Call 1 is the filter's own check; call 2 is the first read,
                 // after the parser has taken its opening fstat.
                 if calls.withLock({ $0 += 1; return $0 }) == 2 { truncate(path, 5000) }
             })
+        }
+    }
+
+    /// Start's tolerant form: an entry that cannot be classified (gone,
+    /// resized or unreadable since the scan) is ordinary data, reported to
+    /// the caller, and the others still classify.
+    @Test func anEntryThatCannotBeClassifiedIsOrdinaryAndReported() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer {
+            chmod(root.appendingPathComponent("unreadable/.DS_Store").path, 0o644)
+            try? FileManager.default.removeItem(at: root)
+        }
+        for name in ["gone", "resized", "unreadable", "good"] {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try FinderMetadataFixtures.bud1(size: 6148).write(to: folder.appendingPathComponent(".DS_Store"))
+        }
+        let entries = try CardSource.enumerateRegularFiles(base: root)
+        try FileManager.default.removeItem(at: root.appendingPathComponent("gone/.DS_Store"))
+        try FinderMetadataFixtures.bud1(size: 8192).write(to: root.appendingPathComponent("resized/.DS_Store"))
+        #expect(chmod(root.appendingPathComponent("unreadable/.DS_Store").path, 0) == 0)
+
+        let reported = Mutex<[String]>([])
+        let skipped = try FinderMetadataSelection.skipped(in: entries, onUnclassified: { entry, _ in
+            reported.withLock { $0.append(entry.relativePath) }
+        })
+        #expect(skipped.map(\.relativePath) == ["good/.DS_Store"])
+        #expect(reported.withLock { $0.sorted() } == ["gone/.DS_Store", "resized/.DS_Store", "unreadable/.DS_Store"])
+        // Without the handler the first failure still throws.
+        #expect(throws: (any Error).self) { try FinderMetadataSelection.skipped(in: entries) }
+    }
+
+    /// Cancellation is never swallowed by the tolerant form.
+    @Test func cancellationStillThrowsFromTheTolerantForm() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: root.appendingPathComponent(".DS_Store"))
+        let entries = try CardSource.enumerateRegularFiles(base: root)
+        let calls = Mutex(0)
+        #expect(throws: CancellationError.self) {
+            try FinderMetadataSelection.skipped(in: entries, checkCancellation: {
+                if calls.withLock({ $0 += 1; return $0 }) >= 2 { throw CancellationError() }
+            }, onUnclassified: { _, _ in })
         }
     }
 }

@@ -47,6 +47,16 @@ struct RemoteBackupCoordinatorTests {
         #expect(unrecorded.store.storedManifests.isEmpty)
     }
 
+    /// Finder wrote the skipped `.DS_Store` after the card was analysed, so
+    /// the card's file count never included it; only counted skips are
+    /// subtracted, and the safe card still uploads.
+    @Test func aSkipFinderWroteAfterTheAnalysisDoesNotBlockTheUpload() throws {
+        let fixture = try CoordinatorFixture(skippedFinderViewFile: true, skipCountedAtAnalysis: false)
+        #expect(fixture.card.fileCount == 1)
+        let items = try fixture.coordinator.queueRemoteBackup(for: fixture.card.id, in: fixture.job.id, results: fixture.rows)
+        #expect(items.count == 1)
+    }
+
     @Test func queueBookmarkIsCreatedFromVerifiedDestinationPackageNeverSourceCard() throws {
         let fixture = try CoordinatorFixture()
 
@@ -229,7 +239,8 @@ private final class CoordinatorFixture {
         fileSize: RemoteBackupCoordinator.FileSize? = nil,
         sha256: RemoteBackupCoordinator.SHA256? = nil,
         skippedFinderViewFile: Bool = false,
-        cardRecordsTheSkip: Bool = true
+        cardRecordsTheSkip: Bool = true,
+        skipCountedAtAnalysis: Bool = true
     ) throws {
         let sourceCard = URL(fileURLWithPath: "/Volumes/CARD")
         let destinationPackage = URL(fileURLWithPath: "/Volumes/Archive/Job/Card-001")
@@ -250,12 +261,15 @@ private final class CoordinatorFixture {
             localState: localState,
             startedAt: Date(timeIntervalSince1970: 1),
             locallySafeAt: localState == .locallySafe ? Date(timeIntervalSince1970: 2) : nil,
-            fileCount: fileCount + (skippedFinderViewFile ? 1 : 0),
+            fileCount: fileCount + (skippedFinderViewFile && skipCountedAtAnalysis ? 1 : 0),
             totalBytes: 3,
             verifiedDestinationCount: localState == .locallySafe ? 1 : 0
         )
         let skippedPath = sourceCard.appendingPathComponent("DCIM/.DS_Store").path
-        if skippedFinderViewFile, cardRecordsTheSkip { card.skippedFinderMetadataPaths = [skippedPath] }
+        if skippedFinderViewFile, cardRecordsTheSkip {
+            card.skippedFinderMetadataPaths = [skippedPath]
+            card.countedSkippedFinderMetadataCount = skipCountedAtAnalysis ? 1 : 0
+        }
         self.card = card
         let profile = RemoteDestinationProfile(
             id: UUID(), name: "Archive", host: "archive.example.test", port: 22, username: "mike",

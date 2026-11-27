@@ -4,13 +4,23 @@ import Foundation
 enum FinderMetadataFixtures {
     /// A buddy-allocator header: 00 00 00 01, "Bud1", offset, root size, offset
     /// again, 16 zero bytes, zero-padded to `size` bytes. The defaults describe a
-    /// consistent header (offset 0x800, size 0x800).
-    static func bud1(size: Int, offset: UInt32 = 0x800, repeatedOffset: UInt32? = nil, rootSize: UInt32 = 0x800) -> Data {
+    /// consistent header (offset 0x800, size 0x800). With `rootMarker`, the root
+    /// block the header points to (at 4 + offset) holds the one `DSDB`
+    /// directory entry every Finder file carries, when it fits in `size`.
+    static func bud1(size: Int, offset: UInt32 = 0x800, repeatedOffset: UInt32? = nil, rootSize: UInt32 = 0x800,
+                     rootMarker: Bool = true) -> Data {
         var bytes: [UInt8] = [0, 0, 0, 1] + Array("Bud1".utf8)
         func put(_ value: UInt32) { for shift in [24, 16, 8, 0] { bytes.append(UInt8(truncatingIfNeeded: value >> UInt32(shift))) } }
         put(offset); put(rootSize); put(repeatedOffset ?? offset)
         bytes += [UInt8](repeating: 0, count: 16)
         if bytes.count < size { bytes += [UInt8](repeating: 0, count: size - bytes.count) }
+        // Root block: block count, an unknown word, one block address, then
+        // the directory: one entry, name length 4, "DSDB", its block number.
+        let root = Int(offset) + 4
+        let entry: [UInt8] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x10, 0x0B, 0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 1]
+        if rootMarker, root >= 36, root + entry.count <= min(bytes.count, root + Int(rootSize)) {
+            bytes.replaceSubrange(root..<root + entry.count, with: entry)
+        }
         return Data(bytes.prefix(max(size, 0)))
     }
 

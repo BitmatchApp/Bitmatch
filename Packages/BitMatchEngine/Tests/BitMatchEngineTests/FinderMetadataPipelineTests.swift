@@ -343,6 +343,61 @@ import Testing
         #expect(try !TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never), "a link is never followed")
     }
 
+    /// A `.DS_Store` that cannot be classified at Start (here unreadable) is
+    /// copied as ordinary data: the run goes on, that file is one failed row
+    /// per backup, and the other clips verify.
+    @Test func anUnclassifiableFinderFileAtStartIsOrdinaryDataNotAnAbort() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer {
+                chmod(tree.dsStore.path, 0o644)
+                try? FileManager.default.removeItem(at: tree.root)
+            }
+            #expect(chmod(tree.dsStore.path, 0) == 0)
+            let operation = try await run(tree)
+            #expect(operation.results.allSatisfy { !$0.skippedFinderMetadata })
+            #expect(operation.skippedFinderMetadataPaths == [])
+            let rows = operation.results.filter(isDSStore)
+            #expect(rows.count == 2, "one row per backup")
+            #expect(rows.allSatisfy { !$0.success })
+            let clips = operation.results.filter { !isDSStore($0) }
+            #expect(clips.count == 4)
+            #expect(clips.allSatisfy { $0.success && $0.verificationResult?.isValid == true },
+                    "\(clips.map { $0.error?.localizedDescription ?? "ok" })")
+        }
+    }
+
+    /// The final gate's recheck reads once more when the file changed under
+    /// it (Finder rewriting it as another Finder file), and a read error is
+    /// passed up so the run says the card could not be read.
+    @Test func theGateRecheckRereadsOnceAndPassesReadErrorsUp() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(".DS_Store")
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: url)
+        let entry = FileEntry(url: url, relativePath: ".DS_Store", size: 6148)
+        let path = url.path
+        let calls = Mutex(0)
+        // Call 2 is the first read, after the opening fstat: Finder rewrites it.
+        let rewriteOnce: @Sendable () throws -> Void = {
+            if calls.withLock({ $0 += 1; return $0 }) == 2 {
+                try? FinderMetadataFixtures.bud1(size: 8192).write(to: URL(fileURLWithPath: path))
+            }
+        }
+        #expect(try TransferPipeline.isStillFinderViewFile(entry, checkCancellation: rewriteOnce))
+
+        // The opening check passes; the read inside the classifier fails.
+        let eio: @Sendable () throws -> Void = {
+            if calls.withLock({ $0 += 1; return $0 }) > 101 {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
+            }
+        }
+        calls.withLock { $0 = 100 }
+        var thrown: NSError?
+        do { _ = try TransferPipeline.isStillFinderViewFile(entry, checkCancellation: eio) } catch { thrown = error as NSError }
+        #expect(thrown?.domain == NSPOSIXErrorDomain && thrown?.code == Int(EIO), "\(String(describing: thrown))")
+    }
+
     @Test func withTheSettingOffANewFinderFileStillFailsTheGate() async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()

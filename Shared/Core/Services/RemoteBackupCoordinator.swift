@@ -308,8 +308,12 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
         // locally safe (proven for that run) may be set aside; any other
         // skipped row is an unverified file.
         let provenSkipped = Set(card.skippedFinderMetadataPaths ?? [])
+        // Only the skips the setup analysis counted are in `fileCount`; one
+        // Finder wrote after the analysis never was. Older cards counted all.
+        let countedSkips = card.countedSkippedFinderMetadataCount ?? provenSkipped.count
         guard Set(results.filter(\.isSkippedFinderMetadata).map(\.path)) == provenSkipped,
-              card.fileCount > provenSkipped.count else {
+              (0...provenSkipped.count).contains(countedSkips),
+              card.fileCount > countedSkips else {
             throw RemoteBackupError.localArtifactNotVerified
         }
         let results = results.filter { !$0.isSkippedFinderMetadata }
@@ -340,8 +344,9 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
               grouped.values.reduce(0, { $0 + $1.count }) == verifiedRows.count else {
             throw RemoteBackupError.localArtifactNotVerified
         }
-        // The card's file count includes its skipped Finder view files.
-        let expectedCount = card.fileCount - provenSkipped.count
+        // The card's file count includes the skipped Finder view files the
+        // analysis counted.
+        let expectedCount = card.fileCount - countedSkips
         let artifacts = try grouped.map { rootPath, pairs -> VerifiedArtifact in
             let entries = pairs.map(\.1).sorted { $0.relativePath.description < $1.relativePath.description }
             guard entries.count == expectedCount,

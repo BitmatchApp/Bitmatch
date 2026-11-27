@@ -170,6 +170,11 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
     /// with `.locallySafe`. They are on the card (`fileCount`) but on no
     /// backup, so they are never part of the card's artifacts. Nil when none.
     var skippedFinderMetadataPaths: [String]? = nil
+    /// Of `skippedFinderMetadataPaths`, how many the setup analysis counted
+    /// in `fileCount`. A `.DS_Store` Finder wrote after the analysis is
+    /// skipped but was never counted. Set with the paths; nil when none were
+    /// skipped and for cards saved before this field (all counted).
+    var countedSkippedFinderMetadataCount: Int? = nil
 
     init(
         id: UUID,
@@ -200,7 +205,7 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, provenance, sourceDisplayName, renderedRelativePath, localState
         case startedAt, locallySafeAt, fileCount, totalBytes, verifiedDestinationCount, remoteBackupSummaries
-        case skippedFinderMetadataPaths
+        case skippedFinderMetadataPaths, countedSkippedFinderMetadataCount
     }
 
     init(from decoder: Decoder) throws {
@@ -217,6 +222,7 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
         verifiedDestinationCount = try values.decodeIfPresent(Int.self, forKey: .verifiedDestinationCount) ?? 0
         remoteBackupSummaries = try values.decodeIfPresent([UUID: RemoteBackupCardSummary].self, forKey: .remoteBackupSummaries) ?? [:]
         skippedFinderMetadataPaths = try values.decodeIfPresent([String].self, forKey: .skippedFinderMetadataPaths)
+        countedSkippedFinderMetadataCount = try values.decodeIfPresent(Int.self, forKey: .countedSkippedFinderMetadataCount)
     }
 }
 
@@ -508,6 +514,8 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
             card.provenance.confirmedFingerprint = try confirmedFingerprint(evidence.canonicalRows)
             card.verifiedDestinationCount = evidence.destinationCount
             card.skippedFinderMetadataPaths = skipped.isEmpty ? nil : skipped.sorted()
+            card.countedSkippedFinderMetadataCount = skipped.isEmpty ? nil
+                : skipped.intersection(context.analysis.sourcePaths).count
             return FinalizedCard(
                 card: card,
                 verifiedDestinationCount: evidence.destinationCount
@@ -565,6 +573,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         card.provenance.confirmedFingerprint = nil
         card.verifiedDestinationCount = 0
         card.skippedFinderMetadataPaths = nil
+        card.countedSkippedFinderMetadataCount = nil
         return FinalizedCard(card: card, verifiedDestinationCount: 0)
     }
 

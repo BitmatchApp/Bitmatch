@@ -46,7 +46,8 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
     /// Per lane: each backup drive verifies in its own lane with this many
     /// workers while verifying during the copy, so backups on different drives
     /// read back side by side and a spinning drive still reads its own files
-    /// in order.
+    /// in order. Across lanes at most `maximumWorkers` are in flight (at
+    /// least one per lane).
     public let verifyWorkers: Int
     /// How many lanes the run verified in: the drives its backups spanned
     /// while verifying during the copy, otherwise one. Records written before
@@ -92,7 +93,11 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
         let spinning = media.contains(.rotational)
         let copy = settings.copyWorkers.map(clamp) ?? (spinning ? 1 : min(4, max(1, cores / 2)))
         let lanes = max(1, verifyLanes ?? (media.count - 1))
-        let verify = clamp(settings.verifyWorkers ?? (spinning ? 1 : max(1, max(2, cores / 2) / lanes)))
+        // An explicit choice applies per lane, but the run never verifies more
+        // than `maximumWorkers` files at once across its lanes (at least one
+        // per lane).
+        let verify = min(clamp(settings.verifyWorkers ?? (spinning ? 1 : max(1, max(2, cores / 2) / lanes))),
+                         max(1, maximumWorkers / lanes))
         let limited = spinning && (settings.copyWorkers == nil || settings.verifyWorkers == nil)
         return TransferConcurrencyPlan(copyWorkers: copy, verifyWorkers: verify, verifyLanes: lanes, limitedForRotationalMedia: limited)
     }

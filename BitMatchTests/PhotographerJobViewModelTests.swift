@@ -244,6 +244,31 @@ struct PhotographerJobViewModelTests {
         #expect(viewModel.activeCard?.localState == (proven ? .locallySafe : .issues))
         #expect((viewModel.activeCard?.verifiedDestinationCount ?? 0) == (proven ? 2 : 0))
         #expect(viewModel.activeCard?.skippedFinderMetadataPaths == (proven ? ["/card/.DS_Store"] : nil))
+        #expect(viewModel.activeCard?.countedSkippedFinderMetadataCount == (proven ? 1 : nil))
+    }
+
+    /// Finder wrote the `.DS_Store` after the card was analysed: it was never
+    /// in the card's file count, so the card records that no skip was counted.
+    @Test func aSkipFinderWroteAfterTheAnalysisIsNotCounted() throws {
+        let store = InMemoryPhotographerJobStore()
+        let viewModel = preparedViewModel(store: store, sourcePaths: ["/card/A.ARW"])
+        viewModel.beginIngest(destinationCount: 2)
+        let skipped = ["Primary", "Secondary"].map { destination in
+            ResultRow(path: "/card/.DS_Store", status: ResultOutcome.skippedFinderMetadata.statusText,
+                      size: 6, checksum: nil, destination: destination,
+                      destinationPath: "/\(destination.lowercased())/\(renderedPackage)/.DS_Store")
+        }
+        let jobID = try #require(viewModel.activeJob?.id)
+        let cardID = try #require(viewModel.activeCardDraft?.id)
+        let analysis = try #require(viewModel.preliminaryAnalysis)
+        try viewModel.completeIngest(
+            jobID: jobID, cardID: cardID, analysis: analysis,
+            results: verifiedRows(destinationNames: ["Primary", "Secondary"]) + skipped,
+            provenSkippedSourcePaths: ["/card/.DS_Store"]
+        )
+        #expect(viewModel.activeCard?.localState == .locallySafe)
+        #expect(viewModel.activeCard?.skippedFinderMetadataPaths == ["/card/.DS_Store"])
+        #expect(viewModel.activeCard?.countedSkippedFinderMetadataCount == 0)
     }
 
     @Test func handoffFailurePreservesPersistedLocalVerificationEvidence() throws {

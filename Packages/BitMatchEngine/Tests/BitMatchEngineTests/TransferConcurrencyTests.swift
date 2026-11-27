@@ -45,6 +45,22 @@ struct TransferConcurrencyPlanTests {
         #expect(decoded?.verifyLanes == 1, "a 0.2.14 record reads as one lane, which is what it ran")
     }
 
+    /// An explicit choice is per lane, but the run never has more than
+    /// `maximumWorkers` verifies in flight across its lanes.
+    @Test func anExplicitVerifyChoiceIsCappedAcrossLanes() {
+        let ssd: [StorageMediumKind] = [.solidState, .solidState, .solidState, .solidState]
+        let three = TransferConcurrencyPlan.resolve(
+            settings: TransferConcurrencySettings(verifyWorkers: 16), media: ssd, processorCount: 12, verifyLanes: 3)
+        #expect(three.verifyWorkers == 5)
+        #expect(three.verifyWorkers * three.verifyLanes <= TransferConcurrencyPlan.maximumWorkers)
+        let one = TransferConcurrencyPlan.resolve(
+            settings: TransferConcurrencySettings(verifyWorkers: 16), media: ssd, processorCount: 12, verifyLanes: 1)
+        #expect(one.verifyWorkers == 16, "one lane keeps the whole choice")
+        let small = TransferConcurrencyPlan.resolve(
+            settings: TransferConcurrencySettings(verifyWorkers: 2), media: ssd, processorCount: 12, verifyLanes: 3)
+        #expect(small.verifyWorkers == 2, "a choice under the cap is unchanged")
+    }
+
     @Test func automaticOnSmallMachinesNeverDropsBelowOneCopyAndTwoVerify() {
         for cores in [0, 1, 2, 3] {
             let plan = TransferConcurrencyPlan.resolve(settings: .automatic, media: [.solidState], processorCount: cores)
@@ -272,8 +288,11 @@ struct TransferConcurrencyPipelineTests {
     /// card, lanes per backup drive would make it seek between files, so the
     /// run uses one lane however many drives there are. Standard reads only
     /// the backups and keeps a lane per drive.
-    @Test(arguments: [(VerificationMode.thorough, 1), (.standard, 2)])
-    func aSpinningCardCollapsesLanesOnlyWhenTheCardIsReread(mode: VerificationMode, lanes: Int) async throws {
+    /// A card whose medium the system does not report could be spinning, so
+    /// it is treated the same way.
+    @Test(arguments: [(StorageMediumKind.rotational, VerificationMode.thorough, 1), (.rotational, .standard, 2),
+                      (.unknown, .paranoid, 1), (.unknown, .standard, 2), (.solidState, .thorough, 2)])
+    func aSpinningCardCollapsesLanesOnlyWhenTheCardIsReread(medium: StorageMediumKind, mode: VerificationMode, lanes: Int) async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()
             let second = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch_conc_dst2_\(UUID().uuidString)")
@@ -283,7 +302,7 @@ struct TransferConcurrencyPipelineTests {
                 try? FileManager.default.removeItem(at: tree.destination)
                 try? FileManager.default.removeItem(at: second)
             }
-            let detector = FixedMediumDetector(kind: .rotational, driveByPath: [
+            let detector = FixedMediumDetector(kind: medium, driveByPath: [
                 tree.destination.path: "drive-one", second.path: "drive-two",
             ])
             #expect(Set(TransferPipeline.verifyLaneKeys(for: [tree.destination, second], detector: detector)).count == 2)

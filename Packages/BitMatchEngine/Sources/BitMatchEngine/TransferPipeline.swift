@@ -203,22 +203,49 @@ extension TransferPipeline {
     /// The final gate's check of a `.DS_Store` on the card: one skipped at
     /// Start that is still there, or one that appeared during the run.
     /// Vanishing between the scan and this open is not a change; anything
-    /// that cannot be proven a Finder view file again is. Only cancellation
-    /// throws.
+    /// that cannot be proven a Finder view file again is. A file that changed
+    /// while being read (Finder saving it) is read once more before it is
+    /// called changed. Cancellation and a read error (EIO) throw, so the run
+    /// says the card could not be read rather than that it changed.
     static func isStillFinderViewFile(_ entry: FileEntry, checkCancellation: @Sendable () throws -> Void) throws -> Bool {
+        do {
+            return try classifyOnce(entry, checkCancellation: checkCancellation)
+        } catch is FinderMetadataSelection.MetadataChanged {
+            do {
+                return try classifyOnce(entry, checkCancellation: checkCancellation)
+            } catch is FinderMetadataSelection.MetadataChanged {
+                return false
+            }
+        }
+    }
+
+    /// One open-and-classify pass. Throws cancellation, EIO and
+    /// `MetadataChanged`; every other failure answers false.
+    private static func classifyOnce(_ entry: FileEntry, checkCancellation: @Sendable () throws -> Void) throws -> Bool {
         try checkCancellation()
         let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-        guard fd >= 0 else { return errno == ENOENT }
+        guard fd >= 0 else {
+            let code = errno
+            if code == EIO { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
+            return code == ENOENT
+        }
         defer { close(fd) }
         // The size is the open file's own, not the scan's: Finder may have
         // rewritten the file since. The classifier's before/after check
         // still catches a change during the read.
         var status = stat()
-        guard fstat(fd, &status) == 0 else { return false }
+        guard fstat(fd, &status) == 0 else {
+            if errno == EIO { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
+            return false
+        }
         do {
             return try FinderMetadataSelection.isFinderViewFile(fd: fd, size: Int64(status.st_size), checkCancellation: checkCancellation)
         } catch is CancellationError {
             throw CancellationError()
+        } catch let changed as FinderMetadataSelection.MetadataChanged {
+            throw changed
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EIO) {
+            throw error
         } catch {
             return false
         }
@@ -763,12 +790,22 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Reading each header can block on a stalled card, so it runs on the
         // transfer executor under its own security scope, as the final
         // check's recheck does.
+        // A `.DS_Store` that cannot be classified (gone, resized or
+        // unreadable since the scan) is not proven, so it is ordinary data:
+        // it is copied like any file and fails, if it must, as its own row.
+        // Nothing aborts the run.
         let skipped: [FileEntry]
         if operation.settings.skipFinderViewFiles {
+            let run = TransferDiagnostics.runID ?? operation.id
             skipped = try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
                 let scoped = fileSystem.startAccessing(url: sourceURL)
                 defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
-                return try FinderMetadataSelection.skipped(in: completeSourceManifest, checkCancellation: check)
+                return try FinderMetadataSelection.skipped(in: completeSourceManifest, checkCancellation: check,
+                                                           onUnclassified: { _, error in
+                    let nsError = error as NSError
+                    SharedLogger.transferEvent(.finderMetadataUnclassified, run: run,
+                                               code: nsError.domain == NSPOSIXErrorDomain ? nsError.code : -1)
+                })
             }
         } else {
             skipped = []
@@ -868,7 +905,8 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             guard shouldPipelineVerify else { return (media, operation.destinationURLs.map { _ in "none" }) }
             // Thorough and Paranoid reread the card for every backup, so lanes
             // on a spinning card would seek between files there: one lane then.
-            if operation.verificationMode.rereadsSource, media.first == .rotational {
+            // A card whose medium the system does not report may be spinning.
+            if operation.verificationMode.rereadsSource, media.first == .rotational || media.first == .unknown {
                 return (media, operation.destinationURLs.map { _ in "source" })
             }
             return (media, Self.verifyLaneKeys(for: operation.destinationURLs, detector: storageMediumDetector))
