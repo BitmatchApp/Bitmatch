@@ -28,7 +28,7 @@ final class HistoryMemoryAppProbeTests: XCTestCase {
         let before = try XCTUnwrap(journal.records.first { $0.id == id })
         let verdict = TransferLibraryPresentation.safetyState(for: before, in: [before])
         for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
-        try journal.markReportsHandled(id: id)
+        try await journal.markReportsHandled(id: id)
         let after = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertNil(after.pendingWithdrawalPaths)
         XCTAssertTrue(after.summary.contains("reports marked handled by the user on"))

@@ -545,7 +545,29 @@ public enum EvidenceWriter: Sendable {
             }
             guard failure == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure)) }
         }
+        func reportFact(_ file: URL, publicURL: URL) throws -> ReportFileFact {
+            var info = stat()
+            guard lstat(file.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+                throw FileOperationError.unsafeOperation("Report could not be identified at \(file.path)")
+            }
+            let handle = try FileHandle(forReadingFrom: file)
+            defer { try? handle.close() }
+            var hash = SHA256()
+            while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
+            return ReportFileFact(path: publicURL.path, size: UInt64(info.st_size), modificationDate: nil,
+                                  sha256: hash.finalize().map { String(format: "%02x", $0) }.joined())
+        }
+        func renameWithoutReplacement(_ from: URL, _ to: URL) throws {
+            let failure = from.withUnsafeFileSystemRepresentation { source in
+                to.withUnsafeFileSystemRepresentation { destination in
+                    renameatx_np(AT_FDCWD, source!, AT_FDCWD, destination!, UInt32(RENAME_EXCL)) == 0 ? 0 : errno
+                }
+            }
+            guard failure == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure)) }
+        }
         var published: [URL] = []
+        var intendedFacts: [String: ReportFileFact] = [:]
+        var previousFacts: [String: ReportFileFact] = [:]
         do {
             // Build the complete report in a hidden directory on the report volume.
             try exportEnhancedCSV(results: results,
@@ -621,28 +643,17 @@ public enum EvidenceWriter: Sendable {
             }
             // Hash the bytes we produced, before any public path can be replaced.
             // The caller runs report export on its detached worker.
-            if let recordIntendedFacts {
-                let facts = try finalURLs.map { url in
-                    let stagedURL = staged(url)
-                    let attrs = try FileManager.default.attributesOfItem(atPath: stagedURL.path)
-                    guard attrs[.type] as? FileAttributeType == .typeRegular,
-                          let size = (attrs[.size] as? NSNumber)?.uint64Value else {
-                        throw FileOperationError.unsafeOperation("Staged report could not be identified at \(stagedURL.path)")
-                    }
-                    beforeStagedReportRead?(stagedURL)
-                    let handle = try FileHandle(forReadingFrom: stagedURL)
-                    defer { try? handle.close() }
-                    var hash = SHA256()
-                    while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
-                    let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
-                    return ReportFileFact(path: url.path, size: size, modificationDate: nil, sha256: digest)
-                }
-                try recordIntendedFacts(facts)
+            let facts = try finalURLs.map { url in
+                beforeStagedReportRead?(staged(url))
+                return try reportFact(staged(url), publicURL: url)
             }
+            intendedFacts = Dictionary(uniqueKeysWithValues: facts.map { ($0.path, $0) })
+            try recordIntendedFacts?(facts)
             for url in finalURLs where replacing?.contains(url) == true {
                 try validatePublication?()
                 try validateReplacement?(url)
                 try FileManager.default.copyItem(at: url, to: backup(url))
+                previousFacts[url.path] = try reportFact(backup(url), publicURL: url)
             }
             for url in finalURLs {
                 try Task.checkCancellation()
@@ -672,18 +683,49 @@ public enum EvidenceWriter: Sendable {
         } catch {
             let originalError = error
             var cleanupErrors: [String] = []
+            var pendingPaths: [String] = []
+            func changed(_ url: URL) {
+                cleanupErrors.append("a file at \(url.path) changed during publication and was left in place")
+                pendingPaths.append(url.path)
+            }
             for url in published.reversed() {
                 do {
                     try validatePublication?()
+                    guard let expected = intendedFacts[url.path]?.sha256,
+                          (try? reportFact(url, publicURL: url).sha256) == expected else {
+                        changed(url)
+                        continue
+                    }
                     // Withdraw the new verdict before attempting restoration.
-                    // If restoration fails, a newly safe PDF must not remain.
                     try FileManager.default.removeItem(at: url)
                     if replacing?.contains(url) == true {
                         try beforeRestore?(url)
-                        try renameReplacing(backup(url), url)
+                        // Restore only the backup whose bytes were recorded before publication.
+                        guard let previous = previousFacts[url.path]?.sha256,
+                              (try? reportFact(backup(url), publicURL: url).sha256) == previous else {
+                            throw FileOperationError.unsafeOperation("The saved report at \(backup(url).path) changed during publication")
+                        }
+                        // Never overwrite a file that arrived after withdrawal.
+                        do {
+                            try renameWithoutReplacement(backup(url), url)
+                        } catch {
+                            if let current = try? reportFact(url, publicURL: url).sha256,
+                               current == previousFacts[url.path]?.sha256 {
+                                continue
+                            }
+                            var occupant = stat()
+                            if lstat(url.path, &occupant) == 0 {
+                                changed(url)
+                                continue
+                            }
+                            throw error
+                        }
                     }
                 }
-                catch { cleanupErrors.append("\(url.path): \(error.localizedDescription)") }
+                catch {
+                    cleanupErrors.append("\(url.path): \(error.localizedDescription)")
+                    pendingPaths.append(url.path)
+                }
             }
             if cleanupErrors.isEmpty && FileManager.default.fileExists(atPath: stagingDirectory.path) {
                 do {
@@ -699,7 +741,7 @@ public enum EvidenceWriter: Sendable {
                 let retained = recordIntendedPaths != nil ? [stagingDirectory.path] :
                     ((try? FileManager.default.contentsOfDirectory(at: stagingDirectory, includingPropertiesForKeys: nil).map(\.path))
                     ?? [pdfURL, csvURL, jsonURL, checksumURL].flatMap { [staged($0).path, backup($0).path] })
-                throw ReportExportError.unsettledReports("\(originalError.localizedDescription); \(cleanupErrors.joined(separator: "; "))", retained)
+                throw ReportExportError.unsettledReports("\(originalError.localizedDescription); \(cleanupErrors.joined(separator: "; "))", Array(Set(retained + pendingPaths)).sorted())
             }
             throw originalError
         }

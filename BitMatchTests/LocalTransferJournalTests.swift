@@ -24,7 +24,104 @@ struct LocalTransferJournalTests {
         #expect(!mainThread.withLock { $0 })
     }
 
-    @Test func reportHandlingIsBlockedDuringWithdrawalRetry() throws {
+    // Plant: trust the cached eligibility in markReportsHandled instead of checking disk.
+    @Test func markHandledRechecksDiskAndRetriesWhenProofAppears() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let json = f.destination.appendingPathComponent("Reports/report.json")
+        let id = try seedPendingWithoutVolumeIdentity(f, path: json.path)
+        let retries = Mutex(0)
+        let journal = LocalTransferJournal(fileURL: f.journal, beforeWithdrawalRetry: { _ in retries.withLock { $0 += 1 } })
+        for _ in 0..<100 where journal.withdrawalRetryIsInFlight(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        retries.withLock { $0 = 0 }
+        for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(journal.canMarkReportsHandled(id: id))
+        try FileManager.default.createDirectory(at: json.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString, "source": ["path": f.source.path]]).write(to: json)
+        do {
+            try await journal.markReportsHandled(id: id)
+            Issue.record("The action must refuse when ownership proof appears")
+        } catch {
+            #expect(error.localizedDescription.contains("withdrawn automatically"))
+        }
+        #expect(retries.withLock { $0 } == 1)
+        #expect(journal.records.first(where: { $0.id == id })?.summary.contains("marked handled") == false)
+    }
+
+    @Test func retryTriggerAndUnchangedOutcomeInvalidateEligibility() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let path = f.destination.appendingPathComponent("Reports/report.json").path
+        let id = try seedPendingWithoutVolumeIdentity(f, path: path)
+        let checks = Mutex(0)
+        let journal = LocalTransferJournal(fileURL: f.journal, beforeReportHandlingCheck: { checks.withLock { $0 += 1 } })
+        for _ in 0..<100 where journal.withdrawalRetryIsInFlight(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(journal.canMarkReportsHandled(id: id))
+        let previousChecks = checks.withLock { $0 }
+        journal.applicationWillEnterForeground()
+        #expect(!journal.canMarkReportsHandled(id: id))
+        for _ in 0..<100 where journal.withdrawalRetryIsInFlight(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(journal.canMarkReportsHandled(id: id))
+        #expect(checks.withLock { $0 } > previousChecks)
+    }
+
+    // Plant: remove the generation comparison after the off-main check.
+    @Test func markHandledRefusesWhenRecordChangesDuringCheck() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let path = f.destination.appendingPathComponent("Reports/report.json").path
+        let id = try seedPendingWithoutVolumeIdentity(f, path: path)
+        let gate = Mutex((armed: false, entered: false, release: false))
+        let journal = LocalTransferJournal(fileURL: f.journal, beforeReportHandlingCheck: {
+            let wait = gate.withLock { state in
+                if state.armed { state.entered = true; return true }
+                return false
+            }
+            if wait {
+                while !gate.withLock({ $0.release }) { Thread.sleep(forTimeInterval: 0.001) }
+            }
+        })
+        defer { gate.withLock { $0.release = true } }
+        for _ in 0..<100 where journal.withdrawalRetryIsInFlight(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(journal.canMarkReportsHandled(id: id))
+        gate.withLock { $0.armed = true }
+        let action = Task { try await journal.markReportsHandled(id: id) }
+        for _ in 0..<100 where !gate.withLock({ $0.entered }) { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(gate.withLock { $0.entered })
+        journal.retainInterruptedOverride(id: id, summary: "Changed record", results: [],
+                                          pendingWithdrawalReason: "Still pending", pendingWithdrawalPaths: [path])
+        gate.withLock { $0.release = true }
+        do {
+            try await action.value
+            Issue.record("A changed record must not be acknowledged")
+        } catch {
+            #expect(error.localizedDescription.contains("withdrawn automatically"))
+        }
+        #expect(journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == [path])
+    }
+
+    private func seedPendingWithoutVolumeIdentity(_ f: (root: URL, source: URL, destination: URL, journal: URL), path: String) throws -> UUID {
+        let id: UUID
+        do {
+            let store = TransferJournal(fileURL: f.journal, recoverReportsOnInit: false)
+            id = try store.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+                                   cameraSettings: .init(), reportSettings: .init())
+            try store.markRunning(id: id)
+            try store.recordPendingReportPaths(id: id, paths: [path])
+            try store.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable", pendingWithdrawalPaths: [path])
+        }
+        var records = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: f.journal)) as? [[String: Any]])
+        var destinations = try #require(records[0]["destinations"] as? [[String: Any]])
+        destinations[0].removeValue(forKey: "volumeID")
+        records[0]["destinations"] = destinations
+        try JSONSerialization.data(withJSONObject: records).write(to: f.journal)
+        return id
+    }
+
+    @Test func reportHandlingIsBlockedDuringWithdrawalRetry() async throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }
         let journal = LocalTransferJournal(fileURL: f.journal)
@@ -35,7 +132,7 @@ struct LocalTransferJournalTests {
         #expect(!journal.withdrawalRetryIsInFlight(id: id))
         journal.retryPendingReportWithdrawals(id: id)
         #expect(journal.withdrawalRetryIsInFlight(id: id))
-        #expect(throws: LocalTransferJournalError.self) { try journal.markReportsHandled(id: id) }
+        await #expect(throws: LocalTransferJournal.ReportHandlingError.self) { try await journal.markReportsHandled(id: id) }
         #expect(journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == [report])
     }
 

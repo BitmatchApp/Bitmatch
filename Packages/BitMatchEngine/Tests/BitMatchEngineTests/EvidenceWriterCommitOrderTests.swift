@@ -702,6 +702,58 @@ struct EvidenceWriterCommitOrderTests {
         #expect(scan.reports.count == 2)
     }
 
+    // Plant: remove the digest guard or restore with a replacing rename.
+    @Test(arguments: [false, true])
+    func rollbackLeavesForeignPublishedOrRestorationOccupant(restoration: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-foreign-rollback-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Card")
+        let destination = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [destination], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let original = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [destination],
+            pdfData: Data("old".utf8), results: [], finished: date, checksumAlgorithm: nil,
+            jobID: id, started: date, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(),
+            generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        try journal.recordPendingReportPaths(id: id, paths: original.map(\.path), publicationID: id)
+        try recordFixtureFacts(journal, id: id, files: original)
+        let pdf = try #require(original.first { $0.pathExtension == "pdf" })
+        let foreign = Data("foreign replacement".utf8)
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [destination],
+                pdfData: Data("new".utf8), results: [], finished: date, checksumAlgorithm: nil,
+                jobID: id, started: date, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, replacing: original,
+                recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0, publicationID: id) },
+                recordIntendedFacts: { try journal.recordIntendedReportFacts(id: id, facts: $0, publicationID: id) },
+                beforePublish: { url in
+                    if url.pathExtension == "json" {
+                        if !restoration { try foreign.write(to: pdf, options: .atomic) }
+                        throw DeliberateFailure.encode
+                    }
+                }, beforeRestore: { url in
+                    if restoration && url == pdf { try foreign.write(to: pdf, options: .atomic) }
+                })
+            Issue.record("Publication should fail")
+        } catch let error as ReportExportError {
+            #expect(error.pendingWithdrawalPaths.contains(pdf.path))
+            #expect(error.localizedDescription.contains("changed during publication and was left in place"))
+            try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: error.localizedDescription,
+                                  pendingWithdrawalPaths: error.pendingWithdrawalPaths)
+            #expect(journal.records.first?.pendingWithdrawalPaths?.contains(pdf.path) == true)
+        }
+        #expect(try Data(contentsOf: pdf) == foreign)
+    }
+
     @Test func failedReplacementRestoresAlreadyReplacedFiles() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-replace-rollback-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

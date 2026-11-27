@@ -29,9 +29,13 @@ final class LocalTransferJournal: ObservableObject {
         let staging: String?
         let destinations: [String]
         let publicationID: UUID?
+        let revision: UInt64?
+        let retryGeneration: UInt64
     }
     @Published private var reportHandlingEligibility: [UUID: Bool] = [:]
     private var reportHandlingKeys: [UUID: ReportHandlingKey] = [:]
+    private var reportHandlingRetryGeneration: [UUID: UInt64] = [:]
+    private var recordsGeneration: UInt64 = 0
     private var reportHandlingTokens: [UUID: UUID] = [:]
     func canMarkReportsHandled(id: UUID) -> Bool { reportHandlingEligibility[id] == true }
 
@@ -45,7 +49,8 @@ final class LocalTransferJournal: ObservableObject {
             let key = ReportHandlingKey(pending: record.pendingWithdrawalPaths ?? [], reports: record.pendingReportPaths ?? [],
                 staging: record.reportStagingPath,
                 destinations: (record.runDestinationURLs ?? record.destinations.map(\.url)).map(\.path) + record.destinations.map { $0.volumeID ?? "" },
-                publicationID: record.reportPublicationID)
+                publicationID: record.reportPublicationID, revision: record.revision,
+                retryGeneration: reportHandlingRetryGeneration[record.id, default: 0])
             guard reportHandlingKeys[record.id] != key else { continue }
             reportHandlingKeys[record.id] = key
             reportHandlingEligibility.removeValue(forKey: record.id)
@@ -185,6 +190,7 @@ final class LocalTransferJournal: ObservableObject {
                 }
             }
         }
+        recordsGeneration &+= 1
         // All record mutation goes through this owner, including failed calls.
         // Invalidate without comparing/hashing potentially huge result arrays.
         completedQueueRows.removeAll(keepingCapacity: true)
@@ -559,21 +565,59 @@ final class LocalTransferJournal: ObservableObject {
         }
     }
 
-    func markReportsHandled(id: UUID) throws {
-        guard !withdrawalRetriesInFlight.contains(id), let record = records.first(where: { $0.id == id }),
-              canMarkReportsHandled(id: record.id) else { throw LocalTransferJournalError.invalidState }
-        defer { refresh() }
-        if let override = interruptedOverrides[id] {
-            let handled = TransferJournal.markingReportsHandled(override)
-            guard try store.persistInterruptedOverride(handled, expectedRevision: overrideRevisions[id] ?? override.revision ?? 0) else {
-                throw LocalTransferJournalError.invalidState
-            }
-            interruptedOverrides.removeValue(forKey: id)
-            overrideRevisions.removeValue(forKey: id)
-            persistencePending.remove(id)
-        } else {
-            try store.markReportsHandled(id: id)
+    enum ReportHandlingError: LocalizedError {
+        case retrying
+        var errorDescription: String? { "Reports are being withdrawn automatically. Please wait for the retry to finish." }
+    }
+
+    func markReportsHandled(id: UUID) async throws {
+        guard let record = records.first(where: { $0.id == id }) else { throw LocalTransferJournalError.invalidState }
+        if withdrawalRetriesInFlight.contains(id) {
+            retryPendingReportWithdrawals(id: id)
+            throw ReportHandlingError.retrying
         }
+        let generation = recordsGeneration
+        let retryGeneration = reportHandlingRetryGeneration[id, default: 0]
+        let beforeCheck = beforeReportHandlingCheck
+        let allowed = await Task.detached(priority: .utility) {
+            beforeCheck?()
+            return TransferJournal.canMarkReportsHandled(record)
+        }.value
+        guard allowed, generation == recordsGeneration,
+              retryGeneration == reportHandlingRetryGeneration[id, default: 0],
+              !withdrawalRetriesInFlight.contains(id),
+              (store.records.first(where: { $0.id == id })?.revision ?? 0) == (record.revision ?? 0) else {
+            retryPendingReportWithdrawals(id: id)
+            throw ReportHandlingError.retrying
+        }
+        do {
+            if let override = interruptedOverrides[id] {
+                let handled = TransferJournal.markingReportsHandled(override)
+                guard try store.persistInterruptedOverride(handled, expectedRevision: overrideRevisions[id] ?? override.revision ?? 0) else {
+                    throw LocalTransferJournalError.invalidState
+                }
+                interruptedOverrides.removeValue(forKey: id)
+                overrideRevisions.removeValue(forKey: id)
+                persistencePending.remove(id)
+            } else {
+                try store.markReportsHandled(id: id, expectedRevision: record.revision ?? 0)
+            }
+        } catch LocalTransferJournalError.invalidState {
+            refresh()
+            retryPendingReportWithdrawals(id: id)
+            throw ReportHandlingError.retrying
+        } catch {
+            refresh()
+            throw error
+        }
+        refresh()
+    }
+
+    private func invalidateReportHandling(id: UUID) {
+        reportHandlingRetryGeneration[id, default: 0] &+= 1
+        reportHandlingKeys.removeValue(forKey: id)
+        reportHandlingTokens.removeValue(forKey: id)
+        reportHandlingEligibility.removeValue(forKey: id)
     }
 
     func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
@@ -599,6 +643,7 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     func retryPendingReportWithdrawals(id: UUID) {
+        invalidateReportHandling(id: id)
         guard records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
         guard withdrawalRetriesInFlight.insert(id).inserted else {
             withdrawalRetriesRequested.insert(id)
@@ -641,9 +686,7 @@ final class LocalTransferJournal: ObservableObject {
                 }
             }
             self.withdrawalRetriesInFlight.remove(id)
-            self.reportHandlingKeys.removeValue(forKey: id)
-            self.reportHandlingTokens.removeValue(forKey: id)
-            self.reportHandlingEligibility.removeValue(forKey: id)
+            self.invalidateReportHandling(id: id)
             if changed {
                 self.refresh()
             } else {
@@ -658,8 +701,9 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     func retryPendingReportWithdrawalsFromView(id: UUID, now: Date = Date()) {
+        invalidateReportHandling(id: id)
         guard records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
-        if let last = withdrawalViewLastAttempt[id], now.timeIntervalSince(last) < 30 { return }
+        if let last = withdrawalViewLastAttempt[id], now.timeIntervalSince(last) < 30 { updateReportHandlingEligibility(records); return }
         withdrawalViewLastAttempt[id] = now
         guard !withdrawalRetriesInFlight.contains(id) else { return }
         retryPendingReportWithdrawals(id: id)
@@ -684,6 +728,7 @@ final class LocalTransferJournal: ObservableObject {
         record.withdrawalReason = pendingWithdrawalReason
         if overrideRevisions[id] == nil { overrideRevisions[id] = store.records.first(where: { $0.id == id })?.revision ?? 0 }
         interruptedOverrides[id] = record
+        invalidateReportHandling(id: id)
         persistencePending.insert(id)
         refresh(persistOverrides: false)
     }

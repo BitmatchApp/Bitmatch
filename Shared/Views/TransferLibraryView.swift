@@ -92,9 +92,11 @@ struct TransferLibraryView: View {
                 set: { if !$0 { reportsToMarkHandled = nil } }
             ), presenting: reportsToMarkHandled) { record in
                 Button("Mark reports as handled", role: .destructive) {
-                    do { try journal.markReportsHandled(id: record.id) }
-                    catch { errorMessage = error.localizedDescription }
                     reportsToMarkHandled = nil
+                    Task {
+                        do { try await journal.markReportsHandled(id: record.id) }
+                        catch { errorMessage = error.localizedDescription }
+                    }
                 }
                 Button("Cancel", role: .cancel) { reportsToMarkHandled = nil }
             } message: { record in

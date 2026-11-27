@@ -599,8 +599,13 @@ public final class TransferJournal: Sendable {
         return updated
     }
 
-    public func markReportsHandled(id: UUID, date: Date = Date()) throws {
-        try update(id: id) { $0 = Self.markingReportsHandled($0, date: date) }
+    public func markReportsHandled(id: UUID, date: Date = Date(), expectedRevision: UInt64? = nil) throws {
+        try update(id: id) { record in
+            if let expectedRevision, (record.revision ?? 0) != expectedRevision {
+                throw LocalTransferJournalError.invalidState
+            }
+            record = Self.markingReportsHandled(record, date: date)
+        }
     }
 
     /// Manual acknowledgement is a last resort, when neither volume identity
