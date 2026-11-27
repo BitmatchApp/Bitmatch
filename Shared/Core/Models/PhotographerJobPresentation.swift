@@ -242,8 +242,9 @@ struct PhotographerCardRowPresentation: Identifiable, Equatable, Sendable {
             fileCountTitle: formattedFileCount(card.fileCount),
             byteCountTitle: ByteCountPresentation.fileSize(card.totalBytes),
             renderedPath: card.renderedRelativePath,
-            statusTitle: statusTitle(for: card.localState),
-            status: .make(localState: card.localState),
+            statusTitle: card.localState == .locallySafe && card.historySettled == false ? "Unconfirmed" : statusTitle(for: card.localState),
+            status: card.localState == .locallySafe && card.historySettled == false
+                ? .init(tone: .neutral, symbol: "questionmark.circle") : .make(localState: card.localState),
             verifiedDestinationCount: verifiedDestinationCount,
             verifiedCopyTitle: copyTitle,
             remoteBackupPresentations: card.remoteBackupSummaries.mapValues(RemoteBackupStatusPresentation.make)

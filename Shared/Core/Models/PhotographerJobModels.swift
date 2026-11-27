@@ -175,6 +175,8 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
     /// skipped but was never counted. Set with the paths; nil when none were
     /// skipped and for cards saved before this field (all counted).
     var countedSkippedFinderMetadataCount: Int? = nil
+    /// Nil denotes cards saved before History settlement tracking was added.
+    var historySettled: Bool? = nil
 
     init(
         id: UUID,
@@ -205,7 +207,7 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, provenance, sourceDisplayName, renderedRelativePath, localState
         case startedAt, locallySafeAt, fileCount, totalBytes, verifiedDestinationCount, remoteBackupSummaries
-        case skippedFinderMetadataPaths, countedSkippedFinderMetadataCount
+        case skippedFinderMetadataPaths, countedSkippedFinderMetadataCount, historySettled
     }
 
     init(from decoder: Decoder) throws {
@@ -223,6 +225,7 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
         remoteBackupSummaries = try values.decodeIfPresent([UUID: RemoteBackupCardSummary].self, forKey: .remoteBackupSummaries) ?? [:]
         skippedFinderMetadataPaths = try values.decodeIfPresent([String].self, forKey: .skippedFinderMetadataPaths)
         countedSkippedFinderMetadataCount = try values.decodeIfPresent(Int.self, forKey: .countedSkippedFinderMetadataCount)
+        historySettled = try values.decodeIfPresent(Bool.self, forKey: .historySettled)
     }
 }
 
@@ -399,6 +402,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
 
     var isLocallySafe: Bool {
         card.localState == .locallySafe
+            && card.historySettled != false
             && locallySafeAt != nil
             && card.locallySafeAt != nil
             && !(card.provenance.confirmedFingerprint ?? "").isEmpty
@@ -452,7 +456,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
     private static func fullyBackedUpAt(for card: CardIngest, requiredLocalCopyCount: Int) -> Date? {
         // Remote evidence survives a stale/failed local attempt for audit, but
         // cannot promote that attempt to a whole-card backed-up claim.
-        guard card.localState == .locallySafe, card.locallySafeAt != nil,
+        guard card.localState == .locallySafe, card.historySettled != false, card.locallySafeAt != nil,
               nonblank(card.provenance.confirmedFingerprint) != nil,
               requiredLocalCopyCount > 0,
               card.verifiedDestinationCount >= requiredLocalCopyCount else { return nil }
@@ -540,7 +544,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         let (copiedRows, skipped) = withoutSkippedRows(results, skippedPaths)
         let evidence = finalEvidence(context: context, card: card, results: copiedRows,
                                      excludingSourcePaths: skipped)
-        guard card.localState == .locallySafe,
+        guard card.localState == .locallySafe, card.historySettled != false,
               card.locallySafeAt != nil,
               let fingerprint = nonblank(card.provenance.confirmedFingerprint),
               let evidence,

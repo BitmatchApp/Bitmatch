@@ -919,6 +919,66 @@ struct PhotographerJobViewModelTests {
         #expect(store.storedJobs.first?.cardIngests.first == result)
     }
 
+    @Test func unconfirmedSafeCardWaitsForReadableHistoryAndThenSettles() throws {
+        let store = InMemoryPhotographerJobStore()
+        let original = preparedViewModel(store: store)
+        _ = original.beginIngest(destinationCount: 2)
+        try original.completeIngest(results: verifiedRows(destinationNames: ["Primary", "Secondary"]))
+        var job = try #require(original.activeJob)
+        job.cardIngests[0].historySettled = false
+        try store.save(job)
+        let card = job.cardIngests[0]
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("unconfirmed-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = LocalTransferJournal(fileURL: root.appendingPathComponent("journal.json"))
+        try journal.enqueue(sourceURL: root, destinationURLs: [root, root], verificationMode: .standard,
+                            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+                            projectID: job.id, projectCardID: card.id)
+        var record = try #require(journal.records.first)
+        record.state = .completed
+        record.endedAt = now
+        record.results = verifiedRows(destinationNames: ["Primary", "Secondary"])
+        record.independentDestinationCount = 2
+        record.runDestinationURLs = [URL(fileURLWithPath: "/primary"), URL(fileURLWithPath: "/secondary")]
+        record.plannedFileCounts = [1, 1]
+        let unreadableURL = root.appendingPathComponent("unreadable.json")
+        try Data("not JSON".utf8).write(to: unreadableURL)
+        let unreadable = LocalTransferJournal(fileURL: unreadableURL)
+        #expect(!unreadable.historyAvailable)
+        let restored = makeViewModel(store: store)
+        restored.recoverIncompleteTransfers(unreadable.records, historyAvailable: unreadable.historyAvailable)
+        let unconfirmed = try #require(restored.activeJob?.cardIngests.first)
+        let row = PhotographerCardRowPresentation.make(card: unconfirmed, verifiedDestinationCount: 2)
+        #expect(row.statusTitle == "Unconfirmed")
+        #expect(row.status.tone == .neutral)
+        restored.recoverIncompleteTransfers([record], historyAvailable: true)
+        let confirmed = try #require(restored.activeJob?.cardIngests.first)
+        #expect(confirmed.historySettled == true)
+        #expect(PhotographerCardRowPresentation.make(card: confirmed, verifiedDestinationCount: 2).statusTitle == "Locally Safe")
+        #expect(store.storedJobs.first?.cardIngests.first?.historySettled == true)
+    }
+
+    @Test func missingHistoryDowngradesUnconfirmedCardButOldCardStillDecodes() throws {
+        let store = InMemoryPhotographerJobStore()
+        let original = preparedViewModel(store: store)
+        _ = original.beginIngest(destinationCount: 2)
+        try original.completeIngest(results: verifiedRows(destinationNames: ["Primary", "Secondary"]))
+        var job = try #require(original.activeJob)
+        var card = try #require(job.cardIngests.first)
+        var legacy = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(card)) as? [String: Any])
+        legacy.removeValue(forKey: "historySettled")
+        let oldCard = try JSONDecoder().decode(CardIngest.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(oldCard.historySettled == nil)
+        #expect(PhotographerCardRowPresentation.make(card: oldCard, verifiedDestinationCount: 2).statusTitle == "Locally Safe")
+        card.historySettled = false
+        job.cardIngests[0] = card
+        try store.save(job)
+        let restored = makeViewModel(store: store)
+        restored.recoverIncompleteTransfers([], historyAvailable: true)
+        #expect(restored.activeJob?.cardIngests.first?.localState == .issues)
+    }
+
     @Test func recoveryCommitsCompletedHistoryForAnUnsettledCard() throws {
         let store = InMemoryPhotographerJobStore()
         let original = preparedViewModel(store: store)

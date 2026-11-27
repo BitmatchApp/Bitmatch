@@ -24,6 +24,7 @@ final class LocalTransferJournal: ObservableObject {
     @Published private(set) var records: [LocalTransferRecord] = []
     @Published private(set) var persistenceError: String?
     private let store: TransferJournal
+    var historyAvailable: Bool { store.historyAvailable }
     let fileURL: URL
     let queueSessionFileURL: URL
     private let beforeMarkRunning: ((UUID) throws -> Void)?
@@ -42,6 +43,7 @@ final class LocalTransferJournal: ObservableObject {
     /// earlier attempt (pruned, retried) must rebuild the row.
     private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
     private var interruptedOverrides: [UUID: LocalTransferRecord] = [:]
+    private var pendingCancellationOverrides: Set<UUID> = []
     private var persistencePending: Set<UUID> = []
     private var isRefreshingRecords = false
     private var withdrawalRetriesInFlight: Set<UUID> = []
@@ -120,6 +122,7 @@ final class LocalTransferJournal: ObservableObject {
                 do {
                     try store.persistInterruptedOverride(record)
                     interruptedOverrides.removeValue(forKey: id)
+                    pendingCancellationOverrides.remove(id)
                     persistencePending.remove(id)
                 } catch { break }
             }
@@ -130,7 +133,13 @@ final class LocalTransferJournal: ObservableObject {
         completedQueueRowLineage.removeAll(keepingCapacity: true)
         isRefreshingRecords = true
         defer { isRefreshingRecords = false }
-        records = store.records.map { interruptedOverrides[$0.id] ?? $0 }
+        records = store.records.map { stored in
+            guard var override = interruptedOverrides[stored.id] else { return stored }
+            if pendingCancellationOverrides.contains(stored.id), (override.pendingWithdrawalPaths ?? []).isEmpty {
+                override.state = stored.state
+            }
+            return override
+        }
         persistenceError = store.persistenceError
     }
 
@@ -525,6 +534,7 @@ final class LocalTransferJournal: ObservableObject {
                         try store.applyWithdrawalRecovery(id: id, snapshot: snapshot, recovered: recovered)
                     }
                     self.interruptedOverrides.removeValue(forKey: id)
+                    self.pendingCancellationOverrides.remove(id)
                     self.persistencePending.remove(id)
                 } catch {
                     if merged.state == .interrupted {
@@ -557,7 +567,8 @@ final class LocalTransferJournal: ObservableObject {
     func withdrawalRetryIsInFlight(id: UUID) -> Bool { withdrawalRetriesInFlight.contains(id) }
 
     func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow],
-                                   pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) {
+                                   pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil,
+                                   pendingCancellation: Bool = false) {
         guard var record = records.first(where: { $0.id == id }) else { return }
         record.state = .interrupted
         record.summary = summary
@@ -567,7 +578,8 @@ final class LocalTransferJournal: ObservableObject {
         record.pendingWithdrawalPaths = pendingWithdrawalPaths
         record.withdrawalReason = pendingWithdrawalReason
         interruptedOverrides[id] = record
-        persistencePending.insert(id)
+        if pendingCancellation { pendingCancellationOverrides.insert(id) }
+        if !pendingCancellation || !(pendingWithdrawalPaths ?? []).isEmpty { persistencePending.insert(id) }
         refresh(persistOverrides: false)
     }
 

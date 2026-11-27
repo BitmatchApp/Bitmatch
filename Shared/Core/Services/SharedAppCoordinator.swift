@@ -1074,7 +1074,7 @@ class SharedAppCoordinator: ObservableObject {
         } else {
             verificationMode = .standard
         }
-        self.photographerJobViewModel.recoverIncompleteTransfers(selectedJournal.records)
+        self.photographerJobViewModel.recoverIncompleteTransfers(selectedJournal.records, historyAvailable: selectedJournal.historyAvailable)
         setupBindings()
         self.transferJournal.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
@@ -2809,6 +2809,14 @@ class SharedAppCoordinator: ObservableObject {
         var publicationFailure: String?
         var pendingWithdrawalReason: String?
         var withdrawalPaths: [String]?
+        var reportMatchedByPath = false
+        func notePathMatchedReport() {
+            guard let record = transferJournal.storedRecord(id: recordID) else { return }
+            reportMatchedByPath = (record.relativeReportPaths ?? []).contains { mapping in
+                record.destinations.indices.contains(mapping.destinationIndex)
+                    && record.destinations[mapping.destinationIndex].volumeID == nil
+            }
+        }
         func withdrawPublishedReports() -> String {
             let paths = copyVerifyExecutor.pendingPublishedReportPaths
             guard let record = transferJournal.storedRecord(id: recordID) else {
@@ -2831,7 +2839,15 @@ class SharedAppCoordinator: ObservableObject {
             }
             var notes: [String] = []
             if !withdrawn.isEmpty { notes.append("Published reports were withdrawn: " + withdrawn.joined(separator: ", ") + ".") }
-            if !absent.isEmpty { notes.append("Reports found absent on the verified backup: " + absent.joined(separator: ", ") + ".") }
+            if !absent.isEmpty { notes.append("Reports found absent at the recorded destination: " + absent.joined(separator: ", ") + ".") }
+            let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
+            if (withdrawn + absent).contains(where: { path in
+                roots.indices.contains { index in
+                    index < record.destinations.count && record.destinations[index].volumeID == nil
+                        && PathContainment.isStrictlyWithin(URL(fileURLWithPath: path).resolvingSymlinksInPath().path,
+                                                            root: roots[index].resolvingSymlinksInPath().path)
+                }
+            }) { notes.append("Destination identity unavailable; matched by path.") }
             if !pending.isEmpty { notes.append("Report withdrawal remains pending: " + pending.joined(separator: ", ") + ".") }
             return notes.isEmpty ? "No published reports to withdraw." : notes.joined(separator: " ")
         }
@@ -2840,7 +2856,9 @@ class SharedAppCoordinator: ObservableObject {
             let belongsToQueueSession = runBelongsToQueueSession
             if startCancellationRequested {
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer cancelled", record: transferJournal.storedRecord(id: recordID))
-                try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: runResults.rows)
+                notePathMatchedReport()
+                let summary = "Cancelled by user (\(cancellationOrigin.rawValue))." + (reportMatchedByPath ? " Destination identity unavailable; matched by path." : "")
+                try transferJournal.cancel(id: recordID, summary: summary, results: runResults.rows)
                 SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else if case .completed(let info) = operationState {
@@ -2851,6 +2869,7 @@ class SharedAppCoordinator: ObservableObject {
                     if !reportPaths.isEmpty { try transferJournal.recordPendingReportPaths(id: recordID, paths: reportPaths, publicationID: recordID) }
                     try beforeFinalReportSettlement?()
                     try await copyVerifyExecutor.settleReportAfterHistory(failure: nil, record: transferJournal.storedRecord(id: recordID))
+                    notePathMatchedReport()
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
@@ -2860,6 +2879,7 @@ class SharedAppCoordinator: ObservableObject {
                     do {
                         try beforeRecoveryReportSettlement?()
                         try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer report export failed: \(exportError.localizedDescription)", record: transferJournal.storedRecord(id: recordID))
+                        notePathMatchedReport()
                     } catch {
                         let deletion = withdrawPublishedReports()
                         recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
@@ -2883,6 +2903,7 @@ class SharedAppCoordinator: ObservableObject {
                         do {
                             try beforeRecoveryReportSettlement?()
                             try await copyVerifyExecutor.settleReportAfterHistory(failure: "Project card could not be saved: \(cardError.localizedDescription)", record: transferJournal.storedRecord(id: recordID))
+                            notePathMatchedReport()
                         } catch {
                             let deletion = withdrawPublishedReports()
                             recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
@@ -2900,7 +2921,7 @@ class SharedAppCoordinator: ObservableObject {
                 try transferJournal.finish(
                     id: recordID,
                     results: runResults.rows,
-                    summary: publicationFailure ?? info.message,
+                    summary: (publicationFailure ?? info.message) + (reportMatchedByPath ? " Destination identity unavailable; matched by path." : ""),
                     hadIssues: publicationFailure != nil || !info.success,
                     quickOnlyUnverified: info.copiedNotVerified,
                     expectedExclusionQueueQualification: publicationFailure == nil ? info.expectedExclusionQueueQualification : nil,
@@ -2914,6 +2935,13 @@ class SharedAppCoordinator: ObservableObject {
                 )
                 attemptingJournalFinish = false
                 pendingProjectFinalization = nil
+                if publicationFailure == nil, let projectIdentity,
+                   let finished = transferJournal.records.first(where: { $0.id == recordID }),
+                   TransferLibraryPresentation.safetyState(for: finished, in: transferJournal.records) == .safeToErase {
+                    // A failed second card write leaves an unconfirmed card; History
+                    // can confirm it on the next load without changing its verdict.
+                    try? photographerJobViewModel.confirmHistorySettled(jobID: projectIdentity.jobID, cardID: projectIdentity.cardID)
+                }
                 updateProjectLifecycle(for: .completed(info), projectIdentity: projectIdentity)
                 copyVerifyExecutor.forgetSettledReport()
                 SharedLogger.transferEvent(.journalFinished, run: startID)
@@ -2941,6 +2969,7 @@ class SharedAppCoordinator: ObservableObject {
                 try beforeRecoveryReportSettlement?()
                 await beforeRecoveryReportSettlementAsync?()
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: reason, record: transferJournal.storedRecord(id: recordID))
+                notePathMatchedReport()
             } catch {
                 let deletion = withdrawPublishedReports()
                 reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"
@@ -2949,7 +2978,8 @@ class SharedAppCoordinator: ObservableObject {
             queueIsRunning = false
             do {
                 if startCancellationRequested {
-                    let summary = ["Cancelled by user (\(cancellationOrigin.rawValue)).", reportFailure].compactMap { $0 }.joined(separator: " ")
+                    let summary = ["Cancelled by user (\(cancellationOrigin.rawValue)).", reportFailure,
+                                   reportMatchedByPath ? "Destination identity unavailable; matched by path." : nil].compactMap { $0 }.joined(separator: " ")
                     try transferJournal.cancel(id: recordID, summary: summary, results: runResults.rows, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
                     SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 } else {
@@ -2958,7 +2988,8 @@ class SharedAppCoordinator: ObservableObject {
                         : attemptingJournalFinish
                             ? "Transfer history could not be saved: \(originalError.localizedDescription). Keep the card."
                             : originalError.localizedDescription
-                    let summary = [baseSummary, publicationFailure, reportFailure].compactMap { $0 }.joined(separator: " ")
+                    let summary = [baseSummary, publicationFailure, reportFailure,
+                                   reportMatchedByPath ? "Destination identity unavailable; matched by path." : nil].compactMap { $0 }.joined(separator: " ")
                     if let record = transferJournal.records.first(where: { $0.id == recordID }),
                        record.state == .completed || record.state == .issues {
                         // A flush may fail after the new journal was published.
@@ -2980,10 +3011,9 @@ class SharedAppCoordinator: ObservableObject {
             } catch {
                 let firstFailure = firstInterruptWriteFailure.map { "First interrupted-history write failed: \($0)." }
                 let message = (["Could not save transfer results: \(error.localizedDescription)", firstFailure, publicationFailure, reportFailure].compactMap { $0 }).joined(separator: " ")
-                if !startCancellationRequested {
-                    transferJournal.retainInterruptedOverride(id: recordID, summary: "Transfer interrupted. " + message, results: runResults.rows,
-                                                             pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
-                }
+                transferJournal.retainInterruptedOverride(id: recordID, summary: "Transfer interrupted. " + message, results: runResults.rows,
+                                                         pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths,
+                                                         pendingCancellation: startCancellationRequested)
                 if isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID) {
                     pauseQueueAttempt(recordID: recordID, message: message)
                 } else {

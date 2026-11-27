@@ -616,6 +616,47 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(scan.reports.allSatisfy { $0.snapshot.safeToErase == false })
     }
 
+    func testCancellationWriteFailureRetainsWithdrawalRetryUntilHistoryAppears() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let offline = f.root.appendingPathComponent("offline-reports")
+        let reports = f.destination.appendingPathComponent("Reports")
+        weak var activeCoordinator: SharedAppCoordinator?
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeCancel: { _ in
+            throw NSError(domain: "CancelWrite", code: 1)
+        }, beforeFinish: { _ in
+            activeCoordinator?.cancelOperation()
+            throw NSError(domain: "FinishCancelled", code: 1)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults,
+            beforeRecoveryReportSettlement: {
+                try FileManager.default.moveItem(at: reports, to: offline)
+                throw NSError(domain: "Offline", code: 1)
+            })
+        activeCoordinator = coordinator
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            !coordinator.isOperationInProgress && journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths != nil
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        let paths = try XCTUnwrap(record.pendingWithdrawalPaths)
+        XCTAssertFalse(paths.isEmpty)
+        XCTAssertNotNil(record.withdrawalReason)
+        try FileManager.default.moveItem(at: offline, to: reports)
+        journal.historyAppeared()
+        let withdrawn = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == nil
+        }
+        XCTAssertTrue(withdrawn)
+        for path in paths { XCTAssertFalse(FileManager.default.fileExists(atPath: path)) }
+    }
+
     func testLateJournalFinishFailureNeverEmitsASafeLiveVerdict() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -689,6 +730,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let store = InMemoryPhotographerJobStore()
         var project: PhotographerJobViewModel?
         var cardWasSafeAtFinish = false
+        var cardWasUnconfirmedAtFinish = false
         var cardWasSafeAtReportSettlement = false
         var reportSettlementPending = false
         var observedSafeWhileReportPending = false
@@ -699,6 +741,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
             reportSettlementPending = false
             cardWasSafeAtFinish = project?.activeCard?.localState == .locallySafe
+            cardWasUnconfirmedAtFinish = project?.activeCard?.historySettled == false
             throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
         })
         let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
@@ -758,6 +801,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertFalse(cardWasSafeAtReportSettlement, "The card must stay in progress while reports are pending")
         XCTAssertFalse(observedSafeWhileReportPending, "No Locally Safe card may be published while report settlement is pending")
         XCTAssertTrue(cardWasSafeAtFinish, "The card must be committed before the terminal History write")
+        XCTAssertTrue(cardWasUnconfirmedAtFinish, "A committed card must remain unconfirmed until History settles")
         XCTAssertFalse(cardSafeAtRecovery, "The card must be downgraded before report recovery starts")
         XCTAssertTrue(verdictFailedAtRecovery, "The live verdict must be downgraded before report recovery starts")
         XCTAssertEqual(journal.records.first?.state, .interrupted)

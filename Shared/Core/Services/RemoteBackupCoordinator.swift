@@ -110,7 +110,7 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
         try retryPendingCleanup()
         guard let job = try store.jobs().first(where: { $0.id == jobID }),
               let card = job.cardIngests.first(where: { $0.id == cardIngestID }),
-              card.localState == .locallySafe,
+              card.localState == .locallySafe, card.historySettled != false,
               card.locallySafeAt != nil,
               card.verifiedDestinationCount >= job.requiredLocalCopyCount,
               !(card.provenance.confirmedFingerprint ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {

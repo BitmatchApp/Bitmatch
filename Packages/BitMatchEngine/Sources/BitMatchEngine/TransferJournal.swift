@@ -74,6 +74,21 @@ public struct LocalTransferResource: Codable, Sendable {
         }
     }
 
+    /// Report settlement may use the recorded path when no volume identity was recorded.
+    fileprivate func beginReportAccess(at root: URL) throws -> LocalTransferReadAccess {
+        if volumeID != nil { return try beginReadAccess() }
+        let resolved = try? resolve()
+        let accessURL = resolved.flatMap { url in
+            PathContainment.isSamePath(url.resolvingSymlinksInPath().path, root.resolvingSymlinksInPath().path) ? url : nil
+        } ?? root
+        let scoped = accessURL.startAccessingSecurityScopedResource()
+        guard (try? root.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else {
+            if scoped { accessURL.stopAccessingSecurityScopedResource() }
+            throw LocalTransferJournalError.unavailable(root.lastPathComponent)
+        }
+        return LocalTransferReadAccess(url: accessURL, scoped: scoped)
+    }
+
     fileprivate func resolve() throws -> URL {
         var stale = false
         #if os(macOS)
@@ -433,6 +448,7 @@ public final class TransferJournal: Sendable {
 
     public var records: [LocalTransferRecord] { state.withLock { $0.records } }
     public var persistenceError: String? { state.withLock { $0.persistenceError } }
+    public var historyAvailable: Bool { state.withLock { !$0.loadFailed } }
 
     public init(fileURL: URL? = nil, recoverReportsOnInit: Bool = true,
                 afterJournalRename: (@Sendable () throws -> Void)? = nil,
@@ -587,24 +603,23 @@ public final class TransferJournal: Sendable {
                   let relative = reportRelativePath(path, root: roots[index]), !relative.isEmpty,
                   !relative.split(separator: "/").contains("..") else { throw failure(path) }
             let destination = record.destinations[index]
-            let access = try destination.beginReadAccess()
+            let access = try destination.beginReportAccess(at: roots[index])
             defer { access.release() }
             let root = roots[index].standardizedFileURL.resolvingSymlinksInPath()
-            try destination.validateIdentity(at: root)
+            if destination.volumeID != nil { try destination.validateIdentity(at: root) }
             let recorded = URL(fileURLWithPath: path).standardizedFileURL
             let parent = recorded.deletingLastPathComponent().resolvingSymlinksInPath()
             let target = parent.appendingPathComponent(recorded.lastPathComponent)
             guard mappings.contains(where: { $0.destinationIndex == index && $0.path == relative }),
                   PathContainment.isStrictlyWithin(target.path, root: root.path),
-                  PathContainment.isWithin(parent.path, root: root.path),
-                  let volumeID = destination.volumeID else { throw failure(path) }
+                  PathContainment.isWithin(parent.path, root: root.path) else { throw failure(path) }
             guard (try? parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
-                  volumeIdentityAt(parent) == volumeID else { throw failure(path) }
+                  destination.volumeID.map({ volumeIdentityAt(parent) == $0 }) ?? true else { throw failure(path) }
             var info = stat()
             if lstat(target.path, &info) == 0 {
                 let resolved = target.resolvingSymlinksInPath()
                 guard PathContainment.isStrictlyWithin(resolved.path, root: root.path),
-                      volumeIdentityAt(resolved) == volumeID else { throw failure(path) }
+                      destination.volumeID.map({ volumeIdentityAt(resolved) == $0 }) ?? true else { throw failure(path) }
             } else if errno != ENOENT { throw failure(path) }
         }
     }
@@ -636,7 +651,7 @@ public final class TransferJournal: Sendable {
             guard index < record.destinations.count else { fail(group, "Destination is unknown"); continue }
             let destination = record.destinations[index]
             let access: LocalTransferReadAccess
-            do { access = try destination.beginReadAccess() }
+            do { access = try destination.beginReportAccess(at: root) }
             catch { fail(group, "Destination could not be confirmed: \(error.localizedDescription)"); continue }
             defer { access.release() }
             let rootURL = access.url.standardizedFileURL.resolvingSymlinksInPath()
@@ -656,16 +671,17 @@ public final class TransferJournal: Sendable {
             // conclusion or move. A missing parent is never proof of absence.
             func verifiedParent(_ url: URL) -> Bool {
                 do {
-                    try destination.validateIdentity(at: rootURL)
+                    if destination.volumeID != nil { try destination.validateIdentity(at: rootURL) }
+                    guard (try? rootURL.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true else { return false }
                     let parent = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
-                    guard PathContainment.isWithin(parent.path, root: rootURL.path), let volumeID = destination.volumeID,
+                    guard PathContainment.isWithin(parent.path, root: rootURL.path),
                           (try? parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
-                          volumeIdentityAt(parent) == volumeID else { return false }
+                          destination.volumeID.map({ volumeIdentityAt(parent) == $0 }) ?? true else { return false }
                     var info = stat()
                     if lstat(url.path, &info) == 0 {
                         let target = url.resolvingSymlinksInPath()
                         return PathContainment.isStrictlyWithin(target.path, root: rootURL.path)
-                            && volumeIdentityAt(target) == volumeID
+                            && (destination.volumeID.map({ volumeIdentityAt(target) == $0 }) ?? true)
                     }
                     return errno == ENOENT
                 } catch { return false }
@@ -734,8 +750,19 @@ public final class TransferJournal: Sendable {
         record.pendingWithdrawalPaths = unresolved.isEmpty ? nil : unresolved
         record.withdrawalReason = unresolved.isEmpty ? nil : reasons.joined(separator: "; ")
         record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
+        let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
+        func matchedByPath(_ path: String) -> Bool {
+            roots.indices.contains { $0 < record.destinations.count && record.destinations[$0].volumeID == nil && reportRelativePath(path, root: roots[$0]) != nil }
+        }
         if !withdrawn.isEmpty { record.summary += " Unsettled reports were withdrawn: " + withdrawn.joined(separator: ", ") + "." }
-        if !absent.isEmpty { record.summary += " Reports found absent on the verified backup: " + absent.joined(separator: ", ") + "." }
+        let verifiedAbsent = absent.filter { !matchedByPath($0) }
+        let pathAbsent = absent.filter(matchedByPath)
+        if !verifiedAbsent.isEmpty { record.summary += " Reports found absent on the verified backup: " + verifiedAbsent.joined(separator: ", ") + "." }
+        if !pathAbsent.isEmpty { record.summary += " Reports found absent at the recorded destination path: " + pathAbsent.joined(separator: ", ") + "." }
+        if (withdrawn + absent).contains(where: matchedByPath),
+           !record.summary.contains("Destination identity unavailable; matched by path.") {
+            record.summary += " Destination identity unavailable; matched by path."
+        }
         if !unresolved.isEmpty {
             record.summary += pendingNote + " Pending: " + unresolved.joined(separator: ", ") + ". " + (record.withdrawalReason ?? "Withdrawal could not be confirmed.")
         }

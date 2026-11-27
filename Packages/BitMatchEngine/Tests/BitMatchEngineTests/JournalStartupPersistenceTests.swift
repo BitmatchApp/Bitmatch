@@ -14,6 +14,41 @@ private final class FlushFailureGate: @unchecked Sendable {
 
 /// Actual journal I/O over owned temporary metadata and backup fixtures.
 final class JournalStartupPersistenceTests: XCTestCase {
+    func testNilIdentityReportPublicationReplacementAndWithdrawalUseContainment() async throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalTransferResource(url: backup))) as? [String: Any])
+        encoded.removeValue(forKey: "volumeID")
+        record.destinations = [try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: encoded))]
+        record.runDestinationURLs = [backup]
+        let json = reports.appendingPathComponent("report.json")
+        let pdf = reports.appendingPathComponent("report.pdf")
+        let paths = [json.path, pdf.path]
+        record.pendingReportPaths = paths
+        try TransferJournal.validateReportPublication(record: record, paths: paths, volumeIdentityAt: { _ in nil })
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        try Data("safe".utf8).write(to: pdf)
+        try TransferJournal.validateReportPublication(record: record, paths: paths, volumeIdentityAt: { _ in nil })
+        try Data("replacement".utf8).write(to: pdf)
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: paths, volumeIdentityAt: { _ in nil })
+        XCTAssertEqual(outcomes[json.path], .withdrawn)
+        XCTAssertEqual(outcomes[pdf.path], .withdrawn)
+        record.pendingWithdrawalPaths = paths
+        let recovered = await TransferJournal.recoverPendingWithdrawals(record)
+        XCTAssertTrue(recovered.summary.lowercased().contains("destination identity unavailable; matched by path"))
+        let outside = fixture.root.appendingPathComponent("outside")
+        try FileManager.default.createDirectory(at: outside, withIntermediateDirectories: true)
+        let link = reports.appendingPathComponent("escape")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: outside)
+        let escaped = link.appendingPathComponent("report.pdf").path
+        record.pendingReportPaths = [escaped]
+        XCTAssertThrowsError(try TransferJournal.validateReportPublication(record: record, paths: [escaped], volumeIdentityAt: { _ in nil }))
+        try FileManager.default.removeItem(at: backup)
+        XCTAssertThrowsError(try TransferJournal.validateReportPublication(record: record, paths: paths, volumeIdentityAt: { _ in nil }))
+    }
     func testWithdrawalMergeKeepsNewPendingPathsAndRecordsActualOutcome() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         var snapshot = try fixture.record(state: .interrupted)

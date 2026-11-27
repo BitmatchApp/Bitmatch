@@ -71,6 +71,7 @@ final class PhotographerJobViewModel: ObservableObject {
     }
 
     private var recoveryTransferRecords: [LocalTransferRecord] = []
+    private var recoveryHistoryAvailable: Bool?
     // Initial loading can precede History injection. Retain the original card
     // until reconciliation has had a chance to apply its terminal record.
     private var unsettledCardsAtLoad: [UUID: CardIngest] = [:]
@@ -107,6 +108,7 @@ final class PhotographerJobViewModel: ObservableObject {
         self.confirmedAnalyzer = confirmedAnalyzer
         self.entryEnumerator = entryEnumerator
         self.recoveryTransferRecords = recoveryRecords
+        self.recoveryHistoryAvailable = recoveryRecords.isEmpty ? nil : true
         #if os(macOS)
         self.remoteBackupCoordinator = remoteBackupCoordinator ?? RemoteBackupCoordinator(store: store)
         #else
@@ -751,9 +753,20 @@ final class PhotographerJobViewModel: ObservableObject {
               job.cardIngests[index].localState == .copying || job.cardIngests[index].localState == .verifying else {
             throw PhotographerReportError.cardNotReady
         }
-        job.cardIngests[index] = card
+        var committedCard = card
+        if committedCard.localState == .locallySafe { committedCard.historySettled = false }
+        job.cardIngests[index] = committedCard
         try persistRunJobThrowing(job)
-        if activeCardDraft?.id == card.id { activeCardDraft = card }
+        if activeCardDraft?.id == committedCard.id { activeCardDraft = committedCard }
+    }
+
+    func confirmHistorySettled(jobID: UUID, cardID: UUID) throws {
+        guard var job = jobForRun(jobID), let index = job.cardIngests.firstIndex(where: { $0.id == cardID }),
+              job.cardIngests[index].localState == .locallySafe,
+              job.cardIngests[index].historySettled == false else { return }
+        job.cardIngests[index].historySettled = true
+        try persistRunJobThrowing(job)
+        if activeCardDraft?.id == cardID { activeCardDraft = job.cardIngests[index] }
     }
 
     func cancelIngest() {
@@ -1127,8 +1140,9 @@ final class PhotographerJobViewModel: ObservableObject {
 
     /// Reconcile only cards with a known journal attempt. Older cards with no
     /// journal entry keep their existing evidence.
-    func recoverIncompleteTransfers(_ records: [LocalTransferRecord]) {
+    func recoverIncompleteTransfers(_ records: [LocalTransferRecord], historyAvailable: Bool = true) {
         recoveryTransferRecords = records
+        recoveryHistoryAvailable = historyAvailable
         // Reconcile loaded cards without resetting an injected view model's
         // current setup. Deferred stores are also checked in loadJobs().
         for job in jobs {
@@ -1136,6 +1150,16 @@ final class PhotographerJobViewModel: ObservableObject {
                 let latest = records.filter { $0.projectID == job.id && $0.projectCardID == card.id }
                     .max { $0.createdAt < $1.createdAt }
                 let unsettled = unsettledCardsAtLoad[card.id] ?? card
+                if card.localState == .locallySafe && card.historySettled == false {
+                    guard historyAvailable else { continue }
+                    if let latest, TransferLibraryPresentation.safetyState(for: latest, in: records) == .safeToErase {
+                        do { try confirmHistorySettled(jobID: job.id, cardID: card.id) }
+                        catch { lastError = error.localizedDescription }
+                    } else {
+                        operationFailed(jobID: job.id, cardID: card.id)
+                    }
+                    continue
+                }
                 if let latest, TransferLibraryPresentation.safetyState(for: latest, in: records) == .safeToErase,
                    [.notStarted, .copying, .verifying].contains(unsettled.localState) {
                     do {
@@ -1220,7 +1244,9 @@ final class PhotographerJobViewModel: ObservableObject {
             } else {
                 lastError = nil
             }
-            if !recoveryTransferRecords.isEmpty { recoverIncompleteTransfers(recoveryTransferRecords) }
+            if let available = recoveryHistoryAvailable {
+                recoverIncompleteTransfers(recoveryTransferRecords, historyAvailable: available)
+            }
         } catch {
             lastError = error.localizedDescription
         }
