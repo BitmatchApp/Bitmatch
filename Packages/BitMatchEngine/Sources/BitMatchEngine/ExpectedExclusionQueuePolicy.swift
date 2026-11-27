@@ -84,10 +84,11 @@ public extension TransferCompletion {
         let sourcePath = PathContainment.comparablePath(source.path)
         let sourcePrefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
         guard let excluded = excludedSourcePaths(source: source, reviewedRelativePaths: reviewed) else { return false }
+        let components = SafetyValidator.destinationRootComponents(source: rootSource ?? source, settings: settings)
         let roots = destinations.map {
-            PathContainment.comparablePath(SafetyValidator.resolvedDestinationRoot(
-                source: rootSource ?? source, destination: $0, settings: settings
-            ).path)
+            PathContainment.comparablePath(
+                ([PathContainment.comparablePath($0.path)] + components).joined(separator: "/")
+            )
         }
         guard Set(roots).count == roots.count else { return false }
         for first in roots.indices {

@@ -241,7 +241,7 @@ public final class SafetyValidator {
 
     public static func resolvedDestinationRoot(source: URL, destination: URL, settings: CameraLabelSettings) -> URL {
         return destinationRootComponents(source: source, settings: settings).reduce(destination) { root, component in
-            root.appendingPathComponent(component, isDirectory: true)
+            root.appendingPathComponent(component)
         }
     }
 

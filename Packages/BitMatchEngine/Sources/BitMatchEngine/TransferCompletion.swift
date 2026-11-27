@@ -127,10 +127,11 @@ public enum TransferCompletion: Sendable {
             guard path.hasPrefix(sourcePrefix), manifest.contains(path),
                   proven.insert(path).inserted else { return false }
         }
+        let components = SafetyValidator.destinationRootComponents(source: source, settings: settings)
         let roots = destinations.map {
-            PathContainment.comparablePath(SafetyValidator.resolvedDestinationRoot(
-                source: source, destination: $0, settings: settings
-            ).path)
+            PathContainment.comparablePath(
+                ([PathContainment.comparablePath($0.path)] + components).joined(separator: "/")
+            )
         }
         guard Set(roots).count == roots.count else { return false }
         for first in roots.indices {
