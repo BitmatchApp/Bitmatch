@@ -46,6 +46,8 @@ struct CopyVerifyConfig {
     /// report and the project card may describe this run's backups as
     /// verified, but never call the card safe.
     let priorSourceFaultPreventsSafeClaim: Bool
+    /// Automatic reports stay cautious until the coordinator has saved History.
+    let deferReportSafetyUntilHistory: Bool
 
     init(
         operationId: UUID,
@@ -61,10 +63,12 @@ struct CopyVerifyConfig {
         generateASCMHL: Bool = false,
         fanOutHooks: DestinationWriter.FanOutHooks? = nil,
         expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil,
-        priorSourceFaultPreventsSafeClaim: Bool = false
+        priorSourceFaultPreventsSafeClaim: Bool = false,
+        deferReportSafetyUntilHistory: Bool = false
     ) {
         self.operationId = operationId
         self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
+        self.deferReportSafetyUntilHistory = deferReportSafetyUntilHistory
         self.sourceURL = sourceURL
         self.destinationURLs = destinationURLs
         self.verificationMode = verificationMode
@@ -142,7 +146,22 @@ final class CopyVerifyExecutor {
 
     // MARK: - State
     private var handoffTask: Task<[String], Error>?
-    private var reportTask: Task<Void, Error>?
+    private var reportTask: Task<[URL], Error>?
+    private struct PendingReport {
+        let operation: FileOperation
+        let results: [ResultRow]
+        let config: CopyVerifyConfig
+        let photographerContext: PhotographerReportContext?
+        let handoffSummary: String?
+        let safetyState: CardSafetyState
+        let verifiedSelection: VerifiedReportSelection?
+        let phaseDurations: OperationPhaseDurations
+        let verdictMessage: String
+        let skipsProven: Bool
+        let files: [URL]
+    }
+    private var pendingReport: PendingReport?
+    private var lastReportFiles: [URL] = []
     private var cancellationRequested = false
     private var loggedFileError = false
     private var lastDiagnosticProgress: Date?
@@ -197,6 +216,8 @@ final class CopyVerifyExecutor {
 
     private func executeRun(config: CopyVerifyConfig, callbacks: CopyVerifyCallbacks) async throws -> FileOperation? {
         cancellationRequested = false
+        pendingReport = nil
+        lastReportFiles = []
         highestOverallProgress = 0
         pipelineWorkBytes = 0
         pipelineCompletedWorkBytes = 0
@@ -496,16 +517,28 @@ final class CopyVerifyExecutor {
                 operation: operation,
                 results: allResults,
                 config: config,
-                photographerContext: photographerLifecycle.context,
+                photographerContext: config.deferReportSafetyUntilHistory ? Self.cautiousReportContext(photographerLifecycle.context) : photographerLifecycle.context,
                 handoffSummary: handoffIssues.isEmpty ? nil : handoffIssues.joined(separator: "; "),
-                safetyState: preReportSafetyState,
-                verifiedSelection: VerifiedReportSelection.beforeReport(operation: operation,
+                safetyState: config.deferReportSafetyUntilHistory ? .needsAttention : preReportSafetyState,
+                verifiedSelection: config.deferReportSafetyUntilHistory ? nil : VerifiedReportSelection.beforeReport(operation: operation,
                     expectedMode: config.verificationMode, handoffIssues: handoffIssues,
                     project: Self.expectedExclusionProjectGate(config: config, lifecycle: photographerLifecycle)),
                 phaseDurations: phaseDurations,
                 verdictMessage: preReportVerdict.message,
-                skipsProven: finderSkipsProven
+                skipsProven: finderSkipsProven,
+                additionalNotes: config.deferReportSafetyUntilHistory ? "Transfer history has not yet been saved. Keep the card." : nil
             )
+            if config.deferReportSafetyUntilHistory, reportIssue == nil {
+                pendingReport = PendingReport(operation: operation, results: allResults, config: config,
+                    photographerContext: photographerLifecycle.context,
+                    handoffSummary: handoffIssues.isEmpty ? nil : handoffIssues.joined(separator: "; "),
+                    safetyState: preReportSafetyState,
+                    verifiedSelection: VerifiedReportSelection.beforeReport(operation: operation,
+                        expectedMode: config.verificationMode, handoffIssues: handoffIssues,
+                        project: Self.expectedExclusionProjectGate(config: config, lifecycle: photographerLifecycle)),
+                    phaseDurations: phaseDurations, verdictMessage: preReportVerdict.message,
+                    skipsProven: finderSkipsProven, files: lastReportFiles)
+            }
         } else {
             reportIssue = nil
         }
@@ -714,9 +747,12 @@ final class CopyVerifyExecutor {
         verifiedSelection: VerifiedReportSelection?,
         phaseDurations: OperationPhaseDurations,
         verdictMessage: String = "",
-        skipsProven: Bool
+        skipsProven: Bool,
+        additionalNotes: String? = nil,
+        replacing: [URL]? = nil,
+        recovery: Bool = false
     ) async throws -> String? {
-        try checkCancellation()
+        if !recovery { try checkCancellation() }
         SharedLogger.transferEvent(.reportStarted, run: config.operationId)
         // Matches are verified files only; a Quick copy is not a match.
         let matchCount = results.filter { TransferOutcomePresentation.isVerified($0) }.count
@@ -729,7 +765,10 @@ final class CopyVerifyExecutor {
         }
         let plannedIDs = Set(plannedRows.map(\.id))
         let excludedFromFileCounts = Set(results.filter { !plannedIDs.contains($0.id) }.map(\.id))
-        let totalBytesProcessed = plannedRows.reduce(Int64(0)) { $0 + $1.size }
+        let totalBytesProcessed = plannedRows.filter(\.isSuccessStatus).reduce(into: Int64(0)) { total, row in
+            let sum = total.addingReportingOverflow(max(0, row.size))
+            total = sum.overflow ? Int64.max : sum.partialValue
+        }
         let fileCount = plannedRows.count
         // The workers the run actually used, never the machine's core count.
         let workers = operation.concurrency?.copyWorkers
@@ -742,6 +781,7 @@ final class CopyVerifyExecutor {
         var reportSettings = config.reportSettings
         reportSettings.verificationMode = config.verificationMode
         reportSettings.skipFinderViewFiles = config.cameraLabelSettings.skipFinderViewFiles
+        if let additionalNotes { reportSettings.notes += "\n" + additionalNotes }
         let notesBeforeSelection = reportSettings.notes
         let excluded = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
         if !excluded.isEmpty {
@@ -791,23 +831,62 @@ final class CopyVerifyExecutor {
                 pdfNotes: verifiedSelection == nil ? nil : notesBeforeSelection,
                 plannedRows: plannedRows,
                 skipsProven: skipsProven,
-                excludedFromFileCounts: excludedFromFileCounts
+                excludedFromFileCounts: excludedFromFileCounts,
+                replacing: replacing
             )
         }
-        reportTask = work
+        if !recovery { reportTask = work }
         defer { reportTask = nil }
         do {
-            try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
-            try checkCancellation()
+            if recovery {
+                lastReportFiles = try await work.value
+            } else {
+                lastReportFiles = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+                try checkCancellation()
+            }
             SharedLogger.transferEvent(.reportFinished, run: config.operationId)
             return nil
         } catch is CancellationError {
             throw CancellationError()
         } catch {
-            try checkCancellation()
+            if !recovery { try checkCancellation() }
             SharedLogger.error("Auto-report failed for job \(operation.id): \(error.localizedDescription)", category: .transfer)
             return error.localizedDescription
         }
+    }
+
+    /// Preserve project identity while withholding its local-safety claim.
+    private static func cautiousReportContext(_ context: PhotographerReportContext?) -> PhotographerReportContext? {
+        guard let context else { return nil }
+        var job = context.job
+        if let index = job.cardIngests.firstIndex(where: { $0.id == context.cardIngestID }) {
+            job.cardIngests[index].localState = .issues
+            job.cardIngests[index].locallySafeAt = nil
+        }
+        return PhotographerReportContext(job: job, cardIngestID: context.cardIngestID, analysis: context.analysis,
+            verifiedDestinationCount: context.verifiedDestinationCount, warnings: context.warnings,
+            independentDestinationCount: context.independentDestinationCount, priorSourceFault: context.priorSourceFault)
+    }
+
+    /// Replace the cautious provisional report once History settles. On a
+    /// failed history write, preserve an explicit keep-card report instead.
+    func settleReportAfterHistory(failure: String?) async throws {
+        guard let pending = pendingReport else { return }
+        let issue = try await generateReport(
+            operation: pending.operation, results: pending.results, config: pending.config,
+            photographerContext: failure == nil ? pending.photographerContext : Self.cautiousReportContext(pending.photographerContext),
+            handoffSummary: pending.handoffSummary,
+            safetyState: failure == nil ? pending.safetyState : .needsAttention,
+            verifiedSelection: failure == nil ? pending.verifiedSelection : nil,
+            phaseDurations: pending.phaseDurations, verdictMessage: pending.verdictMessage,
+            skipsProven: pending.skipsProven,
+            additionalNotes: failure.map { "Transfer history could not be saved: \($0). Keep the card." },
+            replacing: pending.files, recovery: failure != nil
+        )
+        if let issue {
+            throw FileOperationError.unsafeOperation("Could not replace transfer reports: \(issue)")
+        }
+        pendingReport = nil
     }
 
     static func photographerLifecycleAfterAuthoritativeCompletion(

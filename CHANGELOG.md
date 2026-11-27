@@ -6,6 +6,8 @@ All notable changes to this project will be documented in this file.
 
 ## [0.2.15] - 2026-11-26
 
+- Report byte totals now exclude selected files that failed, and History JSON includes `totalBytesProcessed`. Automatic reports stay cautious until transfer History is saved, and a history-write failure leaves a keep-card report when it can be written.
+
 - Queued backups that reconnect at a new path now retain their run paths for safety checks and History exports. If saving the final transfer record fails, the project card is marked as needing attention. Finder view files must also contain an allocated database header to qualify for skipping.
 
 - Unproven Finder skip records now count as issues in reports and History; a retry cannot claim the card is safe when an earlier skipped row lacks proof. Interrupted backups name any recorded skips, and History's file count leaves out AppleDouble exclusions. Drives whose identity cannot be determined share one conservative verification lane.

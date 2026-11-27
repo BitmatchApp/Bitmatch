@@ -449,6 +449,11 @@ final class LocalTransferJournal: ObservableObject {
         )
     }
 
+    func recordReportPublicationFailure(id: UUID, summary: String) throws {
+        defer { refresh() }
+        try store.recordReportPublicationFailure(id: id, summary: summary)
+    }
+
     func matchingVerifiedRecord(sourceFingerprint: String) -> LocalTransferRecord? {
         store.matchingVerifiedRecord(sourceFingerprint: sourceFingerprint)
     }

@@ -3,6 +3,21 @@ import Testing
 @testable import BitMatchEngine
 
 struct FinderSkipReportRegressionTests {
+    @Test func failedSelectedRowsDoNotIncreaseRecordedSourceBytes() throws {
+        let rows = [
+            ResultRow(path: "/Card/good.mov", status: ResultOutcome.verified.statusText, size: 4, checksum: "abc", destination: "backup"),
+            ResultRow(path: "/Card/failed.mov", status: ResultOutcome.failed.statusText, size: 8, checksum: nil, destination: "backup")
+        ]
+        let report: EnhancedJSONReport<String> = try EvidenceWriter.makeEnhancedJSONReport(
+            results: rows, jobID: UUID(), started: .distantPast, finished: .distantPast,
+            kind: .copyAndVerify, sourceURL: URL(fileURLWithPath: "/Card"), destinationURLs: [],
+            fileCount: 2, matchCount: 1, totalBytesProcessed: 4, duration: 1, workers: nil,
+            prefs: ReportPrefs(), project: nil)
+        #expect(report.source.fileCount == 2)
+        #expect(report.source.totalSize == 4)
+        #expect(report.statistics.totalBytes == 4)
+    }
+
     @Test(arguments: [true, false])
     func csvAndJSONCountOnlyUnprovenSkippedRowsAsIssues(skipsProven: Bool) throws {
         let rows = [

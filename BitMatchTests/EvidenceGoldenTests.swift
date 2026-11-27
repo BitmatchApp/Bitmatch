@@ -268,7 +268,7 @@ Notes,"Shot day 3, ""B"" camera."
     "fileCount" : 5,
     "name" : "CARD",
     "path" : "\/golden-missing\/CARD",
-    "totalSize" : 1054730
+    "totalSize" : 1050634
   },
   "statistics" : {
     "averageFileSize" : 210946,

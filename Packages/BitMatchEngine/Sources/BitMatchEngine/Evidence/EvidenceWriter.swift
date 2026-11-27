@@ -1,4 +1,5 @@
 // EvidenceWriter.swift - Writes a transfer's CSV, JSON and checksum evidence.
+import Darwin
 import Foundation
 import CryptoKit
 
@@ -10,10 +11,12 @@ import CryptoKit
 public enum ReportExportError: LocalizedError, Sendable {
     case noSaveLocation
     case missingChecksum(String)
+    case cleanupFailed(String)
     public var errorDescription: String? {
         switch self {
         case .noSaveLocation: "Cannot find a valid directory to save reports"
         case .missingChecksum(let path): "No recorded checksum for \(path)."
+        case .cleanupFailed(let details): "Report cleanup failed: \(details)"
         }
     }
 }
@@ -337,6 +340,8 @@ public struct ProjectCSVEvidence: Sendable {
 
 // MARK: - Evidence Writer
 public enum EvidenceWriter: Sendable {
+    // Name selection and publication must not race another export in this process.
+    private static let reportWriteLock = NSLock()
     /// Drive types in evidence come from the system's medium type, not from
     /// whether the filesystem supports cloning.
     static let storageMediumDetector: any StorageMediumDetecting = SystemStorageMediumDetector()
@@ -375,6 +380,7 @@ public enum EvidenceWriter: Sendable {
 
     /// Saves the evidence next to the transfer: `Reports/` in the first
     /// backup for Copy & Verify, otherwise the Desktop (or Documents).
+    @discardableResult
     public static func write<Project: Codable & Sendable>(kind: EvidenceKind,
                                         destinationURLs: [URL],
                                         pdfData: Data?,
@@ -401,8 +407,11 @@ public enum EvidenceWriter: Sendable {
                                         projectJSON: Project?, safeToErase: Bool? = nil,
                                         verificationScope: VerificationScopeEvidence? = nil,
                                         skipsProven: Bool = false,
-                                        excludedFromFileCounts: Set<UUID> = []) async throws {
-        
+                                        excludedFromFileCounts: Set<UUID> = [],
+                                        beforePDFWrite: (@Sendable () throws -> Void)? = nil,
+                                        replacing: [URL]? = nil,
+                                        beforePublish: (@Sendable (URL) throws -> Void)? = nil) async throws -> [URL] {
+        try reportWriteLock.withLock {
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
         // Determine save location - auto-save to Reports folder
@@ -428,13 +437,36 @@ public enum EvidenceWriter: Sendable {
             throw error
         }
         
-        let pdfURL = saveDirectory.appendingPathComponent(fileName).nonConflictingSibling()
-        
+        func replacement(_ ext: String) -> URL? {
+            replacing?.first { $0.lastPathComponent.hasSuffix(".\(ext)") }
+        }
+        let pdfURL = replacement("pdf") ?? saveDirectory.appendingPathComponent(fileName).nonConflictingSibling()
+        let csvURL = replacement("csv") ?? pdfURL.deletingPathExtension().appendingPathExtension("csv").nonConflictingSibling()
+        let jsonURL = replacement("json") ?? pdfURL.deletingPathExtension().appendingPathExtension("json").nonConflictingSibling()
+        let checksumExtension = "\(checksumAlgorithm?.rawValue.lowercased() ?? "").txt"
+        let checksumURL = replacement(checksumExtension) ?? pdfURL.deletingPathExtension()
+            .appendingPathExtension("\(checksumAlgorithm?.rawValue.lowercased() ?? "").txt")
+            .nonConflictingSibling()
+        let stagingDirectory = saveDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent(".BitMatch-report-staging-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
+        var preserveStaging = false
+        defer { if !preserveStaging { try? FileManager.default.removeItem(at: stagingDirectory) } }
+        func staged(_ url: URL) -> URL { stagingDirectory.appendingPathComponent(url.lastPathComponent) }
+        func backup(_ url: URL) -> URL { stagingDirectory.appendingPathComponent("backup-" + url.lastPathComponent) }
+        func renameReplacing(_ from: URL, _ to: URL) throws {
+            let failure = from.withUnsafeFileSystemRepresentation { source in
+                to.withUnsafeFileSystemRepresentation { destination in
+                    rename(source!, destination!) == 0 ? 0 : errno
+                }
+            }
+            guard failure == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure)) }
+        }
+        var published: [URL] = []
         do {
-            // Save CSV manifest with enhanced data
-            let csvURL = pdfURL.deletingPathExtension().appendingPathExtension("csv").nonConflictingSibling()
+            // Build the complete report in a hidden directory on the report volume.
             try exportEnhancedCSV(results: results,
-                                 to: csvURL,
+                                 to: staged(csvURL),
                                  started: started,
                                  duration: duration,
                                  filesPerSecond: filesPerSecond,
@@ -451,10 +483,9 @@ public enum EvidenceWriter: Sendable {
             
             try Task.checkCancellation()
             // Save enhanced JSON report
-            let jsonURL = pdfURL.deletingPathExtension().appendingPathExtension("json").nonConflictingSibling()
             try exportEnhancedJSONReport(
                 results: results,
-                to: jsonURL,
+                to: staged(jsonURL),
                 jobID: jobID,
                 started: started,
                 finished: finished,
@@ -485,10 +516,7 @@ public enum EvidenceWriter: Sendable {
             
             // If checksums were used, auto-export checksum file (no dialog)
             if generateFullReport, let algorithm = checksumAlgorithm {
-                let checksumURL = pdfURL.deletingPathExtension()
-                    .appendingPathExtension("\(algorithm.rawValue.lowercased()).txt")
-                    .nonConflictingSibling()
-                try writeRecordedChecksumManifest(results: results, algorithm: algorithm, to: checksumURL)
+                try writeRecordedChecksumManifest(results: results, algorithm: algorithm, to: staged(checksumURL))
             }
 
             try Task.checkCancellation()
@@ -497,16 +525,57 @@ public enum EvidenceWriter: Sendable {
             // after every later-failing evidence component has succeeded;
             // otherwise an old, safer verdict could survive a report error.
             if generateFullReport, let pdfData {
-                try pdfData.write(to: pdfURL, options: .atomic)
+                try beforePDFWrite?()
+                try pdfData.write(to: staged(pdfURL), options: .atomic)
             }
-            
-            SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")
 
-            // No need for success dialog since this is auto-save
+            var finalURLs = [csvURL]
+            if generateFullReport, checksumAlgorithm != nil { finalURLs.append(checksumURL) }
+            if generateFullReport, pdfData != nil { finalURLs.append(pdfURL) }
+            finalURLs.append(jsonURL)
+            for url in finalURLs where replacing?.contains(url) == true {
+                try FileManager.default.copyItem(at: url, to: backup(url))
+            }
+            for url in finalURLs {
+                try Task.checkCancellation()
+                try beforePublish?(url)
+                if replacing?.contains(url) == true {
+                    // rename replaces one file atomically; never remove the old
+                    // report before its replacement has been fully generated.
+                    try renameReplacing(staged(url), url)
+                } else {
+                    try FileManager.default.moveItem(at: staged(url), to: url)
+                }
+                published.append(url)
+            }
+
+            SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")
+            return published
 
         } catch {
-            SharedLogger.info("Report export error: \(error.localizedDescription)")
-            throw error
+            let originalError = error
+            var cleanupErrors: [String] = []
+            for url in published.reversed() {
+                do {
+                    if replacing?.contains(url) == true { try renameReplacing(backup(url), url) }
+                    else { try FileManager.default.removeItem(at: url) }
+                }
+                catch { cleanupErrors.append("\(url.path): \(error.localizedDescription)") }
+            }
+            if !cleanupErrors.isEmpty {
+                // Keep any unrecovered originals available for manual recovery.
+                preserveStaging = true
+                cleanupErrors.append("Original reports retained in \(stagingDirectory.path)")
+            } else if FileManager.default.fileExists(atPath: stagingDirectory.path) {
+                do { try FileManager.default.removeItem(at: stagingDirectory) }
+                catch { cleanupErrors.append("\(stagingDirectory.path): \(error.localizedDescription)") }
+            }
+            SharedLogger.info("Report export error: \(originalError.localizedDescription)")
+            guard cleanupErrors.isEmpty else {
+                throw ReportExportError.cleanupFailed("\(originalError.localizedDescription); \(cleanupErrors.joined(separator: "; "))")
+            }
+            throw originalError
+        }
         }
     }
     
@@ -792,8 +861,10 @@ public enum EvidenceWriter: Sendable {
         // A skipped Finder view file was never copied, so it is not counted
         // (the scope's recorded selected files leave it out the same way).
         let sourceRows = Dictionary(grouping: results.filter { $0.isInSelectedPlan && !excludedFromFileCounts.contains($0.id) }, by: \.path)
-        let sourceBytes = sourceRows.values.reduce(Int64(0)) { total, rows in
-            total + max(0, rows.map(\.size).max() ?? 0)
+        let sourceBytes = sourceRows.values.reduce(into: Int64(0)) { total, rows in
+            let size = max(0, rows.filter(\.isSuccessStatus).map(\.size).max() ?? 0)
+            let sum = total.addingReportingOverflow(size)
+            total = sum.overflow ? Int64.max : sum.partialValue
         }
         let sourceInfo = EnhancedJSONReport<Project>.SourceInfo(
             path: sourceURL?.path ?? "—",

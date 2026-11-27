@@ -6,6 +6,29 @@ import BitMatchEngine
 
 @MainActor
 struct TransferDetailsReportTests {
+    @Test func historyPDFCountsOnlySuccessfulPlannedBytes() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("history-success-bytes-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: root),
+            destinations: [try LocalTransferResource(url: root)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .issues
+        record.plannedFileCounts = [2]
+        record.results = [
+            ResultRow(path: "/card/good", status: ResultOutcome.verified.statusText, size: 4096, checksum: "abc", destination: root.path),
+            ResultRow(path: "/card/failed", status: ResultOutcome.failed.statusText, size: 8192, checksum: nil, destination: root.path)
+        ]
+        let pdf = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)))
+        let text = try #require(pdf.string)
+        #expect(text.contains(ByteCountPresentation.fileSize(4096)))
+        #expect(!text.contains(ByteCountPresentation.fileSize(12288)))
+        #expect(text.contains("1/2 selected backup results"))
+        let json = try TransferHistoryDocument(record: record, history: [record], asCSV: false).data
+        let object = try #require(JSONSerialization.jsonObject(with: json) as? [String: Any])
+        #expect((object["totalBytesProcessed"] as? NSNumber)?.int64Value == 4096)
+    }
+
     @Test func historyExportsKeepSavedDetailsAndUnsafeVerdict() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("details-history-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

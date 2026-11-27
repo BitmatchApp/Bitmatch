@@ -15,6 +15,7 @@ enum ReportExporter {
         results.filter(\.isInSelectedPlan).count
     }
 
+    @discardableResult
     static func export(mode: AppMode,
                        jobID: UUID,
                        started: Date,
@@ -39,7 +40,8 @@ enum ReportExporter {
                        pdfNotes: String? = nil,
                        plannedRows: [ResultRow]? = nil,
                        skipsProven: Bool = false,
-                       excludedFromFileCounts: Set<UUID> = []) async throws {
+                       excludedFromFileCounts: Set<UUID> = [],
+                       replacing: [URL]? = nil) async throws -> [URL] {
 
         var reportPrefs = prefs
         let automaticNotes = ResultPresentation.automaticReportNotes(results)
@@ -135,7 +137,7 @@ enum ReportExporter {
 
         try Task.checkCancellation()
         // Auto-save to reports folder
-        try await EvidenceWriter.write(kind: mode.evidenceKind,
+        return try await EvidenceWriter.write(kind: mode.evidenceKind,
                                        destinationURLs: destinationURLs,
                                        pdfData: pdfData,
                                        results: results,
@@ -162,7 +164,8 @@ enum ReportExporter {
                                        safeToErase: safetyState == .safeToErase,
                                        verificationScope: summary.verificationScope,
                                        skipsProven: skipsProven,
-                                       excludedFromFileCounts: excludedFromFileCounts)
+                                       excludedFromFileCounts: excludedFromFileCounts,
+                                       replacing: replacing)
     }
 
     /// Re-renders saved evidence without touching the source or changing the journal verdict.
@@ -192,7 +195,7 @@ enum ReportExporter {
         }
         let thumbnails = try await ReportThumbnailService.collect(results: previewRows, enabled: includeThumbnails)
         let plannedRows = TransferJournal.plannedRows(record)
-        let recordedBytes = plannedRows.reduce(into: Int64(0)) { bytes, row in
+        let recordedBytes = plannedRows.filter(\.isSuccessStatus).reduce(into: Int64(0)) { bytes, row in
             let sum = bytes.addingReportingOverflow(max(0, row.size)); bytes = sum.overflow ? Int64.max : sum.partialValue
         }
         let selectedIDs = Set(plannedRows.map(\.id))

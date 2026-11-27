@@ -74,6 +74,12 @@ struct TransferHistoryDocument: FileDocument {
             ]).joined(separator: "\n")
             data = Data((header + rows.joined(separator: "\n") + timingSummary + "\n").utf8)
         } else {
+            // Recorded bytes describe successful selected backup results, not
+            // the source sizes attached to failed rows.
+            let recordedBytes = TransferJournal.plannedRows(record).filter(\.isSuccessStatus).reduce(into: Int64(0)) { total, row in
+                let sum = total.addingReportingOverflow(max(0, row.size))
+                total = sum.overflow ? Int64.max : sum.partialValue
+            }
             // Do not export security-scoped bookmarks or credentials from the journal.
             struct Report: Encodable {
                 let id: UUID
@@ -85,6 +91,7 @@ struct TransferHistoryDocument: FileDocument {
                 let summary: String
                 let createdAt: Date
                 let verificationMode: VerificationMode
+                let totalBytesProcessed: Int64
                 let savedVerdict: String
                 let savedSafeToErase: Bool
                 let verificationScope: VerificationScopeEvidence
@@ -106,7 +113,7 @@ struct TransferHistoryDocument: FileDocument {
             encoder.dateEncodingStrategy = .iso8601
             data = try encoder.encode(Report(id: record.id, retryOf: record.retryOf, plannedFileCounts: record.plannedFileCounts, source: (record.runSourceURL ?? record.source.url).path,
                 destinations: record.resultDestinationURLs.map(\.path), state: record.state, summary: record.summary,
-                createdAt: record.createdAt, verificationMode: record.verificationMode,
+                createdAt: record.createdAt, verificationMode: record.verificationMode, totalBytesProcessed: recordedBytes,
                 savedVerdict: savedVerdict.title, savedSafeToErase: savedVerdict.isSafe,
                 verificationScope: scope, finderViewFiles: TransferCompletion.finderMetadataSkipSummary(results: record.results, skipsProven: TransferJournal.finderMetadataSkipsProven(record)),
                 selectedFilePlanRecorded: record.plannedFileCounts != nil,

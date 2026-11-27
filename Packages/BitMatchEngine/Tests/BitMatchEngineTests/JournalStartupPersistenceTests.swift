@@ -6,6 +6,22 @@ import XCTest
 /// Actual journal I/O over owned temporary metadata fixtures. No bookmarks
 /// are resolved and no source or backup media are read or modified.
 final class JournalStartupPersistenceTests: XCTestCase {
+    func testReportPublicationFailureDowngradesCompletedHistoryDurably() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        let record = try fixture.record(state: .completed, rowCount: 1)
+        try fixture.write([record])
+        do {
+            let journal = TransferJournal(fileURL: fixture.journal)
+            try journal.recordReportPublicationFailure(id: record.id, summary: "Report export failed; keep the card.")
+            XCTAssertEqual(journal.records.first?.state, .issues)
+            XCTAssertNil(journal.records.first?.expectedExclusionQueueQualification)
+        }
+        let reopened = TransferJournal(fileURL: fixture.journal)
+        XCTAssertEqual(reopened.records.first?.state, .issues)
+        XCTAssertEqual(reopened.records.first?.summary, "Report export failed; keep the card.")
+    }
+
     /// Plant: make TransferJournal.init persist every decoded journal again.
     func testCurrentTerminalAndQueuedHistoryIsUnchangedAcrossRepeatedOpens() throws {
         let fixture = try Fixture()

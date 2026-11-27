@@ -1047,6 +1047,24 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         }
     }
 
+    func testAutomaticReportCountsBytesOnlyForSuccessfulSelectedRows() async throws {
+        let fixture = try ascFixture()
+        let failed = FileOperationResult(sourceURL: fixture.source.appendingPathComponent("failed.mov"),
+            destinationURL: fixture.result.destinationURL.deletingLastPathComponent().appendingPathComponent("failed.mov"),
+            success: false, error: NSError(domain: "CopyFailure", code: 1), fileSize: 8192,
+            verificationResult: nil, processingTime: 0)
+        let harness = ExecutorHarness(returnedResults: [fixture.result, failed], emittedResults: [],
+            sourceURL: fixture.source, destinationURLs: [fixture.destination], makeReport: true)
+        _ = try await harness.execute()
+        let reports = try FileManager.default.contentsOfDirectory(at: fixture.destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
+        XCTAssertEqual(statistics["totalFiles"] as? Int, 2)
+        XCTAssertEqual((statistics["totalBytes"] as? NSNumber)?.int64Value, fixture.result.fileSize)
+        XCTAssertEqual(((object["source"] as? [String: Any])?["totalSize"] as? NSNumber)?.int64Value, fixture.result.fileSize)
+    }
+
     /// The one Shared call of `finderMetadataSkipsProven`: the project
     /// finalizer gets the skipped paths only when the run proved them.
     func testFinalizerReceivesSkippedFinderViewFilesOnlyWhenProven() async throws {

@@ -2,6 +2,7 @@ import AppKit
 import Foundation
 import XCTest
 import CryptoKit
+import PDFKit
 import Combine
 import Testing
 @testable import BitMatch
@@ -85,6 +86,73 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase)
     }
 
+    func testSuccessfulJournalFinishPublishesOneDiscoverableSafeReport() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults)
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .completed && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let scan = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertEqual(scan.reports.count, 1)
+        let url = try XCTUnwrap(scan.reports.first?.url)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
+        XCTAssertEqual(object["safeToErase"] as? Bool, true)
+        XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "Reports")
+        let siblings = try FileManager.default.contentsOfDirectory(at: f.destination, includingPropertiesForKeys: nil)
+        XCTAssertFalse(siblings.contains { $0.lastPathComponent.hasPrefix(".BitMatch-report-staging-") })
+    }
+
+    func testFinalJournalFailureLeavesOnlyUnsafeReports() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        var safeBeforeFinish = false
+        var sawProvisional = false
+        let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            let urls = (try? FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)) ?? []
+            for url in urls where url.pathExtension == "json" {
+                sawProvisional = true
+                if let data = try? Data(contentsOf: url),
+                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                   object["safeToErase"] as? Bool == true { safeBeforeFinish = true }
+            }
+            throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults)
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        XCTAssertTrue(sawProvisional)
+        XCTAssertFalse(safeBeforeFinish)
+        let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+        let jsonURL = try XCTUnwrap(files.first { $0.pathExtension == "json" })
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
+        XCTAssertEqual(object["safeToErase"] as? Bool, false)
+        XCTAssertTrue(String(decoding: try Data(contentsOf: jsonURL), as: UTF8.self).localizedCaseInsensitiveContains("history"))
+        let pdfURL = try XCTUnwrap(files.first { $0.pathExtension == "pdf" })
+        let pdf = try XCTUnwrap(PDFDocument(url: pdfURL))
+        XCTAssertTrue(try XCTUnwrap(pdf.string).contains("NOT SAFE TO ERASE"))
+        XCTAssertTrue(try XCTUnwrap(pdf.string).localizedCaseInsensitiveContains("history"))
+        let scan = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertFalse(scan.reports.isEmpty)
+    }
+
     func testLateJournalFinishFailureNeverEmitsASafeLiveVerdict() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -137,7 +205,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         coordinator.destinationURLs = [f.primary, f.secondary]
         coordinator.sourceURL = f.source
         coordinator.generateASCMHL = false
-        coordinator.reportSettings.makeReport = false
+        coordinator.reportSettings.makeReport = true
         let scanned = await waitUntil(timeout: .seconds(30)) {
             coordinator.sourceFolderInfo?.url == f.source
                 && !coordinator.isFolderInfoLoading(for: f.source)
@@ -171,6 +239,11 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let savedCard = try XCTUnwrap(savedJob.cardIngests.first { $0.id == cardID })
         XCTAssertEqual(savedCard.localState, .issues)
         XCTAssertNil(savedCard.locallySafeAt)
+        let reports = try FileManager.default.contentsOfDirectory(at: f.primary.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        XCTAssertEqual(object["safeToErase"] as? Bool, false)
+        XCTAssertNotNil(object["photographyJob"], "Unsafe evidence must retain project provenance")
     }
 
     func testUnexpectedCancellationErrorPersistsInterruptedRatherThanCancelled() async throws {

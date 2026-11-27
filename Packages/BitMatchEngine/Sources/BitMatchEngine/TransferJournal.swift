@@ -1149,6 +1149,18 @@ public final class TransferJournal: Sendable {
         return groups.allSatisfy { Set($0.map(\.path)) == expectedPaths }
     }
 
+    /// A provisional report was written before settlement, but replacing it
+    /// with the final report failed after the journal finish succeeded.
+    public func recordReportPublicationFailure(id: UUID, summary: String) throws {
+        try update(id: id) { record in
+            guard record.state == .completed || record.state == .issues else { throw LocalTransferJournalError.invalidState }
+            record.state = .issues
+            record.summary = summary
+            record.quickOnlyUnverified = false
+            record.expectedExclusionQueueQualification = nil
+        }
+    }
+
     public func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }

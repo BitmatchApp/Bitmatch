@@ -2688,7 +2688,8 @@ class SharedAppCoordinator: ObservableObject {
             // everywhere else, and always nil in Release.
             fanOutHooks: demoFanOutHooks(for: context.journalRecordID),
             expectedExclusionQueueIdentity: expectedExclusionQueueIdentity,
-            priorSourceFaultPreventsSafeClaim: lineagePreventsSafeClaim
+            priorSourceFaultPreventsSafeClaim: lineagePreventsSafeClaim,
+            deferReportSafetyUntilHistory: true
         )
 
         let callbacks = CopyVerifyCallbacks(
@@ -2779,18 +2780,19 @@ class SharedAppCoordinator: ObservableObject {
             isClearingSnapshottedComposerSource = false
         }
 
+        var attemptingJournalFinish = false
         do {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
             let belongsToQueueSession = runBelongsToQueueSession
             if startCancellationRequested {
+                try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer cancelled")
                 try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: runResults.rows)
                 SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else if case .completed(let info) = operationState {
-                // The report and a project card's independent evidence may
-                // already have been saved. If this final journal write fails,
-                // preserve those artifacts but never emit a settled success.
+                // Provisional reports remain cautious until this write succeeds.
                 let durations = copyVerifyExecutor.completedPhaseDurations
+                attemptingJournalFinish = true
                 try transferJournal.finish(
                     id: recordID,
                     results: runResults.rows,
@@ -2804,6 +2806,30 @@ class SharedAppCoordinator: ObservableObject {
                     sourceFingerprint: currentOperation?.sourceFingerprint,
                     skippedFinderMetadataPaths: currentOperation?.skippedFinderMetadataPaths
                 )
+                do {
+                    try await copyVerifyExecutor.settleReportAfterHistory(failure: nil)
+                } catch {
+                    let exportError = error
+                    var recoveryError: String?
+                    do {
+                        try await copyVerifyExecutor.settleReportAfterHistory(failure: exportError.localizedDescription)
+                    } catch {
+                        recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription)."
+                    }
+                    let message = ["Transfer report export failed after saving history: \(exportError.localizedDescription). Keep the card.", recoveryError].compactMap { $0 }.joined(separator: " ")
+                    if let projectIdentity {
+                        photographerJobViewModel.operationFailed(jobID: projectIdentity.jobID, cardID: projectIdentity.cardID)
+                    }
+                    do {
+                        try transferJournal.recordReportPublicationFailure(id: recordID, summary: message)
+                        handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
+                    } catch {
+                        queueIsRunning = false
+                        queueMessage = "\(message) Could not update history: \(error.localizedDescription)"
+                        operationState = .failed
+                    }
+                    return
+                }
                 SharedLogger.transferEvent(.journalFinished, run: startID)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } else {
@@ -2812,6 +2838,13 @@ class SharedAppCoordinator: ObservableObject {
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             }
         } catch {
+            let originalError = error
+            var reportFailure: String?
+            do {
+                try await copyVerifyExecutor.settleReportAfterHistory(failure: originalError.localizedDescription)
+            } catch {
+                reportFailure = "The provisional reports could not be replaced: \(error.localizedDescription)"
+            }
             // The executor may already have finalized the project card before
             // the journal finish failed. Invalidate it even if interruption
             // persistence also fails, so this session cannot claim safety.
@@ -2822,20 +2855,30 @@ class SharedAppCoordinator: ObservableObject {
             queueIsRunning = false
             do {
                 if startCancellationRequested {
-                    try transferJournal.cancel(id: recordID, summary: "Cancelled by user (\(cancellationOrigin.rawValue)).", results: runResults.rows)
+                    let summary = ["Cancelled by user (\(cancellationOrigin.rawValue)).", reportFailure].compactMap { $0 }.joined(separator: " ")
+                    try transferJournal.cancel(id: recordID, summary: summary, results: runResults.rows)
                     SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
                 } else {
-                    let summary = error is CancellationError || error is TransferInterruption
+                    let baseSummary = originalError is CancellationError || originalError is TransferInterruption
                         ? "Transfer interrupted unexpectedly; partial results retained. Keep source media intact."
-                        : error.localizedDescription
-                    try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
-                                                  reason: Self.taggedFailureReason(of: error))
-                    SharedLogger.transferEvent(.journalInterrupted, run: startID, code: (error as NSError).code,
+                        : attemptingJournalFinish
+                            ? "Transfer history could not be saved: \(originalError.localizedDescription). Keep the card."
+                            : originalError.localizedDescription
+                    let summary = [baseSummary, reportFailure].compactMap { $0 }.joined(separator: " ")
+                    if let record = transferJournal.records.first(where: { $0.id == recordID }),
+                       record.state == .completed || record.state == .issues {
+                        // A flush may fail after the new journal was published.
+                        try transferJournal.recordReportPublicationFailure(id: recordID, summary: summary)
+                    } else {
+                        try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
+                                                      reason: Self.taggedFailureReason(of: originalError))
+                    }
+                    SharedLogger.transferEvent(.journalInterrupted, run: startID, code: (originalError as NSError).code,
                                                taskCancelled: Task.isCancelled)
                 }
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } catch {
-                let message = "Could not save transfer results: \(error.localizedDescription)"
+                let message = (["Could not save transfer results: \(error.localizedDescription)", reportFailure].compactMap { $0 }).joined(separator: " ")
                 if isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID) {
                     pauseQueueAttempt(recordID: recordID, message: message)
                 } else {
