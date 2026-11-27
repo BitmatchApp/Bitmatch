@@ -58,12 +58,12 @@ public struct VerificationScopeEvidence: Codable, Sendable {
     }
 
     public init(selectedMode: VerificationMode, results: [ResultRow], includeModePlan: Bool = true,
-                skipFinderViewFiles: Bool? = nil) {
+                skipFinderViewFiles: Bool? = nil, plannedRows: [ResultRow]? = nil) {
         self.selectedMode = selectedMode
         self.skipFinderViewFiles = skipFinderViewFiles
         configuredChecks = includeModePlan ? Self.checkPlan(for: selectedMode) : nil
         countsBasis = "recorded-results-only"
-        let selected = results.filter(\.isInSelectedPlan)
+        let selected = plannedRows ?? results.filter(\.isInSelectedPlan)
         recordedSelectedSourceFiles = Set(selected.map(\.path)).count
         recordedSelectedResults = selected.count
         // Quick cannot verify contents, even if a malformed or old status

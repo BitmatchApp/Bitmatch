@@ -24,9 +24,11 @@ public enum FinderMetadataSelection {
     /// The Finder view files in `manifest`, sorted by relative path.
     ///
     /// With `onUnclassified`, an entry whose classification fails (gone,
-    /// resized or unreadable since the scan) is reported there and treated
+    /// or unreadable since the scan) is reported there and treated
     /// as ordinary data, so it is copied like any other file; cancellation
-    /// still throws. Without it, the first failure throws.
+    /// still throws. A file that changes during classification is retried
+    /// once, then throws if it changes again. Without the handler, the first
+    /// other failure throws.
     public static func skipped(
         in manifest: [FileEntry],
         checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() },
@@ -34,13 +36,22 @@ public enum FinderMetadataSelection {
     ) throws -> [FileEntry] {
         try manifest.filter { entry in
             try checkCancellation()
-            guard entry.url.lastPathComponent == ".DS_Store",
-                  entry.size >= minimumSize, entry.size <= maximumSize else { return false }
+            guard entry.url.lastPathComponent == ".DS_Store" else { return false }
             do {
-                let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
-                guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
-                defer { close(fd) }
-                return try isFinderViewFile(fd: fd, size: entry.size, checkCancellation: checkCancellation)
+                func classify() throws -> Bool {
+                    let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+                    guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                    defer { close(fd) }
+                    var status = stat()
+                    guard fstat(fd, &status) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+                    guard (status.st_mode & S_IFMT) == S_IFREG else { return false }
+                    return try isFinderViewFile(fd: fd, size: Int64(status.st_size), checkCancellation: checkCancellation)
+                }
+                do { return try classify() }
+                catch is MetadataChanged { return try classify() }
+            } catch let changed as MetadataChanged {
+                // Do not copy against a stale manifest after two concurrent rewrites.
+                throw changed
             } catch {
                 guard let onUnclassified, !(error is CancellationError) else { throw error }
                 // A cancellation surfacing as another error type still stops.
@@ -61,8 +72,8 @@ public enum FinderMetadataSelection {
     static func isFinderViewFile(fd: Int32, size: Int64, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> Bool {
         guard size >= minimumSize, size <= maximumSize else { return false }
         var before = stat()
-        guard fstat(fd, &before) == 0, (before.st_mode & S_IFMT) == S_IFREG,
-              Int64(before.st_size) == size else {
+        guard fstat(fd, &before) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard (before.st_mode & S_IFMT) == S_IFREG, Int64(before.st_size) == size else {
             throw MetadataChanged()
         }
         guard before.st_nlink == 1 else { return false }
@@ -113,7 +124,8 @@ public enum FinderMetadataSelection {
             }
         }
         var after = stat()
-        guard fstat(fd, &after) == 0, before.st_size == after.st_size, before.st_nlink == after.st_nlink,
+        guard fstat(fd, &after) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        guard before.st_size == after.st_size, before.st_nlink == after.st_nlink,
               before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
               before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
             throw MetadataChanged()

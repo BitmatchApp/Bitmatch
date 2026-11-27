@@ -209,7 +209,7 @@ enum GeneralSettingsPresentation {
     #else
     // iOS cannot name the physical drive, so lanes key by volume.
     static let verifyWorkers = "Verify workers per backup volume"
-    static let performanceFootnote = "Auto uses up to 4 copy workers and shares half your cores to verify across the backup volumes; verify workers are per backup volume, at most 16 at once across the volumes. Thorough and Paranoid reread the card, so with Verify workers set (not Auto) they use one lane. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
+    static let performanceFootnote = "Auto uses up to 4 copy workers and shares half your cores to verify across the backup volumes; verify workers are per backup volume, at most 16 at once across the volumes. Thorough and Paranoid reread the card, so a card whose type is not reported uses one lane when Verify workers is set to a number. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
     #endif
     static let verifyWhileCopyingFootnote = "Off verifies each backup in one pass after all of its files are copied, so the verify workers setting does not apply. On a hard drive this avoids reading back while it is still writing."
     static func workerChoice(_ value: Int) -> String { value == 0 ? "Auto" : "\(value)" }

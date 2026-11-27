@@ -66,6 +66,41 @@ import Testing
 
     // MARK: - Journal
 
+    @Test func savedProofUsesRunSourceNameAndWorksOffline() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let runSource = f.root.appendingPathComponent("TodayCard", isDirectory: true)
+        // The journal only accepts a directory, not a symlink as the selected
+        // resource. Keep a differently named alias for the row spelling.
+        try FileManager.default.moveItem(at: f.source, to: runSource)
+        try FileManager.default.createSymbolicLink(at: f.source, withDestinationURL: runSource)
+        var journal: TransferJournal? = TransferJournal(fileURL: f.journalURL)
+        let id = try journal!.enqueue(sourceURL: runSource, destinationURLs: f.destinations, verificationMode: .standard,
+                                     cameraSettings: f.settings, reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+        try journal!.markRunning(id: id, sourceURL: runSource)
+        try journal!.recordPlan(id: id, fileCounts: [1, 1])
+        let rows = f.destinations.flatMap { destination in
+            ["A001.mov", ".DS_Store"].map { name in
+                ResultRow(path: f.source.appendingPathComponent(name).path,
+                          status: name == ".DS_Store" ? ResultOutcome.skippedFinderMetadata.statusText : ResultOutcome.verified.statusText,
+                          size: 4, checksum: nil, destination: destination.lastPathComponent,
+                          destinationPath: destination.appendingPathComponent("TodayCard/" + name).path)
+            }
+        }
+        try journal!.finish(id: id, results: rows, summary: "verified", hadIssues: false,
+                           sourceFingerprint: "card", skippedFinderMetadataPaths: [".DS_Store"])
+        let record = try #require(journal!.records.first)
+        #expect(record.state == .completed)
+        #expect(record.runSourceURL == runSource)
+        for destination in f.destinations { try FileManager.default.removeItem(at: destination) }
+        try FileManager.default.removeItem(at: f.source)
+        try FileManager.default.removeItem(at: runSource)
+        #expect(TransferJournal.finderMetadataSkipsProven(record))
+        journal = nil
+        let reloaded = try #require(TransferJournal(fileURL: f.journalURL).records.first)
+        #expect(reloaded.runSourceURL == runSource)
+        #expect(TransferJournal.finderMetadataSkipsProven(reloaded))
+    }
+
     @Test func aRecordWithProvenSkipsMatchesAsVerified() throws {
         let f = try Fixture(); defer { f.cleanup() }
         let journal = TransferJournal(fileURL: f.journalURL)
@@ -144,6 +179,7 @@ import Testing
         let old = TransferJournal(fileURL: f.journalURL)
         let record = try #require(old.records.first)
         #expect(record.skippedFinderMetadataPaths == nil)
+        #expect(record.runSourceURL == nil)
         #expect(record.cameraSettings.skipFinderViewFiles, "a missing toggle decodes as on")
         #expect(record.state == .completed)
         #expect(record.plannedFileCounts == [2, 2])
@@ -243,7 +279,6 @@ import Testing
     @Test func aRemountedCardsRecordStillProvesItsSkips() throws {
         let f = try Fixture(); defer { f.cleanup() }
         let mounted = f.root.appendingPathComponent("card 1")
-        try FileManager.default.createDirectory(at: mounted, withIntermediateDirectories: true)
         func row(_ relative: String, on destination: URL, skipped: Bool) -> ResultRow {
             ResultRow(path: mounted.appendingPathComponent(relative).path,
                       status: skipped ? ResultOutcome.skippedFinderMetadata.statusText : ResultOutcome.verified.statusText,
@@ -254,16 +289,39 @@ import Testing
                         .appendingPathComponent(relative).path)
         }
         let rows = f.destinations.flatMap { [row("A001.mov", on: $0, skipped: false), row(".DS_Store", on: $0, skipped: true)] }
-        let journal = TransferJournal(fileURL: f.journalURL)
-        let record = try f.finish(journal, rows: rows, proven: [".DS_Store"], fingerprint: "remounted")
+        var journal: TransferJournal? = TransferJournal(fileURL: f.journalURL)
+        let id = try journal!.enqueue(sourceURL: f.source, destinationURLs: f.destinations, verificationMode: .standard,
+                                     cameraSettings: f.settings, reportSettings: ReportPrefs(makeReport: false),
+                                     generateASCMHL: false)
+        // Moving the same folder models a resolved bookmark at a new mount
+        // path while retaining the identity checked by markRunning.
+        try FileManager.default.moveItem(at: f.source, to: mounted)
+        try journal!.markRunning(id: id, sourceURL: mounted)
+        try journal!.recordPlan(id: id, fileCounts: [1, 1])
+        try journal!.finish(id: id, results: rows, summary: "verified", hadIssues: false,
+                           sourceFingerprint: "remounted", skippedFinderMetadataPaths: [".DS_Store"])
+        let record = try #require(journal!.records.first { $0.id == id })
         #expect(record.source.url.lastPathComponent == "card")
+        #expect(record.runSourceURL == mounted)
         #expect(TransferJournal.finderMetadataSkipsProven(record))
         #expect(record.state == .completed, "\(record.summary)")
+        journal = nil // release the history lock so a fresh journal can read the file
+        let reloaded = try #require(TransferJournal(fileURL: f.journalURL).records.first { $0.id == id })
+        #expect(reloaded.runSourceURL == mounted)
+        #expect(TransferJournal.finderMetadataSkipsProven(reloaded))
+        var legacy = reloaded
+        legacy.runSourceURL = nil
+        #expect(TransferJournal.finderMetadataSkipsProven(legacy), "older records use the row source")
+        var wrongRunSource = reloaded
+        wrongRunSource.runSourceURL = f.source
+        #expect(!TransferJournal.finderMetadataSkipsProven(wrongRunSource), "output naming must match the run source")
 
+        journal = TransferJournal(fileURL: f.journalURL)
         // Rows that do not agree on one card root prove nothing.
+        try FileManager.default.moveItem(at: mounted, to: f.source)
         var split = rows
         split[0] = f.verified("A001.mov", on: f.destinations[0])
-        let mixed = try f.finish(journal, rows: split, proven: [".DS_Store"], fingerprint: "mixed")
+        let mixed = try f.finish(journal!, rows: split, proven: [".DS_Store"], fingerprint: "mixed")
         #expect(!TransferJournal.finderMetadataSkipsProven(mixed))
     }
 

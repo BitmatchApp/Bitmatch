@@ -181,6 +181,18 @@ final class ExpectedExclusionQueuePolicyTests: XCTestCase, @unchecked Sendable {
         XCTAssertTrue(TransferJournal.permitsExpectedExclusionQueueContinuation(saved))
     }
 
+    func testRemountedSourceUsesRunPathForExclusionQualification() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let journal = TransferJournal(fileURL: f.journal)
+        _ = try finish(journal, fixture: f, operation: f.operation())
+        var record = try XCTUnwrap(journal.records.first)
+        let previousMount = f.root.appendingPathComponent("Card old", isDirectory: true)
+        try FileManager.default.createDirectory(at: previousMount, withIntermediateDirectories: true)
+        record.source = try LocalTransferResource(url: previousMount)
+        XCTAssertEqual(record.runSourceURL, f.source)
+        XCTAssertTrue(TransferJournal.permitsExpectedExclusionQueueContinuation(record))
+    }
+
     func testLegacyUnknownOrStaleQualificationsFailClosed() throws {
         let f = try Fixture(); defer { f.cleanup() }
         let journal = TransferJournal(fileURL: f.journal)

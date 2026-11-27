@@ -67,6 +67,22 @@ struct FinderMetadataPresentationTests {
 
     // MARK: - Status
 
+    @Test func gateFailedSkipIsNotPartOfSavedSelectedPlanOrScope() throws {
+        let folders = try Folders()
+        var saved = try record(folders, proven: true)
+        saved.state = .issues
+        saved.results[1] = ResultRow(path: folders.card.appendingPathComponent(".DS_Store").path,
+                                     status: ResultOutcome.failed.statusText, size: 6, checksum: nil,
+                                     destination: "Backup", destinationPath: folders.backup.appendingPathComponent(".DS_Store").path,
+                                     failureReason: ResultFailureReason.sourceUnstable.rawValue)
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(saved) == true)
+        let scope = VerificationScopeEvidence(record: saved)
+        #expect(scope.recordedSelectedSourceFiles == 1)
+        #expect(scope.recordedSelectedResults == 1)
+        #expect(scope.recordedVerifiedResults == 1)
+        #expect(TransferLibraryPresentation.safetyState(for: saved, in: [saved]) == .needsAttention)
+    }
+
     @Test func skippedRowHasOneNeutralStatus() {
         let presentation = ResultStatusPresentation.make(status: Self.skipStatus)
         #expect(presentation.tone == .neutral)
@@ -232,7 +248,7 @@ struct FinderMetadataPresentationTests {
     private static let settingOff = "Finder view files (.DS_Store): copied"
 
     /// Writes an automatic report and returns its CSV, JSON object and PDF text.
-    private func export(_ folders: Folders, rows: [ResultRow], skipSetting: Bool?) async throws
+    private func export(_ folders: Folders, rows: [ResultRow], skipSetting: Bool?, plannedRows: [ResultRow]? = nil) async throws
         -> (csv: String, json: [String: Any], pdf: String) {
         try Data(repeating: 1, count: 10).write(to: folders.backup.appendingPathComponent("C0001.MP4"))
         var prefs = ReportPrefs(verificationMode: .standard, makeReport: true)
@@ -241,7 +257,7 @@ struct FinderMetadataPresentationTests {
             mode: .copyAndVerify, jobID: UUID(), started: Date(timeIntervalSince1970: 1_800_000_000),
             finished: Date(timeIntervalSince1970: 1_800_000_030), sourceURL: folders.card,
             destinationURLs: [folders.backup], results: rows, fileCount: rows.count, matchCount: 1,
-            prefs: prefs, workers: 1, totalBytesProcessed: 10, safetyState: .safeToErase
+            prefs: prefs, workers: 1, totalBytesProcessed: 10, safetyState: .safeToErase, plannedRows: plannedRows
         )
         let reports = folders.backup.appendingPathComponent("Reports", isDirectory: true)
         let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
@@ -251,6 +267,20 @@ struct FinderMetadataPresentationTests {
         let json = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
         let pdf = try #require(PDFDocument(data: Data(contentsOf: pdfURL)))
         return (try String(contentsOf: csvURL, encoding: .utf8), json, try #require(pdf.string))
+    }
+
+    @Test func automaticReportScopeUsesTheStartPlanAfterGateFailure() async throws {
+        let folders = try Folders()
+        var saved = try record(folders, proven: true)
+        saved.results[1] = ResultRow(path: folders.card.appendingPathComponent(".DS_Store").path,
+                                     status: ResultOutcome.failed.statusText, size: 6, checksum: nil,
+                                     destination: "Backup", destinationPath: folders.backup.appendingPathComponent(".DS_Store").path,
+                                     failureReason: ResultFailureReason.sourceUnstable.rawValue)
+        let report = try await export(folders, rows: saved.results, skipSetting: true,
+                                      plannedRows: TransferJournal.plannedRows(saved))
+        let scope = try #require((report.json["verification"] as? [String: Any])?["scope"] as? [String: Any])
+        #expect(scope["recordedSelectedResults"] as? Int == 1)
+        #expect(report.csv.contains("Recorded Selected Backup Results,1"))
     }
 
     @Test func automaticReportsStateTheSettingThatApplied() async throws {
@@ -284,9 +314,14 @@ struct FinderMetadataPresentationTests {
 
     @Test func automaticReportListsTheSkipAndOneSummaryLine() async throws {
         let folders = try Folders()
+        try Data(repeating: 1, count: 10).write(to: folders.card.appendingPathComponent("C0001.MP4"))
+        try Data(repeating: 1, count: 1).write(to: folders.card.appendingPathComponent(".DS_Store"))
         let report = try await export(folders, rows: rows(folders), skipSetting: true)
         let csv = report.csv
         let object = report.json
+        let statistics = try #require(object["statistics"] as? [String: Any])
+        let smallest = try #require(statistics["smallestFile"] as? [String: Any])
+        #expect((smallest["path"] as? String)?.hasSuffix("C0001.MP4") == true)
         let line = Self.summaryLine
 
         #expect(csv.contains(Self.skipStatus))
@@ -296,7 +331,6 @@ struct FinderMetadataPresentationTests {
         #expect(!csv.contains("Whole Card Backed Up"))
         #expect(!csv.contains("Selection Policy"))
 
-        let statistics = try #require(object["statistics"] as? [String: Any])
         #expect(statistics["skippedFinderViewFiles"] as? Int == 1)
         #expect(statistics["excluded"] == nil)
         #expect(statistics["issues"] as? Int == 0)

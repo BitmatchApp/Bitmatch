@@ -38,7 +38,8 @@ enum ReportExporter {
                        generateFullReport: Bool = true,
                        photographerContext: PhotographerReportContext? = nil,
                        verifiedSelection: VerifiedReportSelection? = nil,
-                       pdfNotes: String? = nil) async throws {
+                       pdfNotes: String? = nil,
+                       plannedRows: [ResultRow]? = nil) async throws {
 
         var reportPrefs = prefs
         let automaticNotes = ResultPresentation.automaticReportNotes(results)
@@ -98,7 +99,8 @@ enum ReportExporter {
         )
         if mode == .copyAndVerify, let selectedMode = prefs.verificationMode {
             summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results,
-                                                                  skipFinderViewFiles: prefs.skipFinderViewFiles)
+                                                                  skipFinderViewFiles: prefs.skipFinderViewFiles,
+                                                                  plannedRows: plannedRows)
         }
 
         // Raw CSV/JSON retain the full evidence notes. Only a proof matching
@@ -153,7 +155,8 @@ enum ReportExporter {
                                        generateFullReport: shouldGenerateFullReport,
                                        projectCSV: projectCSV,
                                        projectJSON: projectJSON,
-                                       safeToErase: safetyState == .safeToErase)
+                                       safeToErase: safetyState == .safeToErase,
+                                       verificationScope: summary.verificationScope)
     }
 
     /// Re-renders saved evidence without touching the source or changing the journal verdict.

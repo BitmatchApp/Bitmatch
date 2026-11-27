@@ -53,7 +53,7 @@ Safe to erase only when every one of these holds, evaluated in one place (`Trans
 3. exactly one skipped row per proven path per destination, none extra;
 4. selected paths plus skipped paths equal the complete source manifest; unsupported entries stay failures;
 5. the run has no `excludedAppleDouble` rows (that rule wins, unchanged);
-6. at the final source gate the classifier re-runs on each skipped path still present: one that no longer passes fails closed as `sourceUnstable`; a Finder-to-Finder rewrite or a newly appeared Finder file is not a failure; any new ordinary file still is. A file that changes while it is being read is read once more; a read error (EIO) fails the run as a card read failure. A gate-failed skip was never in the saved plan, so the plan checks leave its failed row out while the verdict still counts it.
+6. at the final source gate the classifier re-runs on each skipped path still present: one that no longer passes fails closed as `sourceUnstable`; a Finder-to-Finder rewrite or a newly appeared Finder file is not a failure; any new ordinary file still is. A file that changes while it is being read is read once more; a POSIX read error fails the run as a card read failure. A gate-failed skip was never in the saved plan, so the plan checks leave its failed row out while the verdict still counts it.
 
 Paths are compared in their symlink-resolved form, and a saved record takes the card folder from its own rows, so a symlinked source or a remounted queued card still proves its skips.
 

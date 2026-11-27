@@ -71,6 +71,7 @@ public extension TransferCompletion {
         rows: [ResultRow], source: URL, destinations: [URL],
         settings: CameraLabelSettings, plannedFileCounts: [Int],
         expectedSelectedSourcePaths: Set<String>? = nil,
+        rootSource: URL? = nil,
         finderMetadataSkipsProven: Bool
     ) -> Bool {
         guard finderMetadataSkipsProven else { return false }
@@ -85,7 +86,7 @@ public extension TransferCompletion {
         guard let excluded = excludedSourcePaths(source: source, reviewedRelativePaths: reviewed) else { return false }
         let roots = destinations.map {
             PathContainment.comparablePath(SafetyValidator.resolvedDestinationRoot(
-                source: source, destination: $0, settings: settings
+                source: rootSource ?? source, destination: $0, settings: settings
             ).path)
         }
         guard Set(roots).count == roots.count else { return false }
@@ -135,7 +136,7 @@ public extension TransferCompletion {
             guard !relative.hasPrefix("/"), !parts.isEmpty,
                   parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
                   parts.last?.hasPrefix("._") == true else { return nil }
-            let path = PathContainment.comparablePath(source.appendingPathComponent(relative).path)
+            let path = PathContainment.comparablePath(prefix + relative)
             guard path.hasPrefix(prefix), excluded.insert(path).inserted else { return nil }
         }
         return excluded

@@ -8,6 +8,31 @@ import Testing
 @testable import BitMatchEngine
 
 struct FinderMetadataVerdictTests {
+    @Test func skippedAtStartNeverMatchesAnOutsideFileByBasename() {
+        let outside = URL(fileURLWithPath: "/else/DCIM/.DS_Store")
+        let row = FileOperationResult(sourceURL: outside, destinationURL: shuttleA.appendingPathComponent(".DS_Store"),
+                                      success: false, error: nil, fileSize: 1, verificationResult: nil, processingTime: 0)
+        var operation = FileOperation(sourceURL: source, destinationURLs: [shuttleA], startTime: Date(), endTime: Date(),
+                                      results: [row], sourceManifest: nil, sourceFingerprint: nil,
+                                      verificationMode: .standard, settings: CameraLabelSettings(), estimatedTotalBytes: nil)
+        operation.skippedFinderMetadataPaths = [".DS_Store"]
+        #expect(TransferCompletion.skippedAtStartSourcePaths(operation).isEmpty)
+    }
+    @Test func mixedGateFailureDoesNotMisreportOtherSkips() {
+        let nested = URL(fileURLWithPath: "/source/DCIM/.DS_Store")
+        let failed = [shuttleA, shuttleB].map { destination in
+            ResultRow(path: nested.path, status: ResultOutcome.failed.statusText, size: 1, checksum: nil,
+                      destination: destination.lastPathComponent,
+                      destinationPath: destination.appendingPathComponent("source/DCIM/.DS_Store").path,
+                      failureReason: ResultFailureReason.sourceUnstable.rawValue)
+        }
+        let result = verdict(clipRows + [skipped(at: shuttleA), skipped(at: shuttleB)] + failed,
+                             proven: [".DS_Store", "DCIM/.DS_Store"], sourceFiles: [clipA, clipB, dsStore, nested])
+        #expect(!result.success)
+        #expect(!result.message.contains(TransferCompletion.finderMetadataSkipMismatch), "\(result.message)")
+        #expect(result.message.contains("1 Finder view file"), "\(result.message)")
+        #expect(!result.message.contains("2 files not verified"), "\(result.message)")
+    }
     private let source = URL(fileURLWithPath: "/source")
     private let shuttleA = URL(fileURLWithPath: "/backups/Shuttle A")
     private let shuttleB = URL(fileURLWithPath: "/backups/Shuttle B")

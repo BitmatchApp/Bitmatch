@@ -395,7 +395,8 @@ public enum EvidenceWriter: Sendable {
                                         prefs: ReportPrefs,
                                         generateFullReport: Bool,
                                         projectCSV: ProjectCSVEvidence?,
-                                        projectJSON: Project?, safeToErase: Bool? = nil) async throws {
+                                        projectJSON: Project?, safeToErase: Bool? = nil,
+                                        verificationScope: VerificationScopeEvidence? = nil) async throws {
         
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
@@ -438,7 +439,7 @@ public enum EvidenceWriter: Sendable {
                                  project: projectCSV,
                                  prefs: prefs,
                                  scope: kind == .copyAndVerify && safeToErase != nil
-                                     ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) }
+                                     ? (verificationScope ?? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) })
                                      : nil)
             
             try Task.checkCancellation()
@@ -469,7 +470,8 @@ public enum EvidenceWriter: Sendable {
                 pdfEvidence: generateFullReport ? pdfData.map {
                     ReportPDFEvidence(filename: pdfURL.lastPathComponent,
                         sha256: SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined())
-                } : nil
+                } : nil,
+                verificationScope: verificationScope
             )
             
             // If checksums were used, auto-export checksum file (no dialog)
@@ -662,7 +664,8 @@ public enum EvidenceWriter: Sendable {
                                                  prefs: ReportPrefs,
                                                  project: Project?,
                                                  safeToErase: Bool? = nil,
-                                                 pdfEvidence: ReportPDFEvidence? = nil) throws {
+                                                 pdfEvidence: ReportPDFEvidence? = nil,
+                                                 verificationScope: VerificationScopeEvidence? = nil) throws {
         let report = try makeEnhancedJSONReport(
             results: results,
             jobID: jobID,
@@ -682,7 +685,7 @@ public enum EvidenceWriter: Sendable {
             verifyWorkers: verifyWorkers,
             verifyLanes: verifyLanes,
             prefs: prefs,
-            project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence
+            project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence, verificationScope: verificationScope
         )
         try encodeEnhancedJSONReport(report).write(to: url, options: .withoutOverwriting)
     }
@@ -716,7 +719,8 @@ public enum EvidenceWriter: Sendable {
         prefs: ReportPrefs,
         project: Project?,
         safeToErase: Bool? = nil,
-        pdfEvidence: ReportPDFEvidence? = nil
+        pdfEvidence: ReportPDFEvidence? = nil,
+        verificationScope: VerificationScopeEvidence? = nil
     ) throws -> EnhancedJSONReport<Project> {
         let safeToErase = results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble } ? false : safeToErase
         // Calculate file extensions breakdown
@@ -726,7 +730,7 @@ public enum EvidenceWriter: Sendable {
         var maxSize: Int64 = 0
         var minSize: Int64 = Int64.max
         
-        for result in results {
+        for result in results where !result.isSkippedFinderMetadata {
             let url = URL(fileURLWithPath: result.path)
             let ext = url.pathExtension.uppercased()
             if !ext.isEmpty {
@@ -855,7 +859,7 @@ public enum EvidenceWriter: Sendable {
                 issuesByType: issuesByType,
                 checksumCache: nil, // Would need to track cache stats during operation
                 scope: kind == .copyAndVerify && safeToErase != nil
-                    ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) }
+                    ? (verificationScope ?? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) })
                     : nil
             ),
             results: results.map { JSONReportItem(from: $0) },

@@ -397,7 +397,7 @@ enum TransferLibraryPresentation {
         // completed records visible, but do not infer whole-card safety.
         guard let planned = record.plannedFileCounts,
               savedResultsCoverSelectedPlan(
-                planned: planned, summaries: summaries,
+                planned: planned, summaries: summaries, plannedRows: TransferJournal.plannedRows(record),
                 destinationCount: record.destinations.count
               ) else { return false }
         return summaries.allSatisfy { Set($0.rows.map(\.path)) == expectedPaths }
@@ -410,16 +410,17 @@ enum TransferLibraryPresentation {
         guard let planned = record.plannedFileCounts else { return nil }
         let summaries = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
         return savedResultsCoverSelectedPlan(
-            planned: planned, summaries: summaries, destinationCount: record.destinations.count
+            planned: planned, summaries: summaries, plannedRows: TransferJournal.plannedRows(record), destinationCount: record.destinations.count
         )
     }
 
     private static func savedResultsCoverSelectedPlan(
-        planned: [Int], summaries: [DestinationResultSummary], destinationCount: Int
+        planned: [Int], summaries: [DestinationResultSummary], plannedRows: [ResultRow], destinationCount: Int
     ) -> Bool {
         guard !summaries.isEmpty, summaries.count == destinationCount,
               planned.count == summaries.count else { return false }
-        let selected = summaries.map { summary in summary.rows.filter(\.isInSelectedPlan) }
+        let selectedIDs = Set(plannedRows.map(\.id))
+        let selected = summaries.map { summary in summary.rows.filter { selectedIDs.contains($0.id) } }
         guard zip(selected, planned).allSatisfy({ rows, count in
             rows.count == count && Set(rows.map(\.path)).count == count
         }) else { return false }
@@ -620,6 +621,7 @@ extension VerificationScopeEvidence {
         let setting: Bool? = record.skippedFinderMetadataPaths != nil
             ? true : (record.cameraSettings.skipFinderViewFiles ? nil : false)
         self.init(selectedMode: record.verificationMode, results: record.results,
-                  includeModePlan: record.plannedFileCounts != nil, skipFinderViewFiles: setting)
+                  includeModePlan: record.plannedFileCounts != nil, skipFinderViewFiles: setting,
+                  plannedRows: TransferJournal.plannedRows(record))
     }
 }

@@ -205,17 +205,20 @@ extension TransferPipeline {
     /// Vanishing between the scan and this open is not a change; anything
     /// that cannot be proven a Finder view file again is. A file that changed
     /// while being read (Finder saving it) is read once more before it is
-    /// called changed. Cancellation and a read error (EIO) throw, so the run
+    /// called changed. Cancellation and POSIX read errors throw, so the run
     /// says the card could not be read rather than that it changed.
     static func isStillFinderViewFile(_ entry: FileEntry, checkCancellation: @Sendable () throws -> Void) throws -> Bool {
         do {
-            return try classifyOnce(entry, checkCancellation: checkCancellation)
-        } catch is FinderMetadataSelection.MetadataChanged {
             do {
                 return try classifyOnce(entry, checkCancellation: checkCancellation)
             } catch is FinderMetadataSelection.MetadataChanged {
-                return false
+                do { return try classifyOnce(entry, checkCancellation: checkCancellation) }
+                catch is FinderMetadataSelection.MetadataChanged { return false }
             }
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain {
+            var info = error.userInfo
+            info[NSLocalizedDescriptionKey] = "Could not read \(entry.relativePath) during the end-of-run card check: \(error.localizedDescription)"
+            throw NSError(domain: error.domain, code: error.code, userInfo: info)
         }
     }
 
@@ -224,15 +227,15 @@ extension TransferPipeline {
         try skipped.filter { try !isStillFinderViewFile($0, checkCancellation: checkCancellation) }.map(\.relativePath)
     }
 
-    /// One open-and-classify pass. Throws cancellation, EIO and
-    /// `MetadataChanged`; every other failure answers false.
+    /// One open-and-classify pass. Throws cancellation, POSIX read errors and
+    /// `MetadataChanged`; a vanished file is accepted and other failures answer false.
     private static func classifyOnce(_ entry: FileEntry, checkCancellation: @Sendable () throws -> Void) throws -> Bool {
         try checkCancellation()
         let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else {
             let code = errno
-            if code == EIO { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
-            return code == ENOENT
+            if code == ENOENT { return true }
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
         }
         defer { close(fd) }
         // The size is the open file's own, not the scan's: Finder may have
@@ -240,8 +243,7 @@ extension TransferPipeline {
         // still catches a change during the read.
         var status = stat()
         guard fstat(fd, &status) == 0 else {
-            if errno == EIO { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
-            return false
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
         }
         do {
             return try FinderMetadataSelection.isFinderViewFile(fd: fd, size: Int64(status.st_size), checkCancellation: checkCancellation)
@@ -249,7 +251,7 @@ extension TransferPipeline {
             throw CancellationError()
         } catch let changed as FinderMetadataSelection.MetadataChanged {
             throw changed
-        } catch let error as NSError where error.domain == NSPOSIXErrorDomain && error.code == Int(EIO) {
+        } catch let error as NSError where error.domain == NSPOSIXErrorDomain {
             throw error
         } catch {
             return false
@@ -795,10 +797,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Reading each header can block on a stalled card, so it runs on the
         // transfer executor under its own security scope, as the final
         // check's recheck does.
-        // A `.DS_Store` that cannot be classified (gone, resized or
+        // A `.DS_Store` that cannot be classified (gone or
         // unreadable since the scan) is not proven, so it is ordinary data:
         // it is copied like any file and fails, if it must, as its own row.
-        // Nothing aborts the run.
+        // Repeated changes while reading instead stop the run before copying.
         let skipped: [FileEntry]
         if operation.settings.skipFinderViewFiles {
             let run = TransferDiagnostics.runID ?? operation.id

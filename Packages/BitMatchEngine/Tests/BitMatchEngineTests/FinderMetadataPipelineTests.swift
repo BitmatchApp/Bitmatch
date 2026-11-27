@@ -7,6 +7,35 @@ import Testing
 /// for it on every backup, never writes it, and rechecks it at the final
 /// source gate. GitHub #93: Finder rewriting these files must not fail a run.
 @Suite(.serialized) struct FinderMetadataPipelineTests {
+    private final class RewriteAfterScanAccess: FakeFileAccess, @unchecked Sendable {
+        let source: URL
+        let starts = Mutex(0)
+        init(source: URL) { self.source = source; super.init(backing: LocalFileAccess()) }
+        override func startAccessing(url: URL) -> Bool {
+            if url == source, starts.withLock({ $0 += 1; return $0 }) == 3 {
+                try? FinderMetadataFixtures.bud1(size: 8192).write(to: source.appendingPathComponent(".DS_Store"))
+            }
+            return super.startAccessing(url: url)
+        }
+    }
+
+    @Test func finderRewriteBetweenScanAndStartStillCompletesSafely() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let access = RewriteAfterScanAccess(source: tree.source)
+            let pipeline = TransferPipeline(fileSystem: access, checksum: ChecksumEngine.shared)
+            let operation = try await pipeline.performFileOperation(sourceURL: tree.source, destinationURLs: tree.destinations,
+                verificationMode: .standard, settings: CameraLabelSettings(), estimatedTotalBytes: nil,
+                progressCallback: { _ in }, onFileResult: nil)
+            #expect(operation.results.filter(\.skippedFinderMetadata).count == 2)
+            let verdict = TransferCompletion.verdict(rows: TransferCompletion.rows(from: operation),
+                sourceFiles: operation.sourceManifest, destinations: tree.destinations, source: tree.source,
+                settings: operation.settings, mode: .standard, generateASCMHL: false, handoffIssues: [], reportIssue: nil,
+                project: .init(didPersist: true, locallySafe: nil), skippedFinderMetadataPaths: operation.skippedFinderMetadataPaths)
+            #expect(verdict.success, "\(verdict.message)")
+        }
+    }
     private struct Tree {
         let root: URL
         let source: URL
@@ -353,7 +382,9 @@ import Testing
         let target = root.appendingPathComponent("target")
         try FinderMetadataFixtures.bud1(size: 6148).write(to: target)
         try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
-        #expect(try !TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never), "a link is never followed")
+        #expect(throws: (any Error).self) {
+            try TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never)
+        } // O_NOFOLLOW refuses the link as a read error.
     }
 
     /// A `.DS_Store` that cannot be classified at Start (here unreadable) is
@@ -399,7 +430,7 @@ import Testing
         }
         #expect(try TransferPipeline.isStillFinderViewFile(entry, checkCancellation: rewriteOnce))
 
-        // The opening check passes; the read inside the classifier fails.
+        // Inject an error from the cancellation callback inside classification.
         let eio: @Sendable () throws -> Void = {
             if calls.withLock({ $0 += 1; return $0 }) > 101 {
                 throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO))
@@ -409,6 +440,23 @@ import Testing
         var thrown: NSError?
         do { _ = try TransferPipeline.isStillFinderViewFile(entry, checkCancellation: eio) } catch { thrown = error as NSError }
         #expect(thrown?.domain == NSPOSIXErrorDomain && thrown?.code == Int(EIO), "\(String(describing: thrown))")
+    }
+
+    @Test func gatePropagatesNonEIOPosixReadFailureWithPath() throws {
+        let tree = try makeTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let entry = FileEntry(url: tree.dsStore, relativePath: ".DS_Store", size: 6148)
+        let calls = Mutex(0)
+        var thrown: NSError?
+        do {
+            _ = try TransferPipeline.isStillFinderViewFile(entry, checkCancellation: {
+                if calls.withLock({ $0 += 1; return $0 }) == 2 {
+                    throw NSError(domain: NSPOSIXErrorDomain, code: Int(ENXIO))
+                }
+            })
+        } catch { thrown = error as NSError }
+        #expect(thrown?.domain == NSPOSIXErrorDomain && thrown?.code == Int(ENXIO))
+        #expect(thrown?.localizedDescription.contains(".DS_Store") == true)
     }
 
     @Test func withTheSettingOffANewFinderFileStillFailsTheGate() async throws {

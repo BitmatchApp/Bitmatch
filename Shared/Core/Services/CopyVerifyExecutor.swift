@@ -756,6 +756,10 @@ final class CopyVerifyExecutor {
         let reportResults = results
         let reportOperation = operation
         let reportContext = photographerContext
+        let skippedAtStart = TransferCompletion.skippedAtStartSourcePaths(operation)
+        let plannedRows = results.filter {
+            $0.isInSelectedPlan && !(!$0.isSuccessStatus && skippedAtStart.contains($0.path))
+        }
 
         let work = Task.detached(priority: .utility) {
             try await ReportExporter.export(
@@ -780,7 +784,8 @@ final class CopyVerifyExecutor {
                 generateFullReport: reportSettings.makeReport,
                 photographerContext: reportContext,
                 verifiedSelection: verifiedSelection,
-                pdfNotes: verifiedSelection == nil ? nil : notesBeforeSelection
+                pdfNotes: verifiedSelection == nil ? nil : notesBeforeSelection,
+                plannedRows: plannedRows
             )
         }
         reportTask = work

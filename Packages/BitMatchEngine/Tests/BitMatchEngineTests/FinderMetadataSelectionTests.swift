@@ -4,6 +4,53 @@ import Testing
 @testable import BitMatchEngine
 
 @Suite struct FinderMetadataSelectionTests {
+    @Test func startClassifiesLiveSizeAfterScan() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(".DS_Store")
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: url)
+        let manifest = try CardSource.enumerateRegularFiles(base: root)
+        try FinderMetadataFixtures.bud1(size: 8192).write(to: url)
+        #expect(try FinderMetadataSelection.skipped(in: manifest).map(\.relativePath) == [".DS_Store"])
+    }
+
+    @Test func startRetriesARewriteDuringClassification() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(".DS_Store")
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: url)
+        let manifest = try CardSource.enumerateRegularFiles(base: root)
+        let calls = Mutex(0)
+        let paths = try FinderMetadataSelection.skipped(in: manifest, checkCancellation: {
+            if calls.withLock({ $0 += 1; return $0 }) == 2 {
+                try FinderMetadataFixtures.bud1(size: 8192).write(to: url)
+            }
+        })
+        #expect(paths.map(\.relativePath) == [".DS_Store"])
+    }
+
+    @Test func fifoAtFinderPathDoesNotBlock() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(".DS_Store")
+        #expect(mkfifo(url.path, 0o600) == 0)
+        let entry = FileEntry(url: url, relativePath: ".DS_Store", size: 6148)
+        #expect(try FinderMetadataSelection.skipped(in: [entry]).isEmpty)
+    }
+
+    @Test func classifierPropagatesActualPreadError() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(".DS_Store")
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: url)
+        let fd = open(url.path, O_WRONLY | O_CLOEXEC)
+        #expect(fd >= 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var caught: NSError?
+        do { _ = try FinderMetadataSelection.isFinderViewFile(fd: fd, size: 6148) } catch { caught = error as NSError }
+        #expect(caught?.domain == NSPOSIXErrorDomain && caught?.code == Int(EBADF))
+    }
     private func skipped(_ root: URL) throws -> [String] {
         try FinderMetadataSelection.skipped(in: CardSource.enumerateRegularFiles(base: root)).map(\.relativePath)
     }
@@ -123,7 +170,7 @@ import Testing
         #expect(try skipped(root).isEmpty)
     }
 
-    @Test func aFileThatChangesWhileReadingThrows() throws {
+    @Test func aFileThatChangesOnBothReadsThrows() throws {
         let root = try FinderMetadataFixtures.makeTree()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = root.appendingPathComponent(".DS_Store")
@@ -133,15 +180,15 @@ import Testing
         let calls = Mutex(0)
         #expect(throws: FinderMetadataSelection.MetadataChanged.self) {
             try FinderMetadataSelection.skipped(in: [entry], checkCancellation: {
-                // Call 1 is the filter's own check; call 2 is the first read,
-                // after the parser has taken its opening fstat.
-                if calls.withLock({ $0 += 1; return $0 }) == 2 { truncate(path, 5000) }
-            })
+                // Change the open file during every attempted read.
+                let call = calls.withLock { $0 += 1; return $0 }
+                if call >= 2 { truncate(path, call.isMultiple(of: 2) ? 5000 : 6148) }
+            }, onUnclassified: { _, _ in })
         }
     }
 
-    /// Start's tolerant form: an entry that cannot be classified (gone,
-    /// resized or unreadable since the scan) is ordinary data, reported to
+    /// Start's tolerant form: an entry that cannot be classified (gone or
+    /// unreadable since the scan) is ordinary data, reported to
     /// the caller, and the others still classify.
     @Test func anEntryThatCannotBeClassifiedIsOrdinaryAndReported() throws {
         let root = try FinderMetadataFixtures.makeTree()
@@ -163,8 +210,8 @@ import Testing
         let skipped = try FinderMetadataSelection.skipped(in: entries, onUnclassified: { entry, _ in
             reported.withLock { $0.append(entry.relativePath) }
         })
-        #expect(skipped.map(\.relativePath) == ["good/.DS_Store"])
-        #expect(reported.withLock { $0.sorted() } == ["gone/.DS_Store", "resized/.DS_Store", "unreadable/.DS_Store"])
+        #expect(skipped.map(\.relativePath) == ["good/.DS_Store", "resized/.DS_Store"])
+        #expect(reported.withLock { $0.sorted() } == ["gone/.DS_Store", "unreadable/.DS_Store"])
         // Without the handler the first failure still throws.
         #expect(throws: (any Error).self) { try FinderMetadataSelection.skipped(in: entries) }
     }

@@ -104,15 +104,18 @@ public enum TransferCompletion: Sendable {
     /// `source` may be spelled through a symlinked folder.
     public static func finderMetadataSkipsProven(
         rows: [ResultRow], provenPaths: [String]?, sourceFiles: [URL]?,
-        destinations: [URL], source: URL, settings: CameraLabelSettings
+        destinations: [URL], source: URL, settings: CameraLabelSettings,
+        savedRowSource: URL? = nil
     ) -> Bool {
         let skipped = rows.filter(\.isSkippedFinderMetadata)
         guard let provenPaths, !provenPaths.isEmpty else { return skipped.isEmpty }
         guard !destinations.isEmpty, let sourceFiles else { return false }
         // Only `.DS_Store` entries can be proven, so only they are resolved.
         var folders = CanonicalFolders()
-        let manifest = Set(sourceFiles.filter { $0.lastPathComponent == ".DS_Store" }.map { folders.canonicalPath($0) })
-        let sourcePath = canonicalPath(source)
+        let manifest = Set(sourceFiles.filter { $0.lastPathComponent == ".DS_Store" }.map {
+            savedRowSource == nil ? folders.canonicalPath($0) : PathContainment.comparablePath($0.path)
+        })
+        let sourcePath = savedRowSource.map { PathContainment.comparablePath($0.path) } ?? canonicalPath(source)
         let sourcePrefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
         var proven = Set<String>()
         for relative in provenPaths {
@@ -140,7 +143,9 @@ public enum TransferCompletion: Sendable {
         // same destination URLs as `roots`.
         var skippedByDestination = Array(repeating: Set<String>(), count: roots.count)
         for row in skipped {
-            let path = folders.canonicalPath(URL(fileURLWithPath: row.path, isDirectory: false))
+            let path = savedRowSource == nil
+                ? folders.canonicalPath(URL(fileURLWithPath: row.path, isDirectory: false))
+                : PathContainment.comparablePath(row.path)
             guard proven.contains(path), path.hasPrefix(sourcePrefix),
                   let destinationPath = row.destinationPath else { return false }
             let relative = String(path.dropFirst(sourcePrefix.count))
@@ -158,10 +163,12 @@ public enum TransferCompletion: Sendable {
     /// the plan was counted without them.
     public static func skippedAtStartSourcePaths(_ operation: FileOperation) -> Set<String> {
         guard let proven = operation.skippedFinderMetadataPaths, !proven.isEmpty else { return [] }
-        let relative = Set(proven)
+        let sourcePath = canonicalPath(operation.sourceURL)
+        let prefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
+        let paths = Set(proven.map { PathContainment.comparablePath(prefix + $0) })
         return Set(operation.results.lazy
             .filter { $0.sourceURL.lastPathComponent == ".DS_Store" && !$0.excludedAppleDouble }
-            .filter { relative.contains($0.sourceURL.relativePath(to: operation.sourceURL)) }
+            .filter { paths.contains(canonicalPath($0.sourceURL)) }
             .map(\.sourceURL.path))
     }
 
@@ -630,14 +637,30 @@ public enum TransferCompletion: Sendable {
             rows: rows, provenPaths: skippedFinderMetadataPaths, sourceFiles: sourceFiles,
             destinations: destinations, source: source, settings: settings
         )
+        // For wording only, check whether the missing skip rows are exactly
+        // the paths the final source gate failed. The real predicate above
+        // remains false and therefore can never grant a safe verdict.
+        let gateFailures = rows.filter {
+            !$0.isSuccessStatus && !$0.isOmittedBySelection
+                && $0.fileName == ".DS_Store" && $0.failureReason == ResultFailureReason.sourceUnstable.rawValue
+        }
+        let proofRows = rows + gateFailures.map {
+            ResultRow(path: $0.path, status: ResultOutcome.skippedFinderMetadata.statusText,
+                      size: $0.size, checksum: nil, destination: $0.destination, destinationPath: $0.destinationPath)
+        }
+        let survivingSkipsProven = !skipsProven && !gateFailures.isEmpty && finderMetadataSkipsProven(
+            rows: proofRows, provenPaths: skippedFinderMetadataPaths, sourceFiles: sourceFiles,
+            destinations: destinations, source: source, settings: settings
+        )
+        let displaySkipsProven = skipsProven || survivingSkipsProven
         let skippedCount = skippedSourcePaths.count
         // With no skipped row this is `rows` and `sourceFiles` unchanged.
         let rowsWithoutSkips = skipped.isEmpty ? rows : rows.filter { !$0.isSkippedFinderMetadata }
         // Only proven skips leave the expected files (as in `ascmhlPlan`).
         // Unproven, each stays expected and its row reads "not verified".
-        let sourceFiles = skipped.isEmpty || !skipsProven ? sourceFiles
+        let sourceFiles = skipped.isEmpty || !displaySkipsProven ? sourceFiles
             : sourceFiles.map { files in files.filter { !skippedSourcePaths.contains($0.path) } }
-        let unprovenSkips = !skipsProven && !skipped.isEmpty
+        let unprovenSkips = !displaySkipsProven && !skipped.isEmpty
         // Safe-to-erase modes count only independently verified readback rows.
         // Quick has no safe verdict; its copied rows remain eligible only for
         // the separate amber "copied, not verified" outcome.
@@ -781,7 +804,7 @@ public enum TransferCompletion: Sendable {
             excludedCount > 0 ? selectedCoverage : coverage,
             notVerifiedWord: mode == .quick ? "failed" : "not verified",
             explainReasons: !headlineGivesReason,
-            skippedFinderMetadataCount: skipsProven && !headlineGivesSkips ? skippedCount : 0
+            skippedFinderMetadataCount: displaySkipsProven && !headlineGivesSkips ? skippedCount : 0
         )
 
         let everythingElseHeld = fileResultsSucceeded && skipsProven && coverage.isExact
