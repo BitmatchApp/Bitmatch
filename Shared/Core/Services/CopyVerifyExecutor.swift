@@ -436,14 +436,22 @@ final class CopyVerifyExecutor {
         )
         let provenSkippedSourcePaths = finderSkipsProven
             ? Set(allResults.filter(\.isSkippedFinderMetadata).map(\.path)) : []
-        let photographerLifecycle = try Self.photographerLifecycleAfterAuthoritativeCompletion(
-            completion: {
-                guard let finalizer = config.photographerReportFinalizer else { return nil }
-                return try finalizer(allResults, provenSkippedSourcePaths)
-            }
-        )
         try checkCancellation()
         let handoffIssues = try await createASCMHLHistories(operation: operation, config: config, callbacks: callbacks)
+        try checkCancellation()
+        let photographerLifecycle: PhotographerLifecycleFinalization
+        if !handoffIssues.isEmpty && config.photographerReportFinalizer != nil {
+            // A requested handoff is part of the transfer contract. Do not
+            // persist a safe card when that contract was not fulfilled.
+            photographerLifecycle = PhotographerLifecycleFinalization(context: nil, didPersist: false, locallySafe: nil)
+        } else {
+            photographerLifecycle = try Self.photographerLifecycleAfterAuthoritativeCompletion(
+                completion: {
+                    guard let finalizer = config.photographerReportFinalizer else { return nil }
+                    return try finalizer(allResults, provenSkippedSourcePaths)
+                }
+            )
+        }
         timingService.updateStage(.completed)
         let phaseDurations = timingService.phaseDurations(for: config.verificationMode)
         completedPhaseDurations = phaseDurations

@@ -53,6 +53,40 @@ import Testing
         #expect(try skipped(root).isEmpty)
     }
 
+    @Test func malformedRootDirectoryAndHardLinksAreOrdinary() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let directory = 4 + 0x800 + 8 + 256 * 4
+        for (name, index, value) in [("count", directory + 3, UInt8(2)),
+                                     ("length", directory + 4, UInt8(3)),
+                                     ("block", directory + 12, UInt8(1))] {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var data = FinderMetadataFixtures.bud1(size: 6148)
+            data[index] = value
+            try data.write(to: folder.appendingPathComponent(".DS_Store"))
+        }
+        let folder = root.appendingPathComponent("linked")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let clip = folder.appendingPathComponent("clip.mov")
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: clip)
+        try FileManager.default.linkItem(at: clip, to: folder.appendingPathComponent(".DS_Store"))
+        #expect(try skipped(root).isEmpty)
+    }
+
+    @Test(.enabled(if: FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/.DS_Store").path)))
+    func realDesktopFinderFileClassifiesWhenPresent() throws {
+        let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/.DS_Store")
+        guard FileManager.default.fileExists(atPath: file.path) else { return }
+        let fd = open(file.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        #expect(fd >= 0)
+        guard fd >= 0 else { return }
+        defer { close(fd) }
+        var info = stat()
+        #expect(fstat(fd, &info) == 0)
+        #expect(try FinderMetadataSelection.isFinderViewFile(fd: fd, size: Int64(info.st_size)))
+    }
+
     @Test func otherSpellingsAreOrdinary() throws {
         let root = try FinderMetadataFixtures.makeTree()
         defer { try? FileManager.default.removeItem(at: root) }

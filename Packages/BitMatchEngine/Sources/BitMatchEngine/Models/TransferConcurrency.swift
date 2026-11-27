@@ -46,8 +46,8 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
     /// Per lane: each backup drive verifies in its own lane with this many
     /// workers while verifying during the copy, so backups on different drives
     /// read back side by side and a spinning drive still reads its own files
-    /// in order. Across lanes at most `maximumWorkers` are in flight (at
-    /// least one per lane).
+    /// in order. A shared limiter caps verifies across lanes at
+    /// `maximumWorkers`, including when there are more lanes than workers.
     public let verifyWorkers: Int
     /// How many lanes the run verified in: the drives its backups spanned
     /// while verifying during the copy, otherwise one. Records written before
@@ -104,5 +104,37 @@ public struct TransferConcurrencyPlan: Codable, Equatable, Sendable {
 
     static func clamp(_ workers: Int) -> Int {
         min(maximumWorkers, max(1, workers))
+    }
+}
+
+/// Shared by every verify lane in a run. Cancelled waiters take and promptly
+/// return their permit, so cancellation cannot strand capacity or a task.
+actor VerifyConcurrencyLimiter {
+    private var available: Int
+    private var waiters: [CheckedContinuation<Void, Never>] = []
+
+    init(limit: Int) {
+        precondition(limit > 0)
+        available = limit
+    }
+
+    private func acquire() async {
+        if available > 0 {
+            available -= 1
+        } else {
+            await withCheckedContinuation { waiters.append($0) }
+        }
+    }
+
+    private func release() {
+        if waiters.isEmpty { available += 1 }
+        else { waiters.removeFirst().resume() }
+    }
+
+    func withPermit<T: Sendable>(_ body: @Sendable () async throws -> T) async throws -> T {
+        await acquire()
+        defer { release() }
+        try Task.checkCancellation()
+        return try await body()
     }
 }

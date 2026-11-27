@@ -10,8 +10,7 @@ public enum FinderMetadataSelection {
     public static let maximumSize: Int64 = 64 * 1024 * 1024
     public static let minimumSize: Int64 = 36
     private static let headerLength = 20
-    /// The most of the root block read when looking for `DSDB`. Finder's root
-    /// block is 2 KiB; a larger one is still searched up to this bound.
+    /// Bound the allocator table and directory reads even for malformed files.
     static let maximumRootBlockRead = 64 * 1024
 
     /// The file changed (size, modification or change time) while it was
@@ -56,8 +55,8 @@ public enum FinderMetadataSelection {
     /// Rule: bytes 0-3 are 00 00 00 01, bytes 4-7 are "Bud1", the offset at
     /// 8-11 equals the repeated offset at 16-19, the root size at 12-15 is
     /// non-zero, 4 + offset + rootSize fits inside the file, and the root
-    /// block (at 4 + offset, read up to `maximumRootBlockRead` bytes) holds
-    /// the `DSDB` directory entry. A read error is thrown as its POSIX error;
+    /// block (at 4 + offset, bounded by `maximumRootBlockRead`) contains a
+    /// padded address table and exactly one valid `DSDB` directory entry. A read error is thrown as its POSIX error;
     /// a change to the file while reading throws `MetadataChanged`.
     static func isFinderViewFile(fd: Int32, size: Int64, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> Bool {
         guard size >= minimumSize, size <= maximumSize else { return false }
@@ -66,6 +65,7 @@ public enum FinderMetadataSelection {
               Int64(before.st_size) == size else {
             throw MetadataChanged()
         }
+        guard before.st_nlink == 1 else { return false }
         func read(_ count: Int, at offset: Int64) throws -> [UInt8] {
             var buffer = [UInt8](repeating: 0, count: count)
             var done = 0
@@ -95,12 +95,25 @@ public enum FinderMetadataSelection {
             && 4 + offset + rootSize <= UInt64(size)
         if matches {
             let root = try read(Int(min(rootSize, UInt64(maximumRootBlockRead))), at: Int64(4 + offset))
-            let marker = Array("DSDB".utf8)
-            matches = root.count >= marker.count
-                && (0...(root.count - marker.count)).contains { root[$0..<$0 + marker.count].elementsEqual(marker) }
+            // The allocator root starts with a count and reserved word. The
+            // address table is padded to 256 entries, followed by a directory.
+            matches = false
+            if root.count >= 8 {
+                let count = Int(uint32(root, 0))
+                if count > 0 && count <= maximumRootBlockRead / 4 {
+                    let padded = ((count + 255) / 256) * 256
+                    let directory = 8 + padded * 4
+                    if directory + 13 <= root.count {
+                        matches = uint32(root, directory) == 1
+                            && root[directory + 4] == 4
+                            && root[(directory + 5)..<(directory + 9)].elementsEqual("DSDB".utf8)
+                            && uint32(root, directory + 9) < UInt32(count)
+                    }
+                }
+            }
         }
         var after = stat()
-        guard fstat(fd, &after) == 0, before.st_size == after.st_size,
+        guard fstat(fd, &after) == 0, before.st_size == after.st_size, before.st_nlink == after.st_nlink,
               before.st_mtimespec.tv_sec == after.st_mtimespec.tv_sec, before.st_mtimespec.tv_nsec == after.st_mtimespec.tv_nsec,
               before.st_ctimespec.tv_sec == after.st_ctimespec.tv_sec, before.st_ctimespec.tv_nsec == after.st_ctimespec.tv_nsec else {
             throw MetadataChanged()

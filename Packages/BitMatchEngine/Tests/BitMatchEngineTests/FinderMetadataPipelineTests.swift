@@ -53,6 +53,19 @@ import Testing
                 "failed rows: \(rows.filter { !$0.success }.map { "\($0.sourceURL.lastPathComponent): \($0.error?.localizedDescription ?? "-")" })")
     }
 
+    @Test func finalRecheckOpensProvenPathsEvenWhenScanMissedThem() throws {
+        let tree = try makeTree()
+        defer { try? FileManager.default.removeItem(at: tree.root) }
+        let skipped = try FinderMetadataSelection.skipped(in: CardSource.enumerateRegularFiles(base: tree.source))
+        try FileManager.default.removeItem(at: tree.dsStore)
+        #expect(try TransferPipeline.changedSkippedFinderPaths(skipped, checkCancellation: {}).isEmpty)
+        try Data("ordinary replacement".utf8).write(to: tree.dsStore)
+        #expect(try TransferPipeline.changedSkippedFinderPaths(skipped, checkCancellation: {}) == [".DS_Store"])
+        try FileManager.default.removeItem(at: tree.dsStore)
+        try FileManager.default.createDirectory(at: tree.dsStore, withIntermediateDirectories: false)
+        #expect(try TransferPipeline.changedSkippedFinderPaths(skipped, checkCancellation: {}) == [".DS_Store"])
+    }
+
     @Test func aFinderViewFileIsSkippedListedPerDestinationAndNotWritten() async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()

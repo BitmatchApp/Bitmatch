@@ -904,6 +904,50 @@ struct PhotographerJobViewModelTests {
         #expect(PhotographerSessionPresentation.make(job: try #require(restored.activeJob)).rows.first?.verifiedCopyTitle == "3 of 2 verified")
     }
 
+    @Test func activeRunFailureDowngradesAnAlreadyFinalizedCard() throws {
+        let store = InMemoryPhotographerJobStore()
+        let viewModel = preparedViewModel(store: store)
+        _ = viewModel.beginIngest(destinationCount: 2)
+        try viewModel.completeIngest(results: verifiedRows(destinationNames: ["Primary", "Secondary"]))
+        let job = try #require(viewModel.activeJob)
+        let card = try #require(job.cardIngests.first)
+        viewModel.operationFailed(jobID: job.id, cardID: card.id)
+        let result = try #require(viewModel.activeJob?.cardIngests.first)
+        #expect(result.localState == .issues)
+        #expect(result.locallySafeAt == nil)
+        #expect(result.provenance.confirmedFingerprint == nil)
+        #expect(store.storedJobs.first?.cardIngests.first == result)
+    }
+
+    @Test func recoveryDowngradesSafeCardWhenItsLatestTransferDidNotComplete() throws {
+        let store = InMemoryPhotographerJobStore()
+        let original = preparedViewModel(store: store)
+        _ = original.beginIngest(destinationCount: 2)
+        try original.completeIngest(results: verifiedRows(destinationNames: ["Primary", "Secondary"]))
+        let job = try #require(original.activeJob)
+        let card = try #require(job.cardIngests.first)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("project-recovery-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = LocalTransferJournal(fileURL: root.appendingPathComponent("journal.json"))
+        try journal.enqueue(sourceURL: root, destinationURLs: [root], verificationMode: .standard,
+                            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+                            projectID: job.id, projectCardID: card.id)
+        var record = try #require(journal.records.first)
+        record.state = .completed
+        let recovered = makeViewModel(store: store)
+        recovered.recoverIncompleteTransfers([record])
+        #expect(recovered.activeJob?.cardIngests.first?.localState == .locallySafe)
+        record.state = .interrupted
+        recovered.recoverIncompleteTransfers([record])
+        let result = try #require(recovered.activeJob?.cardIngests.first)
+        #expect(result.localState == .issues)
+        #expect(result.locallySafeAt == nil)
+        #expect(result.provenance.confirmedFingerprint == nil)
+        #expect(result.verifiedDestinationCount == 0)
+        #expect(store.storedJobs.first?.cardIngests.first == result)
+    }
+
     @Test func loadingInterruptedCardDurablyDowngradesItAndClearsSafetyEvidence() throws {
         let store = InMemoryPhotographerJobStore()
         let original = preparedViewModel(store: store)

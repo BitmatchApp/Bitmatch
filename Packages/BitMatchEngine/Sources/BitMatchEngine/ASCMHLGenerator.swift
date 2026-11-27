@@ -349,7 +349,7 @@ public enum ASCMHLGenerator: Sendable {
             try Task.checkCancellation()
             try rejectSourceOverlap(rootFD: rootFD, sourceFD: sourceFD, initialSourcePath: initialSourcePath)
             try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
-            try requireHistoryEntries([], directoryFD: historyFD)
+            try requireHistoryEntries([], directoryFD: historyFD, allowFinderViewFile: true)
             try readHooks?.beforePublishingClaim?()
             try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
 
@@ -377,7 +377,7 @@ public enum ASCMHLGenerator: Sendable {
             try Task.checkCancellation()
             try synchronizeDirectory(historyFD)
             try requireCurrentHistory(rootFD: rootFD, historyFD: historyFD)
-            try requireHistoryEntries([publicationStatusName, name, "ascmhl_chain.xml"], directoryFD: historyFD)
+            try requireHistoryEntries([publicationStatusName, name, "ascmhl_chain.xml"], directoryFD: historyFD, allowFinderViewFile: true)
             try requireWrittenFile(publicationOpening, name: publicationStatusName, directoryFD: historyFD)
             try requireWrittenFile(manifestData, name: name, directoryFD: historyFD)
             try requireWrittenFile(chainData, name: "ascmhl_chain.xml", directoryFD: historyFD)
@@ -394,7 +394,7 @@ public enum ASCMHLGenerator: Sendable {
             try readHooks?.afterPublishingCompletion?()
             try requireWrittenFile(publicationOpening + completion, name: publicationStatusName, directoryFD: historyFD)
             try requireCurrentStatus(directoryFD: historyFD, statusFD: statusFD)
-            try requireHistoryEntries([publicationStatusName, name, "ascmhl_chain.xml"], directoryFD: historyFD)
+            try requireHistoryEntries([publicationStatusName, name, "ascmhl_chain.xml"], directoryFD: historyFD, allowFinderViewFile: true)
             try requireWrittenFile(manifestData, name: name, directoryFD: historyFD)
             try requireWrittenFile(chainData, name: "ascmhl_chain.xml", directoryFD: historyFD)
             try requireCurrentRoot(root, expected: rootIdentity)
@@ -605,7 +605,7 @@ public enum ASCMHLGenerator: Sendable {
         return data
     }
 
-    private static func requireHistoryEntries(_ expected: Set<String>, directoryFD: Int32) throws {
+    private static func requireHistoryEntries(_ expected: Set<String>, directoryFD: Int32, allowFinderViewFile: Bool = false) throws {
         // A fresh open gives readdir its own offset; dup would share the
         // pinned descriptor's offset and later checks could see no entries.
         let scanFD = openat(directoryFD, ".", O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
@@ -634,6 +634,25 @@ public enum ASCMHLGenerator: Sendable {
         // descriptor opened relative to our pinned public history.
         guard expected.isSubset(of: actual) else { throw GenerationError.existingHistory }
         for companion in actual.subtracting(expected) {
+            if allowFinderViewFile && companion == ".DS_Store" {
+                let fd = openat(directoryFD, companion, O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC)
+                guard fd >= 0 else { throw GenerationError.existingHistory }
+                defer { close(fd) }
+                var info = stat()
+                guard fstat(fd, &info) == 0, (info.st_mode & S_IFMT) == S_IFREG else {
+                    throw GenerationError.existingHistory
+                }
+                do {
+                    guard try FinderMetadataSelection.isFinderViewFile(fd: fd, size: Int64(info.st_size)) else {
+                        throw GenerationError.existingHistory
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    throw GenerationError.existingHistory
+                }
+                continue
+            }
             guard companion.hasPrefix("._"), expected.contains(String(companion.dropFirst(2))) else {
                 throw GenerationError.existingHistory
             }

@@ -70,6 +70,7 @@ final class PhotographerJobViewModel: ObservableObject {
         return jobs.first { $0.id == dashboardJobID }
     }
 
+    private var recoveryTransferRecords: [LocalTransferRecord] = []
     private let store: any PhotographerJobStore
     private let now: () -> Date
     private let preliminaryAnalyzer: PreliminaryAnalyzer
@@ -547,7 +548,8 @@ final class PhotographerJobViewModel: ObservableObject {
     }
 
     func operationFailed() {
-        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id,
+              projectCardState(jobID: jobID, cardID: cardID) != .locallySafe else { return }
         operationFailed(jobID: jobID, cardID: cardID)
     }
 
@@ -730,13 +732,16 @@ final class PhotographerJobViewModel: ObservableObject {
     }
 
     func cancelIngest() {
-        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id else { return }
+        guard let jobID = activeJob?.id, let cardID = activeCardDraft?.id,
+              projectCardState(jobID: jobID, cardID: cardID) != .locallySafe else { return }
         cancelIngest(jobID: jobID, cardID: cardID)
     }
 
     func cancelIngest(jobID: UUID, cardID: UUID) {
         transitionCard(jobID: jobID, cardID: cardID, to: .cancelled) { card in
             card.locallySafeAt = nil
+            card.provenance.confirmedFingerprint = nil
+            card.verifiedDestinationCount = 0
         }
     }
 
@@ -1095,6 +1100,23 @@ final class PhotographerJobViewModel: ObservableObject {
         focusedCardIngestID = id
     }
 
+    /// Reconcile only cards with a known journal attempt. Older cards with no
+    /// journal entry keep their existing evidence.
+    func recoverIncompleteTransfers(_ records: [LocalTransferRecord]) {
+        recoveryTransferRecords = records
+        // Reconcile loaded cards without resetting an injected view model's
+        // current setup. Deferred stores are also checked in loadJobs().
+        for job in jobs {
+            for card in job.cardIngests where card.localState == .locallySafe {
+                let latest = records.filter { $0.projectID == job.id && $0.projectCardID == card.id }
+                    .max { $0.createdAt < $1.createdAt }
+                if let latest, latest.state != .completed {
+                    operationFailed(jobID: job.id, cardID: card.id)
+                }
+            }
+        }
+    }
+
     private func loadJobs() {
         do {
             var recoveredCardCount = 0
@@ -1103,11 +1125,14 @@ final class PhotographerJobViewModel: ObservableObject {
                 var recovered = job
                 var changed = false
 
-                for index in recovered.cardIngests.indices where [
-                    PhotographerLocalState.notStarted,
-                    .copying,
-                    .verifying
-                ].contains(recovered.cardIngests[index].localState) {
+                for index in recovered.cardIngests.indices {
+                    let card = recovered.cardIngests[index]
+                    let latest = recoveryTransferRecords.filter {
+                        $0.projectID == recovered.id && $0.projectCardID == card.id
+                    }.max { $0.createdAt < $1.createdAt }
+                    let interrupted = [PhotographerLocalState.notStarted, .copying, .verifying].contains(card.localState)
+                        || (card.localState == .locallySafe && latest != nil && latest?.state != .completed)
+                    guard interrupted else { continue }
                     recovered.cardIngests[index].localState = .issues
                     recovered.cardIngests[index].locallySafeAt = nil
                     recovered.cardIngests[index].provenance.confirmedFingerprint = nil
@@ -1298,6 +1323,7 @@ final class PhotographerJobViewModel: ObservableObject {
         guard var job = jobForRun(jobID),
               let index = job.cardIngests.firstIndex(where: { $0.id == cardID }) else { return }
         guard job.cardIngests[index].localState == .notStarted
+                || job.cardIngests[index].localState == .locallySafe
                 || job.cardIngests[index].localState == .copying
                 || job.cardIngests[index].localState == .verifying else { return }
 
@@ -1353,7 +1379,9 @@ final class PhotographerJobViewModel: ObservableObject {
 
     private func canTransition(from current: PhotographerLocalState, to next: PhotographerLocalState) -> Bool {
         switch current {
-        case .locallySafe, .issues, .cancelled:
+        case .locallySafe:
+            return next == .issues || next == .cancelled
+        case .issues, .cancelled:
             return false
         case .notStarted:
             return next == .copying || next == .issues || next == .cancelled

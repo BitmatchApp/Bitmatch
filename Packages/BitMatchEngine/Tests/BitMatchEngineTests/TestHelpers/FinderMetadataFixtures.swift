@@ -14,10 +14,12 @@ enum FinderMetadataFixtures {
         put(offset); put(rootSize); put(repeatedOffset ?? offset)
         bytes += [UInt8](repeating: 0, count: 16)
         if bytes.count < size { bytes += [UInt8](repeating: 0, count: size - bytes.count) }
-        // Root block: block count, an unknown word, one block address, then
-        // the directory: one entry, name length 4, "DSDB", its block number.
+        // Finder stores a reserved word after the count, then a table padded
+        // to 256 block addresses, followed by its directory.
         let root = Int(offset) + 4
-        let entry: [UInt8] = [0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0x10, 0x0B, 0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 1]
+        let entry: [UInt8] = [0, 0, 0, 1, 0, 0, 0, 0]
+            + [UInt8](repeating: 0, count: 256 * 4)
+            + [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 0]
         if rootMarker, root >= 36, root + entry.count <= min(bytes.count, root + Int(rootSize)) {
             bytes.replaceSubrange(root..<root + entry.count, with: entry)
         }

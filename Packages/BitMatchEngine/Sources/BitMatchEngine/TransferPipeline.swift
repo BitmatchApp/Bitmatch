@@ -219,11 +219,16 @@ extension TransferPipeline {
         }
     }
 
+    /// Reopen every proven path, including paths absent from the final scan.
+    static func changedSkippedFinderPaths(_ skipped: [FileEntry], checkCancellation: @Sendable () throws -> Void) throws -> [String] {
+        try skipped.filter { try !isStillFinderViewFile($0, checkCancellation: checkCancellation) }.map(\.relativePath)
+    }
+
     /// One open-and-classify pass. Throws cancellation, EIO and
     /// `MetadataChanged`; every other failure answers false.
     private static func classifyOnce(_ entry: FileEntry, checkCancellation: @Sendable () throws -> Void) throws -> Bool {
         try checkCancellation()
-        let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
         guard fd >= 0 else {
             let code = errno
             if code == EIO { throw NSError(domain: NSPOSIXErrorDomain, code: Int(EIO)) }
@@ -1126,6 +1131,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         let submitVerify: @Sendable (VerifyJob) -> Void = { [laneSubmitters] job in
             laneSubmitters[laneKeys[job.destinationIndex]]?.yield(job)
         }
+        let verifyLimiter = VerifyConcurrencyLimiter(limit: TransferConcurrencyPlan.maximumWorkers)
         try await withThrowingTaskGroup(of: Void.self) { run in
             // Close the job streams however the copy loop exits, so no lane
             // waits on a stream nobody will finish. (The group's cancellation
@@ -1141,7 +1147,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     try await verifiers.next()
                                     inFlight -= 1
                                 }
-                                verifiers.addTask { try await verify(job) }
+                                verifiers.addTask { try await verifyLimiter.withPermit { try await verify(job) } }
                                 inFlight += 1
                             }
                             try await verifiers.waitForAll()
@@ -1595,16 +1601,12 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // classifier is ordinary data this run never copied.
         var skippedNoLongerFinderFiles: [String] = []
         if !skipped.isEmpty {
-            let currentByPath = Dictionary(finalSourceEnumeration.files.map { ($0.relativePath, $0) },
-                                           uniquingKeysWith: { first, _ in first })
-            let stillPresent = skipped.compactMap { currentByPath[$0.relativePath] }
             let noLongerFinderFiles = try await taggingSourceReadFailure {
                 try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
                     let sourceURL = operation.sourceURL
                     let scoped = fileSystem.startAccessing(url: sourceURL)
                     defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
-                    return try stillPresent.filter { try !Self.isStillFinderViewFile($0, checkCancellation: check) }
-                        .map(\.relativePath)
+                    return try Self.changedSkippedFinderPaths(skipped, checkCancellation: check)
                 }
             }
             skippedNoLongerFinderFiles = noLongerFinderFiles

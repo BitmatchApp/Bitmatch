@@ -139,6 +139,29 @@ final class ASCMHLGeneratorTests: XCTestCase {
         XCTAssertEqual(result.recordedFileCount, 1)
     }
 
+    func testNetworkHistoryIgnoresProvenFinderViewFile() throws {
+        let (root, file) = try fixture()
+        let manifest = try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(fileSystemType: { "smbfs" }, didClaimHistory: {
+                try FinderMetadataFixtures.bud1(size: 6148).write(to: root.appendingPathComponent("ascmhl/.DS_Store"))
+            })
+        )
+        let xml = try String(contentsOf: manifest, encoding: .utf8)
+        XCTAssertFalse(xml.contains(".DS_Store"))
+        XCTAssertTrue(try ASCMHLGenerator.publicationIsComplete(at: manifest.deletingLastPathComponent().appendingPathComponent(ASCMHLGenerator.publicationStatusName)))
+    }
+
+    func testNetworkHistoryRejectsOrdinaryDSStore() throws {
+        let (root, file) = try fixture()
+        XCTAssertThrowsError(try ASCMHLGenerator.generateInitialHistory(
+            destinationURL: root, files: [file], startTime: Date(), toolVersion: "test",
+            readHooks: .init(fileSystemType: { "smbfs" }, didClaimHistory: {
+                try Data("ordinary data".utf8).write(to: root.appendingPathComponent("ascmhl/.DS_Store"))
+            })
+        ))
+    }
+
     /// A network share cannot do the exclusive directory rename either, so its
     /// history is claimed directly, named so Check requires the status record.
     func testNetworkShareClaimsTheHistoryDirectlyWithItsOwnPrefix() async throws {

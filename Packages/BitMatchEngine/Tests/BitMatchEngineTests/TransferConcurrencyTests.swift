@@ -61,6 +61,39 @@ struct TransferConcurrencyPlanTests {
         #expect(small.verifyWorkers == 2, "a choice under the cap is unchanged")
     }
 
+    @Test func seventeenLanesRetainOneWorkerEach() {
+        let plan = TransferConcurrencyPlan.resolve(settings: .automatic, media: [.solidState], processorCount: 32, verifyLanes: 17)
+        #expect(plan.verifyLanes == 17)
+        #expect(plan.verifyWorkers == 1)
+    }
+
+    @Test func sharedLimiterCapsSeventeenConcurrentJobs() async throws {
+        let limiter = VerifyConcurrencyLimiter(limit: 16)
+        let state = Mutex((active: 0, peak: 0, entered: 0))
+        try await withThrowingTaskGroup(of: Void.self) { group in
+            for _ in 0..<17 {
+                group.addTask {
+                    try await limiter.withPermit {
+                        state.withLock { value in
+                            value.active += 1
+                            value.entered += 1
+                            value.peak = max(value.peak, value.active)
+                        }
+                        // Hold the first wave until all sixteen permits are occupied.
+                        for _ in 0..<1000 {
+                            if state.withLock({ $0.entered >= 16 }) { break }
+                            try await Task.sleep(for: .milliseconds(1))
+                        }
+                        state.withLock { $0.active -= 1 }
+                    }
+                }
+            }
+            try await group.waitForAll()
+        }
+        #expect(state.withLock { $0.entered } == 17)
+        #expect(state.withLock { $0.peak } == 16)
+    }
+
     @Test func automaticOnSmallMachinesNeverDropsBelowOneCopyAndTwoVerify() {
         for cores in [0, 1, 2, 3] {
             let plan = TransferConcurrencyPlan.resolve(settings: .automatic, media: [.solidState], processorCount: cores)

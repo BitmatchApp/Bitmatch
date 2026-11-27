@@ -257,7 +257,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         for ext in ["pdf", "csv", "json"] { XCTAssertTrue(reports.contains { $0.pathExtension == ext }) }
     }
 
-    func testHandoffFailurePreservesSuccessfulFileRowsAndPhotographerFinalization() async throws {
+    func testHandoffFailurePreservesSuccessfulFileRowsWithoutMarkingProjectSafe() async throws {
         let fixture = try ascFixture()
         try Data("corrupted".utf8).write(to: fixture.result.destinationURL)
         var finalizations = 0
@@ -266,7 +266,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
             return PhotographerFinalizationResult(context: nil, locallySafe: true)
         }, sourceURL: fixture.source, destinationURLs: [fixture.destination], generateASCMHL: true)
         _ = try await harness.execute()
-        XCTAssertEqual(finalizations, 1)
+        XCTAssertEqual(finalizations, 0)
         XCTAssertEqual(harness.terminalInfo?.success, false)
         XCTAssertTrue(harness.terminalInfo?.message.contains("ASC MHL") == true)
         XCTAssertEqual(harness.completedRows.count, 1)
@@ -1168,8 +1168,11 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
             for shift: UInt32 in [24, 16, 8, 0] { bytes.append(UInt8(truncatingIfNeeded: value >> shift)) }
         }
         bytes += [UInt8](repeating: 0, count: size - bytes.count)
-        let entry: [UInt8] = [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 1]
-        bytes.replaceSubrange(0x804 + 0x400..<0x804 + 0x400 + entry.count, with: entry)
+        let root = 0x804
+        bytes[root + 3] = 1 // one block; the next word is reserved
+        let directory = root + 8 + 256 * 4
+        let entry: [UInt8] = [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 0]
+        bytes.replaceSubrange(directory..<directory + entry.count, with: entry)
         return Data(bytes)
     }
 
