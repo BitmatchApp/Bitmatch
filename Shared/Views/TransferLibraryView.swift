@@ -94,8 +94,16 @@ struct TransferLibraryView: View {
                 Button("Mark reports as handled", role: .destructive) {
                     reportsToMarkHandled = nil
                     Task {
-                        do { try await journal.markReportsHandled(id: record.id) }
-                        catch { errorMessage = error.localizedDescription }
+                        do {
+                            try await journal.markReportsHandled(id: record.id, displayedPaths: record.pendingWithdrawalPaths ?? [], displayedRevision: record.revision)
+                        } catch LocalTransferJournal.ReportHandlingError.changed {
+                            if let current = journal.records.first(where: { $0.id == record.id }), !(current.pendingWithdrawalPaths ?? []).isEmpty {
+                                try? await Task.sleep(for: .milliseconds(300))
+                                reportsToMarkHandled = journal.records.first(where: { $0.id == current.id && !($0.pendingWithdrawalPaths ?? []).isEmpty })
+                            } else {
+                                errorMessage = LocalTransferJournal.ReportHandlingError.changed.localizedDescription
+                            }
+                        } catch { errorMessage = error.localizedDescription }
                     }
                 }
                 Button("Cancel", role: .cancel) { reportsToMarkHandled = nil }
@@ -320,6 +328,10 @@ struct TransferLibraryView: View {
             if !(record.pendingWithdrawalPaths ?? []).isEmpty {
                 if let note = record.pendingWithdrawalNote {
                     Text(note)
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                if journal.reportHandlingAccessUnavailable(id: record.id) {
+                    Text("BitMatch could not look at the backup; try again when it is reachable.")
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
                 if journal.canMarkReportsHandled(id: record.id) {

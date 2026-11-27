@@ -32,12 +32,19 @@ final class LocalTransferJournal: ObservableObject {
         let revision: UInt64?
         let retryGeneration: UInt64
     }
-    @Published private var reportHandlingEligibility: [UUID: Bool] = [:]
+    @Published private var reportHandlingEligibility: [UUID: TransferJournal.ReportHandlingEligibility] = [:]
     private var reportHandlingKeys: [UUID: ReportHandlingKey] = [:]
     private var reportHandlingRetryGeneration: [UUID: UInt64] = [:]
     private var recordsGeneration: UInt64 = 0
     private var reportHandlingTokens: [UUID: UUID] = [:]
-    func canMarkReportsHandled(id: UUID) -> Bool { reportHandlingEligibility[id] == true }
+    func canMarkReportsHandled(id: UUID) -> Bool {
+        if case .eligible = reportHandlingEligibility[id] { return true }
+        return false
+    }
+    func reportHandlingAccessUnavailable(id: UUID) -> Bool {
+        if case .inaccessible = reportHandlingEligibility[id] { return true }
+        return false
+    }
 
     private func updateReportHandlingEligibility(_ records: [LocalTransferRecord]) {
         let pending = records.filter { !($0.pendingWithdrawalPaths ?? []).isEmpty }
@@ -60,7 +67,7 @@ final class LocalTransferJournal: ObservableObject {
             Task { [weak self] in
                 let allowed = await Task.detached(priority: .utility) {
                     beforeCheck?()
-                    return TransferJournal.canMarkReportsHandled(record)
+                    return TransferJournal.reportHandlingEligibility(record)
                 }.value
                 guard let self, self.reportHandlingTokens[record.id] == token else { return }
                 self.reportHandlingEligibility[record.id] = allowed
@@ -566,12 +573,21 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     enum ReportHandlingError: LocalizedError {
-        case retrying
-        var errorDescription: String? { "Reports are being withdrawn automatically. Please wait for the retry to finish." }
+        case retrying, changed, inaccessible
+        var errorDescription: String? {
+            switch self {
+            case .retrying: "Reports are being withdrawn automatically or the backup could not be checked. Try again when it is reachable."
+            case .changed: "The pending reports changed. Review the current list before confirming."
+            case .inaccessible: "BitMatch could not look at the backup; try again when it is reachable."
+            }
+        }
     }
 
-    func markReportsHandled(id: UUID) async throws {
+    func markReportsHandled(id: UUID, displayedPaths: [String], displayedRevision: UInt64?) async throws {
         guard let record = records.first(where: { $0.id == id }) else { throw LocalTransferJournalError.invalidState }
+        guard (record.pendingWithdrawalPaths ?? []) == displayedPaths, record.revision == displayedRevision else {
+            throw ReportHandlingError.changed
+        }
         if withdrawalRetriesInFlight.contains(id) {
             retryPendingReportWithdrawals(id: id)
             throw ReportHandlingError.retrying
@@ -581,9 +597,18 @@ final class LocalTransferJournal: ObservableObject {
         let beforeCheck = beforeReportHandlingCheck
         let allowed = await Task.detached(priority: .utility) {
             beforeCheck?()
-            return TransferJournal.canMarkReportsHandled(record)
+            return TransferJournal.reportHandlingEligibility(record)
         }.value
-        guard allowed, generation == recordsGeneration,
+        guard let current = records.first(where: { $0.id == id }),
+              (current.pendingWithdrawalPaths ?? []) == displayedPaths, current.revision == displayedRevision else {
+            throw ReportHandlingError.changed
+        }
+        if case .inaccessible = allowed { throw ReportHandlingError.inaccessible }
+        guard case .eligible = allowed else {
+            retryPendingReportWithdrawals(id: id)
+            throw ReportHandlingError.retrying
+        }
+        guard generation == recordsGeneration,
               retryGeneration == reportHandlingRetryGeneration[id, default: 0],
               !withdrawalRetriesInFlight.contains(id),
               (store.records.first(where: { $0.id == id })?.revision ?? 0) == (record.revision ?? 0) else {
@@ -604,6 +629,10 @@ final class LocalTransferJournal: ObservableObject {
             }
         } catch LocalTransferJournalError.invalidState {
             refresh()
+            if let current = records.first(where: { $0.id == id }),
+               (current.pendingWithdrawalPaths ?? []) != displayedPaths || current.revision != displayedRevision {
+                throw ReportHandlingError.changed
+            }
             retryPendingReportWithdrawals(id: id)
             throw ReportHandlingError.retrying
         } catch {

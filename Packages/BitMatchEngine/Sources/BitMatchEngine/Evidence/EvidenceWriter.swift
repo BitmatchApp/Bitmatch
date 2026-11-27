@@ -3,6 +3,69 @@ import Darwin
 import Foundation
 import CryptoKit
 
+
+/// Holds the descriptor used for hashing until the caller performs its final
+/// path identity check immediately before removal or rename.
+final class PinnedReportFile {
+    struct IdentityChanged: LocalizedError {
+        let path: String
+        var errorDescription: String? { "A file at \(path) changed and was left in place." }
+    }
+    private let url: URL
+    private let handle: FileHandle
+    private let identity: stat
+    let sha256: String
+    var size: UInt64 { UInt64(identity.st_size) }
+    var modificationDate: Date { Date(timeIntervalSince1970: Double(identity.st_mtimespec.tv_sec) + Double(identity.st_mtimespec.tv_nsec) / 1_000_000_000) }
+
+    init(url: URL) throws {
+        let fd = open(url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        let handle = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
+        var initial = stat()
+        guard fstat(fd, &initial) == 0, (initial.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG), initial.st_size >= 0 else {
+            throw FileOperationError.unsafeOperation("Report could not be identified at \(url.path)")
+        }
+        var hash = SHA256()
+        while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
+        var after = stat()
+        guard fstat(fd, &after) == 0, Self.same(initial, after) else {
+            throw FileOperationError.unsafeOperation("Report changed while being read at \(url.path)")
+        }
+        self.url = url
+        self.handle = handle
+        self.identity = initial
+        self.sha256 = hash.finalize().map { String(format: "%02x", $0) }.joined()
+    }
+
+    private static func same(_ a: stat, _ b: stat) -> Bool {
+        a.st_dev == b.st_dev && a.st_ino == b.st_ino && a.st_size == b.st_size &&
+        a.st_mtimespec.tv_sec == b.st_mtimespec.tv_sec && a.st_mtimespec.tv_nsec == b.st_mtimespec.tv_nsec &&
+        (b.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
+    }
+
+    func requireUnchanged() throws {
+        var current = stat()
+        var descriptor = stat()
+        guard fstat(handle.fileDescriptor, &descriptor) == 0, Self.same(identity, descriptor),
+              lstat(url.path, &current) == 0, Self.same(identity, current) else {
+            throw IdentityChanged(path: url.path)
+        }
+    }
+
+    func remove() throws {
+        try requireUnchanged()
+        guard unlink(url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+    }
+
+    func rename(to destination: URL) throws {
+        try requireUnchanged()
+        guard renameatx_np(AT_FDCWD, url.path, AT_FDCWD, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+    }
+}
+
 // MARK: - Export Outcome
 
 /// Thrown when the requested automatic report cannot be saved. Carried into the
@@ -424,6 +487,7 @@ public enum EvidenceWriter: Sendable {
                                         validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeRestore: (@Sendable (URL) throws -> Void)? = nil,
+                                        beforeRollbackRemoval: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil,
                                         reportNames: @Sendable (URL) throws -> [String] = { try FileManager.default.contentsOfDirectory(atPath: $0.path) }) async throws -> [URL] {
         try reportWriteLock.withLock {
@@ -557,14 +621,6 @@ public enum EvidenceWriter: Sendable {
             return ReportFileFact(path: publicURL.path, size: UInt64(info.st_size), modificationDate: nil,
                                   sha256: hash.finalize().map { String(format: "%02x", $0) }.joined())
         }
-        func renameWithoutReplacement(_ from: URL, _ to: URL) throws {
-            let failure = from.withUnsafeFileSystemRepresentation { source in
-                to.withUnsafeFileSystemRepresentation { destination in
-                    renameatx_np(AT_FDCWD, source!, AT_FDCWD, destination!, UInt32(RENAME_EXCL)) == 0 ? 0 : errno
-                }
-            }
-            guard failure == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(failure)) }
-        }
         var published: [URL] = []
         var intendedFacts: [String: ReportFileFact] = [:]
         var previousFacts: [String: ReportFileFact] = [:]
@@ -691,23 +747,38 @@ public enum EvidenceWriter: Sendable {
             for url in published.reversed() {
                 do {
                     try validatePublication?()
-                    guard let expected = intendedFacts[url.path]?.sha256,
-                          (try? reportFact(url, publicURL: url).sha256) == expected else {
+                    let pinned: PinnedReportFile
+                    do { pinned = try PinnedReportFile(url: url) }
+                    catch {
+                        cleanupErrors.append("a file at \(url.path) could not be verified and was left in place")
+                        pendingPaths.append(url.path)
+                        continue
+                    }
+                    guard let expected = intendedFacts[url.path]?.sha256, pinned.sha256 == expected else {
                         changed(url)
                         continue
                     }
+                    try beforeRollbackRemoval?(url)
                     // Withdraw the new verdict before attempting restoration.
-                    try FileManager.default.removeItem(at: url)
+                    do { try pinned.remove() }
+                    catch is PinnedReportFile.IdentityChanged { changed(url); continue }
+                    catch {
+                        cleanupErrors.append("a file at \(url.path) could not be safely removed and was left in place")
+                        pendingPaths.append(url.path)
+                        continue
+                    }
                     if replacing?.contains(url) == true {
                         try beforeRestore?(url)
                         // Restore only the backup whose bytes were recorded before publication.
-                        guard let previous = previousFacts[url.path]?.sha256,
-                              (try? reportFact(backup(url), publicURL: url).sha256) == previous else {
+                        let saved: PinnedReportFile
+                        do { saved = try PinnedReportFile(url: backup(url)) }
+                        catch { throw FileOperationError.unsafeOperation("a file at \(backup(url).path) could not be verified and was left in place") }
+                        guard let previous = previousFacts[url.path]?.sha256, saved.sha256 == previous else {
                             throw FileOperationError.unsafeOperation("The saved report at \(backup(url).path) changed during publication")
                         }
                         // Never overwrite a file that arrived after withdrawal.
                         do {
-                            try renameWithoutReplacement(backup(url), url)
+                            try saved.rename(to: url)
                         } catch {
                             if let current = try? reportFact(url, publicURL: url).sha256,
                                current == previousFacts[url.path]?.sha256 {

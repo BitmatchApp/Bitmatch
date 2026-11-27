@@ -610,20 +610,57 @@ public final class TransferJournal: Sendable {
 
     /// Manual acknowledgement is a last resort, when neither volume identity
     /// nor an ownership JSON can establish what happened automatically.
+    public enum ReportHandlingEligibility: Sendable {
+        case eligible, ineligible, inaccessible
+    }
+
+    public static func reportHandlingEligibility(_ record: LocalTransferRecord) -> ReportHandlingEligibility {
+        var accessFailed = false
+        let eligible = canMarkReportsHandled(record, access: { destination, root in
+            do { return try destination.beginReportAccess(at: root) }
+            catch { accessFailed = true; throw error }
+        })
+        return eligible ? .eligible : (accessFailed ? .inaccessible : .ineligible)
+    }
+
     public static func canMarkReportsHandled(_ record: LocalTransferRecord) -> Bool {
+        if case .eligible = reportHandlingEligibility(record) { return true }
+        return false
+    }
+
+    static func canMarkReportsHandled(_ record: LocalTransferRecord,
+                                     access: (LocalTransferResource, URL) throws -> LocalTransferReadAccess) -> Bool {
         let paths = record.pendingWithdrawalPaths ?? []
         guard !paths.isEmpty else { return false }
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
-        for path in paths {
+        let jsonPaths = (record.pendingReportPaths ?? paths).filter { $0.hasSuffix(".json") }
+        let checkedPaths = paths + jsonPaths + (record.reportStagingPath.map { [$0] } ?? [])
+        for path in checkedPaths {
             guard let index = roots.indices.first(where: { reportRelativePath(path, root: roots[$0]) != nil }),
-                  index < record.destinations.count, record.destinations[index].volumeID == nil else { return false }
+                  index < record.destinations.count else { return false }
+            if paths.contains(path), record.destinations[index].volumeID != nil { return false }
         }
-        for path in record.pendingReportPaths ?? paths where path.hasSuffix(".json") {
-            let url = URL(fileURLWithPath: path)
-            if isOwnedReportJSON(url, record: record) || withdrawnJSONCandidates(for: url, recordID: record.id).contains(where: { isOwnedReportJSON($0, record: record) }) { return false }
-            if let staging = record.reportStagingPath {
-                let folder = URL(fileURLWithPath: staging)
-                if ownsStagingDirectory(folder, recordID: record.id) && [url.lastPathComponent, "backup-" + url.lastPathComponent].contains(where: { isOwnedReportJSON(folder.appendingPathComponent($0), record: record) }) { return false }
+        for index in roots.indices {
+            let root = roots[index]
+            let relevant = checkedPaths.contains { reportRelativePath($0, root: root) != nil }
+            guard relevant else { continue }
+            guard index < record.destinations.count, let scope = try? access(record.destinations[index], root) else { return false }
+            defer { scope.release() }
+            let resolvedRoot = scope.url.standardizedFileURL.resolvingSymlinksInPath()
+            func resolve(_ path: String) -> URL? {
+                guard let relative = reportRelativePath(path, root: root) else { return nil }
+                let candidate = resolvedRoot.appendingPathComponent(relative).standardizedFileURL
+                guard PathContainment.isStrictlyWithin(candidate.path, root: resolvedRoot.path),
+                      PathContainment.isWithin(reportComparablePath(candidate.deletingLastPathComponent()), root: reportComparablePath(resolvedRoot)) else { return nil }
+                return candidate
+            }
+            for path in jsonPaths where reportRelativePath(path, root: root) != nil {
+                guard let url = resolve(path) else { return false }
+                if isOwnedReportJSON(url, record: record) || withdrawnJSONCandidates(for: url, recordID: record.id).contains(where: { isOwnedReportJSON($0, record: record) }) { return false }
+                if let staging = record.reportStagingPath, reportRelativePath(staging, root: root) != nil {
+                    guard let folder = resolve(staging) else { return false }
+                    if ownsStagingDirectory(folder, recordID: record.id) && [url.lastPathComponent, "backup-" + url.lastPathComponent].contains(where: { isOwnedReportJSON(folder.appendingPathComponent($0), record: record) }) { return false }
+                }
             }
         }
         return true
@@ -811,11 +848,12 @@ public final class TransferJournal: Sendable {
     }
 
     static func withdrawReports(record: LocalTransferRecord, paths: [String],
+                                beforeWithdrawalMove: (URL) -> Void = { _ in },
                                 volumeIdentityAt: (URL) -> String?) -> [String: ReportWithdrawalOutcome] {
         let stagingPaths = paths.filter { isStagingName(URL(fileURLWithPath: $0).lastPathComponent, recordID: record.id) }
         if !stagingPaths.isEmpty {
             let rest = paths.filter { !stagingPaths.contains($0) }
-            var outcomes = rest.isEmpty ? [:] : withdrawReports(record: record, paths: rest, volumeIdentityAt: volumeIdentityAt)
+            var outcomes = rest.isEmpty ? [:] : withdrawReports(record: record, paths: rest, beforeWithdrawalMove: beforeWithdrawalMove, volumeIdentityAt: volumeIdentityAt)
             let unexaminedPending = (record.pendingWithdrawalPaths ?? []).contains { candidate in
                 !stagingPaths.contains(candidate) && !rest.contains(candidate)
             }
@@ -910,7 +948,7 @@ public final class TransferJournal: Sendable {
                 var snapshot = record
                 snapshot.pendingReportPaths = members.filter { !stagingJSONs.contains($0) }
                 snapshot.relativeReportPaths = nil
-                outcomes.merge(withdrawReports(record: snapshot, paths: selected, volumeIdentityAt: volumeIdentityAt)) { _, new in new }
+                outcomes.merge(withdrawReports(record: snapshot, paths: selected, beforeWithdrawalMove: beforeWithdrawalMove, volumeIdentityAt: volumeIdentityAt)) { _, new in new }
             }
             return outcomes
         }
@@ -1071,7 +1109,18 @@ public final class TransferJournal: Sendable {
                     catch { fail([path], "\(url.path): \(error.localizedDescription)") }
                     continue
                 }
-                if !reportFactMatches(record, path: path, url: url) {
+                let pinned: PinnedReportFile
+                do { pinned = try PinnedReportFile(url: url) }
+                catch { fail([path], "A file at \(url.path) could not be verified and was left in place."); continue }
+                let facts = ((record.reportFileFacts ?? []) + (record.intendedReportFileFacts ?? []))
+                    .filter { $0.path == path && ($0.sha256 != nil || $0.size != nil || $0.modificationDate != nil) }
+                let matches = facts.isEmpty || facts.contains { fact in
+                    if let size = fact.size, size != pinned.size { return false }
+                    if let digest = fact.sha256 { return digest == pinned.sha256 }
+                    if let date = fact.modificationDate, date != pinned.modificationDate { return false }
+                    return true
+                }
+                guard matches else {
                     fail([path], "A file at \(url.path) was changed by something else and was left in place.")
                     continue
                 }
@@ -1081,7 +1130,8 @@ public final class TransferJournal: Sendable {
                     suffix += 1
                     hidden = url.deletingLastPathComponent().appendingPathComponent(ReportName.withdrawnName(report: url.lastPathComponent, recordID: record.id, collision: suffix))
                 }
-                do { try FileManager.default.moveItem(at: url, to: hidden); outcomes[path] = .withdrawn }
+                beforeWithdrawalMove(url)
+                do { try pinned.rename(to: hidden); outcomes[path] = .withdrawn }
                 catch { fail([path], "\(url.path): \(error.localizedDescription)") }
             }
         }

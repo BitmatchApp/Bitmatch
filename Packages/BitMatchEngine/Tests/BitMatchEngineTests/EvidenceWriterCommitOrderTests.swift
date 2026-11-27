@@ -5,6 +5,56 @@ import Testing
 @testable import BitMatchEngine
 
 struct EvidenceWriterCommitOrderTests {
+    @Test func pinnedReportRefusesReplacementAfterDigest() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("report.pdf")
+        try Data("ours".utf8).write(to: path)
+        let pinned = try PinnedReportFile(url: path)
+        try Data("foreign".utf8).write(to: path, options: .atomic)
+        #expect(throws: (any Error).self) { try pinned.requireUnchanged() }
+        #expect(try Data(contentsOf: path) == Data("foreign".utf8))
+    }
+
+    @Test(arguments: [false, true])
+    func rollbackPinsPublishedOccupantAndReportsUnreadable(readFailure: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let published = Mutex<URL?>(nil)
+        let foreign = Data("foreign occupant".utf8)
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+                pdfData: Data("ours".utf8), results: [], finished: Date(), checksumAlgorithm: nil,
+                jobID: UUID(), started: Date(), duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, beforePublish: { url in
+                    if url.pathExtension == "pdf" { published.withLock { $0 = url } }
+                    if url.pathExtension == "json" {
+                        if readFailure, let pdf = published.withLock({ $0 }) {
+                            try FileManager.default.removeItem(at: pdf)
+                            try FileManager.default.createDirectory(at: pdf, withIntermediateDirectories: false)
+                        }
+                        throw DeliberateFailure.encode
+                    }
+                }, beforeRollbackRemoval: { url in
+                    if !readFailure && url.pathExtension == "pdf" { try foreign.write(to: url, options: .atomic) }
+                })
+            Issue.record("Publication must fail")
+        } catch let error as ReportExportError {
+            let pdf = try #require(published.withLock { $0 })
+            #expect(error.pendingWithdrawalPaths.contains(pdf.path))
+            if readFailure {
+                #expect(error.localizedDescription.contains("could not be verified and was left in place"))
+            } else {
+                #expect(error.localizedDescription.contains("changed during publication and was left in place"))
+                #expect(try Data(contentsOf: pdf) == foreign)
+            }
+        }
+    }
+
     private func recordFixtureFacts(_ journal: TransferJournal, id: UUID, files: [URL]) throws {
         let facts = try files.map { url in
             let data = try Data(contentsOf: url)

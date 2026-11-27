@@ -39,7 +39,7 @@ struct LocalTransferJournalTests {
         try FileManager.default.createDirectory(at: json.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString, "source": ["path": f.source.path]]).write(to: json)
         do {
-            try await journal.markReportsHandled(id: id)
+            try await journal.markReportsHandled(id: id, displayedPaths: journal.records.first { $0.id == id }?.pendingWithdrawalPaths ?? [], displayedRevision: journal.records.first { $0.id == id }?.revision)
             Issue.record("The action must refuse when ownership proof appears")
         } catch {
             #expect(error.localizedDescription.contains("withdrawn automatically"))
@@ -88,7 +88,7 @@ struct LocalTransferJournalTests {
         for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
         #expect(journal.canMarkReportsHandled(id: id))
         gate.withLock { $0.armed = true }
-        let action = Task { try await journal.markReportsHandled(id: id) }
+        let action = Task { try await journal.markReportsHandled(id: id, displayedPaths: journal.records.first { $0.id == id }?.pendingWithdrawalPaths ?? [], displayedRevision: journal.records.first { $0.id == id }?.revision) }
         for _ in 0..<100 where !gate.withLock({ $0.entered }) { try await Task.sleep(for: .milliseconds(10)) }
         #expect(gate.withLock { $0.entered })
         journal.retainInterruptedOverride(id: id, summary: "Changed record", results: [],
@@ -101,6 +101,27 @@ struct LocalTransferJournalTests {
             #expect(error.localizedDescription.contains("withdrawn automatically"))
         }
         #expect(journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == [path])
+    }
+
+    @Test func markHandledRefusesChangedConfirmation() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let oldPath = f.destination.appendingPathComponent("Reports/old.json").path
+        let newPath = f.destination.appendingPathComponent("Reports/new.json").path
+        let id = try seedPendingWithoutVolumeIdentity(f, path: oldPath)
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        for _ in 0..<100 where journal.withdrawalRetryIsInFlight(id: id) { try await Task.sleep(for: .milliseconds(10)) }
+        let displayed = try #require(journal.records.first { $0.id == id })
+        journal.retainInterruptedOverride(id: id, summary: "Changed", results: [], pendingWithdrawalReason: "Pending", pendingWithdrawalPaths: [newPath])
+        await #expect(throws: LocalTransferJournal.ReportHandlingError.self) {
+            try await journal.markReportsHandled(id: id, displayedPaths: displayed.pendingWithdrawalPaths ?? [], displayedRevision: displayed.revision)
+        }
+        #expect(journal.records.first { $0.id == id }?.pendingWithdrawalPaths == [newPath])
+        let current = try #require(journal.records.first { $0.id == id })
+        await #expect(throws: LocalTransferJournal.ReportHandlingError.self) {
+            try await journal.markReportsHandled(id: id, displayedPaths: [newPath], displayedRevision: (current.revision ?? 0) &+ 1)
+        }
+        #expect(journal.records.first { $0.id == id }?.pendingWithdrawalPaths == [newPath])
     }
 
     private func seedPendingWithoutVolumeIdentity(_ f: (root: URL, source: URL, destination: URL, journal: URL), path: String) throws -> UUID {
@@ -132,7 +153,7 @@ struct LocalTransferJournalTests {
         #expect(!journal.withdrawalRetryIsInFlight(id: id))
         journal.retryPendingReportWithdrawals(id: id)
         #expect(journal.withdrawalRetryIsInFlight(id: id))
-        await #expect(throws: LocalTransferJournal.ReportHandlingError.self) { try await journal.markReportsHandled(id: id) }
+        await #expect(throws: LocalTransferJournal.ReportHandlingError.self) { try await journal.markReportsHandled(id: id, displayedPaths: journal.records.first { $0.id == id }?.pendingWithdrawalPaths ?? [], displayedRevision: journal.records.first { $0.id == id }?.revision) }
         #expect(journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == [report])
     }
 
