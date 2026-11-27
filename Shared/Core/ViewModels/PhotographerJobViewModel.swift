@@ -654,7 +654,8 @@ final class PhotographerJobViewModel: ObservableObject {
         results: [ResultRow],
         independentDestinationCount: Int? = nil,
         priorSourceFault: Bool = false,
-        provenSkippedSourcePaths: Set<String> = []
+        provenSkippedSourcePaths: Set<String> = [],
+        persist: Bool = true
     ) throws -> PhotographerFinalizationResult {
         guard var job = jobForRun(jobID) else {
             throw PhotographerJobViewModelError.noActiveJob
@@ -698,6 +699,7 @@ final class PhotographerJobViewModel: ObservableObject {
                 provenSkippedSourcePaths: provenSkippedSourcePaths
             )
         } catch {
+            if !persist { throw error }
             var failedCard = currentCard
             failedCard.localState = .issues
             failedCard.locallySafeAt = nil
@@ -716,6 +718,10 @@ final class PhotographerJobViewModel: ObservableObject {
         }
 
         job.cardIngests[cardIndex] = finalized.card
+        if !persist {
+            return finalizationResult(job: job, cardID: cardID, analysis: analysis,
+                allowsQueueContinuationForExpectedExclusions: allowsExpectedExclusionQueueContinuation)
+        }
         do {
             try persistRunJobThrowing(job)
         } catch {
@@ -729,6 +735,20 @@ final class PhotographerJobViewModel: ObservableObject {
             analysis: analysis,
             allowsQueueContinuationForExpectedExclusions: allowsExpectedExclusionQueueContinuation
         )
+    }
+
+    /// Commit exactly the card used to create the settled report, retaining
+    /// any unrelated job edits made while the report was being written.
+    func commitPreparedIngest(_ prepared: PhotographerFinalizationResult) throws {
+        guard let context = prepared.context, var job = jobForRun(context.job.id),
+              let index = job.cardIngests.firstIndex(where: { $0.id == context.cardIngestID }),
+              let card = context.job.cardIngests.first(where: { $0.id == context.cardIngestID }),
+              job.cardIngests[index].localState == .copying || job.cardIngests[index].localState == .verifying else {
+            throw PhotographerReportError.cardNotReady
+        }
+        job.cardIngests[index] = card
+        try persistRunJobThrowing(job)
+        if activeCardDraft?.id == card.id { activeCardDraft = card }
     }
 
     func cancelIngest() {

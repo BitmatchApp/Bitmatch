@@ -153,6 +153,31 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertFalse(scan.reports.isEmpty)
     }
 
+    func testFailedHistoryAndWarningExportDeletePublishedReports() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            throw NSError(domain: "BitMatchTestFinish", code: 1)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults,
+            beforeRecoveryReportSettlement: { throw NSError(domain: "BitMatchTestWarningExport", code: 2) })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(record.summary.contains("reports were deleted"))
+        let paths = try XCTUnwrap(record.pendingReportPaths)
+        XCTAssertFalse(paths.isEmpty)
+        for path in paths { XCTAssertFalse(FileManager.default.fileExists(atPath: path), path) }
+    }
+
     func testReportReplacementFailureFinishesHistoryWithIssues() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -206,13 +231,62 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(ended)
         XCTAssertEqual(finishAttempts, 1, "The failed publication must be saved as issues in one finish attempt")
-        XCTAssertEqual(interruptAttempts, 1, "The fallback journal write must fail too")
+        XCTAssertEqual(interruptAttempts, 2, "The interrupted write is retried once")
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
-        XCTAssertNotEqual(record.state, .completed)
+        XCTAssertEqual(record.state, .interrupted)
+        XCTAssertTrue(TransferLibraryPresentation.isVisible(state: record.state, showHistory: true))
+        XCTAssertTrue(record.summary.contains("Could not save transfer results"))
         XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: journal.records), .safeToErase)
         let persisted = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
         XCTAssertNotEqual(persisted.first(where: { $0.id == id })?.state, .completed)
         XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+    }
+
+    func testSettlementCancellationIsRecordedAsInterruption() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: { throw CancellationError() })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(record.summary.localizedCaseInsensitiveContains("interrupt"))
+        XCTAssertFalse(record.summary.contains("report export failed"))
+        let scan = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertTrue(scan.reports.allSatisfy { $0.snapshot.safeToErase == false })
+    }
+
+    func testUserCancellationDuringReportSettlementIsSavedAsCancelled() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        weak var activeCoordinator: SharedAppCoordinator?
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults,
+            beforeFinalReportSettlement: { activeCoordinator?.cancelOperation() })
+        activeCoordinator = coordinator
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .cancelled && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(record.summary.contains("Cancelled by user"))
+        XCTAssertFalse(record.summary.contains("report export failed"))
+        let scan = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertTrue(scan.reports.allSatisfy { $0.snapshot.safeToErase == false })
     }
 
     func testLateJournalFinishFailureNeverEmitsASafeLiveVerdict() async throws {
@@ -253,7 +327,11 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let store = InMemoryPhotographerJobStore()
         var project: PhotographerJobViewModel?
         var cardWasSafeAtFinish = false
+        var cardWasSafeAtReportSettlement = false
+        var reportSettlementPending = false
+        var observedSafeWhileReportPending = false
         let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            reportSettlementPending = false
             cardWasSafeAtFinish = project?.activeCard?.localState == .locallySafe
             throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
         })
@@ -261,8 +339,16 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let coordinator = SharedAppCoordinator(
             platformManager: RecordingPlatformManager(fileOperations: operations),
             transferJournal: journal, projectStore: store, defaults: f.defaults,
-            physicalDiskIdentityProvider: SharedProjectFixture.DistinctFixtureDisks())
+            physicalDiskIdentityProvider: SharedProjectFixture.DistinctFixtureDisks(),
+            beforeFinalReportSettlement: {
+                reportSettlementPending = true
+                cardWasSafeAtReportSettlement = project?.activeCard?.localState == .locallySafe
+            })
         let jobs = coordinator.photographerJobViewModel
+        let subscription = jobs.$activeCardDraft.sink { card in
+            if reportSettlementPending && card?.localState == .locallySafe { observedSafeWhileReportPending = true }
+        }
+        defer { subscription.cancel() }
         project = jobs
         coordinator.destinationURLs = [f.primary, f.secondary]
         coordinator.sourceURL = f.source
@@ -292,7 +378,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(started)
         let idle = await waitUntil(timeout: .seconds(10)) { !coordinator.isOperationInProgress }
         XCTAssertTrue(idle)
-        XCTAssertTrue(cardWasSafeAtFinish, "The injected failure must follow project finalization")
+        XCTAssertFalse(cardWasSafeAtReportSettlement, "The card must stay in progress while reports are pending")
+        XCTAssertFalse(observedSafeWhileReportPending, "No Locally Safe card may be published while report settlement is pending")
+        XCTAssertFalse(cardWasSafeAtFinish, "The card must remain in progress until History is saved")
         XCTAssertEqual(journal.records.first?.state, .interrupted)
         XCTAssertEqual(jobs.activeCard?.localState, .issues)
         XCTAssertNil(jobs.activeCard?.locallySafeAt)

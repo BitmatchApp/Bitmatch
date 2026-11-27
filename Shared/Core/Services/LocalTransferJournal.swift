@@ -34,6 +34,7 @@ final class LocalTransferJournal: ObservableObject {
     /// The lineage each cached row was built with: a later change to an
     /// earlier attempt (pruned, retried) must rebuild the row.
     private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
+    private var interruptedOverrides: [UUID: LocalTransferRecord] = [:]
     private var isRefreshingRecords = false
     /// Counts expensive derivations, so performance tests need no timing limit.
     private(set) var completedQueueRowBuildCount = 0
@@ -87,7 +88,7 @@ final class LocalTransferJournal: ObservableObject {
         completedQueueRowLineage.removeAll(keepingCapacity: true)
         isRefreshingRecords = true
         defer { isRefreshingRecords = false }
-        records = store.records
+        records = store.records.map { interruptedOverrides[$0.id] ?? $0 }
         persistenceError = store.persistenceError
     }
 
@@ -420,6 +421,31 @@ final class LocalTransferJournal: ObservableObject {
     func reorderQueued(idsInRunOrder orderedIDs: [UUID]) throws {
         defer { refresh() }
         try store.reorderQueued(idsInRunOrder: orderedIDs)
+    }
+
+    func recordPendingReportPaths(id: UUID, paths: [String]) throws {
+        defer { refresh() }
+        try store.recordPendingReportPaths(id: id, paths: paths)
+    }
+
+    func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow]) {
+        guard var record = records.first(where: { $0.id == id }) else { return }
+        record.state = .interrupted
+        record.summary = summary
+        record.results = results
+        record.endedAt = Date()
+        record.expectedExclusionQueueQualification = nil
+        interruptedOverrides[id] = record
+        refresh()
+    }
+
+    /// Exit settlement must check the stored record, not a presentation override.
+    func storedRecord(id: UUID) -> LocalTransferRecord? {
+        store.records.first { $0.id == id }
+    }
+
+    var hasStoredRunningRecord: Bool {
+        store.records.contains { $0.state == .running }
     }
 
     func finish(

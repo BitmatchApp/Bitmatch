@@ -6,6 +6,24 @@ import XCTest
 /// Actual journal I/O over owned temporary metadata fixtures. No bookmarks
 /// are resolved and no source or backup media are read or modified.
 final class JournalStartupPersistenceTests: XCTestCase {
+    func testStartupWithdrawsReportsRecordedByRunningAttempt() throws {
+        let fixture = try Fixture()
+        defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let reports = ["report.json", "report.pdf", "report.sha256.txt"].map { fixture.store.appendingPathComponent($0) }
+        for report in reports { try Data("safe".utf8).write(to: report) }
+        record.pendingReportPaths = reports.map(\.path)
+        try fixture.write([record])
+
+        let journal = TransferJournal(fileURL: fixture.journal)
+        XCTAssertEqual(journal.records.first?.state, .interrupted)
+        XCTAssertTrue(journal.records.first?.summary.contains("withdrawn") == true)
+        for report in reports {
+            XCTAssertFalse(FileManager.default.fileExists(atPath: report.path))
+            XCTAssertTrue(FileManager.default.fileExists(atPath: report.deletingLastPathComponent().appendingPathComponent(".unsettled-" + report.lastPathComponent).path))
+        }
+    }
+
     func testReportPublicationFailureDowngradesCompletedHistoryDurably() throws {
         let fixture = try Fixture()
         defer { fixture.cleanup() }

@@ -889,6 +889,31 @@ final class CopyVerifyExecutor {
         if failure != nil { pendingReport = nil }
     }
 
+    var pendingPublishedReportPaths: [String] { pendingReport?.files.map(\.path) ?? [] }
+
+    /// A replacement can fail before touching the existing safe files.
+    /// Attempt every deletion even when the volume is full or unavailable.
+    func deletePendingReports() -> [String] {
+        let paths = pendingPublishedReportPaths
+        func priority(_ path: String) -> Int {
+            if path.hasSuffix(".json") { return 0 }
+            if path.hasSuffix(".pdf") { return 1 }
+            return 2
+        }
+        let ordered = paths.sorted { priority($0) < priority($1) }
+        var failures: [String] = []
+        for path in ordered {
+            do { try FileManager.default.removeItem(atPath: path) }
+            catch {
+                let nsError = error as NSError
+                let missing = nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError
+                let parentExists = FileManager.default.fileExists(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path)
+                if !missing || !parentExists { failures.append(path) }
+            }
+        }
+        return failures
+    }
+
     func forgetSettledReport() {
         pendingReport = nil
     }

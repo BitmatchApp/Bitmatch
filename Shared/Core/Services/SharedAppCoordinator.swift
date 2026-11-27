@@ -389,6 +389,8 @@ class SharedAppCoordinator: ObservableObject {
 
     // MARK: - Sub-coordinators
     private let beforeFinalReportSettlement: (() throws -> Void)?
+    private let beforeRecoveryReportSettlement: (() throws -> Void)?
+    private var pendingProjectFinalization: (() throws -> Void)?
     private lazy var copyVerifyExecutor: CopyVerifyExecutor = {
         CopyVerifyExecutor(
             platformManager: platformManager,
@@ -967,8 +969,10 @@ class SharedAppCoordinator: ObservableObject {
         physicalDiskIdentityProvider: any PhysicalDiskIdentityProviding = SystemPhysicalDiskIdentityProvider(),
         sourceEjectability: (@Sendable (URL) -> Bool)? = nil,
         driveAccessWorker: DriveAccessWorker? = nil,
-        beforeFinalReportSettlement: (() throws -> Void)? = nil
+        beforeFinalReportSettlement: (() throws -> Void)? = nil,
+        beforeRecoveryReportSettlement: (() throws -> Void)? = nil
     ) {
+        self.beforeRecoveryReportSettlement = beforeRecoveryReportSettlement
         self.beforeFinalReportSettlement = beforeFinalReportSettlement
         self.platformManager = platformManager
         let worker = driveAccessWorker ?? DriveAccessWorker(useBlockingThreads: true)
@@ -2729,7 +2733,12 @@ class SharedAppCoordinator: ObservableObject {
                       self.activeStartID == startID,
                       !self.startCancellationRequested else { return }
                 self.operationState = state
-                self.updateProjectLifecycle(for: state, projectIdentity: projectIdentity)
+                // A terminal engine verdict is provisional until reports and History settle.
+                if case .completed = state, projectIdentity != nil {
+                    // The settled branch below updates the card.
+                } else {
+                    self.updateProjectLifecycle(for: state, projectIdentity: projectIdentity)
+                }
             },
             onAuthoritativeResultsAndSkips: { [weak self] allResults, skippedAtStart in
                 guard let self else {
@@ -2783,7 +2792,10 @@ class SharedAppCoordinator: ObservableObject {
             isClearingSnapshottedComposerSource = false
         }
 
+        pendingProjectFinalization = nil
         var attemptingJournalFinish = false
+        var finalizingProject = false
+        var firstInterruptWriteFailure: String?
         var publicationFailure: String?
         do {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
@@ -2797,15 +2809,23 @@ class SharedAppCoordinator: ObservableObject {
                 // Settle reports while History still describes a running transfer.
                 // If publication fails, the first terminal journal write is issues.
                 do {
+                    let reportPaths = copyVerifyExecutor.pendingPublishedReportPaths
+                    if !reportPaths.isEmpty { try transferJournal.recordPendingReportPaths(id: recordID, paths: reportPaths) }
                     try beforeFinalReportSettlement?()
                     try await copyVerifyExecutor.settleReportAfterHistory(failure: nil)
+                } catch is CancellationError {
+                    throw CancellationError()
                 } catch {
+                    if startCancellationRequested { throw CancellationError() }
                     let exportError = error
                     var recoveryError: String?
                     do {
+                        try beforeRecoveryReportSettlement?()
                         try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer report export failed: \(exportError.localizedDescription)")
                     } catch {
-                        recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription)."
+                        let failures = copyVerifyExecutor.deletePendingReports()
+                        let deletion = failures.isEmpty ? "Published reports were deleted." : "Could not delete published reports: \(failures.joined(separator: ", "))."
+                        recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
                     }
                     publicationFailure = (["Transfer report export failed: \(exportError.localizedDescription). Keep the card.", recoveryError]
                         .compactMap { $0 }).joined(separator: " ")
@@ -2813,6 +2833,7 @@ class SharedAppCoordinator: ObservableObject {
                         photographerJobViewModel.operationFailed(jobID: projectIdentity.jobID, cardID: projectIdentity.cardID)
                     }
                 }
+                if startCancellationRequested { throw CancellationError() }
                 let durations = copyVerifyExecutor.completedPhaseDurations
                 attemptingJournalFinish = true
                 try transferJournal.finish(
@@ -2828,6 +2849,15 @@ class SharedAppCoordinator: ObservableObject {
                     sourceFingerprint: currentOperation?.sourceFingerprint,
                     skippedFinderMetadataPaths: currentOperation?.skippedFinderMetadataPaths
                 )
+                attemptingJournalFinish = false
+                if publicationFailure == nil, (info.success || info.expectedExclusionQueueQualification != nil),
+                   let finalize = pendingProjectFinalization {
+                    finalizingProject = true
+                    try finalize()
+                    finalizingProject = false
+                }
+                pendingProjectFinalization = nil
+                updateProjectLifecycle(for: .completed(info), projectIdentity: projectIdentity)
                 copyVerifyExecutor.forgetSettledReport()
                 SharedLogger.transferEvent(.journalFinished, run: startID)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
@@ -2840,13 +2870,20 @@ class SharedAppCoordinator: ObservableObject {
             let originalError = error
             var reportFailure: String?
             do {
-                let reason = attemptingJournalFinish
-                    ? "Transfer history could not be saved: \(originalError.localizedDescription)"
-                    : "Transfer did not finish: \(originalError.localizedDescription)"
+                let reason = startCancellationRequested ? "Transfer cancelled" :
+                    originalError is CancellationError ? "Transfer interrupted unexpectedly" :
+                    attemptingJournalFinish ? "Transfer history could not be saved: \(originalError.localizedDescription)" :
+                    finalizingProject ? "Project card could not be saved: \(originalError.localizedDescription)" :
+                    "Transfer did not finish: \(originalError.localizedDescription)"
+                try beforeRecoveryReportSettlement?()
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: reason)
             } catch {
-                reportFailure = "The reports could not be replaced: \(error.localizedDescription)"
+                let failures = copyVerifyExecutor.deletePendingReports()
+                let deletion = failures.isEmpty ? "Published reports were deleted." :
+                    "Could not delete published reports: \(failures.joined(separator: ", "))."
+                reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"
             }
+            pendingProjectFinalization = nil
             // The executor may already have finalized the project card before
             // the journal finish failed. Invalidate it even if interruption
             // persistence also fails, so this session cannot claim safety.
@@ -2865,22 +2902,34 @@ class SharedAppCoordinator: ObservableObject {
                         ? "Transfer interrupted unexpectedly; partial results retained. Keep source media intact."
                         : attemptingJournalFinish
                             ? "Transfer history could not be saved: \(originalError.localizedDescription). Keep the card."
-                            : originalError.localizedDescription
+                            : finalizingProject
+                                ? "Project card could not be saved: \(originalError.localizedDescription). Keep the card."
+                                : originalError.localizedDescription
                     let summary = [baseSummary, publicationFailure, reportFailure].compactMap { $0 }.joined(separator: " ")
                     if let record = transferJournal.records.first(where: { $0.id == recordID }),
                        record.state == .completed || record.state == .issues {
                         // A flush may fail after the new journal was published.
                         try transferJournal.recordReportPublicationFailure(id: recordID, summary: summary)
                     } else {
-                        try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
-                                                      reason: Self.taggedFailureReason(of: originalError))
+                        do {
+                            try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
+                                                          reason: Self.taggedFailureReason(of: originalError))
+                        } catch {
+                            firstInterruptWriteFailure = error.localizedDescription
+                            try transferJournal.interrupt(id: recordID, summary: summary, results: runResults.rows,
+                                                          reason: Self.taggedFailureReason(of: originalError))
+                        }
                     }
                     SharedLogger.transferEvent(.journalInterrupted, run: startID, code: (originalError as NSError).code,
                                                taskCancelled: Task.isCancelled)
                 }
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             } catch {
-                let message = (["Could not save transfer results: \(error.localizedDescription)", publicationFailure, reportFailure].compactMap { $0 }).joined(separator: " ")
+                let firstFailure = firstInterruptWriteFailure.map { "First interrupted-history write failed: \($0)." }
+                let message = (["Could not save transfer results: \(error.localizedDescription)", firstFailure, publicationFailure, reportFailure].compactMap { $0 }).joined(separator: " ")
+                if !startCancellationRequested {
+                    transferJournal.retainInterruptedOverride(id: recordID, summary: "Transfer interrupted. " + message, results: runResults.rows)
+                }
                 if isReplayingQueuedTransfer || queueSessionRecordIDs.contains(recordID) {
                     pauseQueueAttempt(recordID: recordID, message: message)
                 } else {
@@ -3169,15 +3218,16 @@ class SharedAppCoordinator: ObservableObject {
             }
             // Fail closed if the coordinator is gone: never assume a clean lineage.
             let priorSourceFault = self?.activeRunLineagePreventsSafeClaim ?? true
-            return try photographerJobViewModel.completeIngest(
-                jobID: jobID,
-                cardID: cardID,
-                analysis: analysis,
-                results: results,
+            let prepared = try photographerJobViewModel.completeIngest(
+                jobID: jobID, cardID: cardID, analysis: analysis, results: results,
                 independentDestinationCount: independentDestinationCount,
-                priorSourceFault: priorSourceFault,
-                provenSkippedSourcePaths: provenSkippedSourcePaths
-            )
+                priorSourceFault: priorSourceFault, provenSkippedSourcePaths: provenSkippedSourcePaths,
+                persist: false)
+            self?.pendingProjectFinalization = { [weak photographerJobViewModel] in
+                guard let photographerJobViewModel else { throw PhotographerReportError.cardNotReady }
+                try photographerJobViewModel.commitPreparedIngest(prepared)
+            }
+            return prepared
         }
         activeProjectCardID = cardID
         // The job's folder recipe applies to this run only; the saved label
@@ -3281,10 +3331,10 @@ class SharedAppCoordinator: ObservableObject {
         guard let recordID else {
             // A natural finish can win the race before cancellation observes
             // the active record. In that case there is no running record left.
-            if !transferJournal.records.contains(where: { $0.state == .running }) { return }
+            if !transferJournal.hasStoredRunningRecord { return }
             throw CancellationSettlementError.journalRecordMissing
         }
-        guard let record = transferJournal.records.first(where: { $0.id == recordID }) else {
+        guard let record = transferJournal.storedRecord(id: recordID) else {
             throw CancellationSettlementError.journalRecordMissing
         }
         guard record.state != .running else {

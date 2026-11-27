@@ -245,6 +245,9 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     /// Backup paths actually opened by this attempt; nil in older records.
     public var runDestinationURLs: [URL]? = nil
 
+    /// Report files that may be published before this attempt settles.
+    public var pendingReportPaths: [String]? = nil
+
     /// Roots used to associate saved rows with this attempt’s backups.
     public var resultDestinationURLs: [URL] { runDestinationURLs ?? destinations.map(\.url) }
 
@@ -274,7 +277,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, failureReason, estimatedSourceBytes
-        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs
+        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs, pendingReportPaths
     }
 
     public init(from decoder: Decoder) throws {
@@ -313,6 +316,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         skippedFinderMetadataPaths = try c.decodeIfPresent([String].self, forKey: .skippedFinderMetadataPaths)
         runSourceURL = try c.decodeIfPresent(URL.self, forKey: .runSourceURL)
         runDestinationURLs = try c.decodeIfPresent([URL].self, forKey: .runDestinationURLs)
+        pendingReportPaths = try c.decodeIfPresent([String].self, forKey: .pendingReportPaths)
         // Unknown future qualifications are not permission to advance.
         expectedExclusionQueueQualification = try? c.decodeIfPresent(
             ExpectedExclusionQueueQualification.self, forKey: .expectedExclusionQueueQualification
@@ -407,7 +411,13 @@ public final class TransferJournal: Sendable {
                 var recoveredInterruption = false
                 for index in recovered.indices where recovered[index].state == .running {
                     recovered[index].state = .interrupted
-                    recovered[index].summary = "Interrupted. Reconnect the original folders and retry to check the copies."
+                    let resources = recovered[index].destinations
+                    let scoped = resources.compactMap { try? $0.resolve() }.filter { $0.startAccessingSecurityScopedResource() }
+                    let failed = Self.withdrawUnsettledReports(recovered[index].pendingReportPaths ?? [])
+                    scoped.forEach { $0.stopAccessingSecurityScopedResource() }
+                    let reportNote = (recovered[index].pendingReportPaths ?? []).isEmpty ? "" :
+                        (failed.isEmpty ? " Unsettled reports were withdrawn." : " Some unsettled reports could not be withdrawn: \(failed.joined(separator: ", ")).")
+                    recovered[index].summary = "Interrupted. Reconnect the original folders and retry to check the copies." + reportNote
                     recovered[index].endedAt = Date()
                     recoveredInterruption = true
                 }
@@ -428,6 +438,40 @@ public final class TransferJournal: Sendable {
         self.fileURL = fileURL
         self.lockDescriptor = lockDescriptor
         self.state = Mutex(initial)
+    }
+
+    /// Remove discoverable reports after an interrupted settlement. JSON is
+    /// handled first because it is consumed automatically by report scans.
+    public static func withdrawUnsettledReports(_ paths: [String]) -> [String] {
+        let manager = FileManager.default
+        func priority(_ path: String) -> Int {
+            if path.hasSuffix(".json") { return 0 }
+            if path.hasSuffix(".pdf") { return 1 }
+            return 2
+        }
+        let ordered = paths.sorted { priority($0) < priority($1) }
+        var failures: [String] = []
+        for path in ordered {
+            let url = URL(fileURLWithPath: path)
+            guard manager.fileExists(atPath: path) else {
+                if !manager.fileExists(atPath: url.deletingLastPathComponent().path) { failures.append(path) }
+                continue
+            }
+            let hidden = url.deletingLastPathComponent().appendingPathComponent(".unsettled-" + url.lastPathComponent)
+            do { try manager.moveItem(at: url, to: hidden) }
+            catch {
+                do { try manager.removeItem(at: url) }
+                catch { failures.append(path) }
+            }
+        }
+        return failures
+    }
+
+    public func recordPendingReportPaths(id: UUID, paths: [String]) throws {
+        try update(id: id) { record in
+            guard record.state == .running else { throw LocalTransferJournalError.invalidState }
+            record.pendingReportPaths = paths
+        }
     }
 
     deinit {
@@ -717,6 +761,7 @@ public final class TransferJournal: Sendable {
                 record.independentDestinationCount = independentDestinationCount
                 // A direct retry may reuse this record. Its earlier selected
                 // plan is not evidence for the new attempt.
+                record.pendingReportPaths = nil
                 record.plannedFileCounts = nil
                 record.quickOnlyUnverified = nil
                 record.expectedExclusionQueueQualification = nil
