@@ -104,8 +104,8 @@ struct TransferHistoryDocument: FileDocument {
             let encoder = JSONEncoder()
             encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
             encoder.dateEncodingStrategy = .iso8601
-            data = try encoder.encode(Report(id: record.id, retryOf: record.retryOf, plannedFileCounts: record.plannedFileCounts, source: record.source.url.path,
-                destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
+            data = try encoder.encode(Report(id: record.id, retryOf: record.retryOf, plannedFileCounts: record.plannedFileCounts, source: (record.runSourceURL ?? record.source.url).path,
+                destinations: record.resultDestinationURLs.map(\.path), state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 savedVerdict: savedVerdict.title, savedSafeToErase: savedVerdict.isSafe,
                 verificationScope: scope, finderViewFiles: TransferCompletion.finderMetadataSkipSummary(results: record.results, skipsProven: TransferJournal.finderMetadataSkipsProven(record)),

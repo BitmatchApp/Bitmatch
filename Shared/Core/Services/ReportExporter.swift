@@ -167,10 +167,10 @@ enum ReportExporter {
     /// Re-renders saved evidence without touching the source or changing the journal verdict.
     static func historyPDF(record: LocalTransferRecord, history: [LocalTransferRecord], includeThumbnails: Bool) async throws -> Data {
         try Task.checkCancellation()
-        var accesses: [(LocalTransferResource, LocalTransferReadAccess)] = []
+        var accesses: [(URL, LocalTransferReadAccess)] = []
         if includeThumbnails {
-            for resource in record.destinations {
-                if let access = try? resource.beginReadAccess() { accesses.append((resource, access)) }
+            for (resource, runRoot) in zip(record.destinations, record.resultDestinationURLs) {
+                if let access = try? resource.beginReadAccess() { accesses.append((runRoot, access)) }
             }
         }
         defer { accesses.forEach { $0.1.release() } }
@@ -178,8 +178,8 @@ enum ReportExporter {
             var path: String?
             if let oldPath = row.destinationPath {
                 let comparable = ResultPathMatch.comparablePath(oldPath)
-                for (resource, access) in accesses {
-                    let original = ResultPathMatch.comparablePath(resource.url.path)
+                for (runRoot, access) in accesses {
+                    let original = ResultPathMatch.comparablePath(runRoot.path)
                     if comparable.hasPrefix(original + "/") {
                         path = access.url.appendingPathComponent(String(comparable.dropFirst(original.count + 1))).path
                         break
@@ -210,7 +210,7 @@ enum ReportExporter {
             record.startedAt == nil || record.endedAt == nil ? "Some original transfer timing is unavailable." : nil].compactMap { $0 }.joined(separator: "\n")
         let skipsProven = TransferJournal.finderMetadataSkipsProven(record)
         var summary = ReportSummary(jobID: record.id, started: start, finished: finish, mode: .copyAndVerify,
-            source: record.source.url.path, destinations: record.destinations.map { $0.url.path }, totalFiles: files,
+            source: (record.runSourceURL ?? record.source.url).path, destinations: record.resultDestinationURLs.map(\.path), totalFiles: files,
             matched: record.results.filter(\.isVerifiedStatus).count,
             issues: record.results.filter {
                 !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble

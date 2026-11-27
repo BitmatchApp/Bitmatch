@@ -75,7 +75,7 @@ extension TransferOutcomePresentation {
             // record is `.interrupted`; Finish and History must agree.
             state: displayedState,
             rows: rows,
-            destinations: record?.destinations.map(\.url) ?? [],
+            destinations: record?.resultDestinationURLs ?? [],
             hasErrors: record == nil ? coordinator.hasErrors : recordedIssueCount > 0,
             hasCriticalErrors: record == nil && coordinator.hasCriticalErrors,
             errorCount: record == nil ? coordinator.errorCount : recordedIssueCount,

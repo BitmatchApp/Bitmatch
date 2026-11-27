@@ -38,9 +38,9 @@ A DIT (GitHub issue 93) lost a clean verdict because Finder rewrote a `.DS_Store
 
 ### What is skipped
 
-The classifier proves the Finder database format; it does not interpret the content inside its data blocks.
+The classifier requires a structurally valid Finder database: a consistent header and allocator, with a `DSDB` directory entry resolving to an allocated, in-file block with a plausible B-tree header. It does not interpret record contents.
 
-A source entry is a Finder view file when all hold: its name is byte-exactly `.DS_Store` (any depth); it is a regular file; its size is within the Finder format's plausible range; its first bytes are the alignment word `00 00 00 01` followed by the magic `Bud1`; the header's offsets are consistent with its size; and the root block the header points to (at 4 + offset, read up to 64 KiB) holds the `DSDB` directory entry every Finder file carries. Anything else with that name is ordinary: copied, verified, listed. An entry whose classification fails at Start (gone, resized or unreadable since the scan) is not proven, so it is ordinary too: it is copied and fails, if it must, as its own row; nothing aborts the run. A directory named `.DS_Store` is never classified; a symlink named `.DS_Store` is an unsupported entry as today; `.ds_store` or an NFD spelling is ordinary.
+A source entry is a Finder view file when all hold: its name is byte-exactly `.DS_Store` (any depth); it is a regular file; its size is within the Finder format's plausible range; its first bytes are the alignment word `00 00 00 01` followed by the magic `Bud1`; the header's offsets are consistent with its size; and the root block the header points to (at 4 + offset, read up to 64 KiB) holds the `DSDB` directory entry every Finder file carries, resolving through the address table to an allocated, in-file block with a plausible B-tree header. Anything else with that name is ordinary: copied, verified, listed. An entry whose classification fails at Start (gone, resized or unreadable since the scan) is not proven, so it is ordinary too: it is copied and fails, if it must, as its own row; nothing aborts the run. A directory named `.DS_Store` is never classified; a symlink named `.DS_Store` is an unsupported entry as today; `.ds_store` or an NFD spelling is ordinary.
 
 ### Where it is decided
 

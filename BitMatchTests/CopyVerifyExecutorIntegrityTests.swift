@@ -1169,7 +1169,9 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         }
         bytes += [UInt8](repeating: 0, count: size - bytes.count)
         let root = 0x804
-        bytes[root + 3] = 1 // one block; the next word is reserved
+        bytes[root + 3] = 2 // two blocks; the next word is reserved
+        bytes.replaceSubrange(root + 8..<root + 12, with: [0, 0, 0x10, 0x05])
+        bytes.replaceSubrange(0x1004..<0x1014, with: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
         let directory = root + 8 + 256 * 4
         let entry: [UInt8] = [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 0]
         bytes.replaceSubrange(directory..<directory + entry.count, with: entry)

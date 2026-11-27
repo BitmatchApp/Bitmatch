@@ -525,7 +525,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         } else {
             evidence = nil
         }
-        let destinationNames = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
+        let destinationNames = record.resultDestinationURLs.map { TransferOutcomePresentation.destinationDriveName($0) }
         let cause = qualifiedSelection ? nil : cause(for: record, state: state, history: history)
         let outcome = finishedOutcome(for: record, state: state, history: history)
         let allFilesReused = state == .safeToErase
@@ -608,7 +608,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
         return TransferOutcomePresentation.make(
             state: operationState,
             rows: record.results,
-            destinations: record.destinations.map(\.url),
+            destinations: record.resultDestinationURLs,
             hasErrors: issueCount > 0,
             hasCriticalErrors: state == .failed,
             errorCount: issueCount,
@@ -653,7 +653,7 @@ struct QueueSessionPresentation: Equatable, Sendable {
             }
             let issues = DestinationResultSummary.make(
                 rows: record.results,
-                destinations: record.destinations.map(\.url)
+                destinations: record.resultDestinationURLs
             ).filter { $0.issueCount > 0 }
             if issues.count == 1, let issue = issues.first {
                 let count = issue.issueCount

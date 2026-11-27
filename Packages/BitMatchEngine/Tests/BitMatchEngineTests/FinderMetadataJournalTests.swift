@@ -116,6 +116,60 @@ import Testing
 
     // MARK: - Journal
 
+    @Test func remountedBackupIsPersistedAndProvesSavedSkips() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        var journal: TransferJournal? = TransferJournal(fileURL: f.journalURL)
+        let id = try journal!.enqueue(sourceURL: f.source, destinationURLs: f.destinations, verificationMode: .standard,
+                                     cameraSettings: f.settings, reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+        let moved = f.root.appendingPathComponent("MovedBackup", isDirectory: true)
+        try FileManager.default.moveItem(at: f.destinations[0], to: moved)
+        let runDestinations = [moved, f.destinations[1]]
+        try journal!.markRunning(id: id, sourceURL: f.source, destinationURLs: runDestinations)
+        try journal!.recordPlan(id: id, fileCounts: [1, 1])
+        let rows = runDestinations.flatMap { [f.verified("A001.mov", on: $0), f.skipped(".DS_Store", on: $0)] }
+        try journal!.finish(id: id, results: rows, summary: "verified", hadIssues: false,
+                           sourceFingerprint: "remounted-card", skippedFinderMetadataPaths: [".DS_Store"])
+        journal = nil // release the history lock so a fresh journal can read the file
+        let record = try #require(TransferJournal(fileURL: f.journalURL).records.first)
+        #expect(record.runDestinationURLs == runDestinations)
+        #expect(record.state == .completed)
+        #expect(TransferJournal.finderMetadataSkipsProven(record))
+        journal = TransferJournal(fileURL: f.journalURL)
+        #expect(journal!.matchingVerifiedRecord(sourceFingerprint: "remounted-card") != nil)
+        var json = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        json.removeValue(forKey: "runDestinationURLs")
+        let legacy = try JSONDecoder().decode(LocalTransferRecord.self, from: JSONSerialization.data(withJSONObject: json))
+        #expect(legacy.runDestinationURLs == nil)
+        #expect(legacy.resultDestinationURLs == legacy.destinations.map(\.url))
+    }
+
+    @Test func remountedBackupKeepsExpectedExclusionQueueQualification() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        var journal: TransferJournal? = TransferJournal(fileURL: f.journalURL)
+        var settings = f.settings
+        settings.excludedAppleDoublePaths = ["._A001.mov"]
+        let id = try journal!.enqueue(sourceURL: f.source, destinationURLs: f.destinations, verificationMode: .standard,
+                                     cameraSettings: settings, reportSettings: ReportPrefs(makeReport: false), generateASCMHL: false)
+        let moved = f.root.appendingPathComponent("MovedBackup", isDirectory: true)
+        try FileManager.default.moveItem(at: f.destinations[0], to: moved)
+        let destinations = [moved, f.destinations[1]]
+        try journal!.markRunning(id: id, sourceURL: f.source, destinationURLs: destinations)
+        try journal!.recordPlan(id: id, fileCounts: [1, 1])
+        let rows = destinations.flatMap { destination in
+            [f.verified("A001.mov", on: destination), f.skipped(".DS_Store", on: destination),
+             ResultRow(path: f.source.appendingPathComponent("._A001.mov").path,
+                status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                destination: destination.lastPathComponent, destinationPath: f.output("._A001.mov", on: destination))]
+        }
+        try journal!.finish(id: id, results: rows, summary: "Selected files verified", hadIssues: true,
+                           expectedExclusionQueueQualification: .ordinaryTransfer,
+                           sourceFingerprint: "remounted-exclusions", skippedFinderMetadataPaths: [".DS_Store"])
+        journal = nil // release the history lock so a fresh journal can read the file
+        let record = try #require(TransferJournal(fileURL: f.journalURL).records.first)
+        #expect(TransferJournal.finderMetadataSkipsProven(record))
+        #expect(TransferJournal.permitsExpectedExclusionQueueContinuation(record))
+    }
+
     @Test func savedProofUsesRunSourceNameAndWorksOffline() throws {
         let f = try Fixture(); defer { f.cleanup() }
         let runSource = f.root.appendingPathComponent("TodayCard", isDirectory: true)

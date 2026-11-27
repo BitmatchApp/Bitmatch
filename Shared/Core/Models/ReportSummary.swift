@@ -96,8 +96,8 @@ struct VerifiedReportSelection: Sendable {
 
     static func saved(_ record: LocalTransferRecord) -> Self? {
         guard TransferOutcomePresentation.hasVerifiedSelectedFiles(record) else { return nil }
-        return Self(jobID: record.id, source: record.source.url,
-            destinations: record.destinations.map(\.url), mode: record.verificationMode, rows: record.results)
+        return Self(jobID: record.id, source: record.runSourceURL ?? record.source.url,
+            destinations: record.resultDestinationURLs, mode: record.verificationMode, rows: record.results)
     }
 
     static func beforeReport(operation: FileOperation, expectedMode: VerificationMode,

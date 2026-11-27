@@ -31,6 +31,25 @@ struct TransferDetailsReportTests {
         return record
     }
 
+    @Test func historyExportsIdentifyTheRunSourceAfterRemount() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("history-remount-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: root),
+            destinations: [try LocalTransferResource(url: root)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        let runSource = URL(fileURLWithPath: "/RemountedCard", isDirectory: true)
+        record.runSourceURL = runSource
+        record.results = [ResultRow(path: runSource.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.verified.statusText, size: 5, checksum: "fixture", destination: "Backup")]
+        let json = try #require(JSONSerialization.jsonObject(with: TransferHistoryDocument(record: record, history: [record], asCSV: false).data) as? [String: Any])
+        #expect(json["source"] as? String == runSource.path)
+        let pdf = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)))
+        #expect(try #require(pdf.string).contains(runSource.path))
+        let csv = String(decoding: try TransferHistoryDocument(record: record, history: [record], asCSV: true).data, as: UTF8.self)
+        #expect(csv.contains(runSource.appendingPathComponent("clip.mov").path))
+    }
+
     @Test func historyExportsKeepSavedDetailsAndUnsafeVerdict() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("details-history-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

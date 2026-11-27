@@ -116,7 +116,7 @@ enum TransferLibraryPresentation {
             for record in records {
                 try checkCancellation()
                 let destinationNames = DestinationIdentityPresentation.nameMap(
-                    for: record.destinations.map(\.url)
+                    for: record.resultDestinationURLs
                 )
                 var clips: [String: Clip] = [:]
                 var order: [String] = []
@@ -383,7 +383,7 @@ enum TransferLibraryPresentation {
     ) -> Bool {
         let summaries = DestinationResultSummary.make(
             rows: record.results,
-            destinations: record.destinations.map(\.url)
+            destinations: record.resultDestinationURLs
         )
         guard summaries.count == record.destinations.count,
               summaries.allSatisfy({ summary in
@@ -408,7 +408,7 @@ enum TransferLibraryPresentation {
     /// Nil preserves the older records for which no selected-file plan exists.
     static func savedResultsCoverSelectedPlan(_ record: LocalTransferRecord) -> Bool? {
         guard let planned = record.plannedFileCounts else { return nil }
-        let summaries = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
+        let summaries = DestinationResultSummary.make(rows: record.results, destinations: record.resultDestinationURLs)
         return savedResultsCoverSelectedPlan(
             planned: planned, summaries: summaries, plannedRows: TransferJournal.plannedRows(record), destinationCount: record.destinations.count
         )

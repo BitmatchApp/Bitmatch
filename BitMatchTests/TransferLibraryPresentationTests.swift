@@ -45,6 +45,23 @@ struct TransferLibraryPresentationTests {
         }
     }
 
+    @Test func savedPlanUsesTheRunBackupPath() throws {
+        var record = PresentationTestSupport.record(state: .running)
+        let moved = URL(fileURLWithPath: "/remounted/Backup", isDirectory: true)
+        record.runDestinationURLs = [moved]
+        record.plannedFileCounts = [1]
+        let row = PresentationTestSupport.row(.verified, destination: moved)
+        try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+            authoritativeRows: [row], priorWriteError: nil)
+        record.results = [row]
+        record.state = .completed
+        #expect(TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == true)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .safeToErase)
+        let scope = VerificationScopeEvidence(record: record)
+        #expect(scope.recordedSelectedResults == 1)
+        #expect(scope.recordedVerifiedResults == 1)
+    }
+
     @Test func liveExecutorSuccessIsReconciledToTheSavedTerminalVerdict() {
         var record = PresentationTestSupport.record(state: .completed)
         record.plannedFileCounts = nil

@@ -136,7 +136,7 @@ enum SavedTransferPlanGate {
             $0.isInSelectedPlan && !(!$0.isSuccessStatus && skippedAtStartSourcePaths.contains($0.path))
         }
         let groups = DestinationResultSummary.make(
-            rows: selectedRows, destinations: record.destinations.map(\.url)
+            rows: selectedRows, destinations: record.resultDestinationURLs
         )
         guard groups.count == destinationCount,
               zip(plan, groups).allSatisfy({ expected, group in
@@ -841,13 +841,13 @@ class SharedAppCoordinator: ObservableObject {
         if let context = activeRunContext, context.journalRecordID == activeJournalRecordID {
             return context.sourceURL
         }
-        return outcomeRecord?.source.url ?? sourceURL
+        return outcomeRecord.map { $0.runSourceURL ?? $0.source.url } ?? sourceURL
     }
     var presentedDestinationURLs: [URL] {
         if let context = activeRunContext, context.journalRecordID == activeJournalRecordID {
             return context.destinationURLs
         }
-        return outcomeRecord?.destinations.map(\.url) ?? destinationURLs
+        return outcomeRecord?.resultDestinationURLs ?? destinationURLs
     }
     private var runDestinationNames: [URL: String] = [:]
     var presentedDestinationNames: [String] {
@@ -2034,7 +2034,7 @@ class SharedAppCoordinator: ObservableObject {
         isReplayingQueuedTransfer = true
         defer { isReplayingQueuedTransfer = false }
         sourceURL = record.source.url
-        destinationURLs = record.destinations.map(\.url)
+        destinationURLs = record.resultDestinationURLs
         verificationMode = record.verificationMode
         results = record.results
         operationState = state
@@ -2812,6 +2812,12 @@ class SharedAppCoordinator: ObservableObject {
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)
             }
         } catch {
+            // The executor may already have finalized the project card before
+            // the journal finish failed. Invalidate it even if interruption
+            // persistence also fails, so this session cannot claim safety.
+            if let projectIdentity {
+                photographerJobViewModel.operationFailed(jobID: projectIdentity.jobID, cardID: projectIdentity.cardID)
+            }
             let belongsToQueueSession = runBelongsToQueueSession
             queueIsRunning = false
             do {

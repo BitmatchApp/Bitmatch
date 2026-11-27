@@ -515,7 +515,7 @@ struct TransferRecoverySummary: Identifiable {
     var skipped: Int = 0
 
     static func make(_ record: LocalTransferRecord) -> [Self] {
-        let groups = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
+        let groups = DestinationResultSummary.make(rows: record.results, destinations: record.resultDestinationURLs)
         let hasUnassigned = groups.count > record.destinations.count
         return groups.enumerated().map { index, group in
             // Duplicate/conflicting evidence must not inflate success or hide an issue.

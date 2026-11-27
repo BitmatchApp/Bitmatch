@@ -242,6 +242,11 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     /// The source spelling used to name this attempt's output folders.
     /// Nil for records written before this field was introduced.
     public var runSourceURL: URL? = nil
+    /// Backup paths actually opened by this attempt; nil in older records.
+    public var runDestinationURLs: [URL]? = nil
+
+    /// Roots used to associate saved rows with this attempt’s backups.
+    public var resultDestinationURLs: [URL] { runDestinationURLs ?? destinations.map(\.url) }
 
     public var title: String { source.url.lastPathComponent }
     public var canRetry: Bool { state.canRetry && projectID == nil }
@@ -269,7 +274,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, failureReason, estimatedSourceBytes
-        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL
+        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs
     }
 
     public init(from decoder: Decoder) throws {
@@ -307,6 +312,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         failureReason = try c.decodeIfPresent(String.self, forKey: .failureReason)
         skippedFinderMetadataPaths = try c.decodeIfPresent([String].self, forKey: .skippedFinderMetadataPaths)
         runSourceURL = try c.decodeIfPresent(URL.self, forKey: .runSourceURL)
+        runDestinationURLs = try c.decodeIfPresent([URL].self, forKey: .runDestinationURLs)
         // Unknown future qualifications are not permission to advance.
         expectedExclusionQueueQualification = try? c.decodeIfPresent(
             ExpectedExclusionQueueQualification.self, forKey: .expectedExclusionQueueQualification
@@ -705,6 +711,7 @@ public final class TransferJournal: Sendable {
                 record.state = .running
                 record.startedAt = Date()
                 record.runSourceURL = source
+                record.runDestinationURLs = destinations
                 record.endedAt = nil
                 record.summary = "Copying and verifying"
                 record.independentDestinationCount = independentDestinationCount
@@ -992,7 +999,7 @@ public final class TransferJournal: Sendable {
         }
         return TransferCompletion.exactExpectedExclusionRows(
             rows: record.results, source: rowSourceURL(record),
-            destinations: record.destinations.map(\.url), settings: record.cameraSettings,
+            destinations: record.resultDestinationURLs, settings: record.cameraSettings,
             plannedFileCounts: counts,
             rootSource: record.runSourceURL ?? rowSourceURL(record),
             finderMetadataSkipsProven: finderMetadataSkipsProven(record)
@@ -1026,7 +1033,7 @@ public final class TransferJournal: Sendable {
             : nil
         return TransferCompletion.finderMetadataSkipsProven(
             rows: record.results, provenPaths: record.skippedFinderMetadataPaths, sourceFiles: manifest,
-            destinations: record.destinations.map(\.url), source: record.runSourceURL ?? rowSourceURL(record),
+            destinations: record.resultDestinationURLs, source: record.runSourceURL ?? rowSourceURL(record),
             settings: record.cameraSettings, savedRowSource: rowSourceURL(record)
         )
     }
@@ -1090,10 +1097,10 @@ public final class TransferJournal: Sendable {
               rows.allSatisfy(\.isVerifiedStatus),
               !record.destinations.isEmpty,
               finderMetadataSkipsProven(record) else { return false }
-        let groups = record.destinations.map { destination in
+        let groups = record.resultDestinationURLs.map { destination in
             rows.filter { row in
                 guard let path = row.destinationPath else { return false }
-                return PathContainment.isWithin(path, root: destination.url.path)
+                return PathContainment.isWithin(path, root: destination.path)
             }
         }
         guard groups.allSatisfy({ !$0.isEmpty && Set($0.map(\.path)).count == $0.count }),
@@ -1123,14 +1130,14 @@ public final class TransferJournal: Sendable {
 
     private static func hasCompletePlannedResults(_ record: LocalTransferRecord) -> Bool {
         guard let plan = record.plannedFileCounts else { return false }
-        guard plan.count == record.destinations.count else { return false }
+        guard plan.count == record.destinations.count, plan.count == record.resultDestinationURLs.count else { return false }
         // A proven skip the final gate failed was skipped at Start, so the
         // plan never counted it; its failure still makes the record unsafe.
         let selected = plannedRows(record)
-        let groups = record.destinations.map { destination in
+        let groups = record.resultDestinationURLs.map { destination in
             selected.filter { row in
                 guard let path = row.destinationPath else { return false }
-                return PathContainment.isWithin(path, root: destination.url.path)
+                return PathContainment.isWithin(path, root: destination.path)
             }
         }
         guard groups.reduce(0, { $0 + $1.count }) == selected.count,

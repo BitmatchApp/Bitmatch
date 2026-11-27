@@ -23,7 +23,7 @@ struct TransferFinishNotice: Equatable, Sendable {
         guard record.state != .queued, record.state != .running,
               let state = TransferOutcomePresentation.recordedState(for: record) else { return nil }
         if TransferOutcomePresentation.hasVerifiedSelectedFiles(record), !priorSourceFault, !lineageIncomplete {
-            let names = record.destinations.map { TransferOutcomePresentation.destinationDriveName($0.url) }
+            let names = record.resultDestinationURLs.map { TransferOutcomePresentation.destinationDriveName($0) }
             return .init(
                 title: "\(record.title): selected files verified",
                 body: "Finished on \(naturalList(names)).",
@@ -33,7 +33,7 @@ struct TransferFinishNotice: Equatable, Sendable {
         return make(
             state: state,
             sourceName: record.title,
-            destinations: record.destinations.map(\.url),
+            destinations: record.resultDestinationURLs,
             // A skipped Finder view file is not an issue: the record's state
             // above is safe only when its skips are proven.
             issueCount: record.results.filter { !$0.isSuccessStatus && !$0.isSkippedFinderMetadata }.count,

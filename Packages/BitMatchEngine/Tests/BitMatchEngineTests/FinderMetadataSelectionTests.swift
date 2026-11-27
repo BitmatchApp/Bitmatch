@@ -106,7 +106,7 @@ import Testing
         let directory = 4 + 0x800 + 8 + 256 * 4
         for (name, index, value) in [("count", directory + 3, UInt8(2)),
                                      ("length", directory + 4, UInt8(3)),
-                                     ("block", directory + 12, UInt8(1))] {
+                                     ("block", directory + 12, UInt8(2))] {
             let folder = root.appendingPathComponent(name)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             var data = FinderMetadataFixtures.bud1(size: 6148)
@@ -118,6 +118,24 @@ import Testing
         let clip = folder.appendingPathComponent("clip.mov")
         try FinderMetadataFixtures.bud1(size: 6148).write(to: clip)
         try FileManager.default.linkItem(at: clip, to: folder.appendingPathComponent(".DS_Store"))
+        #expect(try skipped(root).isEmpty)
+    }
+
+    @Test func unallocatedOutOfFileAndImplausibleDatabaseBlocksAreOrdinary() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let address = 4 + 0x800 + 8
+        for name in ["zero", "outside", "header"] {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var data = FinderMetadataFixtures.bud1(size: 6148)
+            switch name {
+            case "zero": data.replaceSubrange(address..<address + 4, with: [0, 0, 0, 0])
+            case "outside": data.replaceSubrange(address..<address + 4, with: [0, 0, 0x20, 0x05])
+            default: data.replaceSubrange(4 + 0x1000..<4 + 0x1000 + 4, with: [0xFF, 0xFF, 0xFF, 0xFF])
+            }
+            try data.write(to: folder.appendingPathComponent(".DS_Store"))
+        }
         #expect(try skipped(root).isEmpty)
     }
 

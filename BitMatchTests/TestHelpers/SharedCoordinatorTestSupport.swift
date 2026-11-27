@@ -182,7 +182,7 @@ final class SharedProjectFixture {
     /// Workflow tests use distinct abstract disks; their temporary folders
     /// are not independent physical backups. Real provider/grouping behavior
     /// is checked separately, and callers can inject shared/unknown identities.
-    private struct DistinctFixtureDisks: PhysicalDiskIdentityProviding {
+    struct DistinctFixtureDisks: PhysicalDiskIdentityProviding {
         func physicalDiskIdentity(for url: URL) -> String? { "fixture-disk:" + url.standardizedFileURL.path }
     }
 

@@ -117,6 +117,62 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: [record]), .safeToErase)
     }
 
+    func testProjectCardDowngradesWhenFinalJournalWriteFails() async throws {
+        let f = try CoordinatorFolders()
+        defer { f.cleanup() }
+        let store = InMemoryPhotographerJobStore()
+        var project: PhotographerJobViewModel?
+        var cardWasSafeAtFinish = false
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            cardWasSafeAtFinish = project?.activeCard?.localState == .locallySafe
+            throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
+        })
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(
+            platformManager: RecordingPlatformManager(fileOperations: operations),
+            transferJournal: journal, projectStore: store, defaults: f.defaults,
+            physicalDiskIdentityProvider: SharedProjectFixture.DistinctFixtureDisks())
+        let jobs = coordinator.photographerJobViewModel
+        project = jobs
+        coordinator.destinationURLs = [f.primary, f.secondary]
+        coordinator.sourceURL = f.source
+        coordinator.generateASCMHL = false
+        coordinator.reportSettings.makeReport = false
+        let scanned = await waitUntil(timeout: .seconds(30)) {
+            coordinator.sourceFolderInfo?.url == f.source
+                && !coordinator.isFolderInfoLoading(for: f.source)
+                && !coordinator.appleDoubleSelection.isReviewing
+                && !coordinator.isAnalysingSource
+                && coordinator.transferReadiness.isReady
+        }
+        guard scanned else { return XCTFail("Fixture source analysis did not settle before setup.") }
+        jobs.createWeddingJob(clientName: "Smith", jobName: "Smith Wedding", eventDate: Date(timeIntervalSince1970: 100))
+        try jobs.prepareCard(
+            photographerName: "Mike", cameraName: "Sony A7 IV", sourceURL: f.source,
+            setupSignature: PhotographerSetupSignature(
+                clientName: "Smith", jobName: "Smith Wedding", eventDate: Date(timeIntervalSince1970: 100),
+                photographerName: "Mike", cameraName: "Sony A7 IV", cardNumber: 1, recipe: .wedding
+            ),
+            analysis: CardAnalysis(fingerprint: "preliminary", fileCount: 1, totalBytes: 4,
+                                   companionGroups: [], sourcePaths: [f.source.appendingPathComponent("A.ARW").path])
+        )
+        let jobID = try XCTUnwrap(jobs.activeJob?.id)
+        let cardID = try XCTUnwrap(jobs.activeCard?.id)
+        let started = await coordinator.startProjectOperation()
+        XCTAssertTrue(started)
+        let idle = await waitUntil(timeout: .seconds(10)) { !coordinator.isOperationInProgress }
+        XCTAssertTrue(idle)
+        XCTAssertTrue(cardWasSafeAtFinish, "The injected failure must follow project finalization")
+        XCTAssertEqual(journal.records.first?.state, .interrupted)
+        XCTAssertEqual(jobs.activeCard?.localState, .issues)
+        XCTAssertNil(jobs.activeCard?.locallySafeAt)
+        XCTAssertEqual(jobs.projectCardState(jobID: jobID, cardID: cardID), .issues)
+        let savedJob = try XCTUnwrap(store.storedJobs.first { $0.id == jobID })
+        let savedCard = try XCTUnwrap(savedJob.cardIngests.first { $0.id == cardID })
+        XCTAssertEqual(savedCard.localState, .issues)
+        XCTAssertNil(savedCard.locallySafeAt)
+    }
+
     func testUnexpectedCancellationErrorPersistsInterruptedRatherThanCancelled() async throws {
         let f = try QueueFixture()
         defer { f.cleanup() }

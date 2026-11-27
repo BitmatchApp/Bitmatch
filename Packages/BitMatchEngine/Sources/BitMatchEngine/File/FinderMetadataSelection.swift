@@ -4,8 +4,8 @@ import Darwin
 /// Classifies Finder `.DS_Store` view files. A filename alone never authorizes
 /// skipping: the file must be named exactly `.DS_Store`, be a regular file,
 /// carry a consistent buddy-allocator ("Bud1") header, and hold Finder's `DSDB`
-/// directory entry in the root block that header points to. Everything else
-/// is ordinary source data. This proves the format, not the contents of its data blocks.
+/// directory entry resolving to an allocated block with a plausible B-tree
+/// header. Everything else is ordinary source data. Record contents are not interpreted.
 public enum FinderMetadataSelection {
     public static let maximumSize: Int64 = 64 * 1024 * 1024
     public static let minimumSize: Int64 = 36
@@ -67,7 +67,9 @@ public enum FinderMetadataSelection {
     /// 8-11 equals the repeated offset at 16-19, the root size at 12-15 is
     /// non-zero, 4 + offset + rootSize fits inside the file, and the root
     /// block (at 4 + offset, bounded by `maximumRootBlockRead`) contains a
-    /// padded address table and exactly one valid `DSDB` directory entry. A read error is thrown as its POSIX error;
+    /// padded address table and exactly one `DSDB` entry resolving to an in-file
+    /// allocated block with a plausible B-tree header. Record contents are not interpreted.
+    /// A read error is thrown as its POSIX error;
     /// a change to the file while reading throws `MetadataChanged`.
     static func isFinderViewFile(fd: Int32, size: Int64, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> Bool {
         guard size >= minimumSize, size <= maximumSize else { return false }
@@ -115,10 +117,20 @@ public enum FinderMetadataSelection {
                     let padded = ((count + 255) / 256) * 256
                     let directory = 8 + padded * 4
                     if directory + 13 <= root.count {
-                        matches = uint32(root, directory) == 1
-                            && root[directory + 4] == 4
+                        let blockID = uint32(root, directory + 9)
+                        if uint32(root, directory) == 1 && root[directory + 4] == 4
                             && root[(directory + 5)..<(directory + 9)].elementsEqual("DSDB".utf8)
-                            && uint32(root, directory + 9) < UInt32(count)
+                            && blockID < UInt32(count) {
+                            let address = uint32(root, 8 + Int(blockID) * 4)
+                            let blockOffset = UInt64(address & ~UInt32(0x1F))
+                            let blockSize = UInt64(1) << (address & 0x1F)
+                            if address != 0 && blockSize >= 16 && 4 + blockOffset + blockSize <= UInt64(size) {
+                                let tree = try read(16, at: Int64(4 + blockOffset))
+                                let fields = stride(from: 0, to: 16, by: 4).map { uint32(tree, $0) }
+                                matches = fields[0] > 0 && fields[0] < UInt32(count)
+                                    && fields.allSatisfy { $0 < 0x7FFF_FFFF }
+                            }
+                        }
                     }
                 }
             }
