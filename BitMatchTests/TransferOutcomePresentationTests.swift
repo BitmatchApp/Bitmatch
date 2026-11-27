@@ -408,6 +408,13 @@ struct TransferOutcomePresentationTests {
         #expect(outcome.destinations.first?.detail == "Interrupted: 1 of 2 files verified before the stop")
     }
 
+    @Test func interruptedBackupWithOnlySkipsNamesThem() {
+        let outcome = make(state: .cancelled, rows: [row(".DS_Store", .skippedFinderMetadata, backup: backupA)])
+        let line = outcome.destinations.first { $0.id == backupA.path }
+        #expect(line?.detail == "Interrupted before any files were copied; 1 Finder view file skipped")
+        #expect(outcome.destinations.first { $0.id == backupB.path }?.detail == "Interrupted before any files were recorded")
+    }
+
     @Test func bannerGuidanceSuppressionUsesSafetyStateNotCopy() {
         let interrupted = make(state: .cancelled, rows: partialRows)
         #expect(interrupted.bannerGuidance == nil)

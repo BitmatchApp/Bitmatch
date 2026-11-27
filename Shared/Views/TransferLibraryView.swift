@@ -298,7 +298,7 @@ struct TransferLibraryView: View {
             if let exclusion = scope.exclusionLine {
                 Text(exclusion).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
-            if let skip = TransferCompletion.finderMetadataSkipSummary(results: record.results) {
+            if let skip = TransferCompletion.finderMetadataSkipSummary(results: record.results, skipsProven: TransferJournal.finderMetadataSkipsProven(record)) {
                 Text(skip).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if let setting = scope.finderViewFilesSettingLine {

@@ -25,6 +25,8 @@ public struct TransferSelectionEvidence: Codable, Sendable {
     public let sourceFileCount: Int
     public let selectedFileCount: Int
     public let excludedFileCount: Int
+    /// Distinct skipped Finder files; absent from older reports and when none were skipped.
+    public let skippedFinderViewFileCount: Int?
     public let excludedSourcePaths: [String]
 
     public init(results: [ResultRow]) {
@@ -38,6 +40,7 @@ public struct TransferSelectionEvidence: Codable, Sendable {
         sourceFileCount = all.count
         selectedFileCount = all.subtracting(excluded).subtracting(skipped).count
         excludedFileCount = excluded.count
+        skippedFinderViewFileCount = skipped.isEmpty ? nil : skipped.count
         excludedSourcePaths = excluded.sorted()
     }
 }
@@ -396,7 +399,8 @@ public enum EvidenceWriter: Sendable {
                                         generateFullReport: Bool,
                                         projectCSV: ProjectCSVEvidence?,
                                         projectJSON: Project?, safeToErase: Bool? = nil,
-                                        verificationScope: VerificationScopeEvidence? = nil) async throws {
+                                        verificationScope: VerificationScopeEvidence? = nil,
+                                        skipsProven: Bool = false) async throws {
         
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
@@ -438,6 +442,7 @@ public enum EvidenceWriter: Sendable {
                                  performanceTelemetry: performanceTelemetry,
                                  project: projectCSV,
                                  prefs: prefs,
+                                 skipsProven: skipsProven,
                                  scope: kind == .copyAndVerify && safeToErase != nil
                                      ? (verificationScope ?? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) })
                                      : nil)
@@ -471,7 +476,8 @@ public enum EvidenceWriter: Sendable {
                     ReportPDFEvidence(filename: pdfURL.lastPathComponent,
                         sha256: SHA256.hash(data: $0).map { String(format: "%02x", $0) }.joined())
                 } : nil,
-                verificationScope: verificationScope
+                verificationScope: verificationScope,
+                skipsProven: skipsProven
             )
             
             // If checksums were used, auto-export checksum file (no dialog)
@@ -512,6 +518,7 @@ public enum EvidenceWriter: Sendable {
                                           performanceTelemetry: TransferPerformanceTelemetry?,
                                           project: ProjectCSVEvidence? = nil,
                                           prefs: ReportPrefs? = nil,
+                                          skipsProven: Bool,
                                           scope: VerificationScopeEvidence? = nil) throws {
         let csvContent = try makeEnhancedCSV(
             results: results,
@@ -523,7 +530,8 @@ public enum EvidenceWriter: Sendable {
             performanceTelemetry: performanceTelemetry,
             project: project,
             prefs: prefs,
-            scope: scope
+            scope: scope,
+            skipsProven: skipsProven
         )
         try csvContent.data(using: .utf8)?.write(to: url)
     }
@@ -538,7 +546,8 @@ public enum EvidenceWriter: Sendable {
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         project: ProjectCSVEvidence?,
         prefs: ReportPrefs? = nil,
-        scope: VerificationScopeEvidence? = nil
+        scope: VerificationScopeEvidence? = nil,
+        skipsProven: Bool = false
     ) throws -> String {
         var csvContent = csvRow([
             "Status", "File Path", "Target Path", "Job", "Photographer", "Camera", "Card", "Package Path", "Details", "Timestamp", "Bytes", "Checksum"
@@ -586,7 +595,7 @@ public enum EvidenceWriter: Sendable {
         }
         // Skipped Finder view files are listed above with their own status;
         // one line says how many, never "excluded".
-        if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results) {
+        if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results, skipsProven: skipsProven) {
             csvContent += csvRow(["Finder View Files", skipLine])
         }
         csvContent += csvRow(["Started", dateFormatter.string(from: started)])
@@ -595,7 +604,7 @@ public enum EvidenceWriter: Sendable {
         // a Quick copy is not a match.
         csvContent += csvRow(["Verified", String(results.filter { $0.isVerifiedStatus }.count)])
         csvContent += csvRow(["Copied, not verified", String(results.filter { isMatchStatus($0.status) && !$0.isVerifiedStatus }.count)])
-        csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) && !$0.isOmittedBySelection }.count)])
+        csvContent += csvRow(["Issues", String(results.filter { isReportIssue($0, skipsProven: skipsProven) }.count)])
         if let scope {
             csvContent += csvRow(["Selected Mode", scope.selectedMode.rawValue])
             csvContent += csvRow(["Selected Mode Checks", scope.configuredChecks ?? "Not recorded for this attempt"])
@@ -665,7 +674,8 @@ public enum EvidenceWriter: Sendable {
                                                  project: Project?,
                                                  safeToErase: Bool? = nil,
                                                  pdfEvidence: ReportPDFEvidence? = nil,
-                                                 verificationScope: VerificationScopeEvidence? = nil) throws {
+                                                 verificationScope: VerificationScopeEvidence? = nil,
+                                                 skipsProven: Bool) throws {
         let report = try makeEnhancedJSONReport(
             results: results,
             jobID: jobID,
@@ -685,7 +695,8 @@ public enum EvidenceWriter: Sendable {
             verifyWorkers: verifyWorkers,
             verifyLanes: verifyLanes,
             prefs: prefs,
-            project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence, verificationScope: verificationScope
+            project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence, verificationScope: verificationScope,
+            skipsProven: skipsProven
         )
         try encodeEnhancedJSONReport(report).write(to: url, options: .withoutOverwriting)
     }
@@ -720,7 +731,8 @@ public enum EvidenceWriter: Sendable {
         project: Project?,
         safeToErase: Bool? = nil,
         pdfEvidence: ReportPDFEvidence? = nil,
-        verificationScope: VerificationScopeEvidence? = nil
+        verificationScope: VerificationScopeEvidence? = nil,
+        skipsProven: Bool = false
     ) throws -> EnhancedJSONReport<Project> {
         let safeToErase = results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble } ? false : safeToErase
         // Calculate file extensions breakdown
@@ -753,7 +765,7 @@ public enum EvidenceWriter: Sendable {
         
         // Calculate issues by type
         var issuesByType: [String: Int] = [:]
-        for result in results.filter({ !isMatchStatus($0.status) && !$0.isOmittedBySelection }) {
+        for result in results.filter({ isReportIssue($0, skipsProven: skipsProven) }) {
             let key = normalizedStatus(result.status)
             issuesByType[key, default: 0] += 1
         }
@@ -820,9 +832,9 @@ public enum EvidenceWriter: Sendable {
                 totalFiles: fileCount,
                 totalBytes: totalBytesProcessed,
                 matches: matchCount,
-                // Failed rows only: a copied-but-unverified file is neither a
-                // match nor an issue.
-                issues: results.filter { !isMatchStatus($0.status) && !$0.isOmittedBySelection }.count,
+                // Failed and unproven skipped rows are issues; a copied-but-
+                // unverified file is neither a match nor an issue.
+                issues: results.filter { isReportIssue($0, skipsProven: skipsProven) }.count,
                 successRate: fileCount > 0 ? Double(matchCount) / Double(fileCount) * 100 : 100,
                 averageFileSize: averageFileSize,
                 largestFile: largestFile,
@@ -918,6 +930,12 @@ public enum EvidenceWriter: Sendable {
         return "'\(string)"
     }
     
+    private static func isReportIssue(_ row: ResultRow, skipsProven: Bool) -> Bool {
+        !isMatchStatus(row.status)
+            && ResultOutcome(statusText: row.status) != .excludedAppleDouble
+            && !(row.isSkippedFinderMetadata && skipsProven)
+    }
+
     private static func isMatchStatus(_ status: String) -> Bool {
         ResultRow.isSuccessStatus(status)
     }

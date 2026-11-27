@@ -110,6 +110,26 @@ struct VerificationScopeEvidenceTests {
     }
 }
 
+struct FinderSkipScopeConsistencyTests {
+    @Test func skippedFilesRequireEnabledRecordedSettingAndLegacyStillReads() throws {
+        let clip = ResultRow(path: "clip", status: ResultOutcome.verified.statusText, size: 1, checksum: "a", destination: "backup")
+        let skip = ResultRow(path: ".DS_Store", status: ResultOutcome.skippedFinderMetadata.statusText, size: 1, checksum: nil, destination: "backup")
+        for setting in [true, false, nil] as [Bool?] {
+            let scope = VerificationScopeEvidence(selectedMode: .standard, results: [clip, skip], skipFinderViewFiles: setting)
+            let decoded = try JSONDecoder().decode(VerificationScopeEvidence.self, from: JSONEncoder().encode(scope))
+            #expect(decoded.hasConsistentRecordedCounts == (setting == true))
+            #expect((EvidenceReader.verificationMode(method: "checksum", algorithm: "SHA-256", scope: decoded) != nil) == (setting == true))
+            #expect(EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1,
+                safeToErase: true, scope: decoded, sourceFileCount: 1) == (setting == true))
+        }
+        let legacy = VerificationScopeEvidence(selectedMode: .standard, results: [clip])
+        let decoded = try JSONDecoder().decode(VerificationScopeEvidence.self, from: JSONEncoder().encode(legacy))
+        #expect(decoded.hasConsistentRecordedCounts)
+        #expect(EvidenceReader.isVerified(matches: 1, issues: 0, mode: .standard, totalResults: 1,
+            safeToErase: true, scope: decoded, sourceFileCount: 1))
+    }
+}
+
 struct LegacyReportDigestRegressionTests {
     @Test func suppliedUnsupportedDigestCannotBypassAnExplicitLegacyMode() {
         let mode = EvidenceReader.verificationMode(method: "standard", algorithm: "ROT13")

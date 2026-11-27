@@ -5,7 +5,7 @@ import Darwin
 /// skipping: the file must be named exactly `.DS_Store`, be a regular file,
 /// carry a consistent buddy-allocator ("Bud1") header, and hold Finder's `DSDB`
 /// directory entry in the root block that header points to. Everything else
-/// is ordinary source data.
+/// is ordinary source data. This proves the format, not the contents of its data blocks.
 public enum FinderMetadataSelection {
     public static let maximumSize: Int64 = 64 * 1024 * 1024
     public static let minimumSize: Int64 = 36

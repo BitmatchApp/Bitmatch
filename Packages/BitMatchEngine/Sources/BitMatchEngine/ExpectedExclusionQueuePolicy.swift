@@ -97,6 +97,7 @@ public extension TransferCompletion {
                       !PathContainment.isWithin(roots[second], root: roots[first]) else { return false }
             }
         }
+        var skippedPaths = Set<String>()
         var selectedByDestination = Array(repeating: Set<String>(), count: roots.count)
         var excludedByDestination = Array(repeating: Set<String>(), count: roots.count)
         for row in rows {
@@ -110,6 +111,7 @@ public extension TransferCompletion {
             guard matching.count == 1, let index = matching.first else { return false }
             if row.isSkippedFinderMetadata {
                 guard finderMetadataSkipsProven, !excluded.contains(path) else { return false }
+                skippedPaths.insert(path)
             } else if ResultOutcome(statusText: row.status) == .excludedAppleDouble {
                 guard excluded.contains(path), excludedByDestination[index].insert(path).inserted else { return false }
             } else {
@@ -118,6 +120,7 @@ public extension TransferCompletion {
             }
         }
         guard let selected = selectedByDestination.first, !selected.isEmpty,
+              selected.isDisjoint(with: skippedPaths),
               expectedSelectedSourcePaths == nil || selected == expectedSelectedSourcePaths else { return false }
         return roots.indices.allSatisfy {
             selectedByDestination[$0] == selected

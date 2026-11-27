@@ -271,7 +271,8 @@ class SharedAppCoordinator: ObservableObject {
     /// until the edit ends so saving it never swaps in the current Settings
     /// value. Nil when not editing.
     private var editingSkipFinderViewFiles: Bool?
-    /// What the next composed run uses: the edited record's choice, else Settings.
+    private var isLoadingSetupTransfer = false
+    /// Preserve the edited record's choice while saving that record.
     private var composerSkipFinderViewFiles: Bool {
         editingSkipFinderViewFiles ?? generalSettings.skipFinderViewFiles
     }
@@ -319,7 +320,11 @@ class SharedAppCoordinator: ObservableObject {
     /// Setup's Quick/Project choice. Held here, not in a view, so every
     /// Start (button, ⌘R) obeys it: choosing Project blocks Start until a
     /// card is prepared (thesis decision S-2).
-    @Published var usesProjectWorkflow = false
+    @Published var usesProjectWorkflow = false {
+        didSet {
+            if oldValue != usesProjectWorkflow { endSetupTransferEdit() }
+        }
+    }
     var photographerReportFinalizer: PhotographerReportFinalizer?
 
     // MARK: - Operation State
@@ -421,6 +426,7 @@ class SharedAppCoordinator: ObservableObject {
     private var cachedReadiness = TransferReadiness(status: .needsSource, blockers: [], warnings: [])
     @Published var sourceURL: URL? {
         didSet {
+            if oldValue != sourceURL && !isLoadingSetupTransfer { endSetupTransferEdit() }
             selectedSourceIdentity = nil
             scheduleSelectionPreparation()
         }
@@ -690,7 +696,8 @@ class SharedAppCoordinator: ObservableObject {
         }
         // A committed immutable card is retained even if the user selected
         // the next card while the journal was being saved.
-        if selectionGeneration == generation, sourceURL == source.url, destinationURLs == destinations {
+        if selectionGeneration == generation, sourceURL == source.url, destinationURLs == destinations,
+           editingSetupTransferID == editingID {
             editingSetupTransferID = nil
             composerBeforeEditing = nil
             editingOriginalAccess = nil
@@ -746,9 +753,11 @@ class SharedAppCoordinator: ObservableObject {
         )
         editingSetupTransferID = record.id
         cameraLabels.clearDetectionPreservingSettings()
+        isLoadingSetupTransfer = true
         isReplayingQueuedTransfer = true
         sourceURL = access.sourceURL
         isReplayingQueuedTransfer = false
+        isLoadingSetupTransfer = false
         destinationURLs = access.destinationURLs
         selectedSourceIdentity = record.source
         selectedDestinationIdentities = Dictionary(uniqueKeysWithValues: zip(access.destinationURLs, record.destinations))
@@ -1612,12 +1621,21 @@ class SharedAppCoordinator: ObservableObject {
         loadSetupTransfer(record, access: access)
     }
 
+    private func endSetupTransferEdit() {
+        guard editingSetupTransferID != nil else { return }
+        editingSetupTransferID = nil
+        composerBeforeEditing = nil
+        editingOriginalAccess = nil
+    }
+
     func cancelSetupTransferEdit() {
         guard let snapshot = composerBeforeEditing else { return }
         cameraLabels.clearDetectionPreservingSettings()
+        isLoadingSetupTransfer = true
         isReplayingQueuedTransfer = true
         sourceURL = snapshot.source
         isReplayingQueuedTransfer = false
+        isLoadingSetupTransfer = false
         destinationURLs = snapshot.destinations
         selectedSourceIdentity = snapshot.sourceIdentity
         selectedDestinationIdentities = snapshot.destinationIdentities
@@ -2361,7 +2379,7 @@ class SharedAppCoordinator: ObservableObject {
             runCameraSettings.excludedAppleDoublePaths = cameraLabelSettings.excludedAppleDoublePaths
             // A project run's folder recipe is built from an earlier
             // snapshot; the skip choice is the one in Settings now.
-            runCameraSettings.skipFinderViewFiles = composerSkipFinderViewFiles
+            runCameraSettings.skipFinderViewFiles = generalSettings.skipFinderViewFiles
         }
         let projectID = photographerReportFinalizer == nil ? nil : photographerJobViewModel.activeJob?.id
         let projectCardID = photographerReportFinalizer == nil ? nil : activeProjectCardID

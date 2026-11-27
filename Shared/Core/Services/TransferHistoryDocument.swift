@@ -39,7 +39,7 @@ struct TransferHistoryDocument: FileDocument {
             let telemetry = record.performanceTelemetry
             // Skipped Finder view files keep their own rows above; one summary
             // line names them, never as an exclusion. Absent with no skips.
-            let skipSummary = TransferCompletion.finderMetadataSkipSummary(results: record.results).map {
+            let skipSummary = TransferCompletion.finderMetadataSkipSummary(results: record.results, skipsProven: TransferJournal.finderMetadataSkipsProven(record)).map {
                 [pair("recordedSkippedFinderViewFiles", String(scope.recordedSkippedFinderMetadata)),
                  pair("finderViewFiles", $0)]
             } ?? []
@@ -88,9 +88,7 @@ struct TransferHistoryDocument: FileDocument {
                 let savedVerdict: String
                 let savedSafeToErase: Bool
                 let verificationScope: VerificationScopeEvidence
-                /// "N Finder view files (.DS_Store) skipped: not card content;
-                /// Finder recreates them" (`TransferCompletion.finderMetadataSkipSummary`);
-                /// omitted with none.
+                /// Proof-aware skipped-row summary, omitted with no skips.
                 let finderViewFiles: String?
                 let selectedFilePlanRecorded: Bool
                 let projectName: String
@@ -110,7 +108,7 @@ struct TransferHistoryDocument: FileDocument {
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 savedVerdict: savedVerdict.title, savedSafeToErase: savedVerdict.isSafe,
-                verificationScope: scope, finderViewFiles: TransferCompletion.finderMetadataSkipSummary(results: record.results),
+                verificationScope: scope, finderViewFiles: TransferCompletion.finderMetadataSkipSummary(results: record.results, skipsProven: TransferJournal.finderMetadataSkipsProven(record)),
                 selectedFilePlanRecorded: record.plannedFileCounts != nil,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
                 operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName),

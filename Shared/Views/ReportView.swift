@@ -93,9 +93,11 @@ struct ReportView: View {
     }
 
     private var reportIssueRows: [ResultRow] {
-        // A skipped Finder view file is listed with its own status, never as
-        // an issue; an unproven skip is the verdict's (and the notes') to say.
-        rows.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
+        // The saved proof, not a row's status alone, makes a skip neutral.
+        rows.filter {
+            !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+                && !($0.isSkippedFinderMetadata && s.finderSkipsProven)
+        }
     }
 
     private var sourceIssueWarnings: [String] {
@@ -600,7 +602,7 @@ struct ReportView: View {
                     Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
                 }
             }
-            if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: rows) {
+            if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: rows, skipsProven: s.finderSkipsProven) {
                 Text("\(skipLine).").font(.system(size: 9)).foregroundColor(.secondary)
             }
             if let setting = s.verificationScope?.finderViewFilesSettingLine {

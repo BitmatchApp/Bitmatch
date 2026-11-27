@@ -503,7 +503,8 @@ final class CopyVerifyExecutor {
                     expectedMode: config.verificationMode, handoffIssues: handoffIssues,
                     project: Self.expectedExclusionProjectGate(config: config, lifecycle: photographerLifecycle)),
                 phaseDurations: phaseDurations,
-                verdictMessage: preReportVerdict.message
+                verdictMessage: preReportVerdict.message,
+                skipsProven: finderSkipsProven
             )
         } else {
             reportIssue = nil
@@ -712,7 +713,8 @@ final class CopyVerifyExecutor {
         safetyState: CardSafetyState,
         verifiedSelection: VerifiedReportSelection?,
         phaseDurations: OperationPhaseDurations,
-        verdictMessage: String = ""
+        verdictMessage: String = "",
+        skipsProven: Bool
     ) async throws -> String? {
         try checkCancellation()
         SharedLogger.transferEvent(.reportStarted, run: config.operationId)
@@ -745,11 +747,12 @@ final class CopyVerifyExecutor {
         // listed in results). When the verdict could not prove them, its
         // mismatch words go in the notes too, so the evidence never reads as
         // a clean run with "Issues 0".
-        if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results) {
+        if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results, skipsProven: skipsProven) {
             reportSettings.notes += "\n\(skipLine)."
         }
         // Whenever the verdict says so, even with no skipped row left.
-        if verdictMessage.contains(TransferCompletion.finderMetadataSkipMismatch) {
+        if verdictMessage.contains(TransferCompletion.finderMetadataSkipMismatch),
+           !reportSettings.notes.contains(TransferCompletion.finderMetadataSkipMismatch) {
             reportSettings.notes += "\n\(TransferCompletion.finderMetadataSkipMismatch)."
         }
         if let handoffSummary { reportSettings.notes += "\nASC MHL: \(handoffSummary)" }
@@ -785,7 +788,8 @@ final class CopyVerifyExecutor {
                 photographerContext: reportContext,
                 verifiedSelection: verifiedSelection,
                 pdfNotes: verifiedSelection == nil ? nil : notesBeforeSelection,
-                plannedRows: plannedRows
+                plannedRows: plannedRows,
+                skipsProven: skipsProven
             )
         }
         reportTask = work

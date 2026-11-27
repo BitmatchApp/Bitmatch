@@ -64,6 +64,56 @@ import Testing
         }
     }
 
+    @Test func skippedRowsNeedProofForLineageAndIssueCounts() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let journal = TransferJournal(fileURL: f.journalURL)
+        var proven = try f.finish(journal, rows: f.provenRows, proven: [".DS_Store"], fingerprint: "proven")
+        proven.state = .issues
+        var retry = proven
+        retry = LocalTransferRecord(id: UUID(), createdAt: retry.createdAt, source: retry.source,
+            destinations: retry.destinations, verificationMode: .standard, cameraSettings: retry.cameraSettings,
+            reportSettings: retry.reportSettings, generateASCMHL: false, retryOf: proven.id)
+        #expect(TransferJournal.finderMetadataSkipsProven(proven))
+        #expect(proven.issueCount == 0)
+        var excluded = proven
+        excluded.results.append(ResultRow(path: f.source.appendingPathComponent("._A001.mov").path,
+            status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil, destination: "BackupA"))
+        #expect(excluded.issueCount == 1)
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, proven]) == .noFaultObserved)
+        var unproven = proven
+        unproven.skippedFinderMetadataPaths = nil
+        #expect(!TransferJournal.finderMetadataSkipsProven(unproven))
+        #expect(unproven.issueCount == 2)
+        let assessment = SourceFaultLineage.assess(for: retry, in: [retry, unproven])
+        #expect(assessment == .lineageIncomplete([]))
+        #expect(assessment.preventsSafeToEraseClaim)
+        unproven.results = unproven.results.map { row in
+            guard row.isSkippedFinderMetadata else { return row }
+            return ResultRow(path: row.path, status: row.status, size: row.size, checksum: row.checksum,
+                destination: row.destination, destinationPath: row.destinationPath,
+                failureReason: ResultFailureReason.outOfSpace.rawValue)
+        }
+        #expect(SourceFaultLineage.assess(for: retry, in: [retry, unproven]) == .lineageIncomplete([]))
+    }
+
+    @Test func queueRejectsAPathBothSelectedAndSkipped() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        var settings = f.settings
+        settings.excludedAppleDoublePaths = ["._A001.mov"]
+        let rows = f.destinations.flatMap { destination in
+            [f.verified(".DS_Store", on: destination), f.skipped(".DS_Store", on: destination),
+             ResultRow(path: f.source.appendingPathComponent("._A001.mov").path,
+                 status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                 destination: destination.lastPathComponent, destinationPath: f.output("._A001.mov", on: destination))]
+        }
+        #expect(TransferCompletion.exactExpectedExclusionRows(rows: rows.filter { !$0.isSkippedFinderMetadata }, source: f.source,
+            destinations: f.destinations, settings: settings, plannedFileCounts: [1, 1],
+            finderMetadataSkipsProven: true))
+        #expect(!TransferCompletion.exactExpectedExclusionRows(rows: rows, source: f.source,
+            destinations: f.destinations, settings: settings, plannedFileCounts: [1, 1],
+            finderMetadataSkipsProven: true))
+    }
+
     // MARK: - Journal
 
     @Test func savedProofUsesRunSourceNameAndWorksOffline() throws {
@@ -456,14 +506,14 @@ import Testing
         let rows = f.destinations.flatMap {
             [f.verified("A001.mov", on: $0), f.skipped(".DS_Store", on: $0), f.skipped("DCIM/.DS_Store", on: $0)]
         }
-        let scope = VerificationScopeEvidence(selectedMode: .standard, results: rows)
+        let scope = VerificationScopeEvidence(selectedMode: .standard, results: rows, skipFinderViewFiles: true)
         #expect(scope.recordedSkippedFinderMetadata == 2)
         #expect(scope.recordedExcludedSourceFiles == 0)
         #expect(scope.recordedSelectedSourceFiles == 1)
         #expect(scope.recordedSelectedResults == 2)
         #expect(scope.exclusionLine == nil)
         // The report's line for the skips: never AppleDouble's wording.
-        let line = try #require(TransferCompletion.finderMetadataSkipSummary(results: rows))
+        let line = try #require(TransferCompletion.finderMetadataSkipSummary(results: rows, skipsProven: true))
         #expect(line == "2 Finder view files (.DS_Store) skipped: not card content; Finder recreates them")
         #expect(!line.contains("whole card"))
         #expect(!line.contains("excluded"))
@@ -471,11 +521,11 @@ import Testing
 
         let oneRows = [f.verified("A001.mov", on: f.destinations[0]), f.skipped(".DS_Store", on: f.destinations[0])]
         #expect(VerificationScopeEvidence(selectedMode: .standard, results: oneRows).recordedSkippedFinderMetadata == 1)
-        #expect(TransferCompletion.finderMetadataSkipSummary(results: oneRows)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: oneRows, skipsProven: true)
             == "1 Finder view file (.DS_Store) skipped: not card content; Finder recreates them")
         let noSkips = [f.verified("A001.mov", on: f.destinations[0])]
         #expect(VerificationScopeEvidence(selectedMode: .standard, results: noSkips).recordedSkippedFinderMetadata == 0)
-        #expect(TransferCompletion.finderMetadataSkipSummary(results: noSkips) == nil)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: noSkips, skipsProven: true) == nil)
     }
 
     @Test func scopeEvidenceFromAnOlderReportDecodesWithNoSkips() throws {

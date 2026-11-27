@@ -208,8 +208,8 @@ public struct ResultRow: Identifiable, Sendable {
     }
 
     /// A file BitMatch deliberately did not copy: a reviewed AppleDouble
-    /// exclusion or a skipped Finder view file. Never counted as an issue
-    /// and never listed in a checksum manifest. Not a success either: the
+    /// exclusion or a skipped Finder view file. Neither is listed in a
+    /// checksum manifest; an unproven skip can count as an issue. Not a success either: the
     /// verdict decides what each means (an exclusion is never safe to erase;
     /// a skip only when `TransferCompletion.finderMetadataSkipsProven`).
     public var isOmittedBySelection: Bool {

@@ -395,6 +395,47 @@ struct MainScreenQueueTests {
         #expect(coordinator.cameraLabelSettings.skipFinderViewFiles)
     }
 
+    @Test(arguments: [true, false])
+    func leavingQueuedEditUsesCurrentFinderSetting(project: Bool) async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.generalSettings.skipFinderViewFiles = false
+        _ = try await coordinator.enqueueSelectionPrepared()
+        let id = try #require(coordinator.stagedSetupTransfers.first?.id)
+        coordinator.generalSettings.skipFinderViewFiles = true
+        try await coordinator.editSetupTransferPrepared(id: id)
+        if project {
+            coordinator.usesProjectWorkflow = true
+        } else {
+            let newSource = fixture.folders.root.appendingPathComponent("another-card", isDirectory: true)
+            try FileManager.default.createDirectory(at: newSource, withIntermediateDirectories: true)
+            try Data("another".utf8).write(to: newSource.appendingPathComponent("clip.mov"))
+            coordinator.sourceURL = newSource
+        }
+        #expect(coordinator.editingSetupTransferID == nil)
+        #expect(coordinator.cameraLabelSettings.skipFinderViewFiles)
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+        await coordinator.startOperation()
+        let start = try #require(await fixture.operations.starts.first)
+        #expect(start.skipFinderViewFiles)
+    }
+
+    @Test func directRunDuringQueuedEditUsesCurrentFinderSetting() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.generalSettings.skipFinderViewFiles = false
+        _ = try await coordinator.enqueueSelectionPrepared()
+        let id = try #require(coordinator.stagedSetupTransfers.first?.id)
+        coordinator.generalSettings.skipFinderViewFiles = true
+        try await coordinator.editSetupTransferPrepared(id: id)
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+        await coordinator.startOperation()
+        let start = try #require(await fixture.operations.starts.first)
+        #expect(start.skipFinderViewFiles)
+    }
+
     @Test func editCancelRestoresComposerAndUpdateReplacesSnapshotInPlace() async throws {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }
@@ -425,11 +466,7 @@ struct MainScreenQueueTests {
         #expect(coordinator.verificationMode == .standard)
         #expect(coordinator.reportSettings.notes == "Keep original notes")
 
-        let replacementSource = fixture.folders.root.appendingPathComponent("replacement-card", isDirectory: true)
-        try FileManager.default.createDirectory(at: replacementSource, withIntermediateDirectories: true)
-        try Data("replacement".utf8).write(to: replacementSource.appendingPathComponent("B.ARW"))
         try await coordinator.editSetupTransferPrepared(id: id)
-        coordinator.sourceURL = replacementSource
         coordinator.destinationURLs = [fixture.folders.secondary]
         coordinator.verificationMode = .thorough
         coordinator.generateASCMHL = false
@@ -443,7 +480,7 @@ struct MainScreenQueueTests {
         #expect(coordinator.stagedSetupTransfers.map(\.id) == originalOrder)
         let updated = try #require(coordinator.stagedSetupTransfers.first { $0.id == id })
         #expect(updated.id == id)
-        #expect(updated.source.url == replacementSource)
+        #expect(updated.source.url.resolvingSymlinksInPath() == fixture.folders.source.resolvingSymlinksInPath())
         #expect(updated.destinations.map(\.url) == [fixture.folders.secondary])
         #expect(updated.verificationMode == .thorough)
         #expect(!updated.generateASCMHL)
@@ -682,7 +719,8 @@ private final class GatedQueuePipeline: FileOperationsService, @unchecked Sendab
         progressCallback: @escaping ProgressCallback, onFileResult: FileResultCallback?
     ) async throws -> FileOperation {
         await gate.record(RecordedStart(source: sourceURL, destinations: destinationURLs, label: settings.label,
-                                       destinationPathComponents: settings.destinationPathComponents, mode: verificationMode))
+                                       destinationPathComponents: settings.destinationPathComponents, mode: verificationMode,
+                                       skipFinderViewFiles: settings.skipFinderViewFiles))
         return try await pipeline.performFileOperation(
             sourceURL: sourceURL, destinationURLs: destinationURLs, verificationMode: verificationMode,
             settings: settings, estimatedTotalBytes: estimatedTotalBytes,

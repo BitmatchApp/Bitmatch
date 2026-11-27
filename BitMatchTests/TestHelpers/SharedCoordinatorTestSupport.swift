@@ -58,6 +58,7 @@ struct RecordedStart: Sendable {
     let label: String
     let destinationPathComponents: [String]?
     let mode: VerificationMode
+    let skipFinderViewFiles: Bool
 }
 
 actor RecordingOperationsGate {
@@ -119,7 +120,8 @@ final class RecordingFileOperations: FileOperationsService, @unchecked Sendable 
             destinations: destinationURLs,
             label: settings.label,
             destinationPathComponents: settings.destinationPathComponents,
-            mode: verificationMode
+            mode: verificationMode,
+            skipFinderViewFiles: settings.skipFinderViewFiles
         ))
         return FileOperation(
             sourceURL: sourceURL, destinationURLs: destinationURLs, startTime: Date(), endTime: Date(),

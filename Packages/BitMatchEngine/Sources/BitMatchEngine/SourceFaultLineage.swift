@@ -47,15 +47,20 @@ public enum SourceFaultLineage {
     /// evidence the card read fine. A cancellation is the person's choice,
     /// and a classified non-source failure says the card read fine.
     static func predecessorIsUnclassified(_ record: LocalTransferRecord) -> Bool {
-        // A skipped Finder view file or a reviewed AppleDouble exclusion is a
-        // deliberate omission, not a failure: it carries no reason, and it
-        // neither needs explaining nor explains anything.
-        let unsuccessful = record.results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
+        // AppleDouble exclusions are deliberate; Finder skips are only
+        // explained when the saved record proves them.
+        let skipsProven = TransferJournal.finderMetadataSkipsProven(record)
+        let unsuccessful = record.results.filter {
+            !$0.isSuccessStatus
+                && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+                && !($0.isSkippedFinderMetadata && skipsProven)
+        }
         // Every unsuccessful row must say why, whatever the record's state:
         // one explained row never explains another.
         // A reason that leaves the card unproven (an existing backup file
         // whose contents differ) explains nothing about the card.
         let anyUnexplainedRow = unsuccessful.contains { row in
+            if row.isSkippedFinderMetadata { return true }
             guard let reason = row.failureReason.flatMap(ResultFailureReason.init(rawValue:)) else { return true }
             return reason.leavesCardUnproven
         }

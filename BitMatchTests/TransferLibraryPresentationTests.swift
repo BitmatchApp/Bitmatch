@@ -596,6 +596,17 @@ struct TransferLibraryPresentationTests {
         #expect(TransferLibraryPresentation.fileCount(for: record) == 1)
     }
 
+    @Test func fileCountOmitsAppleDoubleEvenWhenSelectedFilesAreUnverified() {
+        var record = PresentationTestSupport.record(state: .issues)
+        let destination = record.destinations[0].url
+        record.results = [
+            ResultRow(path: "/Card/A.mov", status: ResultOutcome.failed.statusText, size: 1, checksum: nil, destination: "backup", destinationPath: destination.appendingPathComponent("A.mov").path),
+            ResultRow(path: "/Card/._A.mov", status: ResultOutcome.excludedAppleDouble.statusText, size: 1, checksum: nil, destination: "backup", destinationPath: destination.appendingPathComponent("._A.mov").path)
+        ]
+        #expect(TransferLibraryPresentation.fileCount(for: record) == 1)
+        #expect(TransferLibraryPresentation.rowPresentation(for: record, in: [record]).detailLine == "1 backup · 1 file")
+    }
+
     @Test func detailLineSingularizesOneBackupAndOneFile() {
         #expect(TransferLibraryPresentation.detailLine(destinationCount: 1, fileCount: 1) == "1 backup · 1 file")
         #expect(TransferLibraryPresentation.detailLine(destinationCount: 2, fileCount: 128) == "2 backups · 128 files")

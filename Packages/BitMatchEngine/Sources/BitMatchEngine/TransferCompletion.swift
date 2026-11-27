@@ -178,13 +178,16 @@ public enum TransferCompletion: Sendable {
         "\(count) Finder view \(count == 1 ? "file" : "files") (.DS_Store) skipped"
     }
 
-    /// The report's summary line for skipped Finder view files, the same words
-    /// the verdict's coverage uses: "2 Finder view files (.DS_Store) skipped:
-    /// not card content; Finder recreates them". Nil with no skipped row;
-    /// counts distinct source files, not rows per backup.
-    public static func finderMetadataSkipSummary(results: [ResultRow]) -> String? {
-        let count = Set(results.filter(\.isSkippedFinderMetadata).map(\.path)).count
-        return count > 0 ? finderMetadataSkipSummary(count) : nil
+    /// Only a proven skip can be described as Finder view state. For an
+    /// unproven skip, count the rows and preserve the verdict's warning.
+    public static func finderMetadataSkipSummary(results: [ResultRow], skipsProven: Bool) -> String? {
+        let skipped = results.filter(\.isSkippedFinderMetadata)
+        guard !skipped.isEmpty else { return nil }
+        if skipsProven {
+            return finderMetadataSkipSummary(Set(skipped.map(\.path)).count)
+        }
+        let count = skipped.count
+        return "\(count) skipped \(count == 1 ? "row" : "rows") that did not reconcile with this run; \(finderMetadataSkipMismatch)"
     }
 
     static func finderMetadataSkipSummary(_ count: Int) -> String {

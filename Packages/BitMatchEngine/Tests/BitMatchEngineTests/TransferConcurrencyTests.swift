@@ -211,8 +211,8 @@ private struct FixedMediumDetector: StorageMediumDetecting {
     func driveIdentity(for url: URL) -> String? { driveByPath[url.path] ?? url.path }
 }
 
-/// Two backups on one drive share a lane; a drive the system cannot identify
-/// gets a lane of its own.
+/// Two backups on one drive share a lane; unidentified drives share a
+/// conservative lane.
 struct VerifyLaneTests {
     @Test func theSystemDetectorNamesTheWholeDiskForTwoFoldersOnOneVolume() throws {
         let fm = FileManager.default
@@ -231,7 +231,7 @@ struct VerifyLaneTests {
         #expect(Set(TransferPipeline.verifyLaneKeys(for: [a, b], detector: detector)).count == 1)
     }
 
-    @Test func backupsOnOneVolumeShareALaneAndUnidentifiedOnesDoNot() {
+    @Test func backupsOnOneVolumeAndUnidentifiedBackupsShareLanes() {
         let a = URL(fileURLWithPath: "/Volumes/A/one"), b = URL(fileURLWithPath: "/Volumes/A/two")
         let c = URL(fileURLWithPath: "/Volumes/C")
         let detector = FixedMediumDetector(kind: .rotational, driveByPath: [a.path: "vol-a", b.path: "vol-a"])
@@ -240,7 +240,7 @@ struct VerifyLaneTests {
             func mediumKind(for url: URL) -> StorageMediumKind { .unknown }
             func driveIdentity(for url: URL) -> String? { nil }
         }
-        #expect(TransferPipeline.verifyLaneKeys(for: [a, b], detector: Blind()) == ["destination:0", "destination:1"])
+        #expect(TransferPipeline.verifyLaneKeys(for: [a, b], detector: Blind()) == ["unidentified", "unidentified"])
     }
 }
 

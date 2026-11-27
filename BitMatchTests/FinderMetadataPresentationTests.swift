@@ -56,7 +56,7 @@ struct FinderMetadataPresentationTests {
         record.state = proven ? .completed : .issues
         record.plannedFileCounts = [1]
         record.results = rows(folders)
-        record.skippedFinderMetadataPaths = [".DS_Store"]
+        record.skippedFinderMetadataPaths = proven ? [".DS_Store"] : []
         record.startedAt = Date(timeIntervalSince1970: 1_800_000_000)
         record.endedAt = Date(timeIntervalSince1970: 1_800_000_030)
         record.summary = proven
@@ -248,7 +248,8 @@ struct FinderMetadataPresentationTests {
     private static let settingOff = "Finder view files (.DS_Store): copied"
 
     /// Writes an automatic report and returns its CSV, JSON object and PDF text.
-    private func export(_ folders: Folders, rows: [ResultRow], skipSetting: Bool?, plannedRows: [ResultRow]? = nil) async throws
+    private func export(_ folders: Folders, rows: [ResultRow], skipSetting: Bool?, plannedRows: [ResultRow]? = nil,
+                        skipsProven: Bool = true) async throws
         -> (csv: String, json: [String: Any], pdf: String) {
         try Data(repeating: 1, count: 10).write(to: folders.backup.appendingPathComponent("C0001.MP4"))
         var prefs = ReportPrefs(verificationMode: .standard, makeReport: true)
@@ -257,7 +258,7 @@ struct FinderMetadataPresentationTests {
             mode: .copyAndVerify, jobID: UUID(), started: Date(timeIntervalSince1970: 1_800_000_000),
             finished: Date(timeIntervalSince1970: 1_800_000_030), sourceURL: folders.card,
             destinationURLs: [folders.backup], results: rows, fileCount: rows.count, matchCount: 1,
-            prefs: prefs, workers: 1, totalBytesProcessed: 10, safetyState: .safeToErase, plannedRows: plannedRows
+            prefs: prefs, workers: 1, totalBytesProcessed: 10, safetyState: skipsProven ? .safeToErase : .needsAttention, plannedRows: plannedRows, skipsProven: skipsProven
         )
         let reports = folders.backup.appendingPathComponent("Reports", isDirectory: true)
         let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
@@ -310,6 +311,24 @@ struct FinderMetadataPresentationTests {
         let decoded = try JSONDecoder().decode(VerificationScopeEvidence.self, from: JSONSerialization.data(
             withJSONObject: try #require((unknown.json["verification"] as? [String: Any])?["scope"])))
         #expect(decoded.skipFinderViewFiles == nil)
+    }
+
+    @Test func automaticReportCountsUnprovenSkipsAsIssues() async throws {
+        for proven in [true, false] {
+            let folders = try Folders()
+            let report = try await export(folders, rows: rows(folders), skipSetting: true, skipsProven: proven)
+            #expect(report.csv.contains("Issues,\(proven ? 0 : 1)"))
+            let benign = "not card content; Finder recreates them"
+            let mismatch = "skipped row that did not reconcile with this run"
+            #expect(report.csv.contains(benign) == proven)
+            #expect(condensed(report.pdf).contains(condensed(benign)) == proven)
+            #expect(report.csv.contains(mismatch) == !proven)
+            #expect(condensed(report.pdf).contains(condensed(mismatch)) == !proven)
+
+            let statistics = try #require(report.json["statistics"] as? [String: Any])
+            #expect(statistics["issues"] as? Int == (proven ? 0 : 1))
+            #expect(condensed(report.pdf).contains(condensed("Issues Detail (1)")) == !proven)
+        }
     }
 
     @Test func automaticReportListsTheSkipAndOneSummaryLine() async throws {
@@ -385,13 +404,27 @@ struct FinderMetadataPresentationTests {
         #expect(VerificationScopeEvidence(record: onEmpty).finderViewFilesSettingLine == Self.settingOn)
     }
 
+    @Test func unprovenHistoryExportsDoNotClaimFinderContent() throws {
+        let folders = try Folders()
+        let record = try record(folders, proven: false)
+        #expect(!TransferJournal.finderMetadataSkipsProven(record))
+        for asCSV in [true, false] {
+            let data = try TransferHistoryDocument(record: record, history: [record], asCSV: asCSV).data
+            let text = String(decoding: data, as: UTF8.self)
+            #expect(text.contains("skipped row that did not reconcile with this run"))
+            #expect(text.contains(Self.mismatch))
+            #expect(!text.contains("not card content; Finder recreates them"))
+        }
+    }
+
     @Test func regeneratedPDFQuotesTheVerdictForUnprovenSkips() async throws {
         let folders = try Folders()
         let record = try record(folders, proven: false)
         let data = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)
         let text = condensed(try #require(PDFDocument(data: data)?.string))
         #expect(text.contains(condensed(Self.mismatch)))
-        #expect(text.contains(condensed(Self.summaryLine)))
+        #expect(text.contains(condensed("1 skipped row that did not reconcile with this run")))
+        #expect(!text.contains(condensed(Self.summaryLine)))
         #expect(text.contains(condensed(Self.settingOn)))
     }
 
@@ -428,14 +461,14 @@ struct FinderMetadataPresentationTests {
 
     @Test func summaryLineReadsAsTheVerdictsCoverageLine() {
         let row = ResultRow(path: "/card/A.mov", status: ResultOutcome.verified.statusText, size: 1, checksum: "a", destination: "B")
-        #expect(TransferCompletion.finderMetadataSkipSummary(results: [row]) == nil)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: [row], skipsProven: true) == nil)
         let two = ["Backup 1", "Backup 2"].map {
             ResultRow(path: "/card/.DS_Store", status: Self.skipStatus, size: 6, checksum: nil, destination: $0)
         }
         // Distinct source files, not rows per backup.
-        #expect(TransferCompletion.finderMetadataSkipSummary(results: two) == Self.summaryLine)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: two, skipsProven: true) == Self.summaryLine)
         let three = two + [ResultRow(path: "/card/DCIM/.DS_Store", status: Self.skipStatus, size: 6, checksum: nil, destination: "Backup 1")]
-        #expect(TransferCompletion.finderMetadataSkipSummary(results: three)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: three, skipsProven: true)
             == "2 Finder view files (.DS_Store) skipped: not card content; Finder recreates them")
     }
 

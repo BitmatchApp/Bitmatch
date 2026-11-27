@@ -223,15 +223,13 @@ struct SourceFaultLineageTests {
 
     private func omittedRows() -> [ResultRow] {
         [
-            ResultRow(path: ".DS_Store", status: ResultOutcome.skippedFinderMetadata.statusText,
-                      size: 6_148, checksum: nil, destination: "backup"),
             ResultRow(path: "CLIPS/._clip.MOV", status: ResultOutcome.excludedAppleDouble.statusText,
                       size: 4_096, checksum: nil, destination: "backup"),
         ]
     }
 
-    /// A skipped Finder view file and a reviewed AppleDouble exclusion are
-    /// deliberate omissions, not failures. They carry no reason and must not
+    /// A reviewed AppleDouble exclusion is a deliberate omission, not a
+    /// failure. It carries no reason and must not
     /// make an otherwise explained attempt unknown, or a clean retry could
     /// never reach safe to erase.
     @Test(arguments: [LocalTransferState.failed, .interrupted, .issues, .cancelled])

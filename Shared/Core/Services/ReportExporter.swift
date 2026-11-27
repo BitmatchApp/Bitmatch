@@ -10,8 +10,8 @@ typealias ProjectJSONReport = EnhancedJSONReport<PhotographerReportPayload>
 /// writes every file.
 enum ReportExporter {
     /// The report's file count: every result row except skipped Finder view
-    /// files, which were never copied. Matches, issues and the scope counts
-    /// leave them out too, so a clean run with a skip still has
+    /// files, which were never copied. Matches and scope counts leave them
+    /// out too, so a clean run with a proven skip still has
     /// matches == total files and reads as verified.
     static func countedFileCount(_ results: [ResultRow]) -> Int {
         results.filter { !$0.isSkippedFinderMetadata }.count
@@ -39,7 +39,8 @@ enum ReportExporter {
                        photographerContext: PhotographerReportContext? = nil,
                        verifiedSelection: VerifiedReportSelection? = nil,
                        pdfNotes: String? = nil,
-                       plannedRows: [ResultRow]? = nil) async throws {
+                       plannedRows: [ResultRow]? = nil,
+                       skipsProven: Bool = false) async throws {
 
         var reportPrefs = prefs
         let automaticNotes = ResultPresentation.automaticReportNotes(results)
@@ -53,9 +54,11 @@ enum ReportExporter {
         let method = verification.label
 
         let destinationPaths = destinationURLs.map { $0.path }
-        // Neither an AppleDouble exclusion nor a skipped Finder view file is
-        // an issue; an unproven skip is named by the verdict in the notes.
-        let issues = results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
+        // Only proven Finder skips are omitted from the issue count.
+        let issues = results.filter {
+            !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+                && !($0.isSkippedFinderMetadata && skipsProven)
+        }
 
         // Calculate performance metrics
         let duration = finished.timeIntervalSince(started)
@@ -97,6 +100,7 @@ enum ReportExporter {
             safetyState: safetyState,
             verifiedSelection: verifiedSelection
         )
+        summary.finderSkipsProven = skipsProven
         if mode == .copyAndVerify, let selectedMode = prefs.verificationMode {
             summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results,
                                                                   skipFinderViewFiles: prefs.skipFinderViewFiles,
@@ -156,7 +160,8 @@ enum ReportExporter {
                                        projectCSV: projectCSV,
                                        projectJSON: projectJSON,
                                        safeToErase: safetyState == .safeToErase,
-                                       verificationScope: summary.verificationScope)
+                                       verificationScope: summary.verificationScope,
+                                       skipsProven: skipsProven)
     }
 
     /// Re-renders saved evidence without touching the source or changing the journal verdict.
@@ -203,10 +208,14 @@ enum ReportExporter {
             skipMismatch ? TransferCompletion.finderMetadataSkipMismatch + "." : nil,
             "Regenerated from saved history. No new verification was performed. Recorded results only.",
             record.startedAt == nil || record.endedAt == nil ? "Some original transfer timing is unavailable." : nil].compactMap { $0 }.joined(separator: "\n")
+        let skipsProven = TransferJournal.finderMetadataSkipsProven(record)
         var summary = ReportSummary(jobID: record.id, started: start, finished: finish, mode: .copyAndVerify,
             source: record.source.url.path, destinations: record.destinations.map { $0.url.path }, totalFiles: files,
             matched: record.results.filter(\.isVerifiedStatus).count,
-            issues: record.results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }.count,
+            issues: record.results.filter {
+                !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+                    && !($0.isSkippedFinderMetadata && skipsProven)
+            }.count,
             workers: nil, appVersion: "", osVersion: "",
             client: record.reportSettings.clientName, production: record.reportSettings.production, company: record.reportSettings.company,
             verificationMethod: record.verificationMode.rawValue, verificationMode: record.verificationMode,
@@ -216,6 +225,7 @@ enum ReportExporter {
             safetyState: safetyState,
             hasRecordedTiming: record.startedAt != nil && record.endedAt != nil,
             verifiedSelection: VerifiedReportSelection.saved(record))
+        summary.finderSkipsProven = skipsProven
         summary.verificationScope = VerificationScopeEvidence(record: record)
         if record.plannedFileCounts == nil {
             summary.verificationScopeNote = "Original selected-file plan was not saved; this export describes recorded results only."

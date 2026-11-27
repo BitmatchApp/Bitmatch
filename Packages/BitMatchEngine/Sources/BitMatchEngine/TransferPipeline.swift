@@ -192,11 +192,11 @@ extension TransferPipeline {
     /// One verify lane per backup drive: backups on the same physical drive
     /// (any partition or APFS container of it) share a lane so a spinning
     /// drive never reads two of its files at once. A drive that cannot be
-    /// identified gets a lane of its own.
+    /// identified shares a conservative lane with other unidentified drives.
     static func verifyLaneKeys(for destinations: [URL], detector: any StorageMediumDetecting) -> [String] {
-        destinations.enumerated().map { index, url in
+        destinations.map { url in
             if let identity = detector.driveIdentity(for: url) { return "drive:\(identity)" }
-            return "destination:\(index)"
+            return "unidentified"
         }
     }
 

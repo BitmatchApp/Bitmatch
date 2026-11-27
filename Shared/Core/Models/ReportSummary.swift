@@ -41,12 +41,14 @@ struct ReportSummary {
     var hasRecordedTiming: Bool = true
     /// PDF wording only; never changes the saved verdict or erase permission.
     var verifiedSelection: VerifiedReportSelection? = nil
+    /// Only a proven Finder skip is omitted from the PDF issue list.
+    var finderSkipsProven: Bool = false
 }
 
 extension ReportSummary {
     /// "2 copy · 1 verify" for runs that recorded both stages, "2 copy · 1 verify
     /// × 2 lanes" when the backups verified in lanes (lanes, not drives: a
-    /// drive the system could not identify gets a lane of its own); older
+    /// drives the system could not identify share one lane); older
     /// evidence carries one figure.
     var workersDescription: String? {
         guard let workers else { return nil }

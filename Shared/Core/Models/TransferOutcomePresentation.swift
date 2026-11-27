@@ -562,7 +562,12 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             let copiedRows = summary.rows.filter { !$0.isSkippedFinderMetadata }
             let detail: String
             if copiedRows.isEmpty {
-                detail = "Interrupted before any files were recorded"
+                if summary.skippedCount > 0 {
+                    let skips = summary.skippedCount == 1 ? "1 Finder view file skipped" : "\(summary.skippedCount) Finder view files skipped"
+                    detail = "Interrupted before any files were copied; \(skips)"
+                } else {
+                    detail = "Interrupted before any files were recorded"
+                }
             } else if verificationMode == .quick {
                 let copied = summary.rows.filter(\.isSuccessStatus).count
                 detail = "Interrupted: \(copied) copied, contents not verified"

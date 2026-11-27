@@ -120,6 +120,7 @@ public struct VerificationScopeEvidence: Codable, Sendable {
             && recordedVerifiedResults >= 0
             && recordedExcludedSourceFiles >= 0
             && recordedSkippedFinderMetadata >= 0
+            && (recordedSkippedFinderMetadata == 0 || skipFinderViewFiles == true)
             && recordedSelectedSourceFiles <= recordedSelectedResults
             && (recordedSelectedSourceFiles == 0) == (recordedSelectedResults == 0)
             && recordedVerifiedResults <= recordedSelectedResults

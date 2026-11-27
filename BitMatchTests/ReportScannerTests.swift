@@ -268,11 +268,12 @@ struct ReportScannerTests {
         let fileCount = ReportExporter.countedFileCount(rows)
         #expect(fileCount == 1)
         let finished = Date()
+        var prefs = ReportPrefs(verificationMode: .standard, makeReport: true)
+        prefs.skipFinderViewFiles = true
         try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: finished.addingTimeInterval(-1),
             finished: finished, sourceURL: root.appendingPathComponent("card"), destinationURLs: [backup], results: rows,
-            fileCount: fileCount, matchCount: 1,
-            prefs: ReportPrefs(verificationMode: .standard, makeReport: true),
-            workers: 1, totalBytesProcessed: 10, safetyState: .safeToErase)
+            fileCount: fileCount, matchCount: 1, prefs: prefs,
+            workers: 1, totalBytesProcessed: 10, safetyState: .safeToErase, skipsProven: true)
         let files = try FileManager.default.contentsOfDirectory(at: backup.appendingPathComponent("Reports"),
                                                                 includingPropertiesForKeys: nil)
         let json = try #require(files.first { $0.pathExtension == "json" })

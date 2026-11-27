@@ -359,7 +359,7 @@ enum TransferLibraryPresentation {
             stateLabel: stateLabel(for: record, in: records, hasVerifiedSelectedFiles: verified),
             detailLine: detailLine(
                 destinationCount: record.destinations.count,
-                fileCount: fileCount(for: record, hasVerifiedSelectedFiles: verified)
+                fileCount: fileCount(for: record)
             )
         )
     }
@@ -539,15 +539,8 @@ enum TransferLibraryPresentation {
     /// Files on the card, not result rows: each file has one row per
     /// destination, so two destinations showed "38 files" for a 19-file card.
     static func fileCount(for record: LocalTransferRecord) -> Int {
-        fileCount(for: record, hasVerifiedSelectedFiles: TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
-    }
-
-    private static func fileCount(for record: LocalTransferRecord, hasVerifiedSelectedFiles: Bool) -> Int {
-        // The count is of files transferred; skipped Finder view files are not.
-        let rows = hasVerifiedSelectedFiles
-            ? record.results.filter { !$0.isOmittedBySelection }
-            : record.results.filter { !$0.isSkippedFinderMetadata }
-        return Set(rows.map(\.path)).count
+        // Both kinds of omission lie outside the selected plan.
+        return Set(record.results.filter(\.isInSelectedPlan).map(\.path)).count
     }
 
     static func detailLine(destinationCount: Int, fileCount: Int) -> String {

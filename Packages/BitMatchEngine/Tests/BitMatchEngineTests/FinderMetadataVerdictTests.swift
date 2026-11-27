@@ -111,6 +111,14 @@ struct FinderMetadataVerdictTests {
         #expect(plural.message == "All files copied and verified; 2 Finder view files (.DS_Store) skipped")
     }
 
+    @Test func unprovenSkipSummaryDoesNotClaimFinderContent() {
+        let rows = clipRows + [skipped(at: shuttleA), skipped(at: shuttleB)]
+        let summary = TransferCompletion.finderMetadataSkipSummary(results: rows, skipsProven: false)
+        #expect(summary == "2 skipped rows that did not reconcile with this run; Skipped-file records do not match this run; keep the card")
+        #expect(!verdict(rows, proven: nil).success)
+        #expect(verdict(rows, proven: nil).message.contains(TransferCompletion.finderMetadataSkipMismatch))
+    }
+
     @Test func noSkipsAndNoProvenSetIsUnchanged() {
         #expect(proven(clipRows, nil))
         #expect(proven(clipRows, []))
@@ -271,8 +279,7 @@ struct FinderMetadataVerdictTests {
         #expect(!result.message.contains("has no result"), "\(result.message)")
     }
 
-    /// A skipped row is never an issue, never "selected" and never in the
-    /// checksum manifest.
+    /// A skipped row is never selected or included in the checksum manifest.
     @Test func evidenceNeverCountsASkipAsAnIssueOrListsItsChecksum() throws {
         let rows = [row(clipA, at: shuttleA), row(appleDouble, at: shuttleA, outcome: .excludedAppleDouble),
                     skipped(at: shuttleA)]
@@ -280,6 +287,7 @@ struct FinderMetadataVerdictTests {
         #expect(selection.sourceFileCount == 3)
         #expect(selection.selectedFileCount == 1)
         #expect(selection.excludedFileCount == 1)
+        #expect(selection.skippedFinderViewFileCount == 1)
         #expect(selection.excludedSourcePaths == [appleDouble.path])
 
         let root = try FinderMetadataFixtures.makeTree()
