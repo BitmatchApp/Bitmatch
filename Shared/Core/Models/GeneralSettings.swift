@@ -202,11 +202,13 @@ enum GeneralSettingsPresentation {
     static let playSounds = "Play sounds"
     static let performanceSection = "Performance"
     static let copyWorkers = "Copy workers"
-    static let verifyWorkers = "Verify workers per backup drive"
     static let verifyWhileCopying = "Verify while copying"
     #if os(macOS)
+    static let verifyWorkers = "Verify workers per backup drive"
     static let performanceFootnote = "Auto uses one worker per stage when macOS reports the card or a backup as a spinning hard drive, so the drive reads and writes in order instead of seeking between files. Verify workers are per backup drive while verifying during the copy: backups on different drives read back side by side, and backups on one drive share its lane; Thorough and Paranoid reread the card, so on a spinning card they use one lane. Otherwise Auto uses up to 4 copy workers and shares half your cores to verify across the drives. Some USB enclosures do not report the drive type; choose 1 for both stages if a hard drive still thrashes. Changes apply to the next transfer."
     #else
+    // iOS cannot name the physical drive, so lanes key by volume.
+    static let verifyWorkers = "Verify workers per backup volume"
     static let performanceFootnote = "Auto uses up to 4 copy workers and shares half your cores to verify across the backup volumes; verify workers are per backup volume. iPhone and iPad cannot tell a spinning hard drive from an SSD, so choose 1 for both stages when a backup is a hard drive. Changes apply to the next transfer."
     #endif
     static let verifyWhileCopyingFootnote = "Off verifies each backup in one pass after all of its files are copied, so the verify workers setting does not apply. On a hard drive this avoids reading back while it is still writing."

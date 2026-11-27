@@ -105,14 +105,6 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         return "\(recordedExcludedSourceFiles) AppleDouble source files intentionally excluded; the whole card was not backed up."
     }
 
-    /// "2 Finder view files skipped (not card content)". Never says
-    /// "excluded" or "the whole card": that is AppleDouble's wording.
-    public var finderMetadataSkipLine: String? {
-        guard recordedSkippedFinderMetadata > 0 else { return nil }
-        let noun = recordedSkippedFinderMetadata == 1 ? "file" : "files"
-        return "\(recordedSkippedFinderMetadata) Finder view \(noun) skipped (not card content)"
-    }
-
     /// "Finder view files (.DS_Store): skipped when proven" or "…: copied";
     /// nil when the run did not record the setting.
     public var finderViewFilesSettingLine: String? {

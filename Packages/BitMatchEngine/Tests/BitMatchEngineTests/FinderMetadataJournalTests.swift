@@ -305,17 +305,20 @@ import Testing
         #expect(scope.recordedSelectedSourceFiles == 1)
         #expect(scope.recordedSelectedResults == 2)
         #expect(scope.exclusionLine == nil)
-        let line = try #require(scope.finderMetadataSkipLine)
-        #expect(line == "2 Finder view files skipped (not card content)")
+        // The report's line for the skips: never AppleDouble's wording.
+        let line = try #require(TransferCompletion.finderMetadataSkipSummary(results: rows))
+        #expect(line == "2 Finder view files (.DS_Store) skipped: not card content; Finder recreates them")
         #expect(!line.contains("whole card"))
         #expect(!line.contains("excluded"))
         #expect(scope.hasConsistentRecordedCounts)
 
-        let one = VerificationScopeEvidence(selectedMode: .standard, results: [f.verified("A001.mov", on: f.destinations[0]),
-                                                                              f.skipped(".DS_Store", on: f.destinations[0])])
-        #expect(one.finderMetadataSkipLine == "1 Finder view file skipped (not card content)")
-        #expect(VerificationScopeEvidence(selectedMode: .standard, results: [f.verified("A001.mov", on: f.destinations[0])])
-            .finderMetadataSkipLine == nil)
+        let oneRows = [f.verified("A001.mov", on: f.destinations[0]), f.skipped(".DS_Store", on: f.destinations[0])]
+        #expect(VerificationScopeEvidence(selectedMode: .standard, results: oneRows).recordedSkippedFinderMetadata == 1)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: oneRows)
+            == "1 Finder view file (.DS_Store) skipped: not card content; Finder recreates them")
+        let noSkips = [f.verified("A001.mov", on: f.destinations[0])]
+        #expect(VerificationScopeEvidence(selectedMode: .standard, results: noSkips).recordedSkippedFinderMetadata == 0)
+        #expect(TransferCompletion.finderMetadataSkipSummary(results: noSkips) == nil)
     }
 
     @Test func scopeEvidenceFromAnOlderReportDecodesWithNoSkips() throws {

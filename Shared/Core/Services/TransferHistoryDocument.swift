@@ -88,7 +88,9 @@ struct TransferHistoryDocument: FileDocument {
                 let savedVerdict: String
                 let savedSafeToErase: Bool
                 let verificationScope: VerificationScopeEvidence
-                /// "N Finder view files skipped (not card content)"; omitted with none.
+                /// "N Finder view files (.DS_Store) skipped: not card content;
+                /// Finder recreates them" (`TransferCompletion.finderMetadataSkipSummary`);
+                /// omitted with none.
                 let finderViewFiles: String?
                 let selectedFilePlanRecorded: Bool
                 let projectName: String
