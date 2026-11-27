@@ -1050,7 +1050,7 @@ class SharedAppCoordinator: ObservableObject {
         } else {
             verificationMode = .standard
         }
-        photographerJobViewModel?.recoverIncompleteTransfers(selectedJournal.records)
+        self.photographerJobViewModel.recoverIncompleteTransfers(selectedJournal.records)
         setupBindings()
         self.transferJournal.objectWillChange.sink { [weak self] _ in
             self?.objectWillChange.send()
