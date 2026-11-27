@@ -288,11 +288,18 @@ struct TransferConcurrencyPipelineTests {
     /// card, lanes per backup drive would make it seek between files, so the
     /// run uses one lane however many drives there are. Standard reads only
     /// the backups and keeps a lane per drive.
-    /// A card whose medium the system does not report could be spinning, so
-    /// it is treated the same way.
-    @Test(arguments: [(StorageMediumKind.rotational, VerificationMode.thorough, 1), (.rotational, .standard, 2),
-                      (.unknown, .paranoid, 1), (.unknown, .standard, 2), (.solidState, .thorough, 2)])
-    func aSpinningCardCollapsesLanesOnlyWhenTheCardIsReread(medium: StorageMediumKind, mode: VerificationMode, lanes: Int) async throws {
+    /// Most card readers report no medium type: an unknown card keeps Auto's
+    /// per-drive lanes, and collapses only when the user chose an explicit
+    /// verify count (their remedy for a thrashing drive).
+    @Test(arguments: [
+        (StorageMediumKind.rotational, VerificationMode.thorough, nil, 1), (.rotational, .paranoid, 2, 1),
+        (.rotational, .standard, nil, 2),
+        (.unknown, .paranoid, 1, 1), (.unknown, .thorough, nil, 2), (.unknown, .standard, 1, 2),
+        (.solidState, .thorough, nil, 2), (.solidState, .thorough, 1, 2),
+    ] as [(StorageMediumKind, VerificationMode, Int?, Int)])
+    func aSpinningCardCollapsesLanesOnlyWhenTheCardIsReread(
+        medium: StorageMediumKind, mode: VerificationMode, verifyWorkers: Int?, lanes: Int
+    ) async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()
             let second = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch_conc_dst2_\(UUID().uuidString)")
@@ -308,13 +315,14 @@ struct TransferConcurrencyPipelineTests {
             #expect(Set(TransferPipeline.verifyLaneKeys(for: [tree.destination, second], detector: detector)).count == 2)
             let pipeline = TransferPipeline(
                 fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                concurrency: { TransferConcurrencySettings(verifyWorkers: verifyWorkers) },
                 storageMediumDetector: detector)
             let operation = try await pipeline.performFileOperation(
                 sourceURL: tree.source, destinationURLs: [tree.destination, second],
                 verificationMode: mode, settings: CameraLabelSettings(),
                 estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
             #expect(operation.results.allSatisfy { $0.success })
-            #expect(operation.concurrency?.verifyLanes == lanes, "\(mode)")
+            #expect(operation.concurrency?.verifyLanes == lanes, "\(medium) \(mode) \(String(describing: verifyWorkers))")
         }
     }
 

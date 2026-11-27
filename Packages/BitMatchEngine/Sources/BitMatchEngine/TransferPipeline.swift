@@ -900,13 +900,18 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             && concurrencyChoice.verifyWhileCopying
         // Disk Arbitration and IOKit are synchronous IPC; a slow or stalled
         // volume must not hold a cooperative thread. One job for both lookups.
+        let explicitVerifyWorkers = concurrencyChoice.verifyWorkers != nil
         let (storageMedia, verifyLaneKeys): ([StorageMediumKind], [String]) = try await BoundedBlockingExecutor.transfer.performCancellable { [storageMediumDetector] _ in
             let media = ([operation.sourceURL] + operation.destinationURLs).map { storageMediumDetector.mediumKind(for: $0) }
             guard shouldPipelineVerify else { return (media, operation.destinationURLs.map { _ in "none" }) }
             // Thorough and Paranoid reread the card for every backup, so lanes
             // on a spinning card would seek between files there: one lane then.
-            // A card whose medium the system does not report may be spinning.
-            if operation.verificationMode.rereadsSource, media.first == .rotational || media.first == .unknown {
+            // Most card readers report no medium type, so an unknown card
+            // keeps Auto's per-drive lanes (Auto's pool is already split
+            // across them); only an explicit verify count, the remedy for a
+            // thrashing drive, means one card reread at a time there.
+            if operation.verificationMode.rereadsSource,
+               media.first == .rotational || (media.first == .unknown && explicitVerifyWorkers) {
                 return (media, operation.destinationURLs.map { _ in "source" })
             }
             return (media, Self.verifyLaneKeys(for: operation.destinationURLs, detector: storageMediumDetector))
