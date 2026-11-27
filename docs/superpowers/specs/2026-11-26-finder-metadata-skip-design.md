@@ -38,7 +38,7 @@ A DIT (GitHub issue 93) lost a clean verdict because Finder rewrote a `.DS_Store
 
 ### What is skipped
 
-A source entry is a Finder view file when all hold: its name is byte-exactly `.DS_Store` (any depth); it is a regular file; its size is within the Finder format's plausible range; its first bytes are the alignment word `00 00 00 01` followed by the magic `Bud1`; and the header's offsets are consistent with its size. Anything else with that name is ordinary: copied, verified, listed. A directory named `.DS_Store` is never classified; a symlink named `.DS_Store` is an unsupported entry as today; `.ds_store` or an NFD spelling is ordinary.
+A source entry is a Finder view file when all hold: its name is byte-exactly `.DS_Store` (any depth); it is a regular file; its size is within the Finder format's plausible range; its first bytes are the alignment word `00 00 00 01` followed by the magic `Bud1`; the header's offsets are consistent with its size; and the root block the header points to (at 4 + offset, read up to 64 KiB) holds the `DSDB` directory entry every Finder file carries. Anything else with that name is ordinary: copied, verified, listed. An entry whose classification fails at Start (gone, resized or unreadable since the scan) is not proven, so it is ordinary too: it is copied and fails, if it must, as its own row; nothing aborts the run. A directory named `.DS_Store` is never classified; a symlink named `.DS_Store` is an unsupported entry as today; `.ds_store` or an NFD spelling is ordinary.
 
 ### Where it is decided
 
@@ -53,7 +53,9 @@ Safe to erase only when every one of these holds, evaluated in one place (`Trans
 3. exactly one skipped row per proven path per destination, none extra;
 4. selected paths plus skipped paths equal the complete source manifest; unsupported entries stay failures;
 5. the run has no `excludedAppleDouble` rows (that rule wins, unchanged);
-6. at the final source gate the classifier re-runs on each skipped path still present: one that no longer passes fails closed as `sourceUnstable`; a Finder-to-Finder rewrite or a newly appeared Finder file is not a failure; any new ordinary file still is.
+6. at the final source gate the classifier re-runs on each skipped path still present: one that no longer passes fails closed as `sourceUnstable`; a Finder-to-Finder rewrite or a newly appeared Finder file is not a failure; any new ordinary file still is. A file that changes while it is being read is read once more; a read error (EIO) fails the run as a card read failure. A gate-failed skip was never in the saved plan, so the plan checks leave its failed row out while the verdict still counts it.
+
+Paths are compared in their symlink-resolved form, and a saved record takes the card folder from its own rows, so a symlinked source or a remounted queued card still proves its skips.
 
 Sites that today compare against `excludedAppleDouble` (issue counting and messages, `hasCompleteVerifiedResults`, `matchingVerifiedRecord`, `hasCompletePlannedResults`, `isInSelectedPlan`, `VerificationScopeEvidence`, `ExpectedExclusionQueuePolicy`, `ascmhlPlan`, `FolderInfoService` and Setup counts, the Remote status mapping) are updated to the predicate; a missed site fails closed because the row is not a success.
 
