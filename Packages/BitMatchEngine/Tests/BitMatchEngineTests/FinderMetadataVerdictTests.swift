@@ -56,9 +56,10 @@ struct FinderMetadataVerdictTests {
         )
     }
 
-    private func proven(_ rows: [ResultRow], _ paths: [String]?) -> Bool {
+    private func proven(_ rows: [ResultRow], _ paths: [String]?, sourceFiles: [URL]? = nil) -> Bool {
         TransferCompletion.finderMetadataSkipsProven(
-            rows: rows, provenPaths: paths, destinations: [shuttleA, shuttleB],
+            rows: rows, provenPaths: paths, sourceFiles: sourceFiles ?? [clipA, clipB, dsStore],
+            destinations: [shuttleA, shuttleB],
             source: source, settings: CameraLabelSettings()
         )
     }
@@ -140,6 +141,35 @@ struct FinderMetadataVerdictTests {
 
         // A skipped path that is not on the card is not a skip of the card.
         #expect(!verdict(rows, proven: [".DS_Store"], sourceFiles: [clipA, clipB]).success)
+    }
+
+    /// Spec rule 4 lives in the predicate: a skip must be of a file in the
+    /// card's complete manifest.
+    @Test func aSkippedRowWhosePathIsNotInTheManifestIsUnproven() {
+        let rows = clipRows + [skipped(at: shuttleA), skipped(at: shuttleB)]
+        #expect(proven(rows, [".DS_Store"], sourceFiles: [clipA, clipB, dsStore]))
+        #expect(!proven(rows, [".DS_Store"], sourceFiles: [clipA, clipB]))
+        #expect(!proven(rows, [".DS_Store"], sourceFiles: []))
+        let result = verdict(rows, proven: [".DS_Store"], sourceFiles: [clipA, clipB])
+        #expect(!result.success)
+        #expect(result.message.contains("Skipped-file records do not match this run; keep the card"), "\(result.message)")
+    }
+
+    /// A caller that cannot show the manifest cannot claim proven skips.
+    @Test func nilSourceFilesWithSkippedRowsIsUnproven() {
+        let rows = clipRows + [skipped(at: shuttleA), skipped(at: shuttleB)]
+        #expect(!TransferCompletion.finderMetadataSkipsProven(
+            rows: rows, provenPaths: [".DS_Store"], sourceFiles: nil,
+            destinations: [shuttleA, shuttleB], source: source, settings: CameraLabelSettings()))
+        // With nothing skipped there is nothing to prove, manifest or not.
+        #expect(TransferCompletion.finderMetadataSkipsProven(
+            rows: clipRows, provenPaths: nil, sourceFiles: nil,
+            destinations: [shuttleA, shuttleB], source: source, settings: CameraLabelSettings()))
+        let result = TransferCompletion.verdict(
+            rows: rows, sourceFiles: nil, destinations: [shuttleA, shuttleB], source: source,
+            settings: CameraLabelSettings(), mode: .standard, generateASCMHL: false,
+            handoffIssues: [], reportIssue: nil, project: ordinary, skippedFinderMetadataPaths: [".DS_Store"])
+        #expect(!result.success)
     }
 
     @Test func aFailedClipElsewhereStillBlocksSafety() {
@@ -285,7 +315,7 @@ struct FinderMetadataVerdictTests {
             let rows = TransferCompletion.rows(from: operation)
             #expect(TransferCompletion.finderMetadataSkipsProven(
                 rows: rows, provenPaths: operation.skippedFinderMetadataPaths,
-                destinations: backups, source: card, settings: operation.settings))
+                sourceFiles: operation.sourceManifest, destinations: backups, source: card, settings: operation.settings))
             let plan = TransferCompletion.ascmhlPlan(
                 results: operation.results, sourceFiles: operation.sourceManifest, destinations: backups,
                 source: card, settings: operation.settings,

@@ -94,14 +94,18 @@ public enum TransferCompletion: Sendable {
     /// its own place under that backup's root, and no skipped row falls
     /// outside the set. Status text alone never counts: a skipped row with no
     /// proof, a missing or duplicate row, or a proven path whose rows the
-    /// final gate turned into failures all answer false. With no proven set
-    /// and no skipped row there is nothing to prove, so true.
+    /// final gate turned into failures all answer false. Every proven path
+    /// must also be in `sourceFiles`, the card's complete manifest; a caller
+    /// with no manifest (nil) cannot prove any skip. With no proven set and
+    /// no skipped row there is nothing to prove, so true.
     public static func finderMetadataSkipsProven(
-        rows: [ResultRow], provenPaths: [String]?, destinations: [URL], source: URL, settings: CameraLabelSettings
+        rows: [ResultRow], provenPaths: [String]?, sourceFiles: [URL]?,
+        destinations: [URL], source: URL, settings: CameraLabelSettings
     ) -> Bool {
         let skipped = rows.filter(\.isSkippedFinderMetadata)
         guard let provenPaths, !provenPaths.isEmpty else { return skipped.isEmpty }
-        guard !destinations.isEmpty else { return false }
+        guard !destinations.isEmpty, let sourceFiles else { return false }
+        let manifest = Set(sourceFiles.map { PathContainment.comparablePath($0.path) })
         let sourcePath = PathContainment.comparablePath(source.path)
         let sourcePrefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
         var proven = Set<String>()
@@ -111,7 +115,8 @@ public enum TransferCompletion: Sendable {
                   parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
                   parts.last.map({ $0.utf8.elementsEqual(".DS_Store".utf8) }) == true else { return false }
             let path = PathContainment.comparablePath(source.appendingPathComponent(relative).path)
-            guard path.hasPrefix(sourcePrefix), proven.insert(path).inserted else { return false }
+            guard path.hasPrefix(sourcePrefix), manifest.contains(path),
+                  proven.insert(path).inserted else { return false }
         }
         let roots = destinations.map {
             PathContainment.comparablePath(SafetyValidator.resolvedDestinationRoot(
@@ -394,11 +399,16 @@ public enum TransferCompletion: Sendable {
         // the history could describe.
         // Skipped Finder view files were never written, so they are left out
         // of the hashes too (no `<ignore>` element: the reference verifier
-        // already ignores `.DS_Store`). A path leaves the expected files only
-        // when it is in the proven set and still has a skipped row; a path the
-        // final gate failed keeps its failure rows and blocks the history.
-        let skippedPaths = Set(skippedFinderMetadataPaths ?? []).intersection(
-            results.filter(\.skippedFinderMetadata).map { $0.sourceURL.relativePath(to: source) })
+        // already ignores `.DS_Store`). Proven paths leave the expected files
+        // only when the one predicate holds for the whole run; otherwise the
+        // skipped files stay expected with no counted row, so no history is
+        // written (a path the final gate failed answers false too).
+        let skipsProven = finderMetadataSkipsProven(
+            rows: results.map { row(from: $0, destinationRoots: destinations) },
+            provenPaths: skippedFinderMetadataPaths, sourceFiles: sourceFiles,
+            destinations: destinations, source: source, settings: settings
+        )
+        let skippedPaths = skipsProven ? Set(skippedFinderMetadataPaths ?? []) : []
         let results = results.filter {
             !$0.excludedAppleDouble && !$0.skippedFinderMetadata
                 && $0.failureReason != ResultFailureReason.unsupportedSourceEntry.rawValue
@@ -571,16 +581,13 @@ public enum TransferCompletion: Sendable {
     ) -> Verdict {
         // Skipped Finder view files are neither issues nor selected files:
         // they leave the expected files and every count below, and the run
-        // is safe only when the one predicate proves them. Their paths must
-        // also be on the card's manifest.
+        // is safe only when the one predicate proves them.
         let skipped = rows.filter(\.isSkippedFinderMetadata)
         let skippedSourcePaths = Set(skipped.map(\.path))
         let skipsProven = finderMetadataSkipsProven(
-            rows: rows, provenPaths: skippedFinderMetadataPaths,
+            rows: rows, provenPaths: skippedFinderMetadataPaths, sourceFiles: sourceFiles,
             destinations: destinations, source: source, settings: settings
-        ) && (skipped.isEmpty || sourceFiles.map { files in
-            skippedSourcePaths.isSubset(of: Set(files.map(\.path)))
-        } == true)
+        )
         let skippedCount = skippedSourcePaths.count
         // With no skipped row this is `rows` and `sourceFiles` unchanged.
         let rowsWithoutSkips = skipped.isEmpty ? rows : rows.filter { !$0.isSkippedFinderMetadata }
