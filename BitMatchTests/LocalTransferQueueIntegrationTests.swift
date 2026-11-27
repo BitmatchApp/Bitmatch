@@ -109,12 +109,39 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let url = try XCTUnwrap(foreign)
         XCTAssertEqual(try Data(contentsOf: url), Data("foreign file".utf8))
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
-        XCTAssertTrue(record.summary.contains("changed or replaced"))
+        XCTAssertTrue(record.summary.contains("could not be confirmed"))
         XCTAssertTrue(record.pendingWithdrawalPaths?.contains(url.path) == true)
         let replacement = try XCTUnwrap(record.pendingReportPaths?.first { $0.hasSuffix(".json") && $0 != url.path })
         XCTAssertNotEqual(replacement, url.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: replacement))
     }
+    func testForeignPDFIsLeftInPlaceAndSettlementUsesFreshStem() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init(makeReport: true), generateASCMHL: false)
+        var foreign: URL?
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
+                let path = try XCTUnwrap(journal.records.first { $0.id == id }?.pendingReportPaths?.first { $0.hasSuffix(".pdf") })
+                foreign = URL(fileURLWithPath: path)
+                try Data("foreign PDF".utf8).write(to: try XCTUnwrap(foreign), options: .atomic)
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(30)) {
+            guard let state = journal.records.first(where: { $0.id == id })?.state else { return false }
+            return state != .queued && state != .running && !coordinator.isOperationInProgress
+        }
+        guard ended else { XCTFail("The queued transfer did not finish"); return }
+        let url = try XCTUnwrap(foreign)
+        XCTAssertEqual(try Data(contentsOf: url), Data("foreign PDF".utf8))
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(record.summary.contains("changed by something else"))
+        XCTAssertTrue(record.summary.contains(url.path))
+        XCTAssertTrue(record.pendingReportPaths?.contains(where: { $0.hasSuffix(".pdf") && $0 != url.path }) == true)
+    }
+
     func testFailedCancellationOverrideWithoutReportsRetriesPersistence() throws {
         let f = try QueueFixture(); defer { f.cleanup() }
         let gate = JournalFlushGate()
@@ -469,7 +496,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         defer { f.cleanup() }
         var safeBeforeFinish = false
         var sawProvisional = false
-        var rerenderedPDF: URL?
+        var publishedPDF: URL?
         let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
         let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
             let urls = (try? FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
@@ -480,10 +507,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                    object["safeToErase"] as? Bool == true { safeBeforeFinish = true }
             }
             if let pdf = urls.first(where: { $0.pathExtension == "pdf" }) {
-                var data = try Data(contentsOf: pdf)
-                data.append(Data("\n% Re-rendered report with a different size\n".utf8))
-                try data.write(to: pdf, options: .atomic)
-                rerenderedPDF = pdf
+                publishedPDF = pdf
             }
             throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
         })
@@ -506,13 +530,54 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(object["safeToErase"] as? Bool, false)
         XCTAssertTrue(String(decoding: try Data(contentsOf: jsonURL), as: UTF8.self).localizedCaseInsensitiveContains("history"))
         let pdfURL = try XCTUnwrap(files.first { $0.pathExtension == "pdf" })
-        XCTAssertEqual(pdfURL, rerenderedPDF)
+        XCTAssertEqual(pdfURL, publishedPDF)
         XCTAssertEqual(files.filter { $0.pathExtension == "json" }.count, 1)
         let pdf = try XCTUnwrap(PDFDocument(url: pdfURL))
         XCTAssertTrue(try XCTUnwrap(pdf.string).contains("NOT SAFE TO ERASE"))
         XCTAssertTrue(try XCTUnwrap(pdf.string).localizedCaseInsensitiveContains("history"))
         let scan = await EvidenceReader.scanReports(at: f.destination)
         XCTAssertFalse(scan.reports.isEmpty)
+    }
+
+    func testFinalJournalFailurePreservesChangedPDFAndWritesWarningAlongsideIt() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
+        var changedPDF: URL?
+        var changedBytes: Data?
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            let urls = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+            let pdf = try XCTUnwrap(urls.first { $0.pathExtension == "pdf" })
+            var bytes = try Data(contentsOf: pdf)
+            bytes.append(Data("\n% Changed by another writer\n".utf8))
+            try bytes.write(to: pdf, options: .atomic)
+            changedPDF = pdf
+            changedBytes = bytes
+            throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults)
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let foreignPDF = try XCTUnwrap(changedPDF)
+        XCTAssertEqual(try Data(contentsOf: foreignPDF), try XCTUnwrap(changedBytes))
+        let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
+        let warningJSON = try XCTUnwrap(files.first { url in
+            guard url.pathExtension == "json", let data = try? Data(contentsOf: url),
+                  let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else { return false }
+            return object["safeToErase"] as? Bool == false
+        })
+        let warningPDF = warningJSON.deletingPathExtension().appendingPathExtension("pdf")
+        XCTAssertNotEqual(warningPDF, foreignPDF)
+        let document = try XCTUnwrap(PDFDocument(url: warningPDF))
+        XCTAssertTrue(try XCTUnwrap(document.string).contains("NOT SAFE TO ERASE"))
     }
 
     func testFailedHistoryAndWarningExportDeletePublishedReports() async throws {

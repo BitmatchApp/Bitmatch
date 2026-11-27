@@ -16,6 +16,7 @@ struct TransferLibraryView: View {
     @State private var showDiagnostics = false
     @State private var diagnosticsDocument: TransferDiagnosticsDocument?
     @State private var reauthorizeRecord: LocalTransferRecord?
+    @State private var reportsToMarkHandled: LocalTransferRecord?
     @State private var exportType = UTType.json
     @State private var expandedIDs: Set<UUID> = []
     @StateObject private var historySearch = TransferHistorySearchModel()
@@ -85,6 +86,19 @@ struct TransferLibraryView: View {
                 pdfTask?.cancel()
                 retryTask?.cancel()
                 historySearch.cancel()
+            }
+            .alert("Mark reports as handled?", isPresented: Binding(
+                get: { reportsToMarkHandled != nil },
+                set: { if !$0 { reportsToMarkHandled = nil } }
+            ), presenting: reportsToMarkHandled) { record in
+                Button("Mark reports as handled", role: .destructive) {
+                    do { try journal.markReportsHandled(id: record.id) }
+                    catch { errorMessage = error.localizedDescription }
+                    reportsToMarkHandled = nil
+                }
+                Button("Cancel", role: .cancel) { reportsToMarkHandled = nil }
+            } message: { record in
+                Text("These files may still read safe:\n" + (record.pendingWithdrawalPaths ?? []).joined(separator: "\n"))
             }
             .sheet(item: $reauthorizeRecord) { record in
                 ReauthorizeLocationsView(coordinator: coordinator, journal: journal, recordID: record.id)
@@ -306,11 +320,15 @@ struct TransferLibraryView: View {
                     Text(TransferJournal.pendingReportExplanation)
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                Button("Mark reports as handled") {
-                    do { try journal.markReportsHandled(id: record.id) }
-                    catch { errorMessage = error.localizedDescription }
+                if TransferJournal.canMarkReportsHandled(record) {
+                    Button("Mark reports as handled") { reportsToMarkHandled = record }
+                        .disabled(journal.withdrawalRetryIsInFlight(id: record.id))
+                        .modifier(TouchTarget())
+                    if journal.withdrawalRetryIsInFlight(id: record.id) {
+                        Text("Wait for the report withdrawal retry to finish.")
+                            .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    }
                 }
-                .modifier(TouchTarget())
             }
             Text(scope.selectedModeLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(scope.recordedResultsLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

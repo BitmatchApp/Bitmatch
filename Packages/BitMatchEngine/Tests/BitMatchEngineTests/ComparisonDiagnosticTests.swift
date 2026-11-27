@@ -78,6 +78,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
         for ext in ["json", "pdf", "csv", "sha-256.txt"] {
             try Data().write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.\(ext)"))
         }
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"))
         let compare = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
         let clean = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
         XCTAssertEqual(clean.onlyInRightPaths, [])
@@ -120,6 +121,9 @@ final class ComparisonDiagnosticTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID()
         let base = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        let proofFolder = root.appendingPathComponent("nested/Reports")
+        try FileManager.default.createDirectory(at: proofFolder, withIntermediateDirectories: true)
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: proofFolder.appendingPathComponent(base + ".json"))
         for ext in ["json", "pdf", "csv", "sha-256.txt"] {
             XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "nested/Reports/\(base).\(ext)", root: root))
         }
@@ -136,6 +140,27 @@ final class ComparisonDiagnosticTests: XCTestCase {
         try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
         XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/nested/file", root: root))
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)-x/file", root: root))
+    }
+
+    func testWithdrawalProofAndStrictSuffixes() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reports = root.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        let id = UUID()
+        let base = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        let path = "Reports/\(base).pdf"
+        try Data("foreign".utf8).write(to: reports.appendingPathComponent(base + ".pdf"))
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: path, root: root))
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(base + ".json"))
+        XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: path, root: root))
+        for suffix in ["-0", "-1", "-02", "-٢"] {
+            XCTAssertNil(ReportName.withdrawnReport(base + suffix + ".pdf"))
+        }
+        for suffix in ["-0", "-01", "-٢"] {
+            XCTAssertNil(ReportName.withdrawnReport(base + ".pdf" + suffix))
+            XCTAssertFalse(TransferJournal.isStagingName(".bitmatch-staging-\(id.uuidString)" + suffix, recordID: id))
+        }
     }
 
     func testWithdrawalGrammarAndSuffixedStagingKeepNearMissesVisible() async throws {
@@ -157,6 +182,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
                 }
             }
         }
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(base + ".json"))
         let nearMisses = ["\(base)-x.json", "\(base).json-x", "\(base).sha-256.txt.bak",
                           ".unsettled-\(otherID.uuidString.lowercased())-BitMatch_Report_2026-11-27T12-00-00Z.json"]
         for name in nearMisses { try Data().write(to: reports.appendingPathComponent(name)) }

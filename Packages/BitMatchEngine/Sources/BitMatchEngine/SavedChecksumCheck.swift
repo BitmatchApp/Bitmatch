@@ -263,15 +263,13 @@ public struct SavedChecksumCheck: Sendable {
             let recorded = discovery.expectedFiles[path] != nil
             let working = !recorded && workingEntries.isWorkingFile(path: path, root: root)
             let reserved = Self.isReservedEvidence(path)
-            let appleDouble = (path as NSString).lastPathComponent.hasPrefix("._")
             let resemblesWorkingEntry = path.split(separator: "/").contains {
                 $0.hasPrefix(".unsettled-") || $0.hasPrefix(".bitmatch-staging-")
             }
-            // Recorded Finder sidecars in reserved evidence trees are not media.
-            // An unrecorded sidecar there is nevertheless an extra worth reporting.
-            if (discovery.classicEvidence.isEmpty && reserved && (recorded ? appleDouble : (!appleDouble && !resemblesWorkingEntry)))
+            // Recorded entries always take precedence over extra-file policies.
+            if !recorded && ((discovery.classicEvidence.isEmpty && reserved && !resemblesWorkingEntry)
                 || classicManifestURLs.contains(file.standardizedFileURL)
-                || (!recorded && ((FolderComparer.isFinderMetadata(path) && !(reserved && appleDouble)) || working)) { continue }
+                || FolderComparer.isFinderMetadata(path) || working) { continue }
             #if canImport(Darwin)
             if discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }

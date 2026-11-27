@@ -24,6 +24,37 @@ struct EvidenceWriterCommitOrderTests {
         #expect(record.reportStagingPath == nil)
         #expect(Set(record.pendingReportPaths ?? []).isSuperset(of: Set(files.map(\.path))))
     }
+    @Test func publishedSiblingDigestProtectsReplacementAndWithdrawal() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("safe".utf8), results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+        try journal.recordPublishedReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        let record = try #require(journal.records.first)
+        let pdf = try #require(files.first { $0.pathExtension == "pdf" })
+        let fact = try #require(record.reportFileFacts?.first(where: { $0.path == pdf.path }))
+        let digest = try #require(fact.sha256)
+        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: pdf.path)
+        var changedTimestamp = record
+        changedTimestamp.reportFileFacts = [ReportFileFact(path: pdf.path, size: fact.size,
+            modificationDate: .distantPast, sha256: digest)]
+        try TransferJournal.validateReportReplacement(record: changedTimestamp, paths: files.map(\.path), target: pdf.path)
+        try Data("evil".utf8).write(to: pdf, options: .atomic) // Same size, different digest.
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: pdf.path)
+        }
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path))
+        guard case .pending(let reason) = outcomes[pdf.path] else { Issue.record("Changed file must remain in place"); return }
+        #expect(reason.contains("left in place"))
+        #expect(try Data(contentsOf: pdf) == Data("evil".utf8))
+    }
+
     @Test func failedRestoreTracksStagingCopiesForWithdrawal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
@@ -98,7 +129,7 @@ struct EvidenceWriterCommitOrderTests {
         #expect(try Data(contentsOf: pdf) == Data("safe".utf8))
     }
 
-    @Test func replacementAcceptsLegacyOwnershipWithoutOptionalFileFacts() async throws {
+    @Test func legacyReplacementRequiresMatchingAvailableFacts() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
         try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
@@ -124,9 +155,16 @@ struct EvidenceWriterCommitOrderTests {
         record.reportFileFacts = [ReportFileFact(path: csv.path, size: nil, modificationDate: nil)]
         try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
         record.reportFileFacts = [ReportFileFact(path: csv.path, size: UInt64.max, modificationDate: nil)]
-        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        }
         record.reportFileFacts = [ReportFileFact(path: csv.path, size: nil, modificationDate: .distantPast)]
-        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        }
+        let attrs = try FileManager.default.attributesOfItem(atPath: csv.path)
+        record.reportFileFacts = [ReportFileFact(path: csv.path, size: (attrs[.size] as? NSNumber)?.uint64Value,
+                                                 modificationDate: attrs[.modificationDate] as? Date)]
         let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path))
         #expect(files.allSatisfy { outcomes[$0.path] == .withdrawn })
         // Restore the paths for the source-identity assertion below.

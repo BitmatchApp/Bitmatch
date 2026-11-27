@@ -5,6 +5,21 @@ import BitMatchEngine
 
 @MainActor
 struct LocalTransferJournalTests {
+    @Test func reportHandlingIsBlockedDuringWithdrawalRetry() throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let journal = LocalTransferJournal(fileURL: f.journal)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let report = f.destination.appendingPathComponent("Reports/report.json").path
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable", pendingWithdrawalPaths: [report])
+        #expect(!journal.withdrawalRetryIsInFlight(id: id))
+        journal.retryPendingReportWithdrawals(id: id)
+        #expect(journal.withdrawalRetryIsInFlight(id: id))
+        #expect(throws: LocalTransferJournalError.self) { try journal.markReportsHandled(id: id) }
+        #expect(journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == [report])
+    }
+
     @Test func fingerprintMatchRequiresVerifiedCompletedHistory() throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }

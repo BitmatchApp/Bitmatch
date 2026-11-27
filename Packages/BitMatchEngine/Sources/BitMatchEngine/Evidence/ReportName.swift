@@ -21,6 +21,13 @@ enum ReportName {
         withdrawnPrefix + recordID.uuidString + "-" + report + (collision > 0 ? "-\(collision)" : "")
     }
 
+    static func validSuffix<S: StringProtocol>(_ digits: S, minimum: Int) -> Bool {
+        guard !digits.isEmpty, digits.first != "0",
+              digits.utf8.allSatisfy({ (48...57).contains($0) }) else { return false }
+        if minimum == 2 && String(digits) == "1" { return false }
+        return true
+    }
+
     /// Returns the report filename without a withdrawal collision suffix.
     static func withdrawnReport(_ name: String) -> String? {
         guard name.hasPrefix(withdrawnPrefix) else { return nil }
@@ -51,7 +58,7 @@ enum ReportName {
         if rest.hasPrefix("-") {
             rest.removeFirst()
             let digits = rest.prefix { $0.isASCII && $0.isNumber }
-            guard !digits.isEmpty else { return nil }
+            guard validSuffix(digits, minimum: 2) else { return nil }
             rest.removeFirst(digits.count)
         }
         let extensions = ["json", "pdf", "csv"] + ChecksumAlgorithm.allCases.map { $0.rawValue.lowercased() + ".txt" }
@@ -59,7 +66,7 @@ enum ReportName {
             let expected = "." + ext
             guard rest.hasPrefix(expected) else { continue }
             let suffix = rest.dropFirst(expected.count)
-            guard suffix.isEmpty || (suffix.first == "-" && !suffix.dropFirst().isEmpty && suffix.dropFirst().allSatisfy { $0.isASCII && $0.isNumber }) else { continue }
+            guard suffix.isEmpty || (suffix.first == "-" && validSuffix(suffix.dropFirst(), minimum: 1)) else { continue }
             return String(report.dropLast(suffix.count))
         }
         return nil

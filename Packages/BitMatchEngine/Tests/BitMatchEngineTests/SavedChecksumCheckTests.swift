@@ -4,7 +4,7 @@ import Testing
 @testable import BitMatchEngine
 
 struct SavedChecksumCheckTests {
-    @Test func unrecordedAppleDoubleInReportsIsAnExtra() async throws {
+    @Test func unrecordedAppleDoubleInReportsIsIgnored() async throws {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let file = try writeFile("clip.mov", text: "recorded", under: root)
@@ -13,10 +13,32 @@ struct SavedChecksumCheckTests {
         _ = try writeFile("Reports/.unsettled-notes", text: "extra", under: root)
         _ = try writeFile("Reports/.bitmatch-staging-foreign/file.bin", text: "extra", under: root)
         let result = try await run(root)
-        #expect(result.newPaths.contains("Reports/._x.bin"))
+        #expect(!result.newPaths.contains("Reports/._x.bin"))
         #expect(result.newPaths.contains("Reports/.unsettled-notes"))
         #expect(result.newPaths.contains("Reports/.bitmatch-staging-foreign/file.bin"))
     }
+    @Test(arguments: ["Reports/._clip.mov", "ascmhl/._clip.mov"])
+    func recordedAppleDoubleInReservedTreeIsChecked(path: String) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile(path, text: "recorded", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
+        let result = try await run(root)
+        #expect(result.matchingPaths == [path])
+        #expect(result.missingPaths.isEmpty)
+    }
+
+    @Test func unprovenWithdrawnReportIsDisclosed() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "recorded", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
+        let path = "Reports/.unsettled-\(UUID().uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        _ = try writeFile(path, text: "foreign", under: root)
+        let result = try await run(root)
+        #expect(result.newPaths.contains(path))
+    }
+
     @Test(arguments: [false, true])
     func adjacentChecksumManifestAcceptsLeadingUTF8BOM(withHeader: Bool) async throws {
         let root = try makeRoot()

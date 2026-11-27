@@ -78,10 +78,11 @@ final class SavedChecksumRecordedMetadataTests: XCTestCase {
             try fm.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
             try metadata().write(to: file)
             let input = SavedChecksumCheck.ExpectedFile(relativePath: reserved, checksum: sha(metadata()), algorithm: .sha256, record: record)
-            let reservedDiscovery = SavedChecksumCheck.Discovery(root: root, expectedFiles: [reserved: input], records: [record])
+            let reservedDiscovery = SavedChecksumCheck.Discovery(root: root, expectedFiles: ["clip.bin": expected, reserved: input], records: [record])
             let reservedResult = try await checker.check(reservedDiscovery) { _ in }
-            XCTAssertFalse(reservedResult.isIntact)
-            XCTAssertEqual(reservedResult.missingPaths, [reserved])
+            XCTAssertTrue(reservedResult.isIntact)
+            XCTAssertEqual(Set(reservedResult.matchingPaths), ["clip.bin", reserved])
+            XCTAssertTrue(reservedResult.missingPaths.isEmpty)
         }
     }
 

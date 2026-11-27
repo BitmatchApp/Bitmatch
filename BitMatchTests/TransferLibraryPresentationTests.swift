@@ -20,6 +20,14 @@ struct TransferLibraryPresentationTests {
         }
     }
 
+    @Test func handledReportsKeepTheirPathsAndWarning() {
+        var record = PresentationTestSupport.record(state: .interrupted)
+        record.pendingWithdrawalPaths = ["/backup/Reports/report.pdf"]
+        let handled = TransferJournal.markingReportsHandled(record)
+        #expect(handled.summary.contains("/backup/Reports/report.pdf"))
+        #expect(handled.summary.contains("may still read safe"))
+    }
+
     @Test func authoritativeHandoffRequiresTheSavedSelectedFilePlan() throws {
         var record = PresentationTestSupport.record(state: .running)
         record.plannedFileCounts = nil

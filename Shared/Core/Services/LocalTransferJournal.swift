@@ -47,7 +47,7 @@ final class LocalTransferJournal: ObservableObject {
     private var persistencePending: Set<UUID> = []
     private var overrideRevisions: [UUID: UInt64] = [:]
     private var isRefreshingRecords = false
-    private var withdrawalRetriesInFlight: Set<UUID> = []
+    @Published private var withdrawalRetriesInFlight: Set<UUID> = []
     private var withdrawalRetriesRequested: Set<UUID> = []
     private var withdrawalViewLastAttempt: [UUID: Date] = [:]
     private var mountObserver: AnyCancellable?
@@ -504,6 +504,8 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     func markReportsHandled(id: UUID) throws {
+        guard !withdrawalRetriesInFlight.contains(id), let record = records.first(where: { $0.id == id }),
+              TransferJournal.canMarkReportsHandled(record) else { throw LocalTransferJournalError.invalidState }
         defer { refresh() }
         if let override = interruptedOverrides[id] {
             let handled = TransferJournal.markingReportsHandled(override)

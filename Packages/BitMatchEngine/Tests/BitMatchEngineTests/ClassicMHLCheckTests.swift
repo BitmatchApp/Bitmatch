@@ -110,6 +110,7 @@ struct ClassicMHLCheckTests {
         for ext in ["pdf", "json", "csv"] + ChecksumAlgorithm.allCases.map({ $0.rawValue.lowercased() + ".txt" }) {
             try Data().write(to: reports.appendingPathComponent("\(workingBase)-2.\(ext)-1"))
         }
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent("\(workingBase)-2.json-1"))
         try Data().write(to: reports.appendingPathComponent("\(workingBase)-2.json-x"))
         let result = try await run(fixture.media)
         #expect(result.isIntact)

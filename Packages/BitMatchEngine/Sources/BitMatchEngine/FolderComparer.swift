@@ -1,5 +1,6 @@
 // FolderComparer.swift - Compares two folders, file by file.
 import Foundation
+import Darwin
 
 /// Compares two folder trees with the checks a verification mode asks for
 /// (`CompareCheckPlan`). Runs off the main actor and stops at task
@@ -218,6 +219,7 @@ public struct FolderComparer: Sendable {
 /// establishes ownership of a staging directory.
 struct WorkingReportEntry {
     private var ownership: [URL: Bool] = [:]
+    private var withdrawnOwnership: [String: Bool] = [:]
     private let markerRead: (URL) throws -> Data
 
     init(markerRead: @escaping (URL) throws -> Data = { try Data(contentsOf: $0) }) {
@@ -232,8 +234,27 @@ struct WorkingReportEntry {
     mutating func isWorkingFile(path: String, root: URL) -> Bool {
         let parts = path.split(separator: "/", omittingEmptySubsequences: false).map(String.init)
         guard parts.count >= 2 else { return false }
-        if parts[parts.count - 2] == "Reports", ReportName.withdrawnReport(parts[parts.count - 1]) != nil {
-            return true
+        let name = parts[parts.count - 1]
+        if parts[parts.count - 2] == "Reports", ReportName.withdrawnReport(name) != nil {
+            let idText = String(name.dropFirst(".unsettled-".count).prefix(36))
+            guard let id = UUID(uuidString: idText) else { return false }
+            let folder = parts.dropLast().reduce(root) { $0.appendingPathComponent($1) }.standardizedFileURL
+            let key = folder.path + "/" + id.uuidString
+            if let cached = withdrawnOwnership[key] { return cached }
+            let prefix = ".unsettled-" + id.uuidString + "-"
+            let owned = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).contains { candidate in
+                guard candidate.hasPrefix(prefix),
+                      let report = ReportName.withdrawnReport(candidate), report.hasSuffix(".json") else { return false }
+                let url = folder.appendingPathComponent(candidate)
+                var info = stat()
+                guard lstat(url.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+                      let data = try? markerRead(url),
+                      let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      let raw = object["jobId"] as? String, UUID(uuidString: raw) == id else { return false }
+                return true
+            }
+            withdrawnOwnership[key] = owned
+            return owned
         }
         for index in 1..<(parts.count - 1) where parts[index - 1] == "Reports" {
             let prefix = ".bitmatch-staging-"
