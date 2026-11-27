@@ -106,11 +106,15 @@ struct ClassicMHLCheckTests {
         try Data(id.uuidString.utf8).write(to: foreign.appendingPathComponent(TransferJournal.stagingOwnerMarker))
         try Data().write(to: foreign.appendingPathComponent("extra"))
         try Data().write(to: reports.appendingPathComponent(".unsettled-notes"))
-        try Data().write(to: reports.appendingPathComponent(".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.pdf"))
+        let workingBase = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        for ext in ["pdf", "json", "csv"] + ChecksumAlgorithm.allCases.map({ $0.rawValue.lowercased() + ".txt" }) {
+            try Data().write(to: reports.appendingPathComponent("\(workingBase)-2.\(ext)-1"))
+        }
+        try Data().write(to: reports.appendingPathComponent("\(workingBase)-2.json-x"))
         let result = try await run(fixture.media)
         #expect(result.isIntact)
         #expect(Set(result.matchingPaths) == [recorded, recordedStaging])
-        #expect(Set(result.newPaths) == ["Reports/.unsettled-notes",
+        #expect(Set(result.newPaths) == ["Reports/.unsettled-notes", "Reports/\(workingBase)-2.json-x",
             "Reports/.bitmatch-staging-\(other.uuidString)/.bitmatch-owner",
             "Reports/.bitmatch-staging-\(other.uuidString)/extra"])
     }

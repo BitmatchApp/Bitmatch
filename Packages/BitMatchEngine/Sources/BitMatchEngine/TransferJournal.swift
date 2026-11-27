@@ -567,7 +567,26 @@ public final class TransferJournal: Sendable {
     }
 
     private static let interruptedSummary = "Interrupted. Reconnect the original folders and retry to check the copies."
-    private static let pendingNote = " Reports on an unavailable backup may still read safe until withdrawn."
+    public static let pendingReportExplanation = "Reports on an unavailable backup may still read safe until withdrawn. If this backup reports no volume identity, a missing file does not prove the report is gone. If the files were deleted, this entry will not clear by itself; restore this run's ownership JSON to allow automatic withdrawal, or choose Mark reports as handled after handling the reports yourself."
+    private static let pendingNote = " " + pendingReportExplanation
+
+    /// Acknowledges the operator's handling of unresolved reports without changing the transfer verdict.
+    public static func markingReportsHandled(_ record: LocalTransferRecord, date: Date = Date()) -> LocalTransferRecord {
+        guard !(record.pendingWithdrawalPaths ?? []).isEmpty else { return record }
+        var updated = record
+        updated.pendingWithdrawalPaths = nil
+        updated.withdrawalReason = nil
+        updated.summary = updated.summary.components(separatedBy: " Reports on an unavailable backup").first ?? updated.summary
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate, .withTime, .withTimeZone]
+        formatter.timeZone = TimeZone(secondsFromGMT: 0)
+        updated.summary += " reports marked handled by the user on \(formatter.string(from: date))."
+        return updated
+    }
+
+    public func markReportsHandled(id: UUID, date: Date = Date()) throws {
+        try update(id: id) { $0 = Self.markingReportsHandled($0, date: date) }
+    }
 
     private static func reportComparablePath(_ url: URL) -> String {
         PathContainment.comparablePath(url.standardizedFileURL.resolvingSymlinksInPath().path)
@@ -603,13 +622,14 @@ public final class TransferJournal: Sendable {
         return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
     }
 
-    static func ownsStagingDirectory(_ directory: URL, recordID: UUID) -> Bool {
+    static func ownsStagingDirectory(_ directory: URL, recordID: UUID,
+                                     markerRead: (URL) throws -> Data = { try Data(contentsOf: $0) }) -> Bool {
         var directoryInfo = stat()
         guard lstat(directory.path, &directoryInfo) == 0, (directoryInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else { return false }
         let marker = directory.appendingPathComponent(stagingOwnerMarker)
         var info = stat()
         guard lstat(marker.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
-              let data = try? Data(contentsOf: marker), data.count <= 64,
+              let data = try? markerRead(marker), data.count <= 64,
               let text = String(data: data, encoding: .utf8) else { return false }
         return text == recordID.uuidString
     }
@@ -699,6 +719,29 @@ public final class TransferJournal: Sendable {
         }
     }
 
+    private static func withdrawnJSONCandidates(for publicURL: URL, recordID: UUID) -> [URL] {
+        let parent = publicURL.deletingLastPathComponent()
+        let base = ReportName.withdrawnName(report: publicURL.lastPathComponent, recordID: recordID)
+        return ((try? FileManager.default.contentsOfDirectory(at: parent, includingPropertiesForKeys: nil)) ?? [])
+            .filter { url in
+                let name = url.lastPathComponent
+                if name == base { return true }
+                guard name.hasPrefix(base + "-") else { return false }
+                let suffix = name.dropFirst(base.count + 1)
+                return !suffix.isEmpty && suffix.allSatisfy { $0.isASCII && $0.isNumber }
+            }.sorted { $0.lastPathComponent < $1.lastPathComponent }
+    }
+
+    private static func isOwnedReportJSON(_ url: URL, record: LocalTransferRecord) -> Bool {
+        var info = stat()
+        guard lstat(url.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              let data = try? Data(contentsOf: url),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let rawID = object["jobId"] as? String, let id = UUID(uuidString: rawID) else { return false }
+        let accepted = record.reportPublicationID.map { Set([$0]) } ?? Set([record.id, record.operationID].compactMap { $0 })
+        return accepted.contains(id) && (record.runSourceURL == nil || ((object["source"] as? [String: Any])?["path"] as? String) == record.runSourceURL?.path)
+    }
+
     static func withdrawReports(record: LocalTransferRecord, paths: [String],
                                 volumeIdentityAt: (URL) -> String?) -> [String: ReportWithdrawalOutcome] {
         let stagingPaths = paths.filter { isStagingName(URL(fileURLWithPath: $0).lastPathComponent, recordID: record.id) }
@@ -728,8 +771,21 @@ public final class TransferJournal: Sendable {
                     if lstat(url.path, &info) != 0 {
                         guard errno == ENOENT else { throw FileOperationError.unsafeOperation("Cannot inspect staging directory") }
                         let index = roots.firstIndex { reportComparablePath($0.appendingPathComponent("Reports", isDirectory: true)) == reportComparablePath(url.deletingLastPathComponent()) }
-                        guard let index, record.destinations.indices.contains(index), record.destinations[index].volumeID != nil else {
+                        guard let index, record.destinations.indices.contains(index) else {
                             throw FileOperationError.unsafeOperation("destination identity unavailable; cannot confirm the report is gone")
+                        }
+                        if record.destinations[index].volumeID == nil {
+                            let parent = url.deletingLastPathComponent()
+                            let jsons = (record.pendingReportPaths ?? []).map { URL(fileURLWithPath: $0).standardizedFileURL }.filter {
+                                $0.pathExtension == "json" && reportComparablePath($0.deletingLastPathComponent()) == reportComparablePath(parent)
+                            }
+                            let hasProof = jsons.contains { json in
+                                var info = stat()
+                                if lstat(json.path, &info) == 0 { return isOwnedReportJSON(json, record: record) }
+                                guard errno == ENOENT else { return false }
+                                return withdrawnJSONCandidates(for: json, recordID: record.id).contains { isOwnedReportJSON($0, record: record) }
+                            }
+                            guard hasProof else { throw FileOperationError.unsafeOperation("destination identity unavailable; cannot confirm the report is gone") }
                         }
                         outcomes[path] = .absentOnVerifiedBackup
                     } else {
@@ -883,8 +939,10 @@ public final class TransferJournal: Sendable {
             // A staged JSON can prove a partially published stem only when the
             // public JSON is absent. A foreign public occupant always wins.
             let publicIsAbsent = resolved(jsonPaths[0]).map { absent($0) } ?? false
+            let hiddenCandidates: [URL] = publicIsAbsent ? resolved(jsonPaths[0]).map { withdrawnJSONCandidates(for: $0, recordID: record.id) } ?? [] : []
             let jsonCandidates = [jsonPaths[0]] + (publicIsAbsent ? stagedCandidates : [])
             var ownership: String?
+            var ownershipURL: URL?
             var ownershipFailure: String?
             for path in jsonCandidates {
                 guard let url = resolved(path), verifiedParent(url) else {
@@ -908,9 +966,17 @@ public final class TransferJournal: Sendable {
                     continue
                 }
                 ownership = path
+                ownershipURL = url
                 break
             }
-            guard let ownership, let json = resolved(ownership) else {
+            if ownership == nil {
+                for candidate in hiddenCandidates where verifiedParent(candidate) && isOwnedReportJSON(candidate, record: record) {
+                    ownership = jsonPaths[0]
+                    ownershipURL = candidate
+                    break
+                }
+            }
+            guard let ownership, let json = ownershipURL else {
                 for path in outstanding {
                     if destination.volumeID == nil, let url = resolved(path), absent(url) {
                         fail([path], "destination identity unavailable; cannot confirm the report is gone")
@@ -935,12 +1001,11 @@ public final class TransferJournal: Sendable {
                     catch { fail([path], "\(url.path): \(error.localizedDescription)"); failed = true }
                     continue
                 }
-                let base = ".unsettled-" + record.id.uuidString + "-" + url.lastPathComponent
                 var suffix = 0
-                var hidden = url.deletingLastPathComponent().appendingPathComponent(base)
+                var hidden = url.deletingLastPathComponent().appendingPathComponent(ReportName.withdrawnName(report: url.lastPathComponent, recordID: record.id))
                 while FileManager.default.fileExists(atPath: hidden.path) {
                     suffix += 1
-                    hidden = url.deletingLastPathComponent().appendingPathComponent(base + "-\(suffix)")
+                    hidden = url.deletingLastPathComponent().appendingPathComponent(ReportName.withdrawnName(report: url.lastPathComponent, recordID: record.id, collision: suffix))
                 }
                 do { try FileManager.default.moveItem(at: url, to: hidden); outcomes[path] = .withdrawn }
                 catch { fail([path], "\(url.path): \(error.localizedDescription)"); failed = true }
@@ -1032,10 +1097,11 @@ public final class TransferJournal: Sendable {
         let reasons = [otherPending ? current.withdrawalReason : nil,
                        !unresolved.isEmpty ? recovered.withdrawalReason : nil].compactMap { $0 }
         merged.withdrawalReason = remaining.isEmpty ? nil : (reasons.isEmpty ? "Withdrawal has not yet been checked" : reasons.joined(separator: "; "))
-        let base = snapshot.summary.components(separatedBy: pendingNote).first ?? snapshot.summary
-        let recoveredBase = recovered.summary.components(separatedBy: pendingNote).first ?? recovered.summary
+        let notePrefix = " Reports on an unavailable backup"
+        let base = snapshot.summary.components(separatedBy: notePrefix).first ?? snapshot.summary
+        let recoveredBase = recovered.summary.components(separatedBy: notePrefix).first ?? recovered.summary
         let outcome = recoveredBase.hasPrefix(base) ? String(recoveredBase.dropFirst(base.count)) : ""
-        merged.summary = (current.summary.components(separatedBy: pendingNote).first ?? current.summary) + outcome
+        merged.summary = (current.summary.components(separatedBy: notePrefix).first ?? current.summary) + outcome
         appendPendingNote(&merged)
         return merged
     }
@@ -1068,7 +1134,7 @@ public final class TransferJournal: Sendable {
         return true
     }
 
-    public func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
+    public func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil, publicationFinished: Bool = false) throws {
         let facts: [ReportFileFact] = paths.compactMap { path in
             guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
                   attrs[.type] as? FileAttributeType == .typeRegular else { return nil }
@@ -1079,6 +1145,7 @@ public final class TransferJournal: Sendable {
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             let staging = paths.first { Self.isStagingName(URL(fileURLWithPath: $0).lastPathComponent, recordID: record.id) }
             if let staging { record.reportStagingPath = staging }
+            if publicationFinished { record.reportStagingPath = nil }
             let publicPaths = paths.filter { $0 != staging }
             let allPaths = Array(Set((record.pendingReportPaths ?? []) + publicPaths)).sorted()
             record.pendingReportPaths = allPaths
@@ -1086,6 +1153,10 @@ public final class TransferJournal: Sendable {
             record.reportFileFacts = (record.reportFileFacts ?? []).filter { fact in !paths.contains(fact.path) } + facts
             record.relativeReportPaths = Self.relativePaths(allPaths, record: record)
         }
+    }
+
+    public func recordPublishedReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
+        try recordPendingReportPaths(id: id, paths: paths, publicationID: publicationID, publicationFinished: true)
     }
 
     deinit {
@@ -1888,6 +1959,7 @@ public final class TransferJournal: Sendable {
 
     private static func appendPendingNote(_ record: inout LocalTransferRecord) {
         guard let paths = record.pendingWithdrawalPaths, !paths.isEmpty else { return }
+        record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
         record.summary += pendingNote + " Pending: " + paths.joined(separator: ", ") + ". " + (record.withdrawalReason ?? "Withdrawal could not be confirmed.")
     }
 

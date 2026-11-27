@@ -13,6 +13,27 @@ import BitMatchEngine
 /// No production History, app container, user media or retention rule changes.
 @MainActor
 final class HistoryMemoryAppProbeTests: XCTestCase {
+    func testMarkReportsHandledKeepsSavedVerdict() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("handled-ios-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("card"), backup = root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = LocalTransferJournal(fileURL: root.appendingPathComponent("history.json"))
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable",
+                              pendingWithdrawalPaths: [backup.appendingPathComponent("Reports/report.json").path])
+        let before = try XCTUnwrap(journal.records.first { $0.id == id })
+        let verdict = TransferLibraryPresentation.safetyState(for: before, in: [before])
+        try journal.markReportsHandled(id: id)
+        let after = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertNil(after.pendingWithdrawalPaths)
+        XCTAssertTrue(after.summary.contains("reports marked handled by the user on"))
+        XCTAssertEqual(TransferLibraryPresentation.safetyState(for: after, in: [after]), verdict)
+    }
+
     func testForegroundNotificationRetriesPendingReportWithdrawal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("withdrawal-ios-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }

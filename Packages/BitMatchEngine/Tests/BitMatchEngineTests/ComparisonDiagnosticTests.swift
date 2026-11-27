@@ -123,7 +123,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
         for ext in ["json", "pdf", "csv", "sha-256.txt"] {
             XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "nested/Reports/\(base).\(ext)", root: root))
         }
-        for path in ["Reports/\(base).json.bak", "Reports/\(base).txt", "Reports/\(base)-2.json",
+        for path in ["Reports/\(base).json.bak", "Reports/\(base).txt", "Reports/\(base)-x.json",
                      "Reports/.unsettled-not-a-uuid-BitMatch_Report_2026-11-27T12-00-00Z.json",
                      "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_2026-99-27T12-00-00Z.json",
                      "Reports/nested/\(base).json", "reports/\(base).json"] {
@@ -135,7 +135,89 @@ final class ComparisonDiagnosticTests: XCTestCase {
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/file", root: root))
         try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
         XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/nested/file", root: root))
-        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)-1/file", root: root))
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)-x/file", root: root))
+    }
+
+    func testWithdrawalGrammarAndSuffixedStagingKeepNearMissesVisible() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        let reports = right.appendingPathComponent("Reports")
+        try fm.createDirectory(at: left, withIntermediateDirectories: true)
+        try fm.createDirectory(at: reports, withIntermediateDirectories: true)
+        let id = UUID(uuidString: "ABCDEF01-2345-6789-ABCD-EF0123456789")!
+        let otherID = UUID(uuidString: "FEDCBA98-7654-3210-FEDC-BA9876543210")!
+        let base = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        let extensions = ["json", "pdf", "csv"] + ChecksumAlgorithm.allCases.map { $0.rawValue.lowercased() + ".txt" }
+        for ext in extensions {
+            for suffix in ["", "-2"] {
+                for withdrawalSuffix in ["", "-1"] {
+                    try Data().write(to: reports.appendingPathComponent("\(base)\(suffix).\(ext)\(withdrawalSuffix)"))
+                }
+            }
+        }
+        let nearMisses = ["\(base)-x.json", "\(base).json-x", "\(base).sha-256.txt.bak",
+                          ".unsettled-\(otherID.uuidString.lowercased())-BitMatch_Report_2026-11-27T12-00-00Z.json"]
+        for name in nearMisses { try Data().write(to: reports.appendingPathComponent(name)) }
+        let owned = reports.appendingPathComponent(".bitmatch-staging-\(id.uuidString)-2")
+        try fm.createDirectory(at: owned, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: owned.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        try Data().write(to: owned.appendingPathComponent("partial"))
+        let invalidNames = [".bitmatch-staging-\(id.uuidString)-x", ".bitmatch-staging-\(otherID.uuidString.lowercased())-2"]
+        for name in invalidNames {
+            let dir = reports.appendingPathComponent(name)
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+            let markerID = name.contains(otherID.uuidString.lowercased()) ? otherID : id
+            try Data(markerID.uuidString.utf8).write(to: dir.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+            try Data().write(to: dir.appendingPathComponent("partial"))
+        }
+        let result = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        let expected = nearMisses.map { "Reports/" + $0 } + invalidNames.flatMap {
+            ["Reports/\($0)/.bitmatch-owner", "Reports/\($0)/partial"]
+        }
+        XCTAssertEqual(Set(result.onlyInRightPaths), Set(expected))
+    }
+
+    func testWriterAndJournalNamesShareWorkingReportGrammar() throws {
+        let id = UUID()
+        let date = try XCTUnwrap(ISO8601DateFormatter().date(from: "2026-11-27T12:00:00Z"))
+        let extensions = ["json", "pdf", "csv"] + ChecksumAlgorithm.allCases.map { $0.rawValue.lowercased() + ".txt" }
+        for ext in extensions {
+            let original = EvidenceWriter.reportFileName(finished: date, pathExtension: ext)
+            let base = EvidenceWriter.reportFileName(finished: date, pathExtension: "pdf")
+                .dropLast(".pdf".count)
+            for collision in [1, 2] {
+                let report = ReportName.stem(base: String(base), collision: collision) + "." + ext
+                if collision == 1 { XCTAssertEqual(report, original) }
+                for withdrawal in [0, 1] {
+                    let hidden = ReportName.withdrawnName(report: report, recordID: id, collision: withdrawal)
+                    XCTAssertEqual(ReportName.withdrawnReport(hidden), report)
+                }
+            }
+        }
+    }
+
+    func testCompareReadsEachStagingMarkerOncePerComparison() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        try fm.createDirectory(at: left, withIntermediateDirectories: true)
+        let id = UUID()
+        let staging = right.appendingPathComponent("Reports/.bitmatch-staging-\(id.uuidString)-2")
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        for index in 0..<50 { try Data().write(to: staging.appendingPathComponent("file\(index)")) }
+        let reads = CountingMarkerReads()
+        let comparer = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                                      stagingMarkerRead: { try reads.read($0) })
+        for expectedCount in 1...2 {
+            let result = try await comparer.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+            XCTAssertTrue(result.onlyInRightPaths.isEmpty)
+            XCTAssertEqual(reads.count, expectedCount)
+        }
     }
 
     func testReadFailureRetainsPhaseAndDoesNotLogSuccessfulCompletion() async throws {
@@ -182,4 +264,14 @@ private final class FailingListing: FakeFileAccess, @unchecked Sendable {
 }
 private final class CancelledListing: FakeFileAccess, @unchecked Sendable {
     override func getFileList(from folderURL: URL) async throws -> [URL] { throw CancellationError() }
+}
+
+private final class CountingMarkerReads: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+    var count: Int { lock.withLock { value } }
+    func read(_ url: URL) throws -> Data {
+        lock.withLock { value += 1 }
+        return try Data(contentsOf: url)
+    }
 }

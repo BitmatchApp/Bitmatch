@@ -360,10 +360,7 @@ public enum EvidenceWriter: Sendable {
     /// `BitMatch_Report_<finish time>.<ext>`. The PDF, CSV, JSON and checksum
     /// files share this name; `ReportScanner` looks for the JSON one.
     public static func reportFileName(finished: Date, pathExtension: String) -> String {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = .withInternetDateTime
-        let dateString = formatter.string(from: finished).replacingOccurrences(of: ":", with: "-")
-        return "BitMatch_Report_\(dateString).\(pathExtension)"
+        ReportName.fileName(finished: finished, pathExtension: pathExtension)
     }
 
     public static func normalizedNotes(_ notes: String) -> String? {
@@ -464,6 +461,8 @@ public enum EvidenceWriter: Sendable {
             : []
         func withdrawnNameExists(_ filename: String) -> Bool {
             existingNames.contains { name in
+                if ReportName.withdrawnReport(name) == filename { return true }
+                // Preserve collision protection for older or noncanonical names.
                 guard name.hasPrefix(".unsettled-") else { return false }
                 let remainder = String(name.dropFirst(".unsettled-".count))
                 if remainder == filename { return true } // Names written by older versions.
@@ -477,7 +476,7 @@ public enum EvidenceWriter: Sendable {
             ?? saveDirectory.appendingPathComponent(base)
         if replacing == nil {
             while true {
-                stem = saveDirectory.appendingPathComponent(base + (suffix == 1 ? "" : "-\(suffix)"))
+                stem = saveDirectory.appendingPathComponent(ReportName.stem(base: base, collision: suffix))
                 let extensions = ["pdf", "csv", "json", checksumExtension]
                 if extensions.allSatisfy({ ext in
                     !FileManager.default.fileExists(atPath: stem.appendingPathExtension(ext).path)

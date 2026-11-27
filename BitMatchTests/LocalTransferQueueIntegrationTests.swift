@@ -18,6 +18,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         weak var activeCoordinator: SharedAppCoordinator?
         var freshPaths: [String] = []
         var freshWasSafe: Bool?
+        var stagingAfterPublication: String?
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
             transferJournal: journal, defaults: f.defaults,
@@ -27,6 +28,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             },
             afterFreshSettlementReportPublished: { files in
                 freshPaths = files.map(\.path)
+                stagingAfterPublication = journal.storedRecord(id: id)?.reportStagingPath
                 if let json = files.first(where: { $0.pathExtension == "json" }),
                    let data = try? Data(contentsOf: json),
                    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
@@ -41,6 +43,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(ended)
         XCTAssertTrue(freshPaths.contains { $0.hasSuffix(".json") })
+        XCTAssertNil(stagingAfterPublication)
         XCTAssertEqual(freshWasSafe, true)
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertTrue(Set(freshPaths).isSubset(of: Set(record.pendingReportPaths ?? [])))
@@ -91,6 +94,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
             transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
+                XCTAssertNil(journal.storedRecord(id: id)?.reportStagingPath)
                 let path = try XCTUnwrap(journal.records.first { $0.id == id }?.pendingReportPaths?.first { $0.hasSuffix(".json") })
                 let url = URL(fileURLWithPath: path)
                 try Data("foreign file".utf8).write(to: url, options: .atomic)

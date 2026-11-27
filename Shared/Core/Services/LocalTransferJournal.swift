@@ -498,6 +498,26 @@ final class LocalTransferJournal: ObservableObject {
         return { paths in try store.recordPendingReportPaths(id: id, paths: paths, publicationID: id) }
     }
 
+    func publishedReportPathRecorder(id: UUID) -> @Sendable ([String]) throws -> Void {
+        let store = self.store
+        return { paths in try store.recordPublishedReportPaths(id: id, paths: paths, publicationID: id) }
+    }
+
+    func markReportsHandled(id: UUID) throws {
+        defer { refresh() }
+        if let override = interruptedOverrides[id] {
+            let handled = TransferJournal.markingReportsHandled(override)
+            guard try store.persistInterruptedOverride(handled, expectedRevision: overrideRevisions[id] ?? override.revision ?? 0) else {
+                throw LocalTransferJournalError.invalidState
+            }
+            interruptedOverrides.removeValue(forKey: id)
+            overrideRevisions.removeValue(forKey: id)
+            persistencePending.remove(id)
+        } else {
+            try store.markReportsHandled(id: id)
+        }
+    }
+
     func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
         defer { refresh() }
         try beforeRecordReportPaths?(id)

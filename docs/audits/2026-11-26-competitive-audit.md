@@ -261,3 +261,5 @@ BitMatch: `AGENTS.md`, `ARCHITECTURE.md`, `docs/THESIS.md`, `docs/QUEUE_RECOVERY
 - **Follow-up:** Hardening the fingerprint to count a non-Finder `.DS_Store` needs content reads during fingerprinting. The prior-backup hint does not grant safe-to-erase; that verdict requires a fresh run.
 
 - Report publication limit (0.2.15): reports are staged inside the Reports folder and published by per-file rename after every file is written, and a failed final History write re-exports them unsafe. A hard process termination between the per-file renames can still leave a published report that reflects the export moment while History, on recovery, marks the run interrupted. History is the authority; closing the window needs a single directory swap, which the shared Reports folder does not allow today. Follow-up.
+
+- Follow-up: Check does not disclose unrecorded extras under Reports/ascmhl when using report or ASC evidence.

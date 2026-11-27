@@ -4,6 +4,19 @@ import Testing
 @testable import BitMatchEngine
 
 struct SavedChecksumCheckTests {
+    @Test func unrecordedAppleDoubleInReportsIsAnExtra() async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile("clip.mov", text: "recorded", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
+        _ = try writeFile("Reports/._x.bin", text: "extra", under: root)
+        _ = try writeFile("Reports/.unsettled-notes", text: "extra", under: root)
+        _ = try writeFile("Reports/.bitmatch-staging-foreign/file.bin", text: "extra", under: root)
+        let result = try await run(root)
+        #expect(result.newPaths.contains("Reports/._x.bin"))
+        #expect(result.newPaths.contains("Reports/.unsettled-notes"))
+        #expect(result.newPaths.contains("Reports/.bitmatch-staging-foreign/file.bin"))
+    }
     @Test(arguments: [false, true])
     func adjacentChecksumManifestAcceptsLeadingUTF8BOM(withHeader: Bool) async throws {
         let root = try makeRoot()
@@ -141,7 +154,7 @@ struct SavedChecksumCheckTests {
         let root = try makeRoot()
         defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID()
-        let recorded = "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z.json"
+        let recorded = "Reports/.unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z-2.json-1"
         let file = try writeFile(recorded, text: "recorded", under: root)
         _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
         let staging = "Reports/.bitmatch-staging-\(id.uuidString)"
@@ -156,6 +169,36 @@ struct SavedChecksumCheckTests {
         try Data("changed".utf8).write(to: file)
         let changed = try await run(root)
         #expect(changed.changedPaths == [recorded])
+        #expect(changed.missingPaths.isEmpty)
+    }
+
+    @Test(arguments: ["Reports/clip.mov", "ascmhl/clip.mov"])
+    func recordedOrdinaryReservedTreeFileIsChecked(path: String) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile(path, text: "recorded", under: root)
+        _ = try writeReport(root: root, target: file, checksum: sha256("recorded"), date: date(2026, 2, 1))
+        let result = try await run(root)
+        #expect(result.matchingPaths == [path])
+        #expect(result.missingPaths.isEmpty)
+        try Data("changed".utf8).write(to: file)
+        let changed = try await run(root)
+        #expect(changed.changedPaths == [path])
+        #expect(changed.missingPaths.isEmpty)
+    }
+
+    @Test(arguments: ["Reports/clip.mov", "ascmhl/clip.mov"])
+    func ascRecordedOrdinaryReservedTreeFileIsChecked(path: String) async throws {
+        let root = try makeRoot()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let file = try writeFile(path, text: "recorded", under: root)
+        try writeMHL(root: root, path: path, sha256: sha256("recorded"))
+        let result = try await run(root)
+        #expect(result.matchingPaths == [path])
+        #expect(result.missingPaths.isEmpty)
+        try Data("changed".utf8).write(to: file)
+        let changed = try await run(root)
+        #expect(changed.changedPaths == [path])
         #expect(changed.missingPaths.isEmpty)
     }
 

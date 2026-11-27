@@ -4,6 +4,26 @@ import Testing
 @testable import BitMatchEngine
 
 struct EvidenceWriterCommitOrderTests {
+    @Test func successfulExportClearsRecordedStagingPath() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+            safeToErase: false, recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0, publicationID: id) })
+        try journal.recordPublishedReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        let record = try #require(journal.records.first)
+        #expect(record.reportStagingPath == nil)
+        #expect(Set(record.pendingReportPaths ?? []).isSuperset(of: Set(files.map(\.path))))
+    }
     @Test func failedRestoreTracksStagingCopiesForWithdrawal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")

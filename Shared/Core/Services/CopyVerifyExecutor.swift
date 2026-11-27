@@ -25,6 +25,7 @@ struct CopyVerifyConfig {
     let operationId: UUID
     let reportJobID: UUID?
     let recordReportPaths: (@Sendable ([String]) throws -> Void)?
+    let recordPublishedReportPaths: (@Sendable ([String]) throws -> Void)?
     let initialPublicationRecord: LocalTransferRecord?
     let sourceURL: URL
     let destinationURLs: [URL]
@@ -70,11 +71,13 @@ struct CopyVerifyConfig {
         deferReportSafetyUntilHistory: Bool = false,
         reportJobID: UUID? = nil,
         recordReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
+        recordPublishedReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
         initialPublicationRecord: LocalTransferRecord? = nil
     ) {
         self.operationId = operationId
         self.reportJobID = reportJobID
         self.recordReportPaths = recordReportPaths
+        self.recordPublishedReportPaths = recordPublishedReportPaths
         self.initialPublicationRecord = initialPublicationRecord
         self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
         self.deferReportSafetyUntilHistory = deferReportSafetyUntilHistory
@@ -937,6 +940,7 @@ final class CopyVerifyExecutor {
                 lastReportFiles = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
             }
             exportCompleted = true
+            try config.recordPublishedReportPaths?(lastReportFiles.map(\.path))
             // A successful export removed its owned staging directory itself.
             let temporaryPaths = Set(intendedPaths.withLock { $0 }).subtracting(lastReportFiles.map(\.path))
             unsettledExportPaths.subtract(temporaryPaths)

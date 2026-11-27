@@ -9,6 +9,17 @@ import BitMatchEngine
 struct TransferLibraryPresentationTests {
     private let allStates: [LocalTransferState] = [.queued, .running, .interrupted, .completed, .issues, .failed, .cancelled]
 
+    @Test func markingReportsHandledDoesNotChangeSafetyVerdict() {
+        for state in [LocalTransferState.interrupted, .completed, .issues, .failed, .cancelled] {
+            var record = PresentationTestSupport.record(state: state)
+            record.pendingWithdrawalPaths = ["/backup/Reports/report.json"]
+            let before = TransferLibraryPresentation.safetyState(for: record, in: [record])
+            let after = TransferJournal.markingReportsHandled(record, date: Date(timeIntervalSince1970: 0))
+            #expect(TransferLibraryPresentation.safetyState(for: after, in: [after]) == before)
+            #expect(after.pendingWithdrawalPaths == nil)
+        }
+    }
+
     @Test func authoritativeHandoffRequiresTheSavedSelectedFilePlan() throws {
         var record = PresentationTestSupport.record(state: .running)
         record.plannedFileCounts = nil

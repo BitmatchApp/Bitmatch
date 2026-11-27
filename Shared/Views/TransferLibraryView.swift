@@ -301,6 +301,17 @@ struct TransferLibraryView: View {
                 .font(.caption.weight(.semibold)).foregroundStyle(safetyState.tint.color)
             Text("Saved attempt message: \(record.summary)")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if !(record.pendingWithdrawalPaths ?? []).isEmpty {
+                if !record.summary.contains(TransferJournal.pendingReportExplanation) {
+                    Text(TransferJournal.pendingReportExplanation)
+                        .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+                Button("Mark reports as handled") {
+                    do { try journal.markReportsHandled(id: record.id) }
+                    catch { errorMessage = error.localizedDescription }
+                }
+                .modifier(TouchTarget())
+            }
             Text(scope.selectedModeLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             Text(scope.recordedResultsLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let exclusion = scope.exclusionLine {

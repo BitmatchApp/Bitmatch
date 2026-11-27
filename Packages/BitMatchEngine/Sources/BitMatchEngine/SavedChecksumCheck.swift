@@ -255,17 +255,23 @@ public struct SavedChecksumCheck: Sendable {
         let resolver = RelativePathResolver(base: root)
         var actual: [String: URL] = [:]
         actual.reserveCapacity(files.count)
+        var workingEntries = WorkingReportEntry()
         for file in files {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()
             let path = try resolver.resolve(file)
             let recorded = discovery.expectedFiles[path] != nil
-            let working = WorkingReportEntry.isWorkingFile(path: path, root: root)
-            // Reserved evidence stays outside the checked set, except for a
-            // recorded working entry. Unrecorded Finder state remains noise.
-            if (discovery.classicEvidence.isEmpty && Self.isReservedEvidence(path) && !(recorded && working))
+            let working = !recorded && workingEntries.isWorkingFile(path: path, root: root)
+            let reserved = Self.isReservedEvidence(path)
+            let appleDouble = (path as NSString).lastPathComponent.hasPrefix("._")
+            let resemblesWorkingEntry = path.split(separator: "/").contains {
+                $0.hasPrefix(".unsettled-") || $0.hasPrefix(".bitmatch-staging-")
+            }
+            // Recorded Finder sidecars in reserved evidence trees are not media.
+            // An unrecorded sidecar there is nevertheless an extra worth reporting.
+            if (discovery.classicEvidence.isEmpty && reserved && (recorded ? appleDouble : (!appleDouble && !resemblesWorkingEntry)))
                 || classicManifestURLs.contains(file.standardizedFileURL)
-                || (!recorded && (FolderComparer.isFinderMetadata(path) || working)) { continue }
+                || (!recorded && ((FolderComparer.isFinderMetadata(path) && !(reserved && appleDouble)) || working)) { continue }
             #if canImport(Darwin)
             if discovery.expectedFiles[path] == nil,
                TransferStatusMarker.validatedStatus(at: file, relativePath: path) != nil { continue }
