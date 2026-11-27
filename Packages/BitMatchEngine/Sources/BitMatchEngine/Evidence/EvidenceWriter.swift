@@ -571,7 +571,9 @@ public enum EvidenceWriter: Sendable {
         
         // Add summary at the end
         csvContent += "\n# Summary\n"
-        csvContent += csvRow(["Total Files", String(results.count)])
+        // The JSON's totalFiles: skipped Finder view files are listed above
+        // but were never copied, so they are not counted.
+        csvContent += csvRow(["Total Files", String(results.filter { !$0.isSkippedFinderMetadata }.count)])
         if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
             let scope = TransferSelectionEvidence(results: results)
             csvContent += csvRow(["Selection Policy", scope.policy])
@@ -762,7 +764,9 @@ public enum EvidenceWriter: Sendable {
         
         // Result rows are per source file per backup. The source card totals
         // count each original once; performance/statistics retain all copies.
-        let sourceRows = Dictionary(grouping: results, by: \.path)
+        // A skipped Finder view file was never copied, so it is not counted
+        // (the scope's recorded selected files leave it out the same way).
+        let sourceRows = Dictionary(grouping: results.filter { !$0.isSkippedFinderMetadata }, by: \.path)
         let sourceBytes = sourceRows.values.reduce(Int64(0)) { total, rows in
             total + max(0, rows.map(\.size).max() ?? 0)
         }

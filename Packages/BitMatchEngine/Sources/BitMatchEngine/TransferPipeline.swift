@@ -1550,6 +1550,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // A skipped path that vanished, or that Finder rewrote as another
         // Bud1 file, is not a change. One that no longer passes the
         // classifier is ordinary data this run never copied.
+        var skippedNoLongerFinderFiles: [String] = []
         if !skipped.isEmpty {
             let currentByPath = Dictionary(finalSourceEnumeration.files.map { ($0.relativePath, $0) },
                                            uniquingKeysWith: { first, _ in first })
@@ -1563,6 +1564,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         .map(\.relativePath)
                 }
             }
+            skippedNoLongerFinderFiles = noLongerFinderFiles
             if !noLongerFinderFiles.isEmpty {
                 let error = completionGateError(
                     "The card changed during the copy: \(noLongerFinderFiles.count) skipped Finder view \(noLongerFinderFiles.count == 1 ? "file is" : "files are") no longer a Finder view file (\(noLongerFinderFiles.joined(separator: ", "))). Run it again.",
@@ -1733,8 +1735,10 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // readback and exact selected-file coverage have passed. A card that
         // held entries BitMatch does not copy keeps the incomplete marker: the
         // regular files may all be verified, but the card is not all there.
+        // So does a skipped Finder view file that turned into ordinary data
+        // during the run: it was never copied.
         for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
-            guard unsupportedEntries.isEmpty,
+            guard unsupportedEntries.isEmpty, skippedNoLongerFinderFiles.isEmpty,
                   let pinned = pinnedDestinations[destIndex],
                   pinned.usesDirectFinalPublication,
                   await ledger.hasSuccessfulCoverage(

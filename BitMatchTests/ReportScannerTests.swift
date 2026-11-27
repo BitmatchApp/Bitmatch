@@ -250,6 +250,47 @@ struct ReportScannerTests {
         #expect(changed.verified == false)
     }
 
+    /// A clean run that skipped a proven Finder view file: the totals count
+    /// the copied files only, so the Master Report reads it as verified.
+    @Test func aCleanRunWithASkippedFinderFileReadsAsVerified() async throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let backup = root.appendingPathComponent("Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let rows = [
+            ResultRow(path: root.appendingPathComponent("card/clip.mov").path, status: ResultOutcome.verified.statusText,
+                      size: 10, checksum: "abc", destination: "Backup",
+                      destinationPath: backup.appendingPathComponent("clip.mov").path),
+            ResultRow(path: root.appendingPathComponent("card/.DS_Store").path,
+                      status: ResultOutcome.skippedFinderMetadata.statusText, size: 6148, checksum: nil,
+                      destination: "Backup", destinationPath: backup.appendingPathComponent(".DS_Store").path),
+        ]
+        let fileCount = ReportExporter.countedFileCount(rows)
+        #expect(fileCount == 1)
+        let finished = Date()
+        try await ReportExporter.export(mode: .copyAndVerify, jobID: UUID(), started: finished.addingTimeInterval(-1),
+            finished: finished, sourceURL: root.appendingPathComponent("card"), destinationURLs: [backup], results: rows,
+            fileCount: fileCount, matchCount: 1,
+            prefs: ReportPrefs(verificationMode: .standard, makeReport: true),
+            workers: 1, totalBytesProcessed: 10, safetyState: .safeToErase)
+        let files = try FileManager.default.contentsOfDirectory(at: backup.appendingPathComponent("Reports"),
+                                                                includingPropertiesForKeys: nil)
+        let json = try #require(files.first { $0.pathExtension == "json" })
+        let object = try #require(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        let statistics = try #require(object["statistics"] as? [String: Any])
+        #expect(statistics["totalFiles"] as? Int == 1)
+        #expect(statistics["matches"] as? Int == 1)
+        #expect(statistics["successRate"] as? Double == 100)
+        #expect(statistics["skippedFinderViewFiles"] as? Int == 1)
+        #expect((object["source"] as? [String: Any])?["fileCount"] as? Int == 1)
+        let csv = try String(contentsOf: try #require(files.first { $0.pathExtension == "csv" }), encoding: .utf8)
+        #expect(csv.contains("Total Files,1"), "\(csv)")
+        let cards = await ReportScanner.scan(at: root)
+        #expect(cards.count == 1)
+        #expect(cards.first?.verified == true)
+        #expect(cards.first?.fileCount == 1)
+    }
+
     /// A Quick copy checks sizes only; its report must not read as verified.
     /// Plant: in `ReportScanner.transferCard(from:reportURL:)`, change the
     /// `let verified = ...` line to `let verified = report.statistics.issues == 0`.

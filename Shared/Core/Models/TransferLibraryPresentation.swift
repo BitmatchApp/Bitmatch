@@ -278,6 +278,7 @@ enum TransferLibraryPresentation {
                 // `quickOnlyUnverified` is the verdict's copied-not-verified
                 // answer, which already required any skips to be proven.
                 if record.results.contains(where: { ResultOutcome(statusText: $0.status) == .copiedUnverified }),
+                   TransferJournal.finderMetadataSkipsProven(record),
                    hasCompleteEvidence(record, where: {
                     ResultOutcome(statusText: $0.status) == .copiedUnverified || $0.isSkippedFinderMetadata
                 }) {
@@ -289,8 +290,11 @@ enum TransferLibraryPresentation {
             }
             // The journal sets `.completed` only when the record's skipped
             // Finder view files are proven, so a skipped row stands in for
-            // a copy here; an unproven skip leaves the record `.issues`.
+            // a copy here; an unproven skip leaves the record `.issues`. The
+            // same rule is asked again so a hand-edited or older `.completed`
+            // record cannot vouch for its own skipped rows.
             if record.state == .completed, record.results.contains(where: \.isVerifiedStatus),
+               TransferJournal.finderMetadataSkipsProven(record),
                hasCompleteEvidence(record, where: { $0.isVerifiedStatus || $0.isSkippedFinderMetadata }) {
                 return .safeToErase
             }

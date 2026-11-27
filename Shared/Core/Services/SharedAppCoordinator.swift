@@ -119,6 +119,7 @@ enum SavedTransferPlanGate {
         _ record: LocalTransferRecord?,
         destinationCount: Int,
         authoritativeRows: [ResultRow],
+        skippedAtStartSourcePaths: Set<String> = [],
         priorWriteError: Error?
     ) throws {
         guard priorWriteError == nil,
@@ -128,7 +129,12 @@ enum SavedTransferPlanGate {
               plan.count == destinationCount else {
             throw TransferPlanPersistenceError.missingSavedPlan
         }
-        let selectedRows = authoritativeRows.filter(\.isInSelectedPlan)
+        // A Finder view file skipped at Start was never planned. If the final
+        // gate failed it (it stopped being one mid-run), its failed row still
+        // is not a planned file; the verdict reports the changed card.
+        let selectedRows = authoritativeRows.filter {
+            $0.isInSelectedPlan && !(!$0.isSuccessStatus && skippedAtStartSourcePaths.contains($0.path))
+        }
         let groups = DestinationResultSummary.make(
             rows: selectedRows, destinations: record.destinations.map(\.url)
         )
@@ -2702,7 +2708,7 @@ class SharedAppCoordinator: ObservableObject {
                 self.operationState = state
                 self.updateProjectLifecycle(for: state, projectIdentity: projectIdentity)
             },
-            onAuthoritativeResults: { [weak self] allResults in
+            onAuthoritativeResultsAndSkips: { [weak self] allResults, skippedAtStart in
                 guard let self else {
                     SharedLogger.transferEvent(.authoritativeRefused, run: startID, code: TransferInterruption.ownerReleased.rawValue)
                     throw TransferInterruption.ownerReleased
@@ -2723,6 +2729,7 @@ class SharedAppCoordinator: ObservableObject {
                         self.transferJournal.records.first(where: { $0.id == recordID }),
                         destinationCount: context.destinationURLs.count,
                         authoritativeRows: allResults,
+                        skippedAtStartSourcePaths: skippedAtStart,
                         priorWriteError: runResults.planSaveError
                     )
                 } catch {

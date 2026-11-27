@@ -1058,13 +1058,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         try fm.createDirectory(at: source, withIntermediateDirectories: true)
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data("clip contents".utf8).write(to: source.appendingPathComponent("A001.mov"))
-        // A buddy-allocator header only: view settings, nothing else.
-        var bud1: [UInt8] = [0, 0, 0, 1] + Array("Bud1".utf8)
-        for value: UInt32 in [0x800, 0x800, 0x800] {
-            for shift: UInt32 in [24, 16, 8, 0] { bud1.append(UInt8(truncatingIfNeeded: value >> shift)) }
-        }
-        bud1 += [UInt8](repeating: 0, count: 6148 - bud1.count)
-        try Data(bud1).write(to: source.appendingPathComponent(".DS_Store"))
+        try Self.finderViewFile().write(to: source.appendingPathComponent(".DS_Store"))
 
         var proven: [Set<String>] = []
         let real = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source, destinationURLs: [destination],
@@ -1084,6 +1078,20 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         let csv = try String(contentsOf: try XCTUnwrap(reports.first { $0.pathExtension == "csv" }), encoding: .utf8)
         XCTAssertTrue(csv.contains("Finder View Files Setting,Finder view files (.DS_Store): skipped when proven"), csv)
         XCTAssertTrue(csv.contains("1 Finder view file (.DS_Store) skipped: not card content; Finder recreates them"), csv)
+        // The totals count the copied file only, so the Master Report reads
+        // this safe run as verified.
+        XCTAssertTrue(csv.contains("Total Files,1"), csv)
+        let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
+        XCTAssertEqual(statistics["totalFiles"] as? Int, 1)
+        XCTAssertEqual(statistics["matches"] as? Int, 1)
+        XCTAssertEqual(statistics["successRate"] as? Double, 100)
+        XCTAssertEqual((object["source"] as? [String: Any])?["fileCount"] as? Int, 1)
+        XCTAssertEqual(object["safeToErase"] as? Bool, true)
+        let cards = await ReportScanner.scan(at: destination)
+        XCTAssertEqual(cards.count, 1)
+        XCTAssertEqual(cards.first?.verified, true)
 
         // The same skipped row with no engine proof: nothing is handed over.
         let fixture = try ascFixture()
@@ -1101,6 +1109,68 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         _ = try await fake.execute()
         XCTAssertEqual(unproven, [[]])
         XCTAssertEqual(fake.terminalInfo?.success, false)
+    }
+
+    /// A skipped Finder view file rewritten into ordinary bytes mid-run fails
+    /// at the final gate. Its failed row is not a planned file, so the
+    /// saved-plan gate lets the verdict say the card changed instead of
+    /// stopping with a plan-save alert.
+    func testAMidRunRewriteOfASkippedFinderFileReachesTheChangedCardVerdict() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("executor-finder-rewrite-\(UUID())")
+        addTeardownBlock { try? fm.removeItem(at: root) }
+        let source = root.appendingPathComponent("card")
+        let destination = root.appendingPathComponent("backup")
+        try fm.createDirectory(at: source, withIntermediateDirectories: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("first clip".utf8).write(to: source.appendingPathComponent("A001.mov"))
+        try Data("second clip".utf8).write(to: source.appendingPathComponent("A002.mov"))
+        let dsStore = source.appendingPathComponent(".DS_Store")
+        try Self.finderViewFile().write(to: dsStore)
+
+        let rewritten = OnceFlag()
+        let hooks = DestinationWriter.FanOutHooks(beforePublish: { _, _ in
+            guard rewritten.setOnce() else { return }
+            try? Data((0..<6148).map { UInt8(truncatingIfNeeded: $0 &* 31) }).write(to: dsStore)
+        })
+        var journalRecord = LocalTransferRecord(
+            id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: source),
+            destinations: [try LocalTransferResource(url: destination)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), generateASCMHL: false, projectID: nil)
+        journalRecord.state = .running
+        journalRecord.plannedFileCounts = [2]
+        let record = journalRecord
+        let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source, destinationURLs: [destination],
+            realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared,
+                                                 fanOutHooks: hooks),
+            estimatedFiles: 2, estimatedBytes: 21)
+        harness.onAuthoritativeResults = { [unowned harness] in
+            try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
+                authoritativeRows: harness.completedRows, skippedAtStartSourcePaths: harness.completedSkippedAtStart,
+                priorWriteError: nil)
+        }
+        let operation = try await harness.execute()
+        XCTAssertTrue(rewritten.isSet)
+        let rows = try XCTUnwrap(operation?.results.filter { $0.sourceURL.lastPathComponent == ".DS_Store" })
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.first?.failureReason, ResultFailureReason.sourceUnstable.rawValue)
+        XCTAssertEqual(harness.completedSkippedAtStart.map { URL(fileURLWithPath: $0).lastPathComponent }, [".DS_Store"])
+        XCTAssertEqual(harness.terminalInfo?.success, false)
+        XCTAssertTrue(harness.terminalInfo?.message.contains("the card changed") == true,
+                      harness.terminalInfo?.message ?? "no verdict")
+    }
+
+    /// A Finder view file: a buddy-allocator header whose root block holds
+    /// the `DSDB` directory entry.
+    static func finderViewFile(size: Int = 6148) -> Data {
+        var bytes: [UInt8] = [0, 0, 0, 1] + Array("Bud1".utf8)
+        for value: UInt32 in [0x800, 0x800, 0x800] {
+            for shift: UInt32 in [24, 16, 8, 0] { bytes.append(UInt8(truncatingIfNeeded: value >> shift)) }
+        }
+        bytes += [UInt8](repeating: 0, count: size - bytes.count)
+        let entry: [UInt8] = [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 1]
+        bytes.replaceSubrange(0x804 + 0x400..<0x804 + 0x400 + entry.count, with: entry)
+        return Data(bytes)
     }
 
     private func ascFixture() throws -> (source: URL, destination: URL, history: URL, result: FileOperationResult) {
@@ -1136,6 +1206,7 @@ private final class ExecutorHarness {
 
     private(set) var observedProgress: [OperationProgress] = []
     private(set) var completedRows: [ResultRow] = []
+    private(set) var completedSkippedAtStart: Set<String> = []
     private(set) var terminalInfo: OperationCompletionInfo?
     private(set) var publishedTerminalStates: [OperationState] = []
     var onAuthoritativeResults: (() throws -> Void)?
@@ -1224,9 +1295,10 @@ private final class ExecutorHarness {
                     guard case .completed(let info) = state else { return }
                     self?.terminalInfo = info
                 },
-                onAuthoritativeResults: { [weak self] rows in
+                onAuthoritativeResultsAndSkips: { [weak self] rows, skippedAtStart in
                     guard let self else { return }
                     self.completedRows = rows
+                    self.completedSkippedAtStart = skippedAtStart
                     try self.onAuthoritativeResults?()
                 }
             )
@@ -1236,6 +1308,20 @@ private final class ExecutorHarness {
 
 private enum ExecutorFixtureError: Error {
     case persistence
+}
+
+/// True once, for the first caller of `setOnce()`.
+private final class OnceFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.withLock { value } }
+    func setOnce() -> Bool {
+        lock.withLock {
+            guard !value else { return false }
+            value = true
+            return true
+        }
+    }
 }
 
 private final class ExecutorFileOperationsService: FileOperationsService {

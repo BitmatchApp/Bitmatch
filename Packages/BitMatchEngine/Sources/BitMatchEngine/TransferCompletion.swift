@@ -98,6 +98,10 @@ public enum TransferCompletion: Sendable {
     /// must also be in `sourceFiles`, the card's complete manifest; a caller
     /// with no manifest (nil) cannot prove any skip. With no proven set and
     /// no skipped row there is nothing to prove, so true.
+    ///
+    /// Paths are compared in the symlink-resolved form coverage uses: the
+    /// engine's rows and manifest carry the resolved card path, while
+    /// `source` may be spelled through a symlinked folder.
     public static func finderMetadataSkipsProven(
         rows: [ResultRow], provenPaths: [String]?, sourceFiles: [URL]?,
         destinations: [URL], source: URL, settings: CameraLabelSettings
@@ -105,8 +109,10 @@ public enum TransferCompletion: Sendable {
         let skipped = rows.filter(\.isSkippedFinderMetadata)
         guard let provenPaths, !provenPaths.isEmpty else { return skipped.isEmpty }
         guard !destinations.isEmpty, let sourceFiles else { return false }
-        let manifest = Set(sourceFiles.map { PathContainment.comparablePath($0.path) })
-        let sourcePath = PathContainment.comparablePath(source.path)
+        // Only `.DS_Store` entries can be proven, so only they are resolved.
+        var folders = CanonicalFolders()
+        let manifest = Set(sourceFiles.filter { $0.lastPathComponent == ".DS_Store" }.map { folders.canonicalPath($0) })
+        let sourcePath = canonicalPath(source)
         let sourcePrefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
         var proven = Set<String>()
         for relative in provenPaths {
@@ -114,7 +120,7 @@ public enum TransferCompletion: Sendable {
             guard !relative.hasPrefix("/"), !parts.isEmpty,
                   parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
                   parts.last.map({ $0.utf8.elementsEqual(".DS_Store".utf8) }) == true else { return false }
-            let path = PathContainment.comparablePath(source.appendingPathComponent(relative).path)
+            let path = PathContainment.comparablePath(sourcePrefix + relative)
             guard path.hasPrefix(sourcePrefix), manifest.contains(path),
                   proven.insert(path).inserted else { return false }
         }
@@ -130,9 +136,11 @@ public enum TransferCompletion: Sendable {
                       !PathContainment.isWithin(roots[second], root: roots[first]) else { return false }
             }
         }
+        // Backup paths are compared as written: they are spelled from the
+        // same destination URLs as `roots`.
         var skippedByDestination = Array(repeating: Set<String>(), count: roots.count)
         for row in skipped {
-            let path = PathContainment.comparablePath(row.path)
+            let path = folders.canonicalPath(URL(fileURLWithPath: row.path, isDirectory: false))
             guard proven.contains(path), path.hasPrefix(sourcePrefix),
                   let destinationPath = row.destinationPath else { return false }
             let relative = String(path.dropFirst(sourcePrefix.count))
@@ -142,6 +150,19 @@ public enum TransferCompletion: Sendable {
                   skippedByDestination[index].insert(path).inserted else { return false }
         }
         return skippedByDestination.allSatisfy { $0 == proven }
+    }
+
+    /// Source paths (as rows spell them) of the Finder view files `operation`
+    /// skipped at Start, including one the final gate later failed because
+    /// it no longer was a Finder view file. None of them is a planned file:
+    /// the plan was counted without them.
+    public static func skippedAtStartSourcePaths(_ operation: FileOperation) -> Set<String> {
+        guard let proven = operation.skippedFinderMetadataPaths, !proven.isEmpty else { return [] }
+        let relative = Set(proven)
+        return Set(operation.results.lazy
+            .filter { $0.sourceURL.lastPathComponent == ".DS_Store" && !$0.excludedAppleDouble }
+            .filter { relative.contains($0.sourceURL.relativePath(to: operation.sourceURL)) }
+            .map(\.sourceURL.path))
     }
 
     /// "1 Finder view file (.DS_Store) skipped", "2 Finder view files (.DS_Store) skipped".
@@ -612,8 +633,11 @@ public enum TransferCompletion: Sendable {
         let skippedCount = skippedSourcePaths.count
         // With no skipped row this is `rows` and `sourceFiles` unchanged.
         let rowsWithoutSkips = skipped.isEmpty ? rows : rows.filter { !$0.isSkippedFinderMetadata }
-        let sourceFiles = skipped.isEmpty ? sourceFiles
+        // Only proven skips leave the expected files (as in `ascmhlPlan`).
+        // Unproven, each stays expected and its row reads "not verified".
+        let sourceFiles = skipped.isEmpty || !skipsProven ? sourceFiles
             : sourceFiles.map { files in files.filter { !skippedSourcePaths.contains($0.path) } }
+        let unprovenSkips = !skipsProven && !skipped.isEmpty
         // Safe-to-erase modes count only independently verified readback rows.
         // Quick has no safe verdict; its copied rows remain eligible only for
         // the separate amber "copied, not verified" outcome.
@@ -622,7 +646,7 @@ public enum TransferCompletion: Sendable {
         // Rows that exist but do not count, so coverage can say "not
         // verified" for them and "has no result" only for absent files.
         let notVerifiedEntries = rows
-            .filter { !counts($0) && !$0.isOmittedBySelection }
+            .filter { !counts($0) && (!$0.isOmittedBySelection || (unprovenSkips && $0.isSkippedFinderMetadata)) }
             .map {
                 CoverageEntry(source: URL(fileURLWithPath: $0.path),
                               destination: $0.destinationPath.map { URL(fileURLWithPath: $0) },
@@ -746,6 +770,12 @@ public enum TransferCompletion: Sendable {
                 }
             }
             fileResultsMessage = failedMessage
+        }
+        // Skipped rows the rule does not prove are named whatever else
+        // failed. (A proven path the final gate failed has no skipped row
+        // left; its failure headline already says the card changed.)
+        if unprovenSkips && !fileResultsMessage.contains(skipMismatch) {
+            fileResultsMessage += "; " + skipMismatch
         }
         let incompleteCoverageIssues = coverageIssues(
             excludedCount > 0 ? selectedCoverage : coverage,

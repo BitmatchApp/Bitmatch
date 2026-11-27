@@ -198,6 +198,38 @@ struct FinderMetadataVerdictTests {
         #expect(absentResult.message.contains("Shuttle B: 1 file has no result"), "\(absentResult.message)")
     }
 
+    /// Unproven skipped rows stay expected files: coverage names each backup
+    /// whose `.DS_Store` was not verified, instead of leaving them out.
+    @Test func unprovenSkipsStayInTheCoverage() {
+        let rows = clipRows + [skipped(at: shuttleA), skipped(at: shuttleB)]
+        let result = verdict(rows, proven: nil)
+        #expect(!result.success)
+        #expect(result.message.contains(TransferCompletion.finderMetadataSkipMismatch), "\(result.message)")
+        #expect(result.message.contains("Shuttle A: 1 file not verified"), "\(result.message)")
+        #expect(result.message.contains("Shuttle B: 1 file not verified"), "\(result.message)")
+        #expect(!result.message.contains("Finder recreates them"), "no benign line for an unproven skip: \(result.message)")
+    }
+
+    /// With the proof failing and another file failing too, the verdict
+    /// still says the skipped-file records do not match.
+    @Test func aFailedClipWithUnprovenSkipsStillNamesTheMismatch() {
+        let rows = [row(clipA, at: shuttleA), row(clipB, at: shuttleA),
+                    row(clipA, at: shuttleB), row(clipB, at: shuttleB, outcome: .failed),
+                    skipped(at: shuttleA), skipped(at: shuttleB)]
+        let result = verdict(rows, proven: nil)
+        #expect(!result.success)
+        #expect(result.message.contains("1 file failed"), "\(result.message)")
+        #expect(result.message.contains(TransferCompletion.finderMetadataSkipMismatch), "\(result.message)")
+        #expect(!result.message.contains("Finder recreates them"), "\(result.message)")
+
+        // A proven path the final gate failed has no skipped row left: the
+        // failure headline says what happened, with no mismatch sentence.
+        let gateFailed = clipRows + [row(dsStore, at: shuttleA, outcome: .failed), row(dsStore, at: shuttleB, outcome: .failed)]
+        let gate = verdict(gateFailed, proven: [".DS_Store"])
+        #expect(gate.message.hasPrefix("2 files failed"), "\(gate.message)")
+        #expect(!gate.message.contains(TransferCompletion.finderMetadataSkipMismatch), "\(gate.message)")
+    }
+
     @Test func appleDoubleExclusionStillWinsOverSkips() {
         var settings = CameraLabelSettings()
         settings.excludedAppleDoublePaths = ["._A.MXF"]

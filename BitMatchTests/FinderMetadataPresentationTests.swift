@@ -43,6 +43,9 @@ struct FinderMetadataPresentationTests {
     /// record's skips were proven, `.issues` with the mismatch words otherwise.
     private func record(_ folders: Folders, proven: Bool,
                         cameraSettings: CameraLabelSettings = CameraLabelSettings()) throws -> LocalTransferRecord {
+        // The rows sit directly in the backup folder, so the run wrote there.
+        var cameraSettings = cameraSettings
+        if cameraSettings.destinationPathComponents == nil { cameraSettings.destinationPathComponents = [] }
         var record = LocalTransferRecord(
             id: UUID(), createdAt: Date(timeIntervalSince1970: 1_800_000_000),
             source: try LocalTransferResource(url: folders.card),
@@ -117,6 +120,38 @@ struct FinderMetadataPresentationTests {
         #expect(recovery.pending == 0)
         // Selected-files wording belongs to AppleDouble exclusions only.
         #expect(!TransferOutcomePresentation.hasVerifiedSelectedFiles(record))
+    }
+
+    /// A `.completed` state is not proof on its own: a hand-edited or older
+    /// record whose skipped rows the rule does not prove is never safe, and
+    /// a Quick record with unproven skips is not "copied, not verified".
+    @Test func aCompletedStateDoesNotVouchForUnprovenSkips() throws {
+        let folders = try Folders()
+        var record = try record(folders, proven: true)
+        #expect(TransferJournal.finderMetadataSkipsProven(record))
+        record.skippedFinderMetadataPaths = nil
+        #expect(record.state == .completed)
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+        record.skippedFinderMetadataPaths = ["DCIM/.DS_Store"]
+        #expect(TransferLibraryPresentation.safetyState(for: record, in: [record]) == .needsAttention)
+
+        var quick = LocalTransferRecord(
+            id: UUID(), createdAt: Date(timeIntervalSince1970: 1_800_000_000),
+            source: record.source, destinations: record.destinations, verificationMode: .quick,
+            cameraSettings: record.cameraSettings, reportSettings: ReportPrefs(), generateASCMHL: false, projectID: nil)
+        quick.state = .issues
+        quick.quickOnlyUnverified = true
+        quick.plannedFileCounts = [1]
+        quick.results = [
+            ResultRow(path: folders.card.appendingPathComponent("C0001.MP4").path,
+                      status: ResultOutcome.copiedUnverified.statusText, size: 10, checksum: nil,
+                      destination: "Backup", destinationPath: folders.backup.appendingPathComponent("C0001.MP4").path),
+            rows(folders)[1],
+        ]
+        quick.skippedFinderMetadataPaths = [".DS_Store"]
+        #expect(TransferLibraryPresentation.safetyState(for: quick, in: [quick]) == .copiedNotVerified)
+        quick.skippedFinderMetadataPaths = nil
+        #expect(TransferLibraryPresentation.safetyState(for: quick, in: [quick]) == .needsAttention)
     }
 
     @Test func unprovenSkipsKeepTheCard() throws {
@@ -302,6 +337,37 @@ struct FinderMetadataPresentationTests {
         #expect(text.contains(condensed(Self.mismatch)))
         #expect(text.contains(condensed(Self.summaryLine)))
         #expect(text.contains(condensed(Self.settingOn)))
+    }
+
+    /// The saved verdict's mismatch words reach the regenerated PDF even
+    /// when no skipped row is left in the record.
+    @Test func regeneratedPDFQuotesTheMismatchWithNoSkippedRowLeft() async throws {
+        let folders = try Folders()
+        var record = try record(folders, proven: false)
+        record.results = record.results.filter { !$0.isSkippedFinderMetadata }
+        let data = try await ReportExporter.historyPDF(record: record, history: [record], includeThumbnails: false)
+        let text = condensed(try #require(PDFDocument(data: data)?.string))
+        #expect(text.contains(condensed(Self.mismatch)))
+    }
+
+    /// The PDF's "selected results verified" reason leaves skipped rows out
+    /// only when the run's proof covers them.
+    @Test func theSelectedResultsReasonNeedsTheProofForSkippedRows() throws {
+        let folders = try Folders()
+        let appleDouble = ResultRow(path: folders.card.appendingPathComponent("._C0001.MP4").path,
+                                    status: ResultOutcome.excludedAppleDouble.statusText, size: 4, checksum: nil,
+                                    destination: "Backup",
+                                    destinationPath: folders.backup.appendingPathComponent("._C0001.MP4").path)
+        let withSkip = rows(folders) + [appleDouble]
+        func reason(_ rows: [ResultRow], proven: Bool) -> String? {
+            ReportView.excludedSelectionReason(safetyState: .needsAttention, hasPhotographyJob: false, rows: rows,
+                                               reportIssueRows: [], selectedQuickMode: false,
+                                               selectedFilesVerified: proven)
+        }
+        #expect(reason(withSkip, proven: false) == nil)
+        #expect(reason(withSkip, proven: true)?.hasPrefix("Recorded selected results are marked verified") == true)
+        let withoutSkip = withSkip.filter { !$0.isSkippedFinderMetadata }
+        #expect(reason(withoutSkip, proven: false)?.hasPrefix("Recorded selected results are marked verified") == true)
     }
 
     @Test func summaryLineReadsAsTheVerdictsCoverageLine() {

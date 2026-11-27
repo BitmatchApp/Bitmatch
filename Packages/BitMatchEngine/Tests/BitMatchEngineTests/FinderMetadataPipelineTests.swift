@@ -162,6 +162,77 @@ import Testing
         }
     }
 
+    private func markerStatuses(_ tree: Tree, settings: CameraLabelSettings) throws -> [TransferStatusMarker.Status?] {
+        try tree.destinations.flatMap { destination -> [TransferStatusMarker.Status?] in
+            let root = SafetyValidator.resolvedDestinationRoot(source: tree.source, destination: destination, settings: settings)
+            return try FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil)
+                .filter { TransferStatusMarker.hasExactName($0.lastPathComponent) }
+                .map { TransferStatusMarker.validatedStatus(at: $0, relativePath: $0.lastPathComponent) }
+        }
+    }
+
+    /// A directly publishing backup (FAT, SMB) advances its visible marker
+    /// only for a complete card: a skipped file that turned into real data
+    /// mid-run was never copied, so the marker must not say files verified.
+    @Test func aSkippedFileThatBecameOrdinaryKeepsTheDirectMarkerIncomplete() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let replaced = Mutex(false)
+            let dsStore = tree.dsStore
+            let bytes = randomBytes(6148)
+            let hooks = DestinationWriter.FanOutHooks(forceDirectFinalPublication: { _ in true })
+            let operation = try await run(tree, hooks: hooks, onFileResult: { row in
+                guard row.success, row.sourceURL.lastPathComponent == "A001.mov",
+                      !replaced.withLock({ let was = $0; $0 = true; return was }) else { return }
+                try? bytes.write(to: dsStore)
+            })
+            #expect(replaced.withLock { $0 })
+            #expect(operation.results.filter(isDSStore).allSatisfy {
+                $0.failureReason == ResultFailureReason.sourceUnstable.rawValue
+            })
+            let statuses = try markerStatuses(tree, settings: operation.settings)
+            #expect(statuses.count == 2)
+            #expect(!statuses.contains(.filesVerified), "\(statuses)")
+        }
+    }
+
+    @Test func aProvenSkipStillLetsTheDirectMarkerSayVerified() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let hooks = DestinationWriter.FanOutHooks(forceDirectFinalPublication: { _ in true })
+            let operation = try await run(tree, hooks: hooks)
+            expectSelectedRowsVerified(operation, count: 4)
+            #expect(try markerStatuses(tree, settings: operation.settings) == [.filesVerified, .filesVerified])
+        }
+    }
+
+    /// The card is chosen through a symlinked folder; the engine's rows and
+    /// manifest carry the resolved path. The proof compares the two forms.
+    @Test func aSourceUnderASymlinkedFolderProvesItsSkips() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let link = tree.root.appendingPathComponent("link")
+            try FileManager.default.createSymbolicLink(at: link, withDestinationURL: tree.root)
+            let viaLink = Tree(root: tree.root, source: link.appendingPathComponent("card"), destinations: tree.destinations)
+            let operation = try await run(viaLink)
+            #expect(operation.skippedFinderMetadataPaths == [".DS_Store"])
+            expectSelectedRowsVerified(operation, count: 4)
+            let rows = TransferCompletion.rows(from: operation)
+            #expect(TransferCompletion.finderMetadataSkipsProven(
+                rows: rows, provenPaths: operation.skippedFinderMetadataPaths, sourceFiles: operation.sourceManifest,
+                destinations: viaLink.destinations, source: viaLink.source, settings: operation.settings))
+            let verdict = TransferCompletion.verdict(
+                rows: rows, sourceFiles: operation.sourceManifest, destinations: viaLink.destinations, source: viaLink.source,
+                settings: operation.settings, mode: .standard, generateASCMHL: false, handoffIssues: [], reportIssue: nil,
+                project: .init(didPersist: true, locallySafe: nil),
+                skippedFinderMetadataPaths: operation.skippedFinderMetadataPaths)
+            #expect(verdict.success, "\(verdict.message)")
+        }
+    }
+
     /// Writes `contents` as `DCIM/.DS_Store` on the card after the first clip,
     /// a path the card did not have at Start.
     private func runCreatingNewDSStore(_ tree: Tree, contents: Data, name: String = ".DS_Store",

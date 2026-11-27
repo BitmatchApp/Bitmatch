@@ -85,7 +85,10 @@ struct CopyVerifyCallbacks: Sendable {
     let onProgress: @MainActor @Sendable (OperationProgress) -> Void
     let onResult: @MainActor @Sendable (ResultRow) -> Void
     let onStateChange: @MainActor @Sendable (OperationState) -> Void
-    let onAuthoritativeResults: @MainActor @Sendable ([ResultRow]) throws -> Void
+    /// The authoritative rows, and the source paths of the Finder view files
+    /// the run skipped at Start (whatever their rows say now). Those are
+    /// never planned files, even when the final gate failed one.
+    let onAuthoritativeResults: @MainActor @Sendable ([ResultRow], Set<String>) throws -> Void
     let onIOProgress: @MainActor @Sendable (TransferIOProgress) -> Void
 
     init(
@@ -95,10 +98,22 @@ struct CopyVerifyCallbacks: Sendable {
         onAuthoritativeResults: @escaping @MainActor @Sendable ([ResultRow]) throws -> Void,
         onIOProgress: @escaping @MainActor @Sendable (TransferIOProgress) -> Void = { _ in }
     ) {
+        self.init(onProgress: onProgress, onResult: onResult, onStateChange: onStateChange,
+                  onAuthoritativeResultsAndSkips: { rows, _ in try onAuthoritativeResults(rows) },
+                  onIOProgress: onIOProgress)
+    }
+
+    init(
+        onProgress: @escaping @MainActor @Sendable (OperationProgress) -> Void,
+        onResult: @escaping @MainActor @Sendable (ResultRow) -> Void,
+        onStateChange: @escaping @MainActor @Sendable (OperationState) -> Void,
+        onAuthoritativeResultsAndSkips: @escaping @MainActor @Sendable ([ResultRow], Set<String>) throws -> Void,
+        onIOProgress: @escaping @MainActor @Sendable (TransferIOProgress) -> Void = { _ in }
+    ) {
         self.onProgress = onProgress
         self.onResult = onResult
         self.onStateChange = onStateChange
-        self.onAuthoritativeResults = onAuthoritativeResults
+        self.onAuthoritativeResults = onAuthoritativeResultsAndSkips
         self.onIOProgress = onIOProgress
     }
 }
@@ -411,7 +426,7 @@ final class CopyVerifyExecutor {
         // The journal's selected-file plan is authoritative for this run.
         // Its failure must escape before MHL, project finalization or reports;
         // only a project finalizer error is recoverable as an amber outcome.
-        try callbacks.onAuthoritativeResults(allResults)
+        try callbacks.onAuthoritativeResults(allResults, TransferCompletion.skippedAtStartSourcePaths(operation))
         // The same inputs the verdict below uses, so a project card leaves out
         // only the skipped Finder view files the verdict will also accept.
         let finderSkipsProven = TransferCompletion.finderMetadataSkipsProven(
@@ -699,7 +714,8 @@ final class CopyVerifyExecutor {
         // backup. config.estimatedBytes is a progress estimate that falls
         // back to a placeholder when the source was not measured.
         let totalBytesProcessed = results.filter { !$0.isOmittedBySelection }.reduce(Int64(0)) { $0 + $1.size }
-        let fileCount = results.count
+        // Skipped Finder view files are not counted: they were never copied.
+        let fileCount = ReportExporter.countedFileCount(results)
         // The workers the run actually used, never the machine's core count.
         let workers = operation.concurrency?.copyWorkers
         let verifyWorkers = operation.concurrency?.verifyWorkers
@@ -723,9 +739,10 @@ final class CopyVerifyExecutor {
         // a clean run with "Issues 0".
         if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results) {
             reportSettings.notes += "\n\(skipLine)."
-            if verdictMessage.contains(TransferCompletion.finderMetadataSkipMismatch) {
-                reportSettings.notes += "\n\(TransferCompletion.finderMetadataSkipMismatch)."
-            }
+        }
+        // Whenever the verdict says so, even with no skipped row left.
+        if verdictMessage.contains(TransferCompletion.finderMetadataSkipMismatch) {
+            reportSettings.notes += "\n\(TransferCompletion.finderMetadataSkipMismatch)."
         }
         if let handoffSummary { reportSettings.notes += "\nASC MHL: \(handoffSummary)" }
         let reportResults = results

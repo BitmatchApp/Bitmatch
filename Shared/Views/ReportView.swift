@@ -118,16 +118,31 @@ struct ReportView: View {
     }
 
     private var reportUnsafeReason: String {
+        Self.excludedSelectionReason(
+            safetyState: s.safetyState, hasPhotographyJob: s.photographyJob != nil, rows: rows,
+            reportIssueRows: reportIssueRows, selectedQuickMode: selectedQuickMode,
+            selectedFilesVerified: selectedFilesVerified
+        ) ?? Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob)
+    }
+
+    /// The reason for a run whose selected files verified while AppleDouble
+    /// files were excluded, or nil to use the general reason. Skipped Finder
+    /// view files are left out of "selected" only when this report's proof
+    /// (`selectedFilesVerified`) covers them; unproven, they are not verified.
+    static func excludedSelectionReason(
+        safetyState: CardSafetyState, hasPhotographyJob: Bool, rows: [ResultRow],
+        reportIssueRows: [ResultRow], selectedQuickMode: Bool, selectedFilesVerified: Bool
+    ) -> String? {
         let selected = rows.filter { !$0.isOmittedBySelection }
-        if s.safetyState == .needsAttention, s.photographyJob == nil,
-           excludedResultCount > 0, reportIssueRows.isEmpty, !selected.isEmpty,
-           selected.allSatisfy(TransferOutcomePresentation.isVerified) {
-            if selectedQuickMode {
-                return "Quick mode did not verify file contents. AppleDouble metadata was intentionally excluded; the whole card was not backed up."
-            }
-            return "Recorded selected results are marked verified, but complete handoff evidence was not established. Review the report details before erasing the card."
+        let excludedCount = rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count
+        guard safetyState == .needsAttention, !hasPhotographyJob,
+              excludedCount > 0, reportIssueRows.isEmpty, !selected.isEmpty,
+              selected.allSatisfy(TransferOutcomePresentation.isVerified),
+              selectedFilesVerified || !rows.contains(where: \.isSkippedFinderMetadata) else { return nil }
+        if selectedQuickMode {
+            return "Quick mode did not verify file contents. AppleDouble metadata was intentionally excluded; the whole card was not backed up."
         }
-        return Self.unsafeReportReason(safetyState: s.safetyState, photographyJob: s.photographyJob)
+        return "Recorded selected results are marked verified, but complete handoff evidence was not established. Review the report details before erasing the card."
     }
 
     private var isFullyVerified: Bool { s.safetyState == .safeToErase }

@@ -65,12 +65,15 @@ public extension TransferCompletion {
     /// `finderMetadataSkipsProven`, the answer of
     /// `TransferCompletion.finderMetadataSkipsProven` for these rows; it must
     /// still sit at its own place on one backup and is not a selected file.
+    /// A false answer refuses the rows even when none is skipped: a proven
+    /// list with no rows behind it is not exact evidence either.
     internal static func exactExpectedExclusionRows(
         rows: [ResultRow], source: URL, destinations: [URL],
         settings: CameraLabelSettings, plannedFileCounts: [Int],
         expectedSelectedSourcePaths: Set<String>? = nil,
-        finderMetadataSkipsProven: Bool = false
+        finderMetadataSkipsProven: Bool
     ) -> Bool {
+        guard finderMetadataSkipsProven else { return false }
         guard !rows.isEmpty, !destinations.isEmpty,
               plannedFileCounts.count == destinations.count,
               plannedFileCounts.allSatisfy({ $0 > 0 }),

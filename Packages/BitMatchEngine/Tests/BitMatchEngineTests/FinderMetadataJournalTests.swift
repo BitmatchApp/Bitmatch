@@ -168,6 +168,105 @@ import Testing
         #expect(!TransferJournal.finderMetadataSkipsProven(shortPlan))
     }
 
+    /// The journal's own safety net, apart from `hadIssues`: an unproven
+    /// list, or a record where nothing was copied, is never `.completed`.
+    @Test func finishIsIssuesWhenSkipsAreUnprovenOrNothingWasCopied() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let journal = TransferJournal(fileURL: f.journalURL)
+
+        // Every row verified, but the proven list names a file with no row.
+        let clipsOnly = f.destinations.map { f.verified("A001.mov", on: $0) }
+        let unproven = try f.finish(journal, rows: clipsOnly, proven: [".DS_Store"], fingerprint: "no-skip-row")
+        #expect(!TransferJournal.finderMetadataSkipsProven(unproven))
+        #expect(unproven.state == .issues)
+
+        // Proven skips and nothing else: no file was copied.
+        let skipsOnly = f.destinations.map { f.skipped(".DS_Store", on: $0) }
+        let nothing = try f.finish(journal, rows: skipsOnly, plan: [0, 0], proven: [".DS_Store"], fingerprint: "skips-only")
+        #expect(TransferJournal.finderMetadataSkipsProven(nothing))
+        #expect(nothing.state == .issues)
+        #expect(journal.matchingVerifiedRecord(sourceFingerprint: "skips-only") == nil)
+    }
+
+    /// A skipped `.DS_Store` that stopped being a Finder view file mid-run
+    /// fails at the final gate. It was never in the saved plan, so the
+    /// record keeps the verdict's words ("the card changed"), not a
+    /// generic "results are incomplete".
+    @Test func aGateFailedSkipKeepsTheVerdictsSummary() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let journal = TransferJournal(fileURL: f.journalURL)
+        let rows = f.destinations.flatMap { destination -> [ResultRow] in
+            [f.verified("A001.mov", on: destination),
+             ResultRow(path: f.source.appendingPathComponent(".DS_Store").path, status: ResultOutcome.failed.statusText,
+                       size: 6148, checksum: nil, destination: destination.lastPathComponent,
+                       destinationPath: f.output(".DS_Store", on: destination),
+                       failureReason: ResultFailureReason.sourceUnstable.rawValue)]
+        }
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: f.destinations, verificationMode: .standard,
+                                     cameraSettings: f.settings, reportSettings: ReportPrefs(makeReport: false),
+                                     generateASCMHL: false)
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1, 1])
+        let verdict = "2 files failed; the card changed or could not be read consistently. Keep the card"
+        try journal.finish(id: id, results: rows, summary: verdict, hadIssues: true,
+                           sourceFingerprint: "changed", skippedFinderMetadataPaths: [".DS_Store"])
+        let record = try #require(journal.records.first { $0.id == id })
+        #expect(record.state == .issues)
+        #expect(record.summary == verdict)
+        #expect(!TransferJournal.finderMetadataSkipsProven(record))
+    }
+
+    /// The saved-record queue check asks the proof even when no skipped row
+    /// remains: a proven list with no rows behind it is not a clean record.
+    @Test func theQueueRowCheckConsultsTheProofWithNoSkippedRow() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        var settings = f.settings
+        settings.excludedAppleDoublePaths = ["._A001.mov"]
+        let rows = f.destinations.flatMap { destination -> [ResultRow] in
+            [f.verified("A001.mov", on: destination),
+             ResultRow(path: f.source.appendingPathComponent("._A001.mov").path,
+                       status: ResultOutcome.excludedAppleDouble.statusText, size: 42, checksum: nil,
+                       destination: destination.lastPathComponent,
+                       destinationPath: f.output("._A001.mov", on: destination))]
+        }
+        #expect(TransferCompletion.exactExpectedExclusionRows(
+            rows: rows, source: f.source, destinations: f.destinations, settings: settings,
+            plannedFileCounts: [1, 1], finderMetadataSkipsProven: true))
+        #expect(!TransferCompletion.exactExpectedExclusionRows(
+            rows: rows, source: f.source, destinations: f.destinations, settings: settings,
+            plannedFileCounts: [1, 1], finderMetadataSkipsProven: false))
+    }
+
+    /// A queued card remounted at another path ("card 1"): the run's rows carry
+    /// the path it was read at, the record keeps the path it was queued at.
+    /// The proof follows the rows.
+    @Test func aRemountedCardsRecordStillProvesItsSkips() throws {
+        let f = try Fixture(); defer { f.cleanup() }
+        let mounted = f.root.appendingPathComponent("card 1")
+        try FileManager.default.createDirectory(at: mounted, withIntermediateDirectories: true)
+        func row(_ relative: String, on destination: URL, skipped: Bool) -> ResultRow {
+            ResultRow(path: mounted.appendingPathComponent(relative).path,
+                      status: skipped ? ResultOutcome.skippedFinderMetadata.statusText : ResultOutcome.verified.statusText,
+                      size: skipped ? 6148 : 4, checksum: skipped ? nil : "fixture",
+                      destination: destination.lastPathComponent,
+                      destinationPath: SafetyValidator.resolvedDestinationRoot(
+                        source: mounted, destination: destination, settings: f.settings)
+                        .appendingPathComponent(relative).path)
+        }
+        let rows = f.destinations.flatMap { [row("A001.mov", on: $0, skipped: false), row(".DS_Store", on: $0, skipped: true)] }
+        let journal = TransferJournal(fileURL: f.journalURL)
+        let record = try f.finish(journal, rows: rows, proven: [".DS_Store"], fingerprint: "remounted")
+        #expect(record.source.url.lastPathComponent == "card")
+        #expect(TransferJournal.finderMetadataSkipsProven(record))
+        #expect(record.state == .completed, "\(record.summary)")
+
+        // Rows that do not agree on one card root prove nothing.
+        var split = rows
+        split[0] = f.verified("A001.mov", on: f.destinations[0])
+        let mixed = try f.finish(journal, rows: split, proven: [".DS_Store"], fingerprint: "mixed")
+        #expect(!TransferJournal.finderMetadataSkipsProven(mixed))
+    }
+
     // MARK: - Real runs
 
     private func writeCard(_ f: Fixture, appleDouble: Bool) throws {

@@ -937,9 +937,12 @@ public final class TransferJournal: Sendable {
                 row.isSuccessStatus && !row.isVerifiedStatus
             }
             // A skipped Finder view file is not an issue only while the one
-            // predicate proves the record's skips; otherwise it is one.
+            // predicate proves the record's skips; otherwise it is one. An
+            // unproven list is an issue even when no skipped row remains, and
+            // a record with no copied file is never complete.
             let skipsProven = Self.finderMetadataSkipsProven(record)
             record.state = hadIssues || results.isEmpty || incompletePlan || missingVerification
+                || !skipsProven || !results.contains(where: \.isSuccessStatus)
                 || results.contains(where: { !$0.isSuccessStatus && !($0.isSkippedFinderMetadata && skipsProven) })
                 ? .issues : .completed
             let truthfulSummary = incompletePlan
@@ -1002,15 +1005,60 @@ public final class TransferJournal: Sendable {
     /// other rule of the predicate (proven list, one row per backup at its
     /// own place, no stray skipped row) still applied. A record with no
     /// skipped row and no proven list has nothing to prove.
-    static func finderMetadataSkipsProven(_ record: LocalTransferRecord) -> Bool {
+    ///
+    /// The card is the folder the run read, taken from the rows: a queued
+    /// card remounted at another path ("/Volumes/CARD 1") keeps its
+    /// enqueue-time `record.source.url`, while its rows carry the path the
+    /// run opened. Public so History and every saved-record verdict ask the
+    /// same rule the journal used.
+    public static func finderMetadataSkipsProven(_ record: LocalTransferRecord) -> Bool {
+        // Nothing to prove: no rebuilt manifest, no file-system work.
+        guard record.skippedFinderMetadataPaths?.isEmpty == false else {
+            return !record.results.contains(where: \.isSkippedFinderMetadata)
+        }
         let manifest: [URL]? = hasCompletePlannedResults(record)
-            ? Set(record.results.map(\.path)).map { URL(fileURLWithPath: $0) }
+            ? Set(record.results.map(\.path)).map { URL(fileURLWithPath: $0, isDirectory: false) }
             : nil
         return TransferCompletion.finderMetadataSkipsProven(
             rows: record.results, provenPaths: record.skippedFinderMetadataPaths, sourceFiles: manifest,
-            destinations: record.destinations.map(\.url), source: record.source.url,
+            destinations: record.destinations.map(\.url), source: runSourceURL(record),
             settings: record.cameraSettings
         )
+    }
+
+    /// The card folder the run read, found from the rows at the proven
+    /// paths: the one folder that holds every row and has a row at each
+    /// proven path (skipped, or failed by the final gate). Falls back to
+    /// `record.source.url` when no single folder fits, which the predicate
+    /// then refuses.
+    private static func runSourceURL(_ record: LocalTransferRecord) -> URL {
+        let proven = record.skippedFinderMetadataPaths ?? []
+        let candidateRows = record.results.filter {
+            $0.isSkippedFinderMetadata || (!$0.isSuccessStatus && $0.fileName == ".DS_Store")
+        }
+        let rowPaths = Set(candidateRows.map(\.path))
+        var candidates = Set<String>()
+        for path in rowPaths {
+            for relative in proven where path.hasSuffix("/" + relative) {
+                candidates.insert(String(path.dropLast(relative.count + 1)))
+            }
+        }
+        let fitting = candidates.filter { folder in
+            !folder.isEmpty
+                && proven.allSatisfy { rowPaths.contains(folder + "/" + $0) }
+                && record.results.allSatisfy { PathContainment.isStrictlyWithin($0.path, root: folder) }
+        }
+        guard fitting.count == 1, let folder = fitting.first else { return record.source.url }
+        return URL(fileURLWithPath: folder, isDirectory: true)
+    }
+
+    /// Rows at a proven path that the final gate failed (the file stopped
+    /// being a Finder view file mid-run). Skipped at Start, they were never
+    /// in the saved plan.
+    private static func isFailedProvenSkip(_ row: ResultRow, source: URL, proven: Set<String>) -> Bool {
+        guard !row.isSuccessStatus, !row.isOmittedBySelection, row.fileName == ".DS_Store" else { return false }
+        let prefix = source.path.hasSuffix("/") ? source.path : source.path + "/"
+        return row.path.hasPrefix(prefix) && proven.contains(String(row.path.dropFirst(prefix.count)))
     }
 
     /// Most recent proof that this exact manifest completed with verified
@@ -1061,7 +1109,13 @@ public final class TransferJournal: Sendable {
     private static func hasCompletePlannedResults(_ record: LocalTransferRecord) -> Bool {
         guard let plan = record.plannedFileCounts else { return false }
         guard plan.count == record.destinations.count else { return false }
-        let selected = record.results.filter(\.isInSelectedPlan)
+        // A proven skip the final gate failed was skipped at Start, so the
+        // plan never counted it; its failure still makes the record unsafe.
+        let proven = Set(record.skippedFinderMetadataPaths ?? [])
+        let source = proven.isEmpty ? record.source.url : runSourceURL(record)
+        let selected = record.results.filter {
+            $0.isInSelectedPlan && !(!proven.isEmpty && isFailedProvenSkip($0, source: source, proven: proven))
+        }
         let groups = record.destinations.map { destination in
             selected.filter { row in
                 guard let path = row.destinationPath else { return false }

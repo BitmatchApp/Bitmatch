@@ -9,6 +9,14 @@ typealias ProjectJSONReport = EnhancedJSONReport<PhotographerReportPayload>
 /// the photographer project details) and hands it to `EvidenceWriter`, which
 /// writes every file.
 enum ReportExporter {
+    /// The report's file count: every result row except skipped Finder view
+    /// files, which were never copied. Matches, issues and the scope counts
+    /// leave them out too, so a clean run with a skip still has
+    /// matches == total files and reads as verified.
+    static func countedFileCount(_ results: [ResultRow]) -> Int {
+        results.filter { !$0.isSkippedFinderMetadata }.count
+    }
+
     static func export(mode: AppMode,
                        jobID: UUID,
                        started: Date,
@@ -177,16 +185,16 @@ enum ReportExporter {
         let recordedBytes = record.results.filter(\.isSuccessStatus).reduce(into: Int64(0)) { bytes, row in
             let sum = bytes.addingReportingOverflow(max(0, row.size)); bytes = sum.overflow ? Int64.max : sum.partialValue
         }
-        let files = Set(record.results.map(\.path)).count
+        let files = Set(record.results.filter { !$0.isSkippedFinderMetadata }.map(\.path)).count
         let start = record.startedAt ?? record.createdAt
         let finish = record.endedAt ?? start
         let safetyState = TransferLibraryPresentation.safetyState(for: record, in: history)
         // The saved summary may say "verified" even when the saved rows or
         // selected-file plan do not support that verdict. Keep it in the
         // History record/CSV/JSON, but omit it from unsafe regenerated PDFs.
-        // The saved verdict's own words for unproven skips, never re-derived.
-        let skipMismatch = record.results.contains(where: \.isSkippedFinderMetadata)
-            && record.summary.contains(TransferCompletion.finderMetadataSkipMismatch)
+        // The saved verdict's own words for unproven skips, never re-derived,
+        // whether or not a skipped row is left.
+        let skipMismatch = record.summary.contains(TransferCompletion.finderMetadataSkipMismatch)
         let notes = [EvidenceWriter.normalizedNotes(record.reportSettings.notes),
             safetyState == .safeToErase ? record.summary : nil,
             skipMismatch ? TransferCompletion.finderMetadataSkipMismatch + "." : nil,
