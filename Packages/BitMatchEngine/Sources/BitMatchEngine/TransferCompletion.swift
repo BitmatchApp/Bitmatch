@@ -22,6 +22,7 @@ public enum TransferCompletion: Sendable {
             failedOutputMarking: result.failedOutputMarking,
             recopyOutcome: result.recopyOutcome,
             failureReason: result.failureReason,
+            failureDetail: result.failureDetail,
             recordedChecksumBeforeFailure: result.success ? nil : result.recordedChecksumBeforeFailure
         )
     }
@@ -794,6 +795,8 @@ public enum TransferCompletion: Sendable {
                     failedMessage += "; a file already at that name on a backup has different contents and was not overwritten. Keep the card: it is not proven"
                 case .destinationCheckFailed:
                     failedMessage += "; a backup could not be checked at the end of the run. Keep the source"
+                case .destinationReadbackFailed:
+                    failedMessage += "; a backup file could not be read during verification. Keep the source"
                 }
             }
             fileResultsMessage = failedMessage

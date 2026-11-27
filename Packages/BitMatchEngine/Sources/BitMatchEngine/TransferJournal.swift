@@ -593,6 +593,27 @@ public final class TransferJournal: Sendable {
         }
     }
 
+    static let stagingOwnerMarker = ".bitmatch-owner"
+
+    static func isStagingName(_ name: String, recordID: UUID) -> Bool {
+        let base = ".bitmatch-staging-" + recordID.uuidString
+        if name == base { return true }
+        guard name.hasPrefix(base + "-") else { return false }
+        let suffix = name.dropFirst(base.count + 1)
+        return !suffix.isEmpty && suffix.allSatisfy(\.isNumber)
+    }
+
+    static func ownsStagingDirectory(_ directory: URL, recordID: UUID) -> Bool {
+        var directoryInfo = stat()
+        guard lstat(directory.path, &directoryInfo) == 0, (directoryInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else { return false }
+        let marker = directory.appendingPathComponent(stagingOwnerMarker)
+        var info = stat()
+        guard lstat(marker.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),
+              let data = try? Data(contentsOf: marker), data.count <= 64,
+              let text = String(data: data, encoding: .utf8) else { return false }
+        return text == recordID.uuidString
+    }
+
     public enum ReportWithdrawalOutcome: Sendable, Equatable {
         case withdrawn
         case absentOnVerifiedBackup
@@ -680,12 +701,18 @@ public final class TransferJournal: Sendable {
 
     static func withdrawReports(record: LocalTransferRecord, paths: [String],
                                 volumeIdentityAt: (URL) -> String?) -> [String: ReportWithdrawalOutcome] {
-        let stagingName = ".bitmatch-staging-" + record.id.uuidString
-        let stagingPaths = paths.filter { URL(fileURLWithPath: $0).lastPathComponent == stagingName }
+        let stagingPaths = paths.filter { isStagingName(URL(fileURLWithPath: $0).lastPathComponent, recordID: record.id) }
         if !stagingPaths.isEmpty {
             let rest = paths.filter { !stagingPaths.contains($0) }
             var outcomes = rest.isEmpty ? [:] : withdrawReports(record: record, paths: rest, volumeIdentityAt: volumeIdentityAt)
+            let unexaminedPending = (record.pendingWithdrawalPaths ?? []).contains { candidate in
+                !stagingPaths.contains(candidate) && !rest.contains(candidate)
+            }
             for path in stagingPaths {
+                if unexaminedPending || outcomes.values.contains(where: { if case .pending = $0 { return true }; return false }) {
+                    outcomes[path] = .pending("Public report withdrawal is still pending; staging proof retained")
+                    continue
+                }
                 let url = URL(fileURLWithPath: path).standardizedFileURL
                 do {
                     let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
@@ -705,6 +732,9 @@ public final class TransferJournal: Sendable {
                         guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
                             throw FileOperationError.unsafeOperation("Staging path is not a directory")
                         }
+                        guard ownsStagingDirectory(url, recordID: record.id) else {
+                            throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
+                        }
                         try FileManager.default.removeItem(at: url)
                         outcomes[path] = .withdrawn
                     }
@@ -716,7 +746,8 @@ public final class TransferJournal: Sendable {
         let stagingDirectory = record.reportStagingPath.map { URL(fileURLWithPath: $0) }
         let stagingJSONs: [String] = stagingDirectory.flatMap { directory in
             let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
-            guard directory.lastPathComponent == ".bitmatch-staging-" + record.id.uuidString,
+            guard isStagingName(directory.lastPathComponent, recordID: record.id),
+                  ownsStagingDirectory(directory, recordID: record.id),
                   roots.contains(where: { reportComparablePath($0.appendingPathComponent("Reports"))
                       == reportComparablePath(directory.deletingLastPathComponent()) }) else { return nil }
             return recordedPaths.filter { $0.hasSuffix(".json") }.flatMap { path in
@@ -727,7 +758,7 @@ public final class TransferJournal: Sendable {
         let allPaths = recordedPaths + stagingJSONs
         func isStaging(_ url: URL) -> Bool {
             let name = url.deletingLastPathComponent().lastPathComponent
-            return name.hasPrefix(".BitMatch-report-staging-") || name == ".bitmatch-staging-" + record.id.uuidString
+            return name.hasPrefix(".BitMatch-report-staging-") || isStagingName(name, recordID: record.id)
         }
         let publicJSONs = allPaths.filter {
             let url = URL(fileURLWithPath: $0)
@@ -742,7 +773,7 @@ public final class TransferJournal: Sendable {
                 let members = allPaths.filter { path in
                     let url = URL(fileURLWithPath: path)
                     let folder = url.deletingLastPathComponent().standardizedFileURL
-                    let inStaging = (folder.lastPathComponent.hasPrefix(".BitMatch-report-staging-") || folder.lastPathComponent == ".bitmatch-staging-" + record.id.uuidString) && folder.deletingLastPathComponent() == parent
+                    let inStaging = (folder.lastPathComponent.hasPrefix(".BitMatch-report-staging-") || isStagingName(folder.lastPathComponent, recordID: record.id)) && folder.deletingLastPathComponent() == parent
                     let name = url.lastPathComponent.hasPrefix("backup-") ? String(url.lastPathComponent.dropFirst(7)) : url.lastPathComponent
                     return (folder == parent || inStaging) && name.hasPrefix(stem)
                 }
@@ -902,6 +933,10 @@ public final class TransferJournal: Sendable {
             return "\(path): \(reason)"
         }
         record.pendingWithdrawalPaths = unresolved.isEmpty ? nil : unresolved
+        if let staging = record.reportStagingPath,
+           outcomes[staging] == .withdrawn || outcomes[staging] == .absentOnVerifiedBackup {
+            record.reportStagingPath = nil
+        }
         record.withdrawalReason = unresolved.isEmpty ? nil : reasons.joined(separator: "; ")
         record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
@@ -963,6 +998,8 @@ public final class TransferJournal: Sendable {
         guard currentPaths.contains(where: { handled.contains($0) }) else { return current }
         let remaining = currentPaths.filter { !handled.contains($0) || unresolved.contains($0) }
         merged.pendingWithdrawalPaths = remaining.isEmpty ? nil : remaining
+        if current.reportStagingPath == snapshot.reportStagingPath,
+           recovered.reportStagingPath == nil { merged.reportStagingPath = nil }
         let otherPending = currentPaths.contains { !handled.contains($0) }
         let reasons = [otherPending ? current.withdrawalReason : nil,
                        !unresolved.isEmpty ? recovered.withdrawalReason : nil].compactMap { $0 }
@@ -1012,8 +1049,7 @@ public final class TransferJournal: Sendable {
         }
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
-            let stagingName = ".bitmatch-staging-" + record.id.uuidString
-            let staging = paths.first { URL(fileURLWithPath: $0).lastPathComponent == stagingName }
+            let staging = paths.first { Self.isStagingName(URL(fileURLWithPath: $0).lastPathComponent, recordID: record.id) }
             if let staging { record.reportStagingPath = staging }
             let publicPaths = paths.filter { $0 != staging }
             let allPaths = Array(Set((record.pendingReportPaths ?? []) + publicPaths)).sorted()

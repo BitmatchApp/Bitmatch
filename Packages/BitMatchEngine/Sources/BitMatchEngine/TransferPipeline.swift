@@ -3,6 +3,16 @@
 import Foundation
 import Synchronization
 
+private func verifyReadbackError(_ error: Error) -> NSError {
+    let original = error as NSError
+    var info = original.userInfo
+    let sourceFault = (info[ResultFailureReason.userInfoKey] as? String).flatMap(ResultFailureReason.init(rawValue:))?.isSourceFault == true
+    if info[ResultFailureReason.userInfoKey] == nil { info[ResultFailureReason.userInfoKey] = ResultFailureReason.destinationReadbackFailed.rawValue }
+    let phase = sourceFault ? "verify source read" : "verify readback"
+    info["BitMatchFailureDetail"] = "\(phase): \(original.domain) (\(original.code)): \(original.localizedDescription)"
+    return NSError(domain: original.domain, code: original.code, userInfo: info)
+}
+
 private struct FileResultKey: Hashable {
     let sourceRelativePath: String
     let destinationIndex: Int
@@ -378,7 +388,10 @@ private func taggingSourceReadFailure<T>(_ body: () async throws -> T) async thr
 
 private func completionGateError(_ message: String, reason: ResultFailureReason? = nil) -> NSError {
     var userInfo: [String: Any] = [NSLocalizedDescriptionKey: message]
-    if let reason { userInfo[ResultFailureReason.userInfoKey] = reason.rawValue }
+    if let reason {
+        userInfo[ResultFailureReason.userInfoKey] = reason.rawValue
+        if reason == .destinationCheckFailed { userInfo["BitMatchFailureDetail"] = message }
+    }
     return NSError(
         domain: "TransferPipeline",
         code: NSFileReadUnknownError,
@@ -1105,7 +1118,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     sourceURL: job.source,
                     destinationURL: job.destination,
                     success: false,
-                    error: error,
+                    error: verifyReadbackError(error),
                     fileSize: job.fileSize,
                     verificationResult: nil,
                     processingTime: Date().timeIntervalSince(verificationStarted)
@@ -1439,7 +1452,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                                     sourceURL: fileURL,
                                     destinationURL: destinationFileURL,
                                     success: false,
-                                    error: error,
+                                    error: verifyReadbackError(error),
                                     fileSize: entry.size,
                                     verificationResult: nil,
                                     processingTime: Date().timeIntervalSince(fileStartTime)
@@ -1660,7 +1673,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         relativePath: entry.relativePath,
                         destination: destIndex
                     ) { continue }
-                    let row = FileOperationResult(
+                    var row = FileOperationResult(
                         sourceURL: entry.url,
                         destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                         success: false,
@@ -1669,6 +1682,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         verificationResult: nil,
                         processingTime: 0
                     )
+                    row.recordedChecksumBeforeFailure = await ledger.result(relativePath: entry.relativePath, destination: destIndex)?.verifiedChecksum
                     await ledger.record(row, relativePath: entry.relativePath, destination: destIndex)
                     await onFileResult?(row)
                 }
@@ -1762,7 +1776,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     relativePath: entry.relativePath,
                     destination: destIndex
                 ) { continue }
-                let failure = FileOperationResult(
+                var failure = FileOperationResult(
                     sourceURL: entry.url,
                     destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                     success: false,
@@ -1771,6 +1785,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     verificationResult: nil,
                     processingTime: 0
                 )
+                failure.recordedChecksumBeforeFailure = await ledger.result(relativePath: entry.relativePath, destination: destIndex)?.verifiedChecksum
                 await ledger.record(
                     failure,
                     relativePath: entry.relativePath,
@@ -1808,7 +1823,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                     reason: .destinationCheckFailed
                 )
                 for entry in sourceManifest {
-                    let row = FileOperationResult(
+                    var row = FileOperationResult(
                         sourceURL: entry.url,
                         destinationURL: pinned.logicalRootURL.appendingPathComponent(entry.relativePath),
                         success: false,
@@ -1817,6 +1832,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         verificationResult: nil,
                         processingTime: 0
                     )
+                    row.recordedChecksumBeforeFailure = await ledger.result(relativePath: entry.relativePath, destination: destIndex)?.verifiedChecksum
                     await ledger.record(row, relativePath: entry.relativePath, destination: destIndex)
                     await onFileResult?(row)
                 }

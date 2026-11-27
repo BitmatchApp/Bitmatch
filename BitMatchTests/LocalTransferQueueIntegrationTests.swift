@@ -420,7 +420,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         var rerenderedPDF: URL?
         let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
         let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
-            let urls = (try? FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)) ?? []
+            let urls = (try? FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])) ?? []
             for url in urls where url.pathExtension == "json" {
                 sawProvisional = true
                 if let data = try? Data(contentsOf: url),
@@ -448,7 +448,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(ended)
         XCTAssertTrue(sawProvisional)
         XCTAssertTrue(safeBeforeFinish, "Final reports must settle before the completed journal write")
-        let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+        let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         let jsonURL = try XCTUnwrap(files.first { $0.pathExtension == "json" })
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
         XCTAssertEqual(object["safeToErase"] as? Bool, false)
@@ -942,7 +942,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let savedCard = try XCTUnwrap(savedJob.cardIngests.first { $0.id == cardID })
         XCTAssertEqual(savedCard.localState, .issues)
         XCTAssertNil(savedCard.locallySafeAt)
-        let reports = try FileManager.default.contentsOfDirectory(at: f.primary.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let reports = try FileManager.default.contentsOfDirectory(at: f.primary.appendingPathComponent("Reports"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
         XCTAssertEqual(object["safeToErase"] as? Bool, false)
@@ -1205,7 +1205,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
 
         let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
         let jsonURL = try XCTUnwrap(try FileManager.default
-            .contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+            .contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             .first { $0.pathExtension == "json" })
         let report = try XCTUnwrap(
             try JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any]
@@ -2896,7 +2896,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             XCTAssertEqual(object["savedSafeToErase"] as? Bool, false)
             XCTAssertTrue(first.results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble })
             XCTAssertTrue(FileManager.default.fileExists(atPath: output.appendingPathComponent("ascmhl/ascmhl_chain.xml").path))
-            let reportFiles = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+            let reportFiles = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             for suffix in ["pdf", "json", "csv"] {
                 let file = try XCTUnwrap(reportFiles.first { $0.pathExtension == suffix })
                 XCTAssertFalse(try Data(contentsOf: file).isEmpty, "Requested \(suffix) report must be written")

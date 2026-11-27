@@ -22,7 +22,7 @@ enum TransferHistoryResultPresentation {
         if row.recopyOutcome == "recovered" {
             return row.status + " · recovered after one re-copy (first copy failed verification)"
         }
-        let reasonNote = row.failureReason
+        let reasonNote = row.failureDetail.map { " · " + $0 } ?? row.failureReason
             .flatMap(ResultFailureReason.init(rawValue:))
             .map { " · " + $0.rowNote } ?? ""
         let recopy = row.recopyOutcome == "stillFailed" ? " · re-copy also failed" : ""

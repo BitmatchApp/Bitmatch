@@ -293,6 +293,7 @@ public struct JSONReportItem: Codable, Sendable {
     public let byteCount: Int64?
     public let clipIntegrity: ClipIntegrityFinding?
     public let failureReason: String?
+    public let failureDetail: String?
     /// A failed row's earlier readback checksum (see `ResultRow`); never on a success.
     public let recordedChecksumBeforeFailure: String?
 
@@ -305,6 +306,7 @@ public struct JSONReportItem: Codable, Sendable {
         self.byteCount = row.size
         self.clipIntegrity = row.clipIntegrity
         self.failureReason = row.isSuccessStatus ? nil : row.failureReason.flatMap(ResultFailureReason.init(rawValue:))?.rawValue
+        self.failureDetail = row.isSuccessStatus ? nil : row.failureDetail
         self.recordedChecksumBeforeFailure = row.isSuccessStatus ? nil : row.recordedChecksumBeforeFailure
     }
 }
@@ -488,14 +490,50 @@ public enum EvidenceWriter: Sendable {
         let csvURL = replacement("csv") ?? stem.appendingPathExtension("csv")
         let jsonURL = replacement("json") ?? stem.appendingPathExtension("json")
         let checksumURL = replacement(checksumExtension) ?? stem.appendingPathExtension(checksumExtension)
-        let stagingName = recordIntendedPaths == nil ? ".BitMatch-report-staging-\(UUID().uuidString)" : ".bitmatch-staging-\(jobID.uuidString)"
-        let stagingDirectory = saveDirectory.resolvingSymlinksInPath().appendingPathComponent(stagingName, isDirectory: true)
+        let stagingBase = recordIntendedPaths == nil ? ".BitMatch-report-staging-\(UUID().uuidString)" : ".bitmatch-staging-\(jobID.uuidString)"
+        let stagingParent = saveDirectory.resolvingSymlinksInPath()
+        var stagingDirectory = stagingParent.appendingPathComponent(stagingBase, isDirectory: true)
+        var suffixNumber = 1
+        var createdStaging = false
+        while true {
+            try validatePublication?()
+            if mkdir(stagingDirectory.path, 0o700) == 0 {
+                createdStaging = true
+                do {
+                    if recordIntendedPaths != nil {
+                        try Data(jobID.uuidString.utf8).write(to: stagingDirectory.appendingPathComponent(TransferJournal.stagingOwnerMarker), options: .withoutOverwriting)
+                    }
+                } catch {
+                    // A path occupied during marker creation is not ours to remove.
+                    if recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) {
+                        try? FileManager.default.removeItem(at: stagingDirectory)
+                    }
+                    throw error
+                }
+                break
+            }
+            guard errno == EEXIST else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+            if recordIntendedPaths != nil, TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) {
+                let names = try FileManager.default.contentsOfDirectory(atPath: stagingDirectory.path)
+                guard names == [TransferJournal.stagingOwnerMarker] else {
+                    throw FileOperationError.unsafeOperation("An earlier owned staging directory still contains report evidence. Recover it before retrying.")
+                }
+                break
+            }
+            suffixNumber += 1
+            stagingDirectory = stagingParent.appendingPathComponent(stagingBase + "-\(suffixNumber)", isDirectory: true)
+        }
         var intendedURLs = [csvURL]
         if generateFullReport, checksumAlgorithm != nil { intendedURLs.append(checksumURL) }
         if generateFullReport, pdfData != nil { intendedURLs.append(pdfURL) }
         intendedURLs.append(jsonURL)
-        try recordIntendedPaths?((intendedURLs + [stagingDirectory]).map(\.path))
-        try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
+        do { try recordIntendedPaths?((intendedURLs + [stagingDirectory]).map(\.path)) }
+        catch {
+            if createdStaging && (recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID)) {
+                try? FileManager.default.removeItem(at: stagingDirectory)
+            }
+            throw error
+        }
         func staged(_ url: URL) -> URL { stagingDirectory.appendingPathComponent(url.lastPathComponent) }
         func backup(_ url: URL) -> URL { stagingDirectory.appendingPathComponent("backup-" + url.lastPathComponent) }
         func renameReplacing(_ from: URL, _ to: URL) throws {
@@ -603,6 +641,9 @@ public enum EvidenceWriter: Sendable {
             // Cleanup is part of publication: a failed removal must not be
             // reported as success while provisional evidence remains behind.
             try beforeStagingRemoval?(stagingDirectory)
+            guard recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) else {
+                throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
+            }
             try FileManager.default.removeItem(at: stagingDirectory)
             SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")
             return published
@@ -624,7 +665,12 @@ public enum EvidenceWriter: Sendable {
                 catch { cleanupErrors.append("\(url.path): \(error.localizedDescription)") }
             }
             if cleanupErrors.isEmpty && FileManager.default.fileExists(atPath: stagingDirectory.path) {
-                do { try FileManager.default.removeItem(at: stagingDirectory) }
+                do {
+                    guard recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) else {
+                        throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
+                    }
+                    try FileManager.default.removeItem(at: stagingDirectory)
+                }
                 catch { cleanupErrors.append("\(stagingDirectory.path): \(error.localizedDescription)") }
             }
             SharedLogger.info("Report export error: \(originalError.localizedDescription)")
@@ -702,7 +748,7 @@ public enum EvidenceWriter: Sendable {
             let packagePath = project?.packagePath ?? ""
             let verified = result.isVerifiedStatus && result.checksum?.isEmpty == false && prefs?.verificationMode != .quick
             let reason = result.isSuccessStatus ? nil : result.failureReason.flatMap(ResultFailureReason.init(rawValue:))
-            let details = verified ? "Verified" : (reason.map { result.status + " · " + $0.rowNote } ?? result.status)
+            let details = verified ? "Verified" : (result.failureDetail.map { result.status + " · " + $0 } ?? reason.map { result.status + " · " + $0.rowNote } ?? result.status)
             
             // Per-file times are not measured; the column stays for existing
             // spreadsheets but is empty rather than interpolated (Promise 3).

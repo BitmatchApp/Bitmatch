@@ -73,6 +73,7 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
     /// could not be listed, its folder moved, its transfer status could not be
     /// saved, or a fresh empty-file proof failed.
     case destinationCheckFailed
+    case destinationReadbackFailed
     /// NSError userInfo key the writer sets on the errors it classifies.
     public static let userInfoKey = "BitMatchFailureReason"
 
@@ -91,6 +92,7 @@ public enum ResultFailureReason: String, Sendable, CaseIterable {
         case .existingDestinationConflict: "a different file was already at that name on the backup; it was not overwritten"
         case .existingDestinationContentDiffers: "a file already at that name on the backup has different contents; it was not overwritten, and the card is not proven"
         case .destinationCheckFailed: "the backup could not be checked at the end of the run"
+        case .destinationReadbackFailed: "the backup file could not be read during verification"
         }
     }
 
@@ -124,6 +126,8 @@ public struct ResultRow: Identifiable, Sendable {
     /// Canonical `ResultFailureReason` token for a failed file, when the
     /// engine could classify the failure; nil otherwise. Never error text.
     public let failureReason: String?
+    /// Specific error context recorded at the failing phase.
+    public let failureDetail: String?
     /// The readback checksum this file had on this backup before an
     /// end-of-run check failed it (it changed, vanished or changed size after
     /// it verified). Evidence of what was verified, never a verified checksum:
@@ -142,6 +146,7 @@ public struct ResultRow: Identifiable, Sendable {
          failedOutputMarking: String? = nil,
          recopyOutcome: String? = nil,
          failureReason: String? = nil,
+         failureDetail: String? = nil,
          recordedChecksumBeforeFailure: String? = nil) {
         self.id = id
         self.path = path
@@ -155,6 +160,7 @@ public struct ResultRow: Identifiable, Sendable {
         self.failedOutputMarking = failedOutputMarking
         self.recopyOutcome = recopyOutcome
         self.failureReason = failureReason
+        self.failureDetail = failureDetail
         self.recordedChecksumBeforeFailure = recordedChecksumBeforeFailure
     }
 
@@ -320,7 +326,7 @@ public struct ReportPrefs: Codable, Sendable {
 
 extension ResultRow: Codable {
     public enum CodingKeys: String, CodingKey, Sendable {
-        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome, failureReason, recordedChecksumBeforeFailure
+        case id, path, status, size, checksum, destination, destinationPath, clipIntegrity, wasReused, failedOutputMarking, recopyOutcome, failureReason, failureDetail, recordedChecksumBeforeFailure
     }
 
     public init(from decoder: Decoder) throws {
@@ -346,9 +352,10 @@ extension ResultRow: Codable {
         let failedOutputMarking = try container.decodeIfPresent(String.self, forKey: .failedOutputMarking)
         let recopyOutcome = try container.decodeIfPresent(String.self, forKey: .recopyOutcome)
         let failureReason = try container.decodeIfPresent(String.self, forKey: .failureReason)
+        let failureDetail = try container.decodeIfPresent(String.self, forKey: .failureDetail)
         let recordedChecksumBeforeFailure = try container.decodeIfPresent(String.self, forKey: .recordedChecksumBeforeFailure)
 
-        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome, failureReason: failureReason, recordedChecksumBeforeFailure: recordedChecksumBeforeFailure)
+        self.init(id: id, path: path, status: status, size: size, checksum: checksum, destination: destination, destinationPath: destinationPath, clipIntegrity: clipIntegrity, wasReused: wasReused, failedOutputMarking: failedOutputMarking, recopyOutcome: recopyOutcome, failureReason: failureReason, failureDetail: failureDetail, recordedChecksumBeforeFailure: recordedChecksumBeforeFailure)
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -365,6 +372,7 @@ extension ResultRow: Codable {
         try container.encodeIfPresent(failedOutputMarking, forKey: .failedOutputMarking)
         try container.encodeIfPresent(recopyOutcome, forKey: .recopyOutcome)
         try container.encodeIfPresent(failureReason, forKey: .failureReason)
+        try container.encodeIfPresent(failureDetail, forKey: .failureDetail)
         try container.encodeIfPresent(recordedChecksumBeforeFailure, forKey: .recordedChecksumBeforeFailure)
     }
 }

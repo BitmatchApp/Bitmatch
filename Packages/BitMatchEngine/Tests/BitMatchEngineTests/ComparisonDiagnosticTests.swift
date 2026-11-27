@@ -36,6 +36,29 @@ final class ComparisonDiagnosticTests: XCTestCase {
         XCTAssertEqual(records.last?["mismatchedCount"] as? Int, 1)
         XCTAssertFalse(String(decoding: try JSONSerialization.data(withJSONObject: records), as: UTF8.self).contains(marker))
     }
+    func testCompareIgnoresOnlyBitMatchWorkingEntries() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        for directory in [left, right] { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true) }
+        for directory in [left, right] { try Data("same".utf8).write(to: directory.appendingPathComponent("clip")) }
+        let staging = right.appendingPathComponent(".bitmatch-staging-test")
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data("private".utf8).write(to: staging.appendingPathComponent("report.json"))
+        try Data("private".utf8).write(to: right.appendingPathComponent(".unsettled-report.json"))
+        let result = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertEqual(result.onlyInRightCount, 0)
+        XCTAssertEqual(result.mismatchedCount, 0)
+        // Transfer manifests must never silently discard a card's files.
+        let sourceListing = try CardSource.enumerateRegularFiles(base: right).map(\.relativePath)
+        XCTAssertTrue(sourceListing.contains(".bitmatch-staging-test/report.json"))
+        XCTAssertTrue(sourceListing.contains(".unsettled-report.json"))
+        try Data().write(to: right.appendingPathComponent(".other-hidden"))
+        let other = try await FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+            .compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertEqual(other.onlyInRightCount, 1)
+    }
     func testReadFailureRetainsPhaseAndDoesNotLogSuccessfulCompletion() async throws {
         let run = UUID()
         let marker = "PRIVATE_PATH_\(UUID())"

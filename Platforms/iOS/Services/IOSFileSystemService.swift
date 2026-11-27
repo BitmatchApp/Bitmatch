@@ -71,7 +71,7 @@ final class IOSFileSystemService: NSObject, FileSystemService, @unchecked Sendab
                 ])
             }
             defer { folderURL.stopAccessingSecurityScopedResource() }
-            return try CardSource.enumerateRegularFiles(base: folderURL, checkCancellation: check)
+            return try CardSource.enumerateRegularFiles(base: folderURL, checkCancellation: check, skipWorkingEntries: true)
         }.map(\.url)
 
         #if DEBUG

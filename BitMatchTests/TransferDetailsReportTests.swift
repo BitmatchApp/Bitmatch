@@ -31,6 +31,28 @@ struct TransferDetailsReportTests {
         return record
     }
 
+    @Test func readbackFailureDetailSurvivesHistoryAndPDF() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("history-readback-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: root),
+            destinations: [try LocalTransferResource(url: root)], verificationMode: .standard,
+            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs())
+        record.state = .issues
+        record.results = [ResultRow(path: root.appendingPathComponent("clip.mov").path,
+            status: ResultOutcome.failed.statusText, size: 9, checksum: nil, destination: root.path,
+            failureReason: ResultFailureReason.destinationReadbackFailed.rawValue,
+            failureDetail: "verify readback: InjectedReadback (7): transient read error")]
+        let data = try JSONEncoder().encode(record)
+        let decoded = try JSONDecoder().decode(LocalTransferRecord.self, from: data)
+        #expect(decoded.results.first?.failureDetail == record.results.first?.failureDetail)
+        let exported = try TransferHistoryDocument(record: decoded, history: [decoded], asCSV: false)
+        #expect(String(decoding: exported.data, as: UTF8.self).contains("InjectedReadback"))
+        let pdf = try #require(PDFDocument(data: try await ReportExporter.historyPDF(record: decoded, history: [decoded], includeThumbnails: false)))
+        #expect(pdf.string?.contains("InjectedReadback") == true)
+        #expect(TransferHistoryResultPresentation.statusText(for: decoded.results[0], mode: .standard).contains("verify readback"))
+    }
+
     @Test func historyPDFCountsOnlySuccessfulPlannedBytes() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("history-success-bytes-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

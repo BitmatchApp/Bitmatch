@@ -159,6 +159,10 @@ public struct FileOperationResult: Sendable {
     public var recordedChecksumBeforeFailure: String? = nil
 
     /// Canonical `ResultFailureReason` token the writer set on `error`.
+    public var failureDetail: String? {
+        (error as NSError?)?.userInfo["BitMatchFailureDetail"] as? String
+    }
+
     public var failureReason: String? {
         (error as NSError?)?.userInfo[ResultFailureReason.userInfoKey] as? String
     }

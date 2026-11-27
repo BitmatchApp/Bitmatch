@@ -168,6 +168,22 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertTrue(saved.contains { $0.pathExtension == "json" })
     }
 
+    func testInitialReportRejectsChangedDestinationIdentity() async throws {
+        let fixture = try reportFixture(blockReportsFolder: false)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalTransferResource(url: fixture.destination))) as? [String: Any])
+        encoded["volumeID"] = "replaced-volume"
+        let destination = try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: encoded))
+        var record = LocalTransferRecord(id: UUID(), createdAt: Date(), source: try LocalTransferResource(url: fixture.source),
+            destinations: [destination], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        record.runDestinationURLs = [fixture.destination]
+        let harness = ExecutorHarness(returnedResults: [fixture.result], emittedResults: [],
+            sourceURL: fixture.source, destinationURLs: [fixture.destination], makeReport: true, initialPublicationRecord: record)
+        _ = try await harness.execute()
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fixture.destination.appendingPathComponent("Reports").path))
+        XCTAssertEqual(harness.terminalInfo?.success, false)
+        XCTAssertTrue(harness.terminalInfo?.message.localizedCaseInsensitiveContains("report") == true)
+    }
+
     func testVerifiedDestinationPublishesASCMHLBeforeSuccessfulCompletion() async throws {
         let fixture = try ascFixture()
         let harness = ExecutorHarness(returnedResults: [fixture.result], emittedResults: [],
@@ -657,7 +673,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
                                     let reportRoot = destination.appendingPathComponent("Reports")
                                     XCTAssertEqual(fm.fileExists(atPath: reportRoot.path), reports && backupIndex == 0, key)
                                     if reports && backupIndex == 0 {
-                                        let saved = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil)
+                                        let saved = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
                                         for ext in ["pdf", "csv", "json"] { XCTAssertTrue(saved.contains { $0.pathExtension == ext }, "Missing \(ext): \(key)") }
                                     }
                                 }
@@ -914,7 +930,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
                                 XCTAssertTrue(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path), key)
                             }
                             let reportRoot = destinations[0].appendingPathComponent("Reports")
-                            let files = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil)
+                            let files = try fm.contentsOfDirectory(at: reportRoot, includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
                             let pdf = try XCTUnwrap(files.first { $0.pathExtension == "pdf" }, key)
                             let document = try XCTUnwrap(PDFDocument(url: pdf), key)
                             XCTAssertGreaterThan(document.pageCount, 0)
@@ -1032,7 +1048,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
             XCTAssertTrue(operation?.results.allSatisfy { $0.success && $0.verificationResult?.isValid == true } == true)
             XCTAssertEqual(harness.terminalInfo?.success, true)
             XCTAssertEqual(harness.publishedTerminalStates.count, 1)
-            let reports = try FileManager.default.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+            let reports = try FileManager.default.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
             XCTAssertTrue(reports.contains { $0.pathExtension == "csv" })
             XCTAssertTrue(reports.contains { $0.pathExtension == "json" })
             let copied = SafetyValidator.resolvedDestinationRoot(source: source, destination: destination, settings: CameraLabelSettings())
@@ -1056,7 +1072,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         let harness = ExecutorHarness(returnedResults: [fixture.result, failed], emittedResults: [],
             sourceURL: fixture.source, destinationURLs: [fixture.destination], makeReport: true)
         _ = try await harness.execute()
-        let reports = try FileManager.default.contentsOfDirectory(at: fixture.destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let reports = try FileManager.default.contentsOfDirectory(at: fixture.destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
         let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
@@ -1092,7 +1108,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertEqual(proven.count, 1)
         XCTAssertEqual(proven.first?.map { URL(fileURLWithPath: $0).lastPathComponent }, [".DS_Store"])
         // The report states the run's setting and carries the summary line.
-        let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         let csv = try String(contentsOf: try XCTUnwrap(reports.first { $0.pathExtension == "csv" }), encoding: .utf8)
         XCTAssertTrue(csv.contains("Finder View Files Setting,Finder view files (.DS_Store): skipped when proven"), csv)
         XCTAssertTrue(csv.contains("1 Finder view file (.DS_Store) skipped: not card content; Finder recreates them"), csv)
@@ -1176,7 +1192,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertEqual(harness.terminalInfo?.success, false)
         XCTAssertTrue(harness.terminalInfo?.message.contains("the card changed") == true,
                       harness.terminalInfo?.message ?? "no verdict")
-        let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
         let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
@@ -1278,7 +1294,8 @@ private final class ExecutorHarness {
         estimatedFiles: Int? = nil,
         estimatedBytes: Int64? = nil,
         sleepPreventer: TransferSleepPreventing = RecordingSleepPreventer(),
-        finalizerWithProvenSkips: PhotographerReportFinalizer? = nil
+        finalizerWithProvenSkips: PhotographerReportFinalizer? = nil,
+        initialPublicationRecord: LocalTransferRecord? = nil
     ) {
         let fileOperations = ExecutorFileOperationsService(
             returnedResults: returnedResults,
@@ -1313,7 +1330,8 @@ private final class ExecutorHarness {
             estimatedBytes: estimatedBytes ?? returnedResults.reduce(0) { $0 + $1.fileSize },
             currentMode: .copyAndVerify,
             photographerReportFinalizer: finalizer,
-            generateASCMHL: generateASCMHL
+            generateASCMHL: generateASCMHL,
+            initialPublicationRecord: initialPublicationRecord
         )
         stateService.$currentState
             .dropFirst()

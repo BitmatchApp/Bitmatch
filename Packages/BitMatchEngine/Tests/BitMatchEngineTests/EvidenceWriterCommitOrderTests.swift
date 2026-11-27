@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import BitMatchEngine
 
@@ -154,6 +155,72 @@ struct EvidenceWriterCommitOrderTests {
         }
     }
 
+    @Test func foreignStagingUsesRecordedSiblingAndSurvivesRecovery() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let foreign = backup.appendingPathComponent("Reports/.bitmatch-staging-" + id.uuidString)
+        try FileManager.default.createDirectory(at: foreign, withIntermediateDirectories: true)
+        try Data("keep".utf8).write(to: foreign.appendingPathComponent("foreign"))
+        let date = Date()
+        _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+            safeToErase: false, recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0, publicationID: id) })
+        let record = try #require(journal.records.first)
+        #expect(record.reportStagingPath?.hasSuffix(id.uuidString + "-2") == true)
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [foreign.path])
+        if case .pending = outcomes[foreign.path] {} else { Issue.record("Foreign directory was not retained") }
+        #expect(FileManager.default.fileExists(atPath: foreign.appendingPathComponent("foreign").path))
+    }
+
+    @Test func failedRollbackRetainsStagedJSONUntilPublicWithdrawalSucceeds() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let failure = Mutex(false)
+        let date = Date()
+        await #expect(throws: (any Error).self) {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("safe".utf8),
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true,
+                recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0, publicationID: id) },
+                validatePublication: { if failure.withLock({ $0 }) { throw NSError(domain: "rollback", code: 1) } },
+                beforePublish: { url in
+                    if url.pathExtension == "json" {
+                        failure.withLock { $0 = true }
+                        throw NSError(domain: "publication", code: 1)
+                    }
+                })
+        }
+        let record = try #require(journal.records.first)
+        let staging = try #require(record.reportStagingPath)
+        let paths = try #require(record.pendingReportPaths)
+        let pdf = try #require(paths.first { $0.hasSuffix(".pdf") })
+        let json = try #require(paths.first { $0.hasSuffix(".json") })
+        let stagedJSON = URL(fileURLWithPath: staging).appendingPathComponent(URL(fileURLWithPath: json).lastPathComponent)
+        #expect(FileManager.default.fileExists(atPath: pdf))
+        let first = TransferJournal.withdrawReports(record: record, paths: paths + [staging], volumeIdentityAt: { _ in "unavailable" })
+        if case .pending = first[staging] {} else { Issue.record("Staged proof was not retained") }
+        #expect(FileManager.default.fileExists(atPath: stagedJSON.path))
+        let second = TransferJournal.withdrawReports(record: record, paths: paths + [staging])
+        #expect(second[pdf] == .withdrawn)
+        #expect(second[staging] == .withdrawn)
+        #expect(!FileManager.default.fileExists(atPath: staging))
+    }
+
     @Test func recoveryRemovesRecordedStagingDirectoryBeforePublication() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
@@ -168,6 +235,7 @@ struct EvidenceWriterCommitOrderTests {
         let staging = backup.appendingPathComponent("Reports/.bitmatch-staging-" + id.uuidString)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         try journal.recordPendingReportPaths(id: id, paths: [staging.path], publicationID: id)
+        try Data(id.uuidString.utf8).write(to: staging.appendingPathComponent(".bitmatch-owner"))
         try Data("safe report".utf8).write(to: staging.appendingPathComponent("report.pdf"))
         let record = try #require(journal.records.first)
         let outcomes = TransferJournal.withdrawReports(record: record, paths: [staging.path])

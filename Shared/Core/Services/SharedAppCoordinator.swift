@@ -2719,7 +2719,8 @@ class SharedAppCoordinator: ObservableObject {
             priorSourceFaultPreventsSafeClaim: lineagePreventsSafeClaim,
             deferReportSafetyUntilHistory: true,
             reportJobID: recordID,
-            recordReportPaths: transferJournal.reportPathRecorder(id: recordID)
+            recordReportPaths: transferJournal.reportPathRecorder(id: recordID),
+            initialPublicationRecord: transferJournal.records.first(where: { $0.id == recordID })
         )
 
         let callbacks = CopyVerifyCallbacks(

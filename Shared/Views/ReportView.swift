@@ -1033,6 +1033,9 @@ struct ReportView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
+            if let detail = row.failureDetail {
+                Text(detail).font(.system(size: 8)).foregroundColor(.secondary)
+            }
             if let checksum = row.checksum, !checksum.isEmpty {
                 Text("Checksum: \(checksum.prefix(16))…")
                     .font(.system(size: 8, design: .monospaced))

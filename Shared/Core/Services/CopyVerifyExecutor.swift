@@ -25,6 +25,7 @@ struct CopyVerifyConfig {
     let operationId: UUID
     let reportJobID: UUID?
     let recordReportPaths: (@Sendable ([String]) throws -> Void)?
+    let initialPublicationRecord: LocalTransferRecord?
     let sourceURL: URL
     let destinationURLs: [URL]
     let verificationMode: VerificationMode
@@ -68,11 +69,13 @@ struct CopyVerifyConfig {
         priorSourceFaultPreventsSafeClaim: Bool = false,
         deferReportSafetyUntilHistory: Bool = false,
         reportJobID: UUID? = nil,
-        recordReportPaths: (@Sendable ([String]) throws -> Void)? = nil
+        recordReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
+        initialPublicationRecord: LocalTransferRecord? = nil
     ) {
         self.operationId = operationId
         self.reportJobID = reportJobID
         self.recordReportPaths = recordReportPaths
+        self.initialPublicationRecord = initialPublicationRecord
         self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
         self.deferReportSafetyUntilHistory = deferReportSafetyUntilHistory
         self.sourceURL = sourceURL
@@ -544,7 +547,8 @@ final class CopyVerifyExecutor {
                 phaseDurations: phaseDurations,
                 verdictMessage: preReportVerdict.message,
                 skipsProven: finderSkipsProven,
-                additionalNotes: config.deferReportSafetyUntilHistory ? "Transfer history has not yet been saved. Keep the card." : nil
+                additionalNotes: config.deferReportSafetyUntilHistory ? "Transfer history has not yet been saved. Keep the card." : nil,
+                publicationRecord: config.initialPublicationRecord
             )
             if config.deferReportSafetyUntilHistory, reportIssue == nil {
                 pendingReport = PendingReport(operation: operation, results: allResults, config: config,
@@ -834,28 +838,46 @@ final class CopyVerifyExecutor {
         let reportJobID = config.reportJobID ?? reportOperation.id
         let beforePublish = recovery ? beforeRecoveryReportPublish : nil
         let beforeRestore = recovery ? beforeRecoveryReportRestore : nil
-        let recordIntendedPaths = config.recordReportPaths
-        let validationFiles = replacing ?? publicationRecord?.pendingReportPaths?.map { URL(fileURLWithPath: $0) }
-        let validatePublication: (@Sendable () throws -> Void)? = validationFiles.map { files in
-            let paths = files.map(\.path)
-            return {
+        let recorder = config.recordReportPaths
+        if recorder != nil && publicationRecord == nil {
+            throw FileOperationError.unsafeOperation("The original report destination identity is unavailable. Keep the card.")
+        }
+        let initialPaths = replacing?.map(\.path) ?? publicationRecord.map { record in
+            // Before Reports exists, validate the selected backup itself.
+            (record.runDestinationURLs ?? record.destinations.map(\.url)).prefix(1).map {
+                $0.appendingPathComponent(".bitmatch-publication-check").path
+            }
+        }
+        let pathsToValidate = Mutex(initialPaths ?? [])
+        // Spelled as if-let rather than Optional.map returning a closure: the
+        // compiler cannot type-check the nested @Sendable closure form.
+        var recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil
+        if let record = recorder {
+            recordIntendedPaths = { paths in
+                try record(paths)
+                pathsToValidate.withLock { $0 = paths }
+            }
+        }
+        var validatePublication: (@Sendable () throws -> Void)? = nil
+        if initialPaths != nil {
+            validatePublication = {
                 guard var snapshot = publicationRecord else {
                     throw FileOperationError.unsafeOperation("The original report destination identity is unavailable. Keep the card.")
                 }
-                if snapshot.pendingReportPaths != paths { snapshot.relativeReportPaths = nil }
+                let paths = pathsToValidate.withLock { $0 }
+                snapshot.relativeReportPaths = nil
                 snapshot.pendingReportPaths = paths
                 try TransferJournal.validateReportPublication(record: snapshot, paths: paths)
             }
         }
-        let validateReplacement: (@Sendable (URL) throws -> Void)? = replacing.map { files in
+        var validateReplacement: (@Sendable (URL) throws -> Void)? = nil
+        if let files = replacing {
             let paths = files.map(\.path)
-            return { url in
+            validateReplacement = { url in
                 guard let snapshot = publicationRecord else { throw ReportReplacementOwnershipError(path: url.path) }
                 try TransferJournal.validateReportReplacement(record: snapshot, paths: paths, target: url.path)
             }
         }
-        try validatePublication?()
-
         let work = Task.detached(priority: .utility) {
             try await ReportExporter.export(
                 mode: reportMode,

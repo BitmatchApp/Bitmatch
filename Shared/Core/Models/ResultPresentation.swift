@@ -421,6 +421,7 @@ extension ResultFailureReason {
         case .existingDestinationConflict: return "\(name) already had different files at those names"
         case .existingDestinationContentDiffers: return "\(name) already had files with different contents at those names"
         case .destinationCheckFailed: return "\(name) could not be checked at the end of the run"
+        case .destinationReadbackFailed: return "A file on \(name) could not be read during verification"
         }
     }
 }
