@@ -31,20 +31,29 @@ public extension TransferCompletion {
               project.permitsExpectedExclusionQueueContinuation,
               handoffIssues.isEmpty, reportIssue == nil,
               operation.results.allSatisfy({ result in
-                  result.error == nil && (result.excludedAppleDouble
+                  result.error == nil && (result.excludedAppleDouble || result.skippedFinderMetadata
                     || (result.success && result.verificationResult?.isValid == true))
               }) else { return nil }
+        let rows = TransferCompletion.rows(from: operation)
+        // Skipped Finder view files leave the selected files only when the
+        // one predicate proves them against this run's complete manifest.
+        guard finderMetadataSkipsProven(
+            rows: rows, provenPaths: operation.skippedFinderMetadataPaths, sourceFiles: manifest,
+            destinations: operation.destinationURLs, source: operation.sourceURL, settings: operation.settings
+        ) else { return nil }
+        let skippedPaths = Set(rows.filter(\.isSkippedFinderMetadata).map { PathContainment.comparablePath($0.path) })
         let sourcePaths = manifest.map { PathContainment.comparablePath($0.path) }
         guard Set(sourcePaths).count == sourcePaths.count,
               let expected = selectedSourcePaths(
                 source: operation.sourceURL, reviewedRelativePaths: reviewed,
-                fullSourcePaths: Set(sourcePaths)
+                fullSourcePaths: Set(sourcePaths).subtracting(skippedPaths)
               ), !expected.isEmpty else { return nil }
         let counts = Array(repeating: expected.count, count: operation.destinationURLs.count)
         guard exactExpectedExclusionRows(
-            rows: rows(from: operation), source: operation.sourceURL,
+            rows: rows, source: operation.sourceURL,
             destinations: operation.destinationURLs, settings: operation.settings,
-            plannedFileCounts: counts, expectedSelectedSourcePaths: expected
+            plannedFileCounts: counts, expectedSelectedSourcePaths: expected,
+            finderMetadataSkipsProven: true
         ) else { return nil }
         return project.expectedExclusionQueueIdentity
     }
@@ -52,10 +61,15 @@ public extension TransferCompletion {
     /// Pure saved-evidence checks: no bookmarks, file reads or mounted-media
     /// dependency. The final persisted qualification attests the classifier
     /// and handoff gates; this rechecks its exact row/selection scope.
+    /// A skipped Finder view file row is accepted only when the caller passes
+    /// `finderMetadataSkipsProven`, the answer of
+    /// `TransferCompletion.finderMetadataSkipsProven` for these rows; it must
+    /// still sit at its own place on one backup and is not a selected file.
     internal static func exactExpectedExclusionRows(
         rows: [ResultRow], source: URL, destinations: [URL],
         settings: CameraLabelSettings, plannedFileCounts: [Int],
-        expectedSelectedSourcePaths: Set<String>? = nil
+        expectedSelectedSourcePaths: Set<String>? = nil,
+        finderMetadataSkipsProven: Bool = false
     ) -> Bool {
         guard !rows.isEmpty, !destinations.isEmpty,
               plannedFileCounts.count == destinations.count,
@@ -89,7 +103,9 @@ public extension TransferCompletion {
             let destination = PathContainment.comparablePath(destinationPath)
             let matching = roots.indices.filter { destination == roots[$0] + "/" + relative }
             guard matching.count == 1, let index = matching.first else { return false }
-            if ResultOutcome(statusText: row.status) == .excludedAppleDouble {
+            if row.isSkippedFinderMetadata {
+                guard finderMetadataSkipsProven, !excluded.contains(path) else { return false }
+            } else if ResultOutcome(statusText: row.status) == .excludedAppleDouble {
                 guard excluded.contains(path), excludedByDestination[index].insert(path).inserted else { return false }
             } else {
                 guard row.isVerifiedStatus, !excluded.contains(path),

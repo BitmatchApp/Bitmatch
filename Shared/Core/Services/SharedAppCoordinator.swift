@@ -2756,7 +2756,8 @@ class SharedAppCoordinator: ObservableObject {
                     copyDurationSeconds: durations.copySeconds,
                     verifyDurationSeconds: durations.verifySeconds,
                     performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,
-                    sourceFingerprint: currentOperation?.sourceFingerprint
+                    sourceFingerprint: currentOperation?.sourceFingerprint,
+                    skippedFinderMetadataPaths: currentOperation?.skippedFinderMetadataPaths
                 )
                 SharedLogger.transferEvent(.journalFinished, run: startID)
                 handleAttemptTerminal(recordID: recordID, belongsToQueueSession: belongsToQueueSession)

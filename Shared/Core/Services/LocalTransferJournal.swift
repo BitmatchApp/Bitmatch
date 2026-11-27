@@ -429,7 +429,8 @@ final class LocalTransferJournal: ObservableObject {
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
-        sourceFingerprint: String? = nil
+        sourceFingerprint: String? = nil,
+        skippedFinderMetadataPaths: [String]? = nil
     ) throws {
         defer { refresh() }
         try beforeFinish?(id)
@@ -443,7 +444,8 @@ final class LocalTransferJournal: ObservableObject {
             copyDurationSeconds: copyDurationSeconds,
             verifyDurationSeconds: verifyDurationSeconds,
             performanceTelemetry: performanceTelemetry,
-            sourceFingerprint: sourceFingerprint
+            sourceFingerprint: sourceFingerprint,
+            skippedFinderMetadataPaths: skippedFinderMetadataPaths
         )
     }
 

@@ -11,6 +11,42 @@ public struct VerificationScopeEvidence: Codable, Sendable {
     public let recordedSelectedResults: Int
     public let recordedVerifiedResults: Int
     public let recordedExcludedSourceFiles: Int
+    /// Distinct Finder view files (`.DS_Store`) the run skipped. Not card
+    /// content and not selected files; 0 for reports written before skipping.
+    public let recordedSkippedFinderMetadata: Int
+
+    private enum CodingKeys: String, CodingKey {
+        case selectedMode, configuredChecks, countsBasis, recordedSelectedSourceFiles
+        case recordedSelectedResults, recordedVerifiedResults, recordedExcludedSourceFiles
+        case recordedSkippedFinderMetadata
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        selectedMode = try c.decode(VerificationMode.self, forKey: .selectedMode)
+        configuredChecks = try c.decodeIfPresent(String.self, forKey: .configuredChecks)
+        countsBasis = try c.decode(String.self, forKey: .countsBasis)
+        recordedSelectedSourceFiles = try c.decode(Int.self, forKey: .recordedSelectedSourceFiles)
+        recordedSelectedResults = try c.decode(Int.self, forKey: .recordedSelectedResults)
+        recordedVerifiedResults = try c.decode(Int.self, forKey: .recordedVerifiedResults)
+        recordedExcludedSourceFiles = try c.decode(Int.self, forKey: .recordedExcludedSourceFiles)
+        recordedSkippedFinderMetadata = try c.decodeIfPresent(Int.self, forKey: .recordedSkippedFinderMetadata) ?? 0
+    }
+
+    /// A run with no skipped file writes the same keys as before.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(selectedMode, forKey: .selectedMode)
+        try c.encodeIfPresent(configuredChecks, forKey: .configuredChecks)
+        try c.encode(countsBasis, forKey: .countsBasis)
+        try c.encode(recordedSelectedSourceFiles, forKey: .recordedSelectedSourceFiles)
+        try c.encode(recordedSelectedResults, forKey: .recordedSelectedResults)
+        try c.encode(recordedVerifiedResults, forKey: .recordedVerifiedResults)
+        try c.encode(recordedExcludedSourceFiles, forKey: .recordedExcludedSourceFiles)
+        if recordedSkippedFinderMetadata != 0 {
+            try c.encode(recordedSkippedFinderMetadata, forKey: .recordedSkippedFinderMetadata)
+        }
+    }
 
     public init(selectedMode: VerificationMode, results: [ResultRow], includeModePlan: Bool = true) {
         self.selectedMode = selectedMode
@@ -25,6 +61,7 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         recordedExcludedSourceFiles = Set(results.filter {
             ResultOutcome(statusText: $0.status) == .excludedAppleDouble
         }.map(\.path)).count
+        recordedSkippedFinderMetadata = Set(results.filter(\.isSkippedFinderMetadata).map(\.path)).count
     }
 
     public static func checkPlan(for mode: VerificationMode) -> String {
@@ -57,6 +94,14 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         return "\(recordedExcludedSourceFiles) AppleDouble source files intentionally excluded; the whole card was not backed up."
     }
 
+    /// "2 Finder view files skipped (not card content)". Never says
+    /// "excluded" or "the whole card": that is AppleDouble's wording.
+    public var finderMetadataSkipLine: String? {
+        guard recordedSkippedFinderMetadata > 0 else { return nil }
+        let noun = recordedSkippedFinderMetadata == 1 ? "file" : "files"
+        return "\(recordedSkippedFinderMetadata) Finder view \(noun) skipped (not card content)"
+    }
+
     /// Counts decoded from another report are claims, not trusted counters.
     /// Compare them with that report's totals before accepting its verdict.
     public var hasConsistentRecordedCounts: Bool {
@@ -65,6 +110,7 @@ public struct VerificationScopeEvidence: Codable, Sendable {
             && recordedSelectedResults >= 0
             && recordedVerifiedResults >= 0
             && recordedExcludedSourceFiles >= 0
+            && recordedSkippedFinderMetadata >= 0
             && recordedSelectedSourceFiles <= recordedSelectedResults
             && (recordedSelectedSourceFiles == 0) == (recordedSelectedResults == 0)
             && recordedVerifiedResults <= recordedSelectedResults

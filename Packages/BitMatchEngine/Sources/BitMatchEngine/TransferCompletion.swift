@@ -663,8 +663,11 @@ public enum TransferCompletion: Sendable {
             }
         } else if !skipsProven && actualIssueCount == 0 {
             // Every copied file is fine but the skips are not proven: say that,
-            // never "All files copied and verified".
-            fileResultsMessage = excludedCount > 0 ? "\(skipMismatch); \(excludedDescription)" : skipMismatch
+            // never "All files copied and verified". With an AppleDouble
+            // exclusion too, still say the whole card is not backed up.
+            fileResultsMessage = excludedCount > 0
+                ? "\(skipMismatch); \(excludedDescription). Keep the source: the whole card is not backed up"
+                : skipMismatch
         } else if fileResultsSucceeded {
             if allFilesReused {
                 fileResultsMessage = "All files already existed and were verified; nothing new copied"

@@ -900,11 +900,15 @@ public final class TransferJournal: Sendable {
         copyDurationSeconds: TimeInterval? = nil,
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
-        sourceFingerprint: String? = nil
+        sourceFingerprint: String? = nil,
+        skippedFinderMetadataPaths: [String]? = nil
     ) throws {
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.results = results
+            // The engine-proven set (`FileOperation.skippedFinderMetadataPaths`).
+            // Status text alone never proves a skip.
+            record.skippedFinderMetadataPaths = skippedFinderMetadataPaths
             record.copyDurationSeconds = performanceTelemetry?.copyDurationSeconds
                 ?? copyDurationSeconds
                 ?? record.copyDurationSeconds
@@ -932,8 +936,12 @@ public final class TransferJournal: Sendable {
             let missingVerification = record.verificationMode != .quick && results.contains { row in
                 row.isSuccessStatus && !row.isVerifiedStatus
             }
+            // A skipped Finder view file is not an issue only while the one
+            // predicate proves the record's skips; otherwise it is one.
+            let skipsProven = Self.finderMetadataSkipsProven(record)
             record.state = hadIssues || results.isEmpty || incompletePlan || missingVerification
-                || results.contains(where: { !$0.isSuccessStatus }) ? .issues : .completed
+                || results.contains(where: { !$0.isSuccessStatus && !($0.isSkippedFinderMetadata && skipsProven) })
+                ? .issues : .completed
             let truthfulSummary = incompletePlan
                 ? "Transfer results are incomplete. Do not erase the card."
                 : missingVerification && !hadIssues
@@ -975,7 +983,33 @@ public final class TransferJournal: Sendable {
         return TransferCompletion.exactExpectedExclusionRows(
             rows: record.results, source: record.source.url,
             destinations: record.destinations.map(\.url), settings: record.cameraSettings,
-            plannedFileCounts: counts
+            plannedFileCounts: counts,
+            finderMetadataSkipsProven: finderMetadataSkipsProven(record)
+        )
+    }
+
+    /// `TransferCompletion.finderMetadataSkipsProven` for a saved record.
+    ///
+    /// A record keeps no source manifest, so the manifest handed to the
+    /// predicate is rebuilt from the record's own rows (every row's source
+    /// path), and only after the saved plan is covered exactly
+    /// (`hasCompletePlannedResults`: each backup's selected rows match
+    /// `plannedFileCounts`, recorded before copying from the manifest with
+    /// skipped files left out). Otherwise the manifest is nil and any skip is
+    /// unproven. For a persisted record, rule 4 (every proven path is on the
+    /// card's manifest) is therefore tautological: the record-level guarantee
+    /// is its rows, its planned counts and the card fingerprint, with every
+    /// other rule of the predicate (proven list, one row per backup at its
+    /// own place, no stray skipped row) still applied. A record with no
+    /// skipped row and no proven list has nothing to prove.
+    static func finderMetadataSkipsProven(_ record: LocalTransferRecord) -> Bool {
+        let manifest: [URL]? = hasCompletePlannedResults(record)
+            ? Set(record.results.map(\.path)).map { URL(fileURLWithPath: $0) }
+            : nil
+        return TransferCompletion.finderMetadataSkipsProven(
+            rows: record.results, provenPaths: record.skippedFinderMetadataPaths, sourceFiles: manifest,
+            destinations: record.destinations.map(\.url), source: record.source.url,
+            settings: record.cameraSettings
         )
     }
 
@@ -993,18 +1027,23 @@ public final class TransferJournal: Sendable {
             .max { ($0.endedAt ?? .distantPast) < ($1.endedAt ?? .distantPast) }
     }
 
+    /// Every row verified, except skipped Finder view files, which count only
+    /// while `finderMetadataSkipsProven(record)` holds; the per-backup and
+    /// planned-count checks apply to the other rows.
     private static func hasCompleteVerifiedResults(_ record: LocalTransferRecord) -> Bool {
-        guard !record.results.isEmpty,
-              record.results.allSatisfy(\.isVerifiedStatus),
-              !record.destinations.isEmpty else { return false }
+        let rows = record.results.filter { !$0.isSkippedFinderMetadata }
+        guard !rows.isEmpty,
+              rows.allSatisfy(\.isVerifiedStatus),
+              !record.destinations.isEmpty,
+              finderMetadataSkipsProven(record) else { return false }
         let groups = record.destinations.map { destination in
-            record.results.filter { row in
+            rows.filter { row in
                 guard let path = row.destinationPath else { return false }
                 return PathContainment.isWithin(path, root: destination.url.path)
             }
         }
         guard groups.allSatisfy({ !$0.isEmpty && Set($0.map(\.path)).count == $0.count }),
-              groups.reduce(0, { $0 + $1.count }) == record.results.count,
+              groups.reduce(0, { $0 + $1.count }) == rows.count,
               let expectedPaths = groups.first.map({ Set($0.map(\.path)) }),
               !expectedPaths.isEmpty else { return false }
         guard let plan = record.plannedFileCounts,
