@@ -14,6 +14,15 @@ Every feature, screen, and refactor should make this truer. When a change is har
 4. **Simple by default, powerful on purpose.** The everyday path is: choose a source, choose backups, copy and verify, review the outcome. Photographer jobs, folder recipes, SFTP, ASC MHL, and verification modes are first-class but opt-in; they never crowd the default path.
 5. **One app everywhere.** Mac, iPad, and iPhone share the same engine, rules, and verdicts. Layout adapts; behavior does not. Mac-only exceptions (SFTP) are explicit.
 
+**Skipped Finder view files, 2026-11-26 (GitHub issue 93).** A skip is a `.DS_Store` on the card that the engine read and proved to be Finder view state, left uncopied and listed on every backup; it is not an exclusion, not a filter by name, and never a way to drop real card content. Promises 1 and 2 hold because `TransferCompletion.finderMetadataSkipsProven` lets a skip leave the card safe to erase only when all six rules hold:
+
+1. Every selected file on every backup verified (Quick never qualifies).
+2. Every skipped row's path is in the run's proven set; status text alone never counts.
+3. Each proven path has exactly one skipped row per backup, none extra.
+4. Selected plus skipped paths equal the card's complete manifest; unsupported entries stay failures.
+5. The run has no AppleDouble exclusions; that rule wins, unchanged.
+6. At the final card check each skipped file still present is classified again; one that is no longer a Finder file fails the run, while a Finder rewrite or a new Finder file does not.
+
 ## Coherence review, 2026-09-25
 
 A read-only audit of the whole codebase against these promises found the safety core strong and the drift in the layers around it. Findings, in priority order:

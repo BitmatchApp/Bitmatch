@@ -246,6 +246,7 @@ License for any reuse of `ChunkedIO`/`SpeedMeter` ideas: MIT, retain copyright n
 - **`.bak` of the journal.** See section 1 row 5.
 - **Attention items with errno.** SD-Offload preserves operation + errno through `NSError` (`RecoveryConsentTests.testWipeErrorPreservesOperationAndErrnoThroughNSError`); BitMatch records errno without paths in diagnostics (`ARCHITECTURE.md:288`) and canonical `failureReason` tokens — equivalent.
 - **Power assertion.** Both take one (`PowerAssertion` vs `TransferKeepAwake`). Equal.
+- **Follow-up (2026-11-26, after the `.DS_Store` skip).** Finder view files are now skipped only when proven and are listed on every backup, but the root folders `.Trashes`, `.Spotlight-V100` and `.fseventsd` (with `.TemporaryItems` and `.DocumentRevisions-V100`) are still skipped silently by `CardSource.enumerateRegularFiles`. They should be surfaced the same way, with rows and a summary line; `.Trashes` can hold deleted clips.
 
 ---
 
