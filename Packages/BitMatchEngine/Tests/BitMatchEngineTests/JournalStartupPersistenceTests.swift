@@ -205,11 +205,12 @@ final class JournalStartupPersistenceTests: XCTestCase {
     func testLateWithdrawalIsRecordedAfterUserHandledReports() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         var snapshot = try fixture.record(state: .interrupted)
-        let path = "/missing/report.pdf"
+        let path = "/missing/Volume. Name/report.pdf"
         snapshot.pendingWithdrawalPaths = [path]
         var recovered = snapshot
         recovered.pendingWithdrawalPaths = nil
         recovered.summary += " Unsettled reports were withdrawn: \(path)."
+        recovered.lastWithdrawnReportPaths = [path]
         let current = TransferJournal.markingReportsHandled(snapshot)
         let merged = TransferJournal.mergeWithdrawalRecovery(current: current, snapshot: snapshot, recovered: recovered)
         XCTAssertTrue(merged.summary.contains(path))
@@ -373,6 +374,21 @@ final class JournalStartupPersistenceTests: XCTestCase {
         XCTAssertTrue(merged.summary.contains("withdrawn: /backup/old.json"))
         XCTAssertTrue(merged.summary.contains("/backup/new.json"))
         XCTAssertEqual(merged.withdrawalReason, "New report unavailable")
+    }
+    func testWithdrawalMergePreservesPeriodSpaceInPendingPath() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var snapshot = try fixture.record(state: .interrupted)
+        snapshot.summary = "Keep the card"
+        snapshot.pendingWithdrawalPaths = ["/backup/old.json"]
+        var recovered = snapshot
+        recovered.pendingWithdrawalPaths = nil
+        recovered.summary += " Unsettled reports were withdrawn: /backup/old.json."
+        var current = snapshot
+        current.pendingWithdrawalPaths = ["/backup/old.json", "/backup/Volume. Name/report.json"]
+        current.withdrawalReason = "Unavailable"
+        let merged = TransferJournal.mergeWithdrawalRecovery(current: current, snapshot: snapshot, recovered: recovered)
+        XCTAssertEqual(merged.pendingWithdrawalPaths, ["/backup/Volume. Name/report.json"])
+        XCTAssertTrue(merged.pendingWithdrawalNote?.contains("/backup/Volume. Name/report.json") == true)
     }
     func testFinishThrowsWhenDirectoryFlushFailsAfterPublication() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
@@ -979,17 +995,25 @@ final class JournalStartupPersistenceTests: XCTestCase {
         let offline = backup.appendingPathComponent("offline")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let pdf = folder.appendingPathComponent("report.pdf")
-        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        let jsonData = try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString, "safeToErase": true])
+        try jsonData.write(to: json)
         try Data("safe pdf".utf8).write(to: pdf)
         record.pendingReportPaths = [json.path, pdf.path]
+        record.reportFileFacts = try [json, pdf].map { try reportFact(for: $0) }
         try fixture.write([record])
         try FileManager.default.moveItem(at: folder, to: offline)
-        let journal = TransferJournal(fileURL: fixture.journal)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: json.path))
-        XCTAssertEqual(Set(journal.records[0].pendingWithdrawalPaths ?? []), Set([json.path, pdf.path]))
+        let withdrawnJSON = backup.appendingPathComponent(".unsettled-\(record.id.uuidString)-report.json")
+        do {
+            let journal = TransferJournal(fileURL: fixture.journal)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: json.path))
+            XCTAssertEqual(try Data(contentsOf: withdrawnJSON), jsonData)
+            XCTAssertEqual(journal.records[0].pendingWithdrawalPaths, [pdf.path])
+        }
+        let reopened = TransferJournal(fileURL: fixture.journal)
+        XCTAssertEqual(reopened.records[0].pendingWithdrawalPaths, [pdf.path])
         try FileManager.default.moveItem(at: offline, to: folder)
-        try journal.retryPendingReportWithdrawals(id: record.id)
-        XCTAssertNil(journal.records[0].pendingWithdrawalPaths)
+        try reopened.retryPendingReportWithdrawals(id: record.id)
+        XCTAssertNil(reopened.records[0].pendingWithdrawalPaths)
         XCTAssertFalse(FileManager.default.fileExists(atPath: pdf.path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: json.path))
     }

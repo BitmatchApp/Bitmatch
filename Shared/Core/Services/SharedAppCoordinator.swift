@@ -2724,6 +2724,7 @@ class SharedAppCoordinator: ObservableObject {
             deferReportSafetyUntilHistory: true,
             reportJobID: recordID,
             recordReportPaths: transferJournal.reportPathRecorder(id: recordID),
+            recordIntendedReportFacts: transferJournal.intendedReportFactRecorder(id: recordID),
             recordPublishedReportPaths: transferJournal.publishedReportPathRecorder(id: recordID),
             initialPublicationRecord: transferJournal.records.first(where: { $0.id == recordID })
         )

@@ -5,6 +5,7 @@ import CryptoKit
 import PDFKit
 import Combine
 import Testing
+import Synchronization
 @testable import BitMatch
 @testable import BitMatchEngine
 
@@ -182,6 +183,30 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         journal.historyAppeared()
         XCTAssertEqual(journal.records.first { $0.id == id }?.state, .completed)
         XCTAssertEqual(journal.records.first { $0.id == id }?.summary, "Later completion")
+    }
+
+    func testFailedReplacementFactsPromotionWithdrawsOrReplacesSafeReports() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let promotions = Mutex(0)
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeReportFactsPromotion: { _ in
+            let count = promotions.withLock { count in count += 1; return count }
+            if count == 2 { throw NSError(domain: "FactsPromotion", code: 1) }
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults)
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(30)) {
+            guard let state = journal.records.first(where: { $0.id == id })?.state else { return false }
+            return state != .queued && state != .running && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        XCTAssertGreaterThanOrEqual(promotions.withLock { $0 }, 2)
+        let reports = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertFalse(reports.reports.contains { $0.snapshot.safeToErase == true })
+        XCTAssertNotEqual(journal.records.first { $0.id == id }?.state, .completed)
     }
 
     func testFailedPostPublicationFactsUpdateReplacesSafeReports() async throws {

@@ -13,7 +13,7 @@ import BitMatchEngine
 /// No production History, app container, user media or retention rule changes.
 @MainActor
 final class HistoryMemoryAppProbeTests: XCTestCase {
-    func testMarkReportsHandledKeepsSavedVerdict() throws {
+    func testMarkReportsHandledKeepsSavedVerdict() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("handled-ios-\(UUID())")
         defer { try? FileManager.default.removeItem(at: root) }
         let source = root.appendingPathComponent("card"), backup = root.appendingPathComponent("backup")
@@ -27,6 +27,7 @@ final class HistoryMemoryAppProbeTests: XCTestCase {
                               pendingWithdrawalPaths: [backup.appendingPathComponent("Reports/report.json").path])
         let before = try XCTUnwrap(journal.records.first { $0.id == id })
         let verdict = TransferLibraryPresentation.safetyState(for: before, in: [before])
+        for _ in 0..<100 where !journal.canMarkReportsHandled(id: id) { try await Task.sleep(for: .milliseconds(10)) }
         try journal.markReportsHandled(id: id)
         let after = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertNil(after.pendingWithdrawalPaths)

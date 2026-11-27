@@ -418,6 +418,8 @@ public enum EvidenceWriter: Sendable {
                                         beforePDFWrite: (@Sendable () throws -> Void)? = nil,
                                         replacing: [URL]? = nil,
                                         recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil,
+                                        recordIntendedFacts: (@Sendable ([ReportFileFact]) throws -> Void)? = nil,
+                                        beforeStagedReportRead: (@Sendable (URL) -> Void)? = nil,
                                         validatePublication: (@Sendable () throws -> Void)? = nil,
                                         validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
@@ -616,6 +618,26 @@ public enum EvidenceWriter: Sendable {
             // must not publish an additional path that recovery cannot withdraw.
             if let replacing, Set(finalURLs) != Set(replacing) {
                 throw ReportExportError.replacementFilesChanged
+            }
+            // Hash the bytes we produced, before any public path can be replaced.
+            // The caller runs report export on its detached worker.
+            if let recordIntendedFacts {
+                let facts = try finalURLs.map { url in
+                    let stagedURL = staged(url)
+                    let attrs = try FileManager.default.attributesOfItem(atPath: stagedURL.path)
+                    guard attrs[.type] as? FileAttributeType == .typeRegular,
+                          let size = (attrs[.size] as? NSNumber)?.uint64Value else {
+                        throw FileOperationError.unsafeOperation("Staged report could not be identified at \(stagedURL.path)")
+                    }
+                    beforeStagedReportRead?(stagedURL)
+                    let handle = try FileHandle(forReadingFrom: stagedURL)
+                    defer { try? handle.close() }
+                    var hash = SHA256()
+                    while let chunk = try handle.read(upToCount: 1024 * 1024), !chunk.isEmpty { hash.update(data: chunk) }
+                    let digest = hash.finalize().map { String(format: "%02x", $0) }.joined()
+                    return ReportFileFact(path: url.path, size: size, modificationDate: nil, sha256: digest)
+                }
+                try recordIntendedFacts(facts)
             }
             for url in finalURLs where replacing?.contains(url) == true {
                 try validatePublication?()

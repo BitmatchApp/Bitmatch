@@ -239,12 +239,19 @@ struct WorkingReportEntry {
             let idText = String(name.dropFirst(".unsettled-".count).prefix(36))
             guard let id = UUID(uuidString: idText) else { return false }
             let folder = parts.dropLast().reduce(root) { $0.appendingPathComponent($1) }.standardizedFileURL
-            let key = folder.path + "/" + id.uuidString
+            guard let report = ReportName.withdrawnReport(name) else { return false }
+            let stem: String
+            if report.hasSuffix(".txt"), let dot = report.dropLast(4).lastIndex(of: ".") {
+                stem = String(report[..<dot])
+            } else {
+                stem = (report as NSString).deletingPathExtension
+            }
+            let key = folder.path + "/" + id.uuidString + "/" + stem
             if let cached = withdrawnOwnership[key] { return cached }
             let prefix = ".unsettled-" + id.uuidString + "-"
             let owned = ((try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []).contains { candidate in
                 guard candidate.hasPrefix(prefix),
-                      let report = ReportName.withdrawnReport(candidate), report.hasSuffix(".json") else { return false }
+                      let json = ReportName.withdrawnReport(candidate), json == stem + ".json" else { return false }
                 let url = folder.appendingPathComponent(candidate)
                 var info = stat()
                 guard lstat(url.path, &info) == 0, (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG),

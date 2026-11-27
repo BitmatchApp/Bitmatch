@@ -1,10 +1,29 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import BitMatch
 import BitMatchEngine
 
 @MainActor
 struct LocalTransferJournalTests {
+    @Test func reportHandlingEligibilityIsCachedAcrossRepeatedReads() async throws {
+        let f = try fixture()
+        defer { try? FileManager.default.removeItem(at: f.root) }
+        let checks = Mutex(0)
+        let mainThread = Mutex(false)
+        let journal = LocalTransferJournal(fileURL: f.journal, beforeReportHandlingCheck: {
+            checks.withLock { $0 += 1 }
+            mainThread.withLock { $0 = Thread.isMainThread }
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable", pendingWithdrawalPaths: [f.destination.appendingPathComponent("Reports/report.json").path])
+        for _ in 0..<100 where checks.withLock({ $0 }) == 0 { try await Task.sleep(for: .milliseconds(10)) }
+        for _ in 0..<100 { _ = journal.canMarkReportsHandled(id: id) }
+        #expect(checks.withLock { $0 } == 1)
+        #expect(!mainThread.withLock { $0 })
+    }
+
     @Test func reportHandlingIsBlockedDuringWithdrawalRetry() throws {
         let f = try fixture()
         defer { try? FileManager.default.removeItem(at: f.root) }

@@ -313,14 +313,14 @@ struct TransferLibraryView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(safetyState.title, systemImage: safetyState.symbol)
                 .font(.caption.weight(.semibold)).foregroundStyle(safetyState.tint.color)
-            Text("Saved attempt message: \(record.summary)")
+            Text("Saved attempt message: \(record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary)")
                 .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if !(record.pendingWithdrawalPaths ?? []).isEmpty {
-                if !record.summary.contains(TransferJournal.pendingReportExplanation) {
-                    Text(TransferJournal.pendingReportExplanation)
+                if let note = record.pendingWithdrawalNote {
+                    Text(note)
                         .foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 }
-                if TransferJournal.canMarkReportsHandled(record) {
+                if journal.canMarkReportsHandled(id: record.id) {
                     Button("Mark reports as handled") { reportsToMarkHandled = record }
                         .disabled(journal.withdrawalRetryIsInFlight(id: record.id))
                         .modifier(TouchTarget())

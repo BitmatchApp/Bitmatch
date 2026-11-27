@@ -25,6 +25,7 @@ struct CopyVerifyConfig {
     let operationId: UUID
     let reportJobID: UUID?
     let recordReportPaths: (@Sendable ([String]) throws -> Void)?
+    let recordIntendedReportFacts: (@Sendable ([ReportFileFact]) throws -> Void)?
     let recordPublishedReportPaths: (@Sendable ([String]) throws -> Void)?
     let initialPublicationRecord: LocalTransferRecord?
     let sourceURL: URL
@@ -71,12 +72,14 @@ struct CopyVerifyConfig {
         deferReportSafetyUntilHistory: Bool = false,
         reportJobID: UUID? = nil,
         recordReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
+        recordIntendedReportFacts: (@Sendable ([ReportFileFact]) throws -> Void)? = nil,
         recordPublishedReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
         initialPublicationRecord: LocalTransferRecord? = nil
     ) {
         self.operationId = operationId
         self.reportJobID = reportJobID
         self.recordReportPaths = recordReportPaths
+        self.recordIntendedReportFacts = recordIntendedReportFacts
         self.recordPublishedReportPaths = recordPublishedReportPaths
         self.initialPublicationRecord = initialPublicationRecord
         self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
@@ -817,14 +820,6 @@ final class CopyVerifyExecutor {
         reportSettings.verificationMode = config.verificationMode
         reportSettings.skipFinderViewFiles = config.cameraLabelSettings.skipFinderViewFiles
         if let additionalNotes { reportSettings.notes += "\n" + additionalNotes }
-        if let record = publicationRecord, let facts = record.reportFileFacts {
-            let changed = facts.contains { fact in
-                guard let attributes = try? FileManager.default.attributesOfItem(atPath: fact.path) else { return false }
-                return fact.size.map { (attributes[.size] as? NSNumber)?.uint64Value != $0 } == true
-                    || fact.modificationDate.map { (attributes[.modificationDate] as? Date) != $0 } == true
-            }
-            if changed { reportSettings.notes += "\nRecorded report size or modification date changed since publication." }
-        }
         let notesBeforeSelection = reportSettings.notes
         let excluded = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
         if !excluded.isEmpty {
@@ -851,6 +846,8 @@ final class CopyVerifyExecutor {
         let beforePublish = recovery ? beforeRecoveryReportPublish : nil
         let beforeRestore = recovery ? beforeRecoveryReportRestore : nil
         let recorder = config.recordReportPaths
+        let factRecorder = config.recordIntendedReportFacts
+        let publishedRecorder = config.recordPublishedReportPaths
         if recorder != nil && publicationRecord == nil {
             throw FileOperationError.unsafeOperation("The original report destination identity is unavailable. Keep the card.")
         }
@@ -896,7 +893,7 @@ final class CopyVerifyExecutor {
         // the result of this attempt.
         lastReportFiles = []
         let work = Task.detached(priority: .utility) {
-            try await ReportExporter.export(
+            let files = try await ReportExporter.export(
                 mode: reportMode,
                 jobID: reportJobID,
                 started: reportOperation.startTime,
@@ -924,11 +921,14 @@ final class CopyVerifyExecutor {
                 excludedFromFileCounts: excludedFromFileCounts,
                 replacing: replacing,
                 recordIntendedPaths: recordIntendedPaths,
+                recordIntendedFacts: factRecorder,
                 validatePublication: validatePublication,
                 validateReplacement: validateReplacement,
                 beforePublish: beforePublish,
                 beforeRestore: beforeRestore
             )
+            try publishedRecorder?(files.map(\.path))
+            return files
         }
         if !recovery { reportTask = work }
         defer { reportTask = nil }
@@ -940,7 +940,6 @@ final class CopyVerifyExecutor {
                 lastReportFiles = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
             }
             exportCompleted = true
-            try config.recordPublishedReportPaths?(lastReportFiles.map(\.path))
             // A successful export removed its owned staging directory itself.
             let temporaryPaths = Set(intendedPaths.withLock { $0 }).subtracting(lastReportFiles.map(\.path))
             unsettledExportPaths.subtract(temporaryPaths)

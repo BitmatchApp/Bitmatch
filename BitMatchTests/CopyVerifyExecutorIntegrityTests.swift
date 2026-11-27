@@ -269,7 +269,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
             XCTAssertEqual(fm.fileExists(atPath: copied.appendingPathComponent("ascmhl/ascmhl_chain.xml").path),
                 includeMHL && (!failSecondDestination || index == 0))
         }
-        let reports = try fm.contentsOfDirectory(at: destinations[0].appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let reports = try fm.contentsOfDirectory(at: destinations[0].appendingPathComponent("Reports"), includingPropertiesForKeys: nil, options: [.skipsHiddenFiles])
         for ext in ["pdf", "csv", "json"] { XCTAssertTrue(reports.contains { $0.pathExtension == ext }) }
     }
 

@@ -3,6 +3,18 @@ import XCTest
 @testable import BitMatchEngine
 
 final class ComparisonDiagnosticTests: XCTestCase {
+    func testWithdrawnProofRequiresSameStem() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reports = root.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        let id = UUID()
+        let prefix = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(prefix + ".json"))
+        var working = WorkingReportEntry()
+        XCTAssertTrue(working.isWorkingFile(path: "Reports/" + prefix + ".pdf", root: root))
+        XCTAssertFalse(working.isWorkingFile(path: "Reports/" + prefix + "-2.pdf", root: root))
+    }
     private func events(_ run: UUID, store: TransferDiagnosticStore) throws -> [[String: Any]] {
         let data = try store.exportData()
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -183,6 +195,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
             }
         }
         try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(base + ".json"))
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: reports.appendingPathComponent(base + "-2.json"))
         let nearMisses = ["\(base)-x.json", "\(base).json-x", "\(base).sha-256.txt.bak",
                           ".unsettled-\(otherID.uuidString.lowercased())-BitMatch_Report_2026-11-27T12-00-00Z.json"]
         for name in nearMisses { try Data().write(to: reports.appendingPathComponent(name)) }

@@ -23,6 +23,46 @@ struct PersistedQueueSession: Codable, Equatable, Sendable {
 final class LocalTransferJournal: ObservableObject {
     @Published private(set) var records: [LocalTransferRecord] = []
     @Published private(set) var persistenceError: String?
+    private struct ReportHandlingKey: Equatable {
+        let pending: [String]
+        let reports: [String]
+        let staging: String?
+        let destinations: [String]
+        let publicationID: UUID?
+    }
+    @Published private var reportHandlingEligibility: [UUID: Bool] = [:]
+    private var reportHandlingKeys: [UUID: ReportHandlingKey] = [:]
+    private var reportHandlingTokens: [UUID: UUID] = [:]
+    func canMarkReportsHandled(id: UUID) -> Bool { reportHandlingEligibility[id] == true }
+
+    private func updateReportHandlingEligibility(_ records: [LocalTransferRecord]) {
+        let pending = records.filter { !($0.pendingWithdrawalPaths ?? []).isEmpty }
+        let ids = Set(pending.map(\.id))
+        reportHandlingKeys = reportHandlingKeys.filter { ids.contains($0.key) }
+        reportHandlingTokens = reportHandlingTokens.filter { ids.contains($0.key) }
+        reportHandlingEligibility = reportHandlingEligibility.filter { ids.contains($0.key) }
+        for record in pending {
+            let key = ReportHandlingKey(pending: record.pendingWithdrawalPaths ?? [], reports: record.pendingReportPaths ?? [],
+                staging: record.reportStagingPath,
+                destinations: (record.runDestinationURLs ?? record.destinations.map(\.url)).map(\.path) + record.destinations.map { $0.volumeID ?? "" },
+                publicationID: record.reportPublicationID)
+            guard reportHandlingKeys[record.id] != key else { continue }
+            reportHandlingKeys[record.id] = key
+            reportHandlingEligibility.removeValue(forKey: record.id)
+            let token = UUID()
+            reportHandlingTokens[record.id] = token
+            let beforeCheck = beforeReportHandlingCheck
+            Task { [weak self] in
+                let allowed = await Task.detached(priority: .utility) {
+                    beforeCheck?()
+                    return TransferJournal.canMarkReportsHandled(record)
+                }.value
+                guard let self, self.reportHandlingTokens[record.id] == token else { return }
+                self.reportHandlingEligibility[record.id] = allowed
+            }
+        }
+    }
+
     private let store: TransferJournal
     var historyAvailable: Bool { store.historyAvailable }
     let fileURL: URL
@@ -35,6 +75,8 @@ final class LocalTransferJournal: ObservableObject {
     private let beforeInterrupt: ((UUID) throws -> Void)?
     private let beforeWithdrawalRetry: ((UUID) -> Void)?
     private let beforeWithdrawalIO: (@Sendable () -> Void)?
+    private let beforeReportHandlingCheck: (@Sendable () -> Void)?
+    private let beforeReportFactsPromotion: (@Sendable (UUID) throws -> Void)?
     /// Cache only derived finish fields, with a stable newest-first admission
     /// window. Older rows bypass it instead of evicting every other row on a
     /// large queue's next render.
@@ -66,6 +108,8 @@ final class LocalTransferJournal: ObservableObject {
         beforeInterrupt: ((UUID) throws -> Void)? = nil,
         beforeWithdrawalRetry: ((UUID) -> Void)? = nil,
         beforeWithdrawalIO: (@Sendable () -> Void)? = nil,
+        beforeReportHandlingCheck: (@Sendable () -> Void)? = nil,
+        beforeReportFactsPromotion: (@Sendable (UUID) throws -> Void)? = nil,
         afterJournalRename: (@Sendable () throws -> Void)? = nil,
         beforeRecoveryPersist: (@Sendable () throws -> Void)? = nil
     ) {
@@ -82,6 +126,8 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeInterrupt = beforeInterrupt
         self.beforeWithdrawalRetry = beforeWithdrawalRetry
         self.beforeWithdrawalIO = beforeWithdrawalIO
+        self.beforeReportHandlingCheck = beforeReportHandlingCheck
+        self.beforeReportFactsPromotion = beforeReportFactsPromotion
         store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false, afterJournalRename: afterJournalRename,
                                 beforeRecoveryPersist: beforeRecoveryPersist)
         refresh()
@@ -149,6 +195,7 @@ final class LocalTransferJournal: ObservableObject {
             interruptedOverrides[stored.id] ?? stored
         }
         persistenceError = store.persistenceError
+        updateReportHandlingEligibility(records)
     }
 
     func queuePresentation(
@@ -498,14 +545,23 @@ final class LocalTransferJournal: ObservableObject {
         return { paths in try store.recordPendingReportPaths(id: id, paths: paths, publicationID: id) }
     }
 
+    func intendedReportFactRecorder(id: UUID) -> @Sendable ([ReportFileFact]) throws -> Void {
+        let store = self.store
+        return { facts in try store.recordIntendedReportFacts(id: id, facts: facts, publicationID: id) }
+    }
+
     func publishedReportPathRecorder(id: UUID) -> @Sendable ([String]) throws -> Void {
         let store = self.store
-        return { paths in try store.recordPublishedReportPaths(id: id, paths: paths, publicationID: id) }
+        let beforePromotion = beforeReportFactsPromotion
+        return { paths in
+            try beforePromotion?(id)
+            try store.promoteIntendedReportFacts(id: id, paths: paths)
+        }
     }
 
     func markReportsHandled(id: UUID) throws {
         guard !withdrawalRetriesInFlight.contains(id), let record = records.first(where: { $0.id == id }),
-              TransferJournal.canMarkReportsHandled(record) else { throw LocalTransferJournalError.invalidState }
+              canMarkReportsHandled(id: record.id) else { throw LocalTransferJournalError.invalidState }
         defer { refresh() }
         if let override = interruptedOverrides[id] {
             let handled = TransferJournal.markingReportsHandled(override)
@@ -585,10 +641,14 @@ final class LocalTransferJournal: ObservableObject {
                 }
             }
             self.withdrawalRetriesInFlight.remove(id)
+            self.reportHandlingKeys.removeValue(forKey: id)
+            self.reportHandlingTokens.removeValue(forKey: id)
+            self.reportHandlingEligibility.removeValue(forKey: id)
             if changed {
                 self.refresh()
-            } else if previousError != store.persistenceError {
-                self.persistenceError = store.persistenceError
+            } else {
+                self.updateReportHandlingEligibility(self.records)
+                if previousError != store.persistenceError { self.persistenceError = store.persistenceError }
             }
             if self.withdrawalRetriesRequested.remove(id) != nil,
                self.records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) {
