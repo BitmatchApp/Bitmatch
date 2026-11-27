@@ -3,6 +3,8 @@ import Combine
 import BitMatchEngine
 #if os(macOS)
 import AppKit
+#elseif os(iOS)
+import UIKit
 #endif
 
 struct PersistedQueueSession: Codable, Equatable, Sendable {
@@ -42,6 +44,7 @@ final class LocalTransferJournal: ObservableObject {
     private var withdrawalRetriesInFlight: Set<UUID> = []
     private var withdrawalRetriesRequested: Set<UUID> = []
     private var mountObserver: AnyCancellable?
+    private var foregroundObserver: AnyCancellable?
     /// Counts expensive derivations, so performance tests need no timing limit.
     private(set) var completedQueueRowBuildCount = 0
     var completedQueueRowCacheCount: Int { completedQueueRows.count }
@@ -72,6 +75,12 @@ final class LocalTransferJournal: ObservableObject {
             .receive(on: DispatchQueue.main)
             .sink { [weak self] _ in
                 Task { @MainActor [weak self] in self?.retryAllPendingReportWithdrawals() }
+            }
+        #elseif os(iOS)
+        foregroundObserver = NotificationCenter.default.publisher(for: UIApplication.willEnterForegroundNotification)
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] _ in
+                Task { @MainActor [weak self] in self?.applicationWillEnterForeground() }
             }
         #endif
     }
@@ -324,7 +333,12 @@ final class LocalTransferJournal: ObservableObject {
     /// Indexes into `[source] + destinations` whose stored access no longer
     /// resolves to the original folder (stale bookmark, unplugged drive).
     func staleResourceIndexes(id: UUID) throws -> [Int] {
-        try store.staleResourceIndexes(id: id)
+        let stale = try store.staleResourceIndexes(id: id)
+        if let record = records.first(where: { $0.id == id }),
+           record.destinations.indices.contains(where: { !stale.contains($0 + 1) }) {
+            retryPendingReportWithdrawals(id: id)
+        }
+        return stale
     }
 
     func staleResourceIndexes(id: UUID, using worker: DriveAccessWorker, jobKey: String) async throws -> [Int] {
@@ -335,18 +349,23 @@ final class LocalTransferJournal: ObservableObject {
         let expectedResources = [record.source] + record.destinations
         let mountKeys = Set(([record.source.url] + record.destinations.map(\.url))
             .map { DriveAccessWorker.mountKey(for: $0) })
-        return try await worker.perform(
+        let stale = try await worker.perform(
             mountKeys: mountKeys,
             jobKey: jobKey
         ) {
             try store.staleResourceIndexes(id: id, expectedResources: expectedResources)
         }
+        if record.destinations.indices.contains(where: { !stale.contains($0 + 1) }) {
+            retryPendingReportWithdrawals(id: id)
+        }
+        return stale
     }
 
     /// Refreshes one stored location after access expired; see `TransferJournal.reauthorize`.
     func reauthorize(id: UUID, resourceIndex: Int, newURL: URL) throws {
         defer { refresh() }
         try store.reauthorize(id: id, resourceIndex: resourceIndex, newURL: newURL)
+        if resourceIndex > 0 { retryPendingReportWithdrawals(id: id) }
     }
 
     /// Reconnects an original resource and durably stores its refreshed
@@ -377,6 +396,7 @@ final class LocalTransferJournal: ObservableObject {
             }
         }
         try await commitTask.value
+        if resourceIndex > 0 { retryPendingReportWithdrawals(id: id) }
     }
 
     func markRunning(id: UUID, independentDestinationCount: Int? = nil,
@@ -442,6 +462,10 @@ final class LocalTransferJournal: ObservableObject {
         try store.recordPendingReportPaths(id: id, paths: paths, publicationID: publicationID)
     }
 
+    func historyAppeared() { retryAllPendingReportWithdrawals() }
+
+    func applicationWillEnterForeground() { retryAllPendingReportWithdrawals() }
+
     func retryAllPendingReportWithdrawals() {
         for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
             retryPendingReportWithdrawals(id: record.id)
@@ -449,6 +473,7 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     func retryPendingReportWithdrawals(id: UUID) {
+        guard records.contains(where: { $0.id == id && !($0.pendingWithdrawalPaths ?? []).isEmpty }) else { return }
         guard withdrawalRetriesInFlight.insert(id).inserted else {
             withdrawalRetriesRequested.insert(id)
             return

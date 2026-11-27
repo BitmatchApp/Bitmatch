@@ -74,7 +74,10 @@ struct TransferLibraryView: View {
             // Search only makes sense once History has something to search,
             // and it never grabs focus on its own — `.searchable` never autofocuses.
             .modifier(OptionalSearchable(isActive: counts.history > 0, text: searchBinding))
-            .onAppear { historySearch.resume(records: journal.records, query: search) }
+            .onAppear {
+                historySearch.resume(records: journal.records, query: search)
+                journal.historyAppeared()
+            }
             .onReceive(journal.$records) { records in
                 historySearch.replaceRecords(records)
             }
@@ -210,6 +213,7 @@ struct TransferLibraryView: View {
         return DisclosureGroup(isExpanded: expandedBinding(record.id)) {
             if expandedIDs.contains(record.id) {
                 detailsView(record, actions: actions)
+                    .onAppear { journal.retryPendingReportWithdrawals(id: record.id) }
             }
         } label: {
             TransferRecordRow(record: record, history: journal.records, clipMatchLine: clipLine) {
@@ -225,6 +229,7 @@ struct TransferLibraryView: View {
                 .accessibilityLabel("More actions for \(record.title)")
             }
         }
+        .onAppear { journal.retryPendingReportWithdrawals(id: record.id) }
         .contextMenu { menuItems(record, actions: actions) }
         #if os(iOS)
         .swipeActions(edge: .trailing, allowsFullSwipe: false) {
@@ -246,6 +251,7 @@ struct TransferLibraryView: View {
             get: { expandedIDs.contains(id) },
             set: { isExpanded in
                 if isExpanded {
+                    journal.retryPendingReportWithdrawals(id: id)
                     expandedIDs.insert(id)
                 } else { expandedIDs.remove(id) }
             }

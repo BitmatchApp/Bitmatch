@@ -13,6 +13,34 @@ import BitMatchEngine
 /// No production History, app container, user media or retention rule changes.
 @MainActor
 final class HistoryMemoryAppProbeTests: XCTestCase {
+    func testForegroundNotificationRetriesPendingReportWithdrawal() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("withdrawal-ios-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("card")
+        let backup = root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        let offline = backup.appendingPathComponent("offline")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        let journal = LocalTransferJournal(fileURL: root.appendingPathComponent("history.json"))
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let json = reports.appendingPathComponent("report.json")
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString, "source": ["path": source.path]]).write(to: json)
+        try journal.recordPendingReportPaths(id: id, paths: [json.path])
+        try FileManager.default.moveItem(at: reports, to: offline)
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable")
+        try FileManager.default.moveItem(at: offline, to: reports)
+        NotificationCenter.default.post(name: UIApplication.willEnterForegroundNotification, object: nil)
+        for _ in 0..<100 {
+            if journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == nil { break }
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        XCTAssertNil(journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: json.path))
+    }
+
     func testActualHistoryMemoryAppProbe() async throws {
         guard ProcessInfo.processInfo.environment["BITMATCH_HISTORY_IOS_PROBE"] == "1" else {
             throw XCTSkip("Set BITMATCH_HISTORY_IOS_PROBE=1 for the bounded iOS History probe")

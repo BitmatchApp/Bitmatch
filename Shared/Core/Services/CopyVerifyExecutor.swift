@@ -895,28 +895,14 @@ final class CopyVerifyExecutor {
 
     var pendingPublishedReportPaths: [String] { pendingReport?.files.map(\.path) ?? [] }
 
-    /// A replacement can fail before touching the existing safe files.
-    /// Attempt every deletion even when the volume is full or unavailable.
-    func deletePendingReports() -> [String] {
+    /// Use the same identity and ownership checks as interrupted-run recovery.
+    func withdrawPendingReports(record: LocalTransferRecord) -> [String: TransferJournal.ReportWithdrawalOutcome] {
         let paths = pendingPublishedReportPaths
-        func priority(_ path: String) -> Int {
-            if path.hasSuffix(".json") { return 2 }
-            if path.hasSuffix(".pdf") { return 0 }
-            return 1
-        }
-        let ordered = paths.sorted { priority($0) < priority($1) }
-        var failures: [String] = []
-        for path in ordered {
-            if path.hasSuffix(".json") && !failures.isEmpty { failures.append(path); continue }
-            do { try FileManager.default.removeItem(atPath: path) }
-            catch {
-                let nsError = error as NSError
-                let missing = nsError.domain == NSCocoaErrorDomain && nsError.code == NSFileNoSuchFileError
-                let parentExists = FileManager.default.fileExists(atPath: URL(fileURLWithPath: path).deletingLastPathComponent().path)
-                if !missing || !parentExists { failures.append(path) }
-            }
-        }
-        return failures
+        var snapshot = record
+        snapshot.pendingReportPaths = paths
+        // The executor may have published before paths were persisted.
+        if record.pendingReportPaths != paths { snapshot.relativeReportPaths = nil }
+        return TransferJournal.withdrawReports(record: snapshot, paths: paths)
     }
 
     func forgetSettledReport() {

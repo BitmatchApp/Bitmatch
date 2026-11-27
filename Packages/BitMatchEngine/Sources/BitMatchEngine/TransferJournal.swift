@@ -504,116 +504,135 @@ public final class TransferJournal: Sendable {
         }
     }
 
-    /// The recorded paths, not filename conventions, define the withdrawal set.
-    private static func recoverReports(_ record: inout LocalTransferRecord) {
-        let paths = record.pendingWithdrawalPaths ?? []
+    public enum ReportWithdrawalOutcome: Sendable, Equatable {
+        case withdrawn
+        case absentOnVerifiedBackup
+        case pending(String)
+    }
+
+    /// Withdraw only recorded files on the original, identity-checked backup.
+    /// The ownership JSON is moved last so a partial withdrawal remains retryable.
+    public static func withdrawReports(record: LocalTransferRecord, paths: [String]) -> [String: ReportWithdrawalOutcome] {
+        withdrawReports(record: record, paths: paths) { url in
+            var url = url
+            url.removeAllCachedResourceValues()
+            guard let values = try? url.resourceValues(forKeys: LocalTransferResource.identityKeys) else { return nil }
+            return LocalTransferResource.volumeIdentity(values)
+        }
+    }
+
+    static func withdrawReports(record: LocalTransferRecord, paths: [String],
+                                volumeIdentityAt: (URL) -> String?) -> [String: ReportWithdrawalOutcome] {
         let allPaths = record.pendingReportPaths ?? paths
         let mappings = record.relativeReportPaths ?? relativePaths(allPaths, record: record)
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
-        var remaining = Set(paths)
-        var reasons: [String] = []
+        var outcomes: [String: ReportWithdrawalOutcome] = [:]
+        for path in paths { outcomes[path] = .pending("Recorded path could not be mapped to a confirmed destination") }
         for (index, root) in roots.enumerated() {
             let group = paths.filter { reportRelativePath($0, root: root) != nil }
             guard !group.isEmpty else { continue }
-            func fail(_ reason: String) { reasons.append("\(group.map { URL(fileURLWithPath: $0).lastPathComponent }.joined(separator: ", ")): \(reason)") }
-            guard index < record.destinations.count else { fail("destination is unknown"); continue }
+            func fail(_ paths: [String], _ reason: String) {
+                for path in paths { outcomes[path] = .pending(reason) }
+            }
+            guard index < record.destinations.count else { fail(group, "Destination is unknown"); continue }
+            let destination = record.destinations[index]
             let access: LocalTransferReadAccess
-            do { access = try record.destinations[index].beginReadAccess() }
-            catch { fail("destination could not be confirmed: \(error.localizedDescription)"); continue }
+            do { access = try destination.beginReadAccess() }
+            catch { fail(group, "Destination could not be confirmed: \(error.localizedDescription)"); continue }
             defer { access.release() }
             let rootURL = access.url.standardizedFileURL.resolvingSymlinksInPath()
-            func recordedReportFallback(_ original: String) -> URL? {
-                let recorded = URL(fileURLWithPath: original).standardizedFileURL
-                let reports = rootURL.appendingPathComponent("Reports", isDirectory: true)
-                guard FileManager.default.fileExists(atPath: recorded.path),
-                      reportComparablePath(recorded.deletingLastPathComponent()) == reportComparablePath(reports) else { return nil }
-                return recorded
-            }
             func resolved(_ original: String) -> URL? {
-                guard let relative = reportRelativePath(original, root: root) else { return nil }
-                guard mappings.contains(where: { $0.destinationIndex == index && $0.path == relative }),
+                guard let relative = reportRelativePath(original, root: root),
                       !relative.isEmpty, !relative.split(separator: "/").contains("..") else { return nil }
                 let candidate = rootURL.appendingPathComponent(relative).standardizedFileURL
-                let parent = reportComparablePath(candidate.deletingLastPathComponent())
-                let resolvedRoot = reportComparablePath(rootURL)
-                guard PathContainment.isStrictlyWithin(candidate.path, root: rootURL.path),
-                      PathContainment.isWithin(parent, root: resolvedRoot) else { return nil }
-                if !FileManager.default.fileExists(atPath: candidate.path), let recorded = recordedReportFallback(original) {
-                    return recorded
-                }
+                let recorded = URL(fileURLWithPath: original).standardizedFileURL
+                let fallback = FileManager.default.fileExists(atPath: recorded.path)
+                    && reportComparablePath(recorded.deletingLastPathComponent()) == reportComparablePath(rootURL.appendingPathComponent("Reports"))
+                guard mappings.contains(where: { $0.destinationIndex == index && $0.path == relative }) || fallback,
+                      PathContainment.isStrictlyWithin(candidate.path, root: rootURL.path),
+                      PathContainment.isWithin(reportComparablePath(candidate.deletingLastPathComponent()), root: reportComparablePath(rootURL)) else { return nil }
                 return candidate
             }
-            // ENOENT counts only with an existing, reachable parent directory.
+            // Recheck the root and the actual parent volume before any ENOENT
+            // conclusion or move. A missing parent is never proof of absence.
+            func verifiedParent(_ url: URL) -> Bool {
+                do {
+                    try destination.validateIdentity(at: rootURL)
+                    let parent = url.deletingLastPathComponent().standardizedFileURL.resolvingSymlinksInPath()
+                    guard PathContainment.isWithin(parent.path, root: rootURL.path), let volumeID = destination.volumeID,
+                          (try? parent.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
+                          volumeIdentityAt(parent) == volumeID else { return false }
+                    var info = stat()
+                    if lstat(url.path, &info) == 0 {
+                        let target = url.resolvingSymlinksInPath()
+                        return PathContainment.isStrictlyWithin(target.path, root: rootURL.path)
+                            && volumeIdentityAt(target) == volumeID
+                    }
+                    return errno == ENOENT
+                } catch { return false }
+            }
             func absent(_ url: URL) -> Bool {
+                guard verifiedParent(url) else { return false }
                 var info = stat()
-                guard lstat(url.deletingLastPathComponent().path, &info) == 0,
-                      (info.st_mode & S_IFMT) == S_IFDIR else { return false }
                 guard lstat(url.path, &info) != 0, errno == ENOENT else { return false }
-                return lstat(url.deletingLastPathComponent().path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFDIR
+                return verifiedParent(url)
             }
             for path in group {
-                if let url = resolved(path), absent(url) { remaining.remove(path) }
+                guard let url = resolved(path) else { fail([path], "Recorded path could not be mapped to the confirmed destination \(rootURL.path)"); continue }
+                guard verifiedParent(url) else { fail([path], "Report parent or its volume could not be confirmed at \(url.path)"); continue }
+                if absent(url) { outcomes[path] = .absentOnVerifiedBackup }
             }
-            let outstanding = group.filter { remaining.contains($0) }
+            let outstanding = group.filter { if case .pending = outcomes[$0] { return true }; return false }
             guard !outstanding.isEmpty else { continue }
-            let jsonPaths = allPaths.filter {
-                reportRelativePath($0, root: root) != nil && $0.hasSuffix(".json")
-            }
-            guard jsonPaths.count == 1 else {
-                fail("recorded ownership JSON is unavailable; recorded paths: \(jsonPaths.isEmpty ? allPaths.joined(separator: ", ") : jsonPaths.joined(separator: ", "))"); continue
-            }
-            let mappedJSON = resolved(jsonPaths[0])
-            let json = mappedJSON.flatMap { FileManager.default.fileExists(atPath: $0.path) ? $0 : nil }
-                ?? recordedReportFallback(jsonPaths[0]) ?? mappedJSON
-            guard let json else {
-                fail("recorded ownership JSON is unavailable at \(jsonPaths[0]) (could not map to \(rootURL.path))"); continue
+            let jsonPaths = allPaths.filter { reportRelativePath($0, root: root) != nil && $0.hasSuffix(".json") }
+            guard jsonPaths.count == 1, let json = jsonPaths.first.flatMap(resolved), verifiedParent(json) else {
+                fail(outstanding, "Recorded ownership JSON or report parent could not be confirmed: " + outstanding.joined(separator: ", ")); continue
             }
             let data: Data
             do { data = try Data(contentsOf: json) }
-            catch { fail("ownership JSON could not be read at \(json.path): \(error.localizedDescription)"); continue }
+            catch { fail(outstanding, "ownership JSON could not be read at \(json.path): \(error.localizedDescription)"); continue }
             guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                   let rawID = object["jobId"] as? String, let jobID = UUID(uuidString: rawID) else {
-                fail("ownership JSON is unreadable or incomplete at \(json.path)"); continue
+                fail(outstanding, "Ownership JSON is unreadable or incomplete at \(json.path)"); continue
             }
             let acceptedIDs = record.reportPublicationID.map { Set([$0]) }
                 ?? Set([record.id, record.operationID].compactMap { $0 })
             guard acceptedIDs.contains(jobID),
                   record.runSourceURL == nil || ((object["source"] as? [String: Any])?["path"] as? String) == record.runSourceURL?.path else {
-                fail("ownership does not match this run at \(json.path)"); continue
+                fail(outstanding, "ownership does not match this run at \(json.path)"); continue
             }
             var failed = false
-            for path in outstanding where path != jsonPaths[0] {
-                guard let url = resolved(path) else {
-                    failed = true
-                    reasons.append("\(path): recorded path could not be mapped to the confirmed destination \(rootURL.path)")
-                    continue
+            for path in outstanding.sorted(by: { ($0 == jsonPaths[0] ? 1 : 0) < ($1 == jsonPaths[0] ? 1 : 0) }) {
+                if path == jsonPaths[0] && failed { continue }
+                guard let url = resolved(path), verifiedParent(url), verifiedParent(json) else {
+                    fail([path], "Report parent or its volume could not be confirmed"); failed = true; continue
                 }
                 let hidden = url.deletingLastPathComponent().appendingPathComponent(".unsettled-" + url.lastPathComponent)
-                do { try FileManager.default.moveItem(at: url, to: hidden); remaining.remove(path) }
-                catch { failed = true; reasons.append("\(url.path): \(error.localizedDescription)") }
-            }
-            if !failed, remaining.contains(jsonPaths[0]) {
-                let hidden = json.deletingLastPathComponent().appendingPathComponent(".unsettled-" + json.lastPathComponent)
-                do { try FileManager.default.moveItem(at: json, to: hidden); remaining.remove(jsonPaths[0]) }
-                catch { reasons.append("\(json.path): \(error.localizedDescription)") }
+                do { try FileManager.default.moveItem(at: url, to: hidden); outcomes[path] = .withdrawn }
+                catch { fail([path], "\(url.path): \(error.localizedDescription)"); failed = true }
             }
         }
-        let unresolved = paths.filter { remaining.contains($0) }
-        let unmapped = unresolved.filter { path in
-            !roots.contains { reportRelativePath(path, root: $0) != nil }
+        return outcomes
+    }
+
+    /// The recorded paths, not filename conventions, define the withdrawal set.
+    private static func recoverReports(_ record: inout LocalTransferRecord) {
+        let paths = record.pendingWithdrawalPaths ?? []
+        let outcomes = withdrawReports(record: record, paths: paths)
+        let unresolved = paths.filter { if case .pending = outcomes[$0] { return true }; return false }
+        let withdrawn = paths.filter { outcomes[$0] == .withdrawn }
+        let absent = paths.filter { outcomes[$0] == .absentOnVerifiedBackup }
+        let reasons = unresolved.compactMap { path -> String? in
+            guard case .pending(let reason) = outcomes[path] else { return nil }
+            return "\(path): \(reason)"
         }
-        if !unmapped.isEmpty {
-            reasons.append("\(unmapped.joined(separator: ", ")): recorded paths could not be mapped to a confirmed destination")
-        }
-        if reasons.isEmpty && !unresolved.isEmpty { reasons.append("Recorded paths could not be mapped to a confirmed destination") }
         record.pendingWithdrawalPaths = unresolved.isEmpty ? nil : unresolved
         record.withdrawalReason = unresolved.isEmpty ? nil : reasons.joined(separator: "; ")
+        record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
+        if !withdrawn.isEmpty { record.summary += " Unsettled reports were withdrawn: " + withdrawn.joined(separator: ", ") + "." }
+        if !absent.isEmpty { record.summary += " Reports found absent on the verified backup: " + absent.joined(separator: ", ") + "." }
         if !unresolved.isEmpty {
-            record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
             record.summary += pendingNote + " Pending: " + unresolved.joined(separator: ", ") + ". " + (record.withdrawalReason ?? "Withdrawal could not be confirmed.")
-        } else if !paths.isEmpty {
-            record.summary = record.summary.components(separatedBy: " Reports on an unavailable backup").first ?? record.summary
-            record.summary += " Unsettled reports were withdrawn."
         }
     }
 
@@ -1430,8 +1449,9 @@ public final class TransferJournal: Sendable {
 
     private static func setPendingWithdrawal(_ record: inout LocalTransferRecord, reason: String?, paths: [String]?) {
         guard let reason, let paths = paths ?? record.pendingReportPaths, !paths.isEmpty else { return }
-        record.pendingReportPaths = paths
-        record.relativeReportPaths = relativePaths(paths, record: record)
+        let allPaths = Array(Set((record.pendingReportPaths ?? []) + paths)).sorted()
+        record.pendingReportPaths = allPaths
+        record.relativeReportPaths = relativePaths(allPaths, record: record)
         record.pendingWithdrawalPaths = paths
         record.withdrawalReason = reason
     }

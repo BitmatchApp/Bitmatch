@@ -5,6 +5,104 @@ import XCTest
 
 /// Actual journal I/O over owned temporary metadata and backup fixtures.
 final class JournalStartupPersistenceTests: XCTestCase {
+    func testWithdrawalKeepsPathsPendingWhenWholeDestinationIsUnavailableOrReplaced() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let offline = fixture.root.appendingPathComponent("offline")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        let json = reports.appendingPathComponent("report.json")
+        let pdf = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        try Data("safe".utf8).write(to: pdf)
+        let paths = [json.path, pdf.path]
+        record.pendingReportPaths = paths
+        try FileManager.default.moveItem(at: backup, to: offline)
+        // A replacement at the old path must never be touched.
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        try Data("replacement".utf8).write(to: pdf)
+        // Simulate a disconnected volume even if macOS follows the moved folder's bookmark.
+        var resource = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record.destinations[0])) as? [String: Any])
+        resource["volumeID"] = "different-volume"
+        record.destinations = [try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: resource))]
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: paths)
+        for path in paths {
+            guard case .pending = outcomes[path] else { return XCTFail("Expected pending for \(path)") }
+        }
+        XCTAssertEqual(try Data(contentsOf: pdf), Data("replacement".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: offline.appendingPathComponent("Reports/report.json").path))
+    }
+
+    func testReportParentOnDifferentVolumeNeverProvesAbsence() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        let path = reports.appendingPathComponent("report.json").path
+        record.pendingReportPaths = [path]
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [path], volumeIdentityAt: { _ in "different-volume" })
+        guard case .pending = outcomes[path] else { return XCTFail("A different report volume must remain pending") }
+    }
+
+    func testExistingReportOnDifferentVolumeIsNotWithdrawn() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let resource = try LocalTransferResource(url: backup)
+        record.destinations = [resource]
+        record.runDestinationURLs = [backup]
+        let json = backup.appendingPathComponent("report.json")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        record.pendingReportPaths = [json.path]
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [json.path], volumeIdentityAt: { url in
+            url.lastPathComponent == "report.json" ? "different-volume" : resource.volumeID
+        })
+        guard case .pending = outcomes[json.path] else { return XCTFail("Report on a different volume must remain pending") }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: json.path))
+    }
+
+    func testAbsentAndWithdrawnReportsHaveDistinctHistoryEvidence() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        let json = backup.appendingPathComponent("report.json")
+        let missing = backup.appendingPathComponent("missing.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        record.pendingReportPaths = [json.path, missing.path]
+        try fixture.write([record])
+        let journal = TransferJournal(fileURL: fixture.journal)
+        let summary = journal.records[0].summary
+        XCTAssertTrue(summary.contains("withdrawn"))
+        XCTAssertTrue(summary.contains("found absent on the verified backup"))
+        XCTAssertTrue(summary.contains(json.path))
+        XCTAssertTrue(summary.contains(missing.path))
+    }
+
+    func testMissingReportParentStaysPending() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        let path = backup.appendingPathComponent("missing/report.json").path
+        record.pendingReportPaths = [path]
+        try fixture.write([record])
+        let journal = TransferJournal(fileURL: fixture.journal)
+        XCTAssertEqual(journal.records[0].pendingWithdrawalPaths, [path])
+        XCTAssertNotNil(journal.records[0].withdrawalReason)
+    }
+
     func testUnreadableJSONAndOwnershipMismatchRemainPendingWithReasons() throws {
         for contents in [Data("{half-written".utf8), try JSONSerialization.data(withJSONObject: ["jobId": UUID().uuidString])] {
             let fixture = try Fixture(); defer { fixture.cleanup() }

@@ -173,10 +173,76 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(ended)
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
-        XCTAssertTrue(record.summary.contains("reports were deleted"))
+        XCTAssertTrue(record.summary.contains("reports were withdrawn"))
         let paths = try XCTUnwrap(record.pendingReportPaths)
         XCTAssertFalse(paths.isEmpty)
         for path in paths { XCTAssertFalse(FileManager.default.fileExists(atPath: path), path) }
+    }
+
+    func testForegroundRetryRechecksPendingWithdrawal() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let reports = f.destination.appendingPathComponent("Reports")
+        let offline = f.destination.appendingPathComponent("offline-reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let json = reports.appendingPathComponent("report.json")
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString, "source": ["path": f.source.path]]).write(to: json)
+        try journal.recordPendingReportPaths(id: id, paths: [json.path])
+        try FileManager.default.moveItem(at: reports, to: offline)
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Unavailable")
+        try FileManager.default.moveItem(at: offline, to: reports)
+        journal.applicationWillEnterForeground()
+        let withdrawn = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == nil
+        }
+        XCTAssertTrue(withdrawn)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: json.path))
+    }
+
+    func testFailedFinishNeverTouchesReplacementDestinationReports() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let offline = f.root.appendingPathComponent("offline-backup")
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            throw NSError(domain: "BitMatchTestFinish", code: 1)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults,
+            beforeRecoveryReportSettlement: {
+                try FileManager.default.moveItem(at: f.destination, to: offline)
+                let replacement = f.destination.appendingPathComponent("Reports")
+                try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
+                let originalReports = offline.appendingPathComponent("Reports")
+                for name in try FileManager.default.contentsOfDirectory(atPath: originalReports.path) {
+                    try Data("replacement".utf8).write(to: replacement.appendingPathComponent(name))
+                }
+                throw NSError(domain: "BitMatchTestOffline", code: 2)
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .interrupted && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first(where: { $0.id == id }))
+        let paths = try XCTUnwrap(record.pendingReportPaths)
+        XCTAssertFalse(paths.isEmpty)
+        for path in paths {
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data("replacement".utf8))
+        }
+        if !(record.pendingWithdrawalPaths ?? []).isEmpty {
+            XCTAssertNotNil(record.withdrawalReason)
+        } else {
+            // A bookmark can follow the original folder to its new location.
+            XCTAssertTrue(record.summary.contains("withdrawn"))
+        }
     }
 
     func testUnavailableReportsAfterFailedFinishRemainPendingUntilRetry() async throws {
@@ -212,7 +278,9 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             XCTAssertTrue(publishedNames.contains { $0.hasSuffix(".\(ext)") }, ext)
         }
         try FileManager.default.moveItem(at: offline, to: reports)
-        journal.retryPendingReportWithdrawals(id: id)
+        // Opening History schedules the retry without requiring an app restart.
+        journal.historyAppeared()
+        journal.historyAppeared()
         let withdrawn = await waitUntil(timeout: .seconds(20)) { @MainActor in
             journal.records.first(where: { $0.id == id })?.pendingWithdrawalPaths == nil
         }

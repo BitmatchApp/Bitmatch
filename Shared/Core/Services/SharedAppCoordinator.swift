@@ -2804,6 +2804,32 @@ class SharedAppCoordinator: ObservableObject {
         var publicationFailure: String?
         var pendingWithdrawalReason: String?
         var withdrawalPaths: [String]?
+        func withdrawPublishedReports() -> String {
+            let paths = copyVerifyExecutor.pendingPublishedReportPaths
+            guard let record = transferJournal.storedRecord(id: recordID) else {
+                if !paths.isEmpty {
+                    withdrawalPaths = paths
+                    pendingWithdrawalReason = "The original destination identity is unavailable"
+                }
+                return paths.isEmpty ? "No published reports to withdraw." : "Published reports could not be checked."
+            }
+            let outcomes = copyVerifyExecutor.withdrawPendingReports(record: record)
+            let pending = paths.filter { if case .pending = outcomes[$0] { return true }; return false }
+            let withdrawn = paths.filter { outcomes[$0] == .withdrawn }
+            let absent = paths.filter { outcomes[$0] == .absentOnVerifiedBackup }
+            if !pending.isEmpty {
+                withdrawalPaths = pending
+                pendingWithdrawalReason = pending.compactMap { path in
+                    guard case .pending(let reason) = outcomes[path] else { return nil }
+                    return "\(path): \(reason)"
+                }.joined(separator: "; ")
+            }
+            var notes: [String] = []
+            if !withdrawn.isEmpty { notes.append("Published reports were withdrawn: " + withdrawn.joined(separator: ", ") + ".") }
+            if !absent.isEmpty { notes.append("Reports found absent on the verified backup: " + absent.joined(separator: ", ") + ".") }
+            if !pending.isEmpty { notes.append("Report withdrawal remains pending: " + pending.joined(separator: ", ") + ".") }
+            return notes.isEmpty ? "No published reports to withdraw." : notes.joined(separator: " ")
+        }
         do {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
             let belongsToQueueSession = runBelongsToQueueSession
@@ -2830,12 +2856,7 @@ class SharedAppCoordinator: ObservableObject {
                         try beforeRecoveryReportSettlement?()
                         try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer report export failed: \(exportError.localizedDescription)")
                     } catch {
-                        let failures = copyVerifyExecutor.deletePendingReports()
-                        let deletion = failures.isEmpty ? "Published reports were deleted." : "Could not delete published reports: \(failures.joined(separator: ", "))."
-                        if !failures.isEmpty {
-                            pendingWithdrawalReason = "Could not delete published reports: \(failures.joined(separator: ", "))"
-                            withdrawalPaths = copyVerifyExecutor.pendingPublishedReportPaths
-                        }
+                        let deletion = withdrawPublishedReports()
                         recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
                     }
                     publicationFailure = (["Transfer report export failed: \(exportError.localizedDescription). Keep the card.", recoveryError]
@@ -2891,13 +2912,7 @@ class SharedAppCoordinator: ObservableObject {
                 try beforeRecoveryReportSettlement?()
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: reason)
             } catch {
-                let failures = copyVerifyExecutor.deletePendingReports()
-                let deletion = failures.isEmpty ? "Published reports were deleted." :
-                    "Could not delete published reports: \(failures.joined(separator: ", "))."
-                if !failures.isEmpty {
-                    pendingWithdrawalReason = "Could not delete published reports: \(failures.joined(separator: ", "))"
-                    withdrawalPaths = copyVerifyExecutor.pendingPublishedReportPaths
-                }
+                let deletion = withdrawPublishedReports()
                 reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"
             }
             pendingProjectFinalization = nil
