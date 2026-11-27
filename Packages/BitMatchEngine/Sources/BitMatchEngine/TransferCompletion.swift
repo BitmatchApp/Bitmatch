@@ -348,8 +348,11 @@ public enum TransferCompletion: Sendable {
     private static func coverageIssues(_ coverage: CoverageAnalysis, notVerifiedWord: String = "not verified",
                                        explainReasons: Bool = true, skippedFinderMetadataCount: Int = 0) -> [String] {
         var issues = coverage.issues
-        for item in coverage.destinations {
-            let name = destinationLabel(for: item.destination, roots: [item.destination])
+        // The same distinct names the ASC MHL lines use: two backups on one
+        // volume never both read as the volume.
+        let labels = distinctDestinationLabels(for: coverage.destinations.map(\.destination))
+        for (position, item) in coverage.destinations.enumerated() {
+            let name = labels[position]
             if item.notVerifiedCount > 0 {
                 var line = item.notVerifiedCount == 1
                     ? "\(name): 1 file \(notVerifiedWord)"

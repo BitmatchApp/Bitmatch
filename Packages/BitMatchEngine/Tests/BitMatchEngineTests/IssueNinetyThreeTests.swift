@@ -319,6 +319,26 @@ struct IssueNinetyThreeSummaryTests {
         #expect(!result.message.contains("has no result"), "\(result.message)")
     }
 
+    /// Two backups on one volume would both read "RAID" in the summary: the
+    /// per-backup lines use the same distinct names as the ASC MHL lines.
+    @Test func coverageLinesTellApartBackupsOnOneVolume() {
+        let raidA = URL(fileURLWithPath: "/Volumes/RAID/A")
+        let raidB = URL(fileURLWithPath: "/Volumes/RAID/B")
+        let result = TransferCompletion.verdict(
+            rows: [
+                row(clip, on: raidA), row(finder, on: raidA, .failed, reason: .destinationChangedAfterCheck),
+                row(clip, on: raidB, .failed, reason: .outOfSpace), row(finder, on: raidB),
+            ],
+            sourceFiles: [clip, finder], destinations: [raidA, raidB], source: source,
+            settings: CameraLabelSettings(), mode: .standard, generateASCMHL: false,
+            handoffIssues: [], reportIssue: nil, project: .init(didPersist: true, locallySafe: nil)
+        )
+        #expect(!result.success)
+        #expect(result.message.contains("RAID/A: 1 file not verified"), "\(result.message)")
+        #expect(result.message.contains("RAID/B: 1 file not verified"), "\(result.message)")
+        #expect(!result.message.contains("; RAID: "), "\(result.message)")
+    }
+
     @Test func notVerifiedRowsWithDifferentReasonsGetNoParenthesis() {
         let other = source.appendingPathComponent("AMB/other.wav")
         let result = verdict([
