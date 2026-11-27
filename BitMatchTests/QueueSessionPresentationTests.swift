@@ -266,6 +266,27 @@ struct QueueSessionPresentationTests {
         #expect(MenuBarRecentTransfer.status(for: record, history: [record])?.needsAttention == false)
     }
 
+    @Test func historyFileCountExcludesGateFailedProvenSkipButKeepsSelectedFailures() throws {
+        let fixture = try QueuePresentationFixture()
+        defer { fixture.cleanup() }
+        var record = try fixture.record(name: "Card", state: .issues, outcome: .verified)
+        let source = record.source.url
+        let backup = record.destinations[0].url
+        record.skippedFinderMetadataPaths = [".DS_Store"]
+        record.results.append(ResultRow(path: source.appendingPathComponent(".DS_Store").path,
+            status: ResultOutcome.failed.statusText, size: 6148, checksum: nil,
+            destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent(".DS_Store").path,
+            failureReason: ResultFailureReason.sourceUnstable.rawValue))
+        record.results.append(ResultRow(path: source.appendingPathComponent("failed.mov").path,
+            status: ResultOutcome.failed.statusText, size: 10, checksum: nil,
+            destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("failed.mov").path))
+        #expect(TransferLibraryPresentation.fileCount(for: record) == 2)
+        #expect(TransferJournal.plannedRows(record).count == 2)
+        #expect(!TransferLibraryPresentation.safetyState(for: record, in: [record]).isSafe)
+        record.skippedFinderMetadataPaths = nil
+        #expect(TransferLibraryPresentation.fileCount(for: record) == 3)
+    }
+
     @Test func missingProofOrIncompleteEvidenceCannotQuietACompletedCard() throws {
         let fixture = try QueuePresentationFixture()
         defer { fixture.cleanup() }

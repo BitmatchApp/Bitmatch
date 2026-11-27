@@ -540,7 +540,7 @@ enum TransferLibraryPresentation {
     /// destination, so two destinations showed "38 files" for a 19-file card.
     static func fileCount(for record: LocalTransferRecord) -> Int {
         // Both kinds of omission lie outside the selected plan.
-        return Set(record.results.filter(\.isInSelectedPlan).map(\.path)).count
+        return Set(TransferJournal.plannedRows(record).map(\.path)).count
     }
 
     static func detailLine(destinationCount: Int, fileCount: Int) -> String {

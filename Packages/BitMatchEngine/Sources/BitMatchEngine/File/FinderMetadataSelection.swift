@@ -5,7 +5,8 @@ import Darwin
 /// skipping: the file must be named exactly `.DS_Store`, be a regular file,
 /// carry a consistent buddy-allocator ("Bud1") header, and hold Finder's `DSDB`
 /// directory entry resolving to an allocated block with a plausible B-tree
-/// header. Everything else is ordinary source data. Record contents are not interpreted.
+/// header. Everything else is ordinary source data.
+/// A Finder view file is proven by structure: Bud1 header, allocator table, a single DSDB directory entry resolving to an allocated master block whose root node is allocated and has a plausible header. Record contents are not interpreted; a file that satisfies all of this is treated as Finder's. This is the documented limit.
 public enum FinderMetadataSelection {
     public static let maximumSize: Int64 = 64 * 1024 * 1024
     public static let minimumSize: Int64 = 36
@@ -68,7 +69,8 @@ public enum FinderMetadataSelection {
     /// non-zero, 4 + offset + rootSize fits inside the file, and the root
     /// block (at 4 + offset, bounded by `maximumRootBlockRead`) contains a
     /// padded address table and exactly one `DSDB` entry resolving to an in-file
-    /// allocated block with a plausible B-tree header. Record contents are not interpreted.
+    /// allocated master block with a plausible B-tree header and an allocated
+    /// root node with a plausible header. Record contents are not interpreted.
     /// A read error is thrown as its POSIX error;
     /// a change to the file while reading throws `MetadataChanged`.
     static func isFinderViewFile(fd: Int32, size: Int64, checkCancellation: @Sendable () throws -> Void = { try Task.checkCancellation() }) throws -> Bool {
@@ -127,8 +129,18 @@ public enum FinderMetadataSelection {
                             if address != 0 && blockSize >= 16 && 4 + blockOffset + blockSize <= UInt64(size) {
                                 let tree = try read(16, at: Int64(4 + blockOffset))
                                 let fields = stride(from: 0, to: 16, by: 4).map { uint32(tree, $0) }
-                                matches = fields[0] > 0 && fields[0] < UInt32(count)
-                                    && fields.allSatisfy { $0 < 0x7FFF_FFFF }
+                                if fields[0] > 0 && fields[0] < UInt32(count)
+                                    && fields.allSatisfy({ $0 < 0x7FFF_FFFF }) {
+                                    let nodeAddress = uint32(root, 8 + Int(fields[0]) * 4)
+                                    let nodeOffset = UInt64(nodeAddress & ~UInt32(0x1F))
+                                    let nodeSize = UInt64(1) << (nodeAddress & 0x1F)
+                                    if nodeAddress != 0 && nodeSize >= 8 && 4 + nodeOffset + nodeSize <= UInt64(size) {
+                                        let node = try read(8, at: Int64(4 + nodeOffset))
+                                        let next = uint32(node, 0)
+                                        let records = uint32(node, 4)
+                                        matches = (next == 0 || next < UInt32(count)) && UInt64(records) < nodeSize / 8
+                                    }
+                                }
                             }
                         }
                     }

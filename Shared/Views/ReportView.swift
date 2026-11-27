@@ -42,7 +42,7 @@ struct ReportView: View {
     }
 
     private var reportStatistics: ReportResultStatistics {
-        ReportResultStatistics(rows: rows)
+        ReportResultStatistics(rows: rows.filter { !s.excludedFromFileCounts.contains($0.id) })
     }
     
     private var filesPerSecond: Double {
@@ -859,7 +859,7 @@ struct ReportView: View {
                 StatBox(title: "Verified", value: "\(verifiedFileCount)", color: isFullyVerified ? .green : .orange)
                 StatBox(title: "Issues", value: "\(issueCount)", color: issueCount > 0 ? .orange : .gray)
                 StatBox(title: "Success Rate",
-                       value: String(format: "%.1f%%", rows.isEmpty ? 100 : (Double(verifiedFileCount) / Double(rows.count) * 100)),
+                       value: String(format: "%.1f%%", reportStatistics.totalFiles == 0 ? 100 : (Double(verifiedFileCount) / Double(reportStatistics.totalFiles) * 100)),
                        color: isFullyVerified ? .green : .orange)
             }
         }

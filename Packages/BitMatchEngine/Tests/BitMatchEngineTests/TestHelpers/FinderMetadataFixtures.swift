@@ -18,7 +18,7 @@ enum FinderMetadataFixtures {
         // to 256 block addresses, followed by its directory.
         let root = Int(offset) + 4
         let entry: [UInt8] = [0, 0, 0, 2, 0, 0, 0, 0]
-            + [0, 0, 0x10, 0x05] + [UInt8](repeating: 0, count: 255 * 4)
+            + [0, 0, 0x10, 0x05, 0, 0, 0x12, 0x05] + [UInt8](repeating: 0, count: 254 * 4)
             + [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 0]
         if rootMarker, root >= 36, root + entry.count <= min(bytes.count, root + Int(rootSize)) {
             bytes.replaceSubrange(root..<root + entry.count, with: entry)

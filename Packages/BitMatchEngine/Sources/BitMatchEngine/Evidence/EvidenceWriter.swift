@@ -400,7 +400,8 @@ public enum EvidenceWriter: Sendable {
                                         projectCSV: ProjectCSVEvidence?,
                                         projectJSON: Project?, safeToErase: Bool? = nil,
                                         verificationScope: VerificationScopeEvidence? = nil,
-                                        skipsProven: Bool = false) async throws {
+                                        skipsProven: Bool = false,
+                                        excludedFromFileCounts: Set<UUID> = []) async throws {
         
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
@@ -443,6 +444,7 @@ public enum EvidenceWriter: Sendable {
                                  project: projectCSV,
                                  prefs: prefs,
                                  skipsProven: skipsProven,
+                                 excludedFromFileCounts: excludedFromFileCounts,
                                  scope: kind == .copyAndVerify && safeToErase != nil
                                      ? (verificationScope ?? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) })
                                      : nil)
@@ -461,6 +463,7 @@ public enum EvidenceWriter: Sendable {
                 destinationURLs: destinationURLs,
                 fileCount: fileCount,
                 matchCount: matchCount,
+                excludedFromFileCounts: excludedFromFileCounts,
                 totalBytesProcessed: totalBytesProcessed,
                 duration: duration,
                 copyDurationSeconds: copyDurationSeconds,
@@ -519,6 +522,7 @@ public enum EvidenceWriter: Sendable {
                                           project: ProjectCSVEvidence? = nil,
                                           prefs: ReportPrefs? = nil,
                                           skipsProven: Bool,
+                                          excludedFromFileCounts: Set<UUID>,
                                           scope: VerificationScopeEvidence? = nil) throws {
         let csvContent = try makeEnhancedCSV(
             results: results,
@@ -531,7 +535,8 @@ public enum EvidenceWriter: Sendable {
             project: project,
             prefs: prefs,
             scope: scope,
-            skipsProven: skipsProven
+            skipsProven: skipsProven,
+            excludedFromFileCounts: excludedFromFileCounts
         )
         try csvContent.data(using: .utf8)?.write(to: url)
     }
@@ -547,7 +552,8 @@ public enum EvidenceWriter: Sendable {
         project: ProjectCSVEvidence?,
         prefs: ReportPrefs? = nil,
         scope: VerificationScopeEvidence? = nil,
-        skipsProven: Bool = false
+        skipsProven: Bool = false,
+        excludedFromFileCounts: Set<UUID> = []
     ) throws -> String {
         var csvContent = csvRow([
             "Status", "File Path", "Target Path", "Job", "Photographer", "Camera", "Card", "Package Path", "Details", "Timestamp", "Bytes", "Checksum"
@@ -584,7 +590,7 @@ public enum EvidenceWriter: Sendable {
         csvContent += "\n# Summary\n"
         // The JSON's totalFiles: skipped Finder view files are listed above
         // but were never copied, so they are not counted.
-        csvContent += csvRow(["Total Files", String(results.filter { !$0.isSkippedFinderMetadata }.count)])
+        csvContent += csvRow(["Total Files", String(results.filter { $0.isInSelectedPlan && !excludedFromFileCounts.contains($0.id) }.count)])
         if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
             let scope = TransferSelectionEvidence(results: results)
             csvContent += csvRow(["Selection Policy", scope.policy])
@@ -662,6 +668,7 @@ public enum EvidenceWriter: Sendable {
                                                  destinationURLs: [URL],
                                                  fileCount: Int,
                                                  matchCount: Int,
+                                                 excludedFromFileCounts: Set<UUID>,
                                                  totalBytesProcessed: Int64,
                                                  duration: TimeInterval,
                                                  copyDurationSeconds: TimeInterval?,
@@ -696,7 +703,8 @@ public enum EvidenceWriter: Sendable {
             verifyLanes: verifyLanes,
             prefs: prefs,
             project: project, safeToErase: safeToErase, pdfEvidence: pdfEvidence, verificationScope: verificationScope,
-            skipsProven: skipsProven
+            skipsProven: skipsProven,
+            excludedFromFileCounts: excludedFromFileCounts
         )
         try encodeEnhancedJSONReport(report).write(to: url, options: .withoutOverwriting)
     }
@@ -732,7 +740,8 @@ public enum EvidenceWriter: Sendable {
         safeToErase: Bool? = nil,
         pdfEvidence: ReportPDFEvidence? = nil,
         verificationScope: VerificationScopeEvidence? = nil,
-        skipsProven: Bool = false
+        skipsProven: Bool = false,
+        excludedFromFileCounts: Set<UUID> = []
     ) throws -> EnhancedJSONReport<Project> {
         let safeToErase = results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble } ? false : safeToErase
         // Calculate file extensions breakdown
@@ -742,7 +751,7 @@ public enum EvidenceWriter: Sendable {
         var maxSize: Int64 = 0
         var minSize: Int64 = Int64.max
         
-        for result in results where !result.isSkippedFinderMetadata {
+        for result in results where result.isInSelectedPlan && !excludedFromFileCounts.contains(result.id) {
             let url = URL(fileURLWithPath: result.path)
             let ext = url.pathExtension.uppercased()
             if !ext.isEmpty {
@@ -782,7 +791,7 @@ public enum EvidenceWriter: Sendable {
         // count each original once; performance/statistics retain all copies.
         // A skipped Finder view file was never copied, so it is not counted
         // (the scope's recorded selected files leave it out the same way).
-        let sourceRows = Dictionary(grouping: results.filter { !$0.isSkippedFinderMetadata }, by: \.path)
+        let sourceRows = Dictionary(grouping: results.filter { $0.isInSelectedPlan && !excludedFromFileCounts.contains($0.id) }, by: \.path)
         let sourceBytes = sourceRows.values.reduce(Int64(0)) { total, rows in
             total + max(0, rows.map(\.size).max() ?? 0)
         }

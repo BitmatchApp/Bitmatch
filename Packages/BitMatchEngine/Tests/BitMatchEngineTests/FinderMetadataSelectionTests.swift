@@ -139,6 +139,26 @@ import Testing
         #expect(try skipped(root).isEmpty)
     }
 
+    @Test func unallocatedOutOfFileAndImplausibleRootNodesAreOrdinary() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let address = 4 + 0x800 + 8 + 4
+        let node = 4 + 0x1200
+        for name in ["zero", "outside", "records", "next"] {
+            let folder = root.appendingPathComponent(name)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            var data = FinderMetadataFixtures.bud1(size: 6148)
+            switch name {
+            case "zero": data.replaceSubrange(address..<address + 4, with: [0, 0, 0, 0])
+            case "outside": data.replaceSubrange(address..<address + 4, with: [0, 0, 0x20, 0x05])
+            case "records": data.replaceSubrange(node + 4..<node + 8, with: [0, 0, 0, 4])
+            default: data.replaceSubrange(node..<node + 4, with: [0, 0, 0, 2])
+            }
+            try data.write(to: folder.appendingPathComponent(".DS_Store"))
+        }
+        #expect(try skipped(root).isEmpty)
+    }
+
     @Test(.enabled(if: FileManager.default.fileExists(atPath: FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/.DS_Store").path)))
     func realDesktopFinderFileClassifiesWhenPresent() throws {
         let file = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Desktop/.DS_Store")

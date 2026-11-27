@@ -723,9 +723,14 @@ final class CopyVerifyExecutor {
         // Evidence (Promise 3): bytes actually copied, one row per file per
         // backup. config.estimatedBytes is a progress estimate that falls
         // back to a placeholder when the source was not measured.
-        let totalBytesProcessed = results.filter { !$0.isOmittedBySelection }.reduce(Int64(0)) { $0 + $1.size }
-        // Skipped Finder view files are not counted: they were never copied.
-        let fileCount = ReportExporter.countedFileCount(results)
+        let skippedAtStart = TransferCompletion.skippedAtStartSourcePaths(operation)
+        let plannedRows = results.filter {
+            $0.isInSelectedPlan && !(!$0.isSuccessStatus && skippedAtStart.contains($0.path))
+        }
+        let plannedIDs = Set(plannedRows.map(\.id))
+        let excludedFromFileCounts = Set(results.filter { !plannedIDs.contains($0.id) }.map(\.id))
+        let totalBytesProcessed = plannedRows.reduce(Int64(0)) { $0 + $1.size }
+        let fileCount = plannedRows.count
         // The workers the run actually used, never the machine's core count.
         let workers = operation.concurrency?.copyWorkers
         let verifyWorkers = operation.concurrency?.verifyWorkers
@@ -759,10 +764,6 @@ final class CopyVerifyExecutor {
         let reportResults = results
         let reportOperation = operation
         let reportContext = photographerContext
-        let skippedAtStart = TransferCompletion.skippedAtStartSourcePaths(operation)
-        let plannedRows = results.filter {
-            $0.isInSelectedPlan && !(!$0.isSuccessStatus && skippedAtStart.contains($0.path))
-        }
 
         let work = Task.detached(priority: .utility) {
             try await ReportExporter.export(
@@ -789,7 +790,8 @@ final class CopyVerifyExecutor {
                 verifiedSelection: verifiedSelection,
                 pdfNotes: verifiedSelection == nil ? nil : notesBeforeSelection,
                 plannedRows: plannedRows,
-                skipsProven: skipsProven
+                skipsProven: skipsProven,
+                excludedFromFileCounts: excludedFromFileCounts
             )
         }
         reportTask = work

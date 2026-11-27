@@ -43,6 +43,8 @@ struct ReportSummary {
     var verifiedSelection: VerifiedReportSelection? = nil
     /// Only a proven Finder skip is omitted from the PDF issue list.
     var finderSkipsProven: Bool = false
+    /// Failed final checks of Start-skipped files remain issues, not copied files.
+    var excludedFromFileCounts: Set<UUID> = []
 }
 
 extension ReportSummary {

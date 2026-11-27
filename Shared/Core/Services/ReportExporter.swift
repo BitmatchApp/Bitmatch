@@ -9,12 +9,10 @@ typealias ProjectJSONReport = EnhancedJSONReport<PhotographerReportPayload>
 /// the photographer project details) and hands it to `EvidenceWriter`, which
 /// writes every file.
 enum ReportExporter {
-    /// The report's file count: every result row except skipped Finder view
-    /// files, which were never copied. Matches and scope counts leave them
-    /// out too, so a clean run with a proven skip still has
-    /// matches == total files and reads as verified.
+    /// Count selected result rows. Gate-failed skips also need the recorded
+    /// Start-time skip paths, which the caller must filter first.
     static func countedFileCount(_ results: [ResultRow]) -> Int {
-        results.filter { !$0.isSkippedFinderMetadata }.count
+        results.filter(\.isInSelectedPlan).count
     }
 
     static func export(mode: AppMode,
@@ -40,7 +38,8 @@ enum ReportExporter {
                        verifiedSelection: VerifiedReportSelection? = nil,
                        pdfNotes: String? = nil,
                        plannedRows: [ResultRow]? = nil,
-                       skipsProven: Bool = false) async throws {
+                       skipsProven: Bool = false,
+                       excludedFromFileCounts: Set<UUID> = []) async throws {
 
         var reportPrefs = prefs
         let automaticNotes = ResultPresentation.automaticReportNotes(results)
@@ -101,6 +100,7 @@ enum ReportExporter {
             verifiedSelection: verifiedSelection
         )
         summary.finderSkipsProven = skipsProven
+        summary.excludedFromFileCounts = excludedFromFileCounts
         if mode == .copyAndVerify, let selectedMode = prefs.verificationMode {
             summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results,
                                                                   skipFinderViewFiles: prefs.skipFinderViewFiles,
@@ -161,7 +161,8 @@ enum ReportExporter {
                                        projectJSON: projectJSON,
                                        safeToErase: safetyState == .safeToErase,
                                        verificationScope: summary.verificationScope,
-                                       skipsProven: skipsProven)
+                                       skipsProven: skipsProven,
+                                       excludedFromFileCounts: excludedFromFileCounts)
     }
 
     /// Re-renders saved evidence without touching the source or changing the journal verdict.
@@ -190,10 +191,13 @@ enum ReportExporter {
                 destination: row.destination, destinationPath: path, clipIntegrity: row.clipIntegrity, wasReused: row.wasReused)
         }
         let thumbnails = try await ReportThumbnailService.collect(results: previewRows, enabled: includeThumbnails)
-        let recordedBytes = record.results.filter(\.isSuccessStatus).reduce(into: Int64(0)) { bytes, row in
+        let plannedRows = TransferJournal.plannedRows(record)
+        let recordedBytes = plannedRows.reduce(into: Int64(0)) { bytes, row in
             let sum = bytes.addingReportingOverflow(max(0, row.size)); bytes = sum.overflow ? Int64.max : sum.partialValue
         }
-        let files = Set(record.results.filter { !$0.isSkippedFinderMetadata }.map(\.path)).count
+        let selectedIDs = Set(plannedRows.map(\.id))
+        let excludedIDs = Set(record.results.filter { !selectedIDs.contains($0.id) }.map(\.id))
+        let files = Set(plannedRows.map(\.path)).count
         let start = record.startedAt ?? record.createdAt
         let finish = record.endedAt ?? start
         let safetyState = TransferLibraryPresentation.safetyState(for: record, in: history)
@@ -226,6 +230,7 @@ enum ReportExporter {
             hasRecordedTiming: record.startedAt != nil && record.endedAt != nil,
             verifiedSelection: VerifiedReportSelection.saved(record))
         summary.finderSkipsProven = skipsProven
+        summary.excludedFromFileCounts = excludedIDs
         summary.verificationScope = VerificationScopeEvidence(record: record)
         if record.plannedFileCounts == nil {
             summary.verificationScopeNote = "Original selected-file plan was not saved; this export describes recorded results only."

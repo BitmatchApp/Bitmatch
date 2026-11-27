@@ -1124,7 +1124,6 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         try fm.createDirectory(at: source, withIntermediateDirectories: true)
         try fm.createDirectory(at: destination, withIntermediateDirectories: true)
         try Data("first clip".utf8).write(to: source.appendingPathComponent("A001.mov"))
-        try Data("second clip".utf8).write(to: source.appendingPathComponent("A002.mov"))
         let dsStore = source.appendingPathComponent(".DS_Store")
         try Self.finderViewFile().write(to: dsStore)
 
@@ -1138,12 +1137,13 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
             destinations: [try LocalTransferResource(url: destination)], verificationMode: .standard,
             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(), generateASCMHL: false, projectID: nil)
         journalRecord.state = .running
-        journalRecord.plannedFileCounts = [2]
+        journalRecord.plannedFileCounts = [1]
         let record = journalRecord
         let harness = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source, destinationURLs: [destination],
+            makeReport: true,
             realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared,
                                                  fanOutHooks: hooks),
-            estimatedFiles: 2, estimatedBytes: 21)
+            estimatedFiles: 1, estimatedBytes: 10)
         harness.onAuthoritativeResults = { [unowned harness] in
             try SavedTransferPlanGate.requireSavedPlan(record, destinationCount: 1,
                 authoritativeRows: harness.completedRows, skippedAtStartSourcePaths: harness.completedSkippedAtStart,
@@ -1158,6 +1158,24 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         XCTAssertEqual(harness.terminalInfo?.success, false)
         XCTAssertTrue(harness.terminalInfo?.message.contains("the card changed") == true,
                       harness.terminalInfo?.message ?? "no verdict")
+        let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let json = try XCTUnwrap(reports.first { $0.pathExtension == "json" })
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: json)) as? [String: Any])
+        let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
+        XCTAssertEqual(statistics["totalFiles"] as? Int, 1)
+        XCTAssertEqual(statistics["totalBytes"] as? Int, 10)
+        XCTAssertEqual(statistics["issues"] as? Int, 1)
+        XCTAssertEqual((object["source"] as? [String: Any])?["fileCount"] as? Int, 1)
+        XCTAssertEqual(object["safeToErase"] as? Bool, false)
+        let jsonRows = try XCTUnwrap(object["results"] as? [[String: Any]])
+        XCTAssertTrue(jsonRows.contains { ($0["path"] as? String)?.hasSuffix("/.DS_Store") == true })
+        let csv = try String(contentsOf: try XCTUnwrap(reports.first { $0.pathExtension == "csv" }), encoding: .utf8)
+        XCTAssertTrue(csv.contains("Total Files,1"), csv)
+        XCTAssertTrue(csv.contains(".DS_Store"), csv)
+        let pdf = try XCTUnwrap(PDFDocument(url: try XCTUnwrap(reports.first { $0.pathExtension == "pdf" })))
+        let pdfText = (0..<pdf.pageCount).compactMap { pdf.page(at: $0)?.string }.joined(separator: " ")
+        XCTAssertTrue(pdfText.contains("1 file"), pdfText)
+        XCTAssertTrue(pdfText.contains(".DS_Store"), pdfText)
     }
 
     /// A Finder view file: a buddy-allocator header whose root block holds
@@ -1171,6 +1189,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         let root = 0x804
         bytes[root + 3] = 2 // two blocks; the next word is reserved
         bytes.replaceSubrange(root + 8..<root + 12, with: [0, 0, 0x10, 0x05])
+        bytes.replaceSubrange(root + 12..<root + 16, with: [0, 0, 0x12, 0x05])
         bytes.replaceSubrange(0x1004..<0x1014, with: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
         let directory = root + 8 + 256 * 4
         let entry: [UInt8] = [0, 0, 0, 1, 4] + Array("DSDB".utf8) + [0, 0, 0, 0]
