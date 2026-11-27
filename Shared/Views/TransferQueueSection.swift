@@ -648,7 +648,7 @@ struct TransferQueueSection: View {
                     Text(scope.selectedModeLine)
                     Text(scope.recordedResultsLine)
                     if let exclusion = scope.exclusionLine { Text(exclusion) }
-                    if let skip = scope.finderMetadataSkipLine { Text(skip) }
+                    if let skip = TransferCompletion.finderMetadataSkipSummary(results: record.results) { Text(skip) }
                     if let setting = scope.finderViewFilesSettingLine { Text(setting) }
                 }
                 .font(.caption).foregroundStyle(.secondary)
