@@ -32,7 +32,7 @@ public struct TransferSelectionEvidence: Codable, Sendable {
     public let skippedFinderViewFileCount: Int?
     public let excludedSourcePaths: [String]
 
-    public init(results: [ResultRow]) {
+    public init(results: [ResultRow], excludedFromFileCounts: Set<UUID> = []) {
         let all = Set(results.map(\.path))
         let excluded = Set(results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.map(\.path))
         // A skipped Finder view file is not selected either, but it is not
@@ -41,7 +41,7 @@ public struct TransferSelectionEvidence: Codable, Sendable {
         policy = "exclude-appledouble-companions"
         countsBasis = "recorded-source-results"
         sourceFileCount = all.count
-        selectedFileCount = all.subtracting(excluded).subtracting(skipped).count
+        selectedFileCount = Set(results.filter { $0.isInSelectedPlan && !excludedFromFileCounts.contains($0.id) }.map(\.path)).count
         excludedFileCount = excluded.count
         skippedFinderViewFileCount = skipped.isEmpty ? nil : skipped.count
         excludedSourcePaths = excluded.sorted()
@@ -667,7 +667,7 @@ public enum EvidenceWriter: Sendable {
         // but were never copied, so they are not counted.
         csvContent += csvRow(["Total Files", String(results.filter { $0.isInSelectedPlan && !excludedFromFileCounts.contains($0.id) }.count)])
         if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
-            let scope = TransferSelectionEvidence(results: results)
+            let scope = TransferSelectionEvidence(results: results, excludedFromFileCounts: excludedFromFileCounts)
             csvContent += csvRow(["Selection Policy", scope.policy])
             csvContent += csvRow(["Recorded Source Files", String(scope.sourceFileCount)])
             csvContent += csvRow(["Selected Recorded Source Files", String(scope.selectedFileCount)])
@@ -966,7 +966,7 @@ public enum EvidenceWriter: Sendable {
             safeToErase: safeToErase, pdfEvidence: pdfEvidence, operatorName: normalizedNotes(prefs.operatorName)
         )
         if results.contains(where: { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
-            report.selection = TransferSelectionEvidence(results: results)
+            report.selection = TransferSelectionEvidence(results: results, excludedFromFileCounts: excludedFromFileCounts)
         }
         return report
     }

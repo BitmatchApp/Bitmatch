@@ -71,6 +71,9 @@ final class PhotographerJobViewModel: ObservableObject {
     }
 
     private var recoveryTransferRecords: [LocalTransferRecord] = []
+    // Initial loading can precede History injection. Retain the original card
+    // until reconciliation has had a chance to apply its terminal record.
+    private var unsettledCardsAtLoad: [UUID: CardIngest] = [:]
     private let store: any PhotographerJobStore
     private let now: () -> Date
     private let preliminaryAnalyzer: PreliminaryAnalyzer
@@ -94,7 +97,8 @@ final class PhotographerJobViewModel: ObservableObject {
         confirmedAnalyzer: @escaping ConfirmedAnalyzer = { try PhotographerCardAnalyzer.confirmedFingerprint(results: $0) },
         entryEnumerator: @escaping EntryEnumerator = { url, check in try CardSource.enumerateRegularFiles(base: url, checkCancellation: check) },
         remoteBackupCoordinator: (any ProjectRemoteCoordinator)? = nil,
-        workflowDefaults: UserDefaults = .standard
+        workflowDefaults: UserDefaults = .standard,
+        recoveryRecords: [LocalTransferRecord] = []
     ) {
         self.store = store
         self.workflowDefaults = workflowDefaults
@@ -102,6 +106,7 @@ final class PhotographerJobViewModel: ObservableObject {
         self.preliminaryAnalyzer = preliminaryAnalyzer
         self.confirmedAnalyzer = confirmedAnalyzer
         self.entryEnumerator = entryEnumerator
+        self.recoveryTransferRecords = recoveryRecords
         #if os(macOS)
         self.remoteBackupCoordinator = remoteBackupCoordinator ?? RemoteBackupCoordinator(store: store)
         #else
@@ -1127,14 +1132,46 @@ final class PhotographerJobViewModel: ObservableObject {
         // Reconcile loaded cards without resetting an injected view model's
         // current setup. Deferred stores are also checked in loadJobs().
         for job in jobs {
-            for card in job.cardIngests where card.localState == .locallySafe {
+            for card in job.cardIngests {
                 let latest = records.filter { $0.projectID == job.id && $0.projectCardID == card.id }
                     .max { $0.createdAt < $1.createdAt }
-                if let latest, latest.state != .completed {
+                let unsettled = unsettledCardsAtLoad[card.id] ?? card
+                if let latest, TransferLibraryPresentation.safetyState(for: latest, in: records) == .safeToErase,
+                   [.notStarted, .copying, .verifying].contains(unsettled.localState) {
+                    do {
+                        var recoveredJob = jobForRun(job.id) ?? job
+                        guard let index = recoveredJob.cardIngests.firstIndex(where: { $0.id == card.id }) else { continue }
+                        let saved = latest.projectCardSnapshot.flatMap { try? JSONDecoder().decode(CardIngest.self, from: $0) }
+                        var recovered: CardIngest
+                        if let saved, saved.id == card.id, saved.localState == .locallySafe {
+                            recovered = saved
+                        } else {
+                            // Older History lacks the prepared snapshot; retain the
+                            // recorded facts from the completed selected plan.
+                            recovered = unsettled
+                            recovered.localState = .locallySafe
+                            recovered.locallySafeAt = latest.endedAt
+                            recovered.verifiedDestinationCount = min(latest.independentDestinationCount ?? latest.resultDestinationURLs.count, latest.resultDestinationURLs.count)
+                            let skips = Set(latest.skippedFinderMetadataPaths ?? [])
+                            recovered.skippedFinderMetadataPaths = skips.isEmpty ? nil : skips.sorted()
+                            let selected = latest.results.filter(\.isVerifiedStatus)
+                            var seen = Set<String>()
+                            let canonical = selected.filter { seen.insert($0.path).inserted }
+                            recovered.countedSkippedFinderMetadataCount = skips.isEmpty ? nil
+                                : min(skips.count, max(0, recovered.fileCount - canonical.count))
+                            recovered.provenance.confirmedFingerprint = try? confirmedAnalyzer(canonical)
+                        }
+                        recoveredJob.cardIngests[index] = recovered
+                        try persistRunJobThrowing(recoveredJob)
+                        if activeCardDraft?.id == card.id { activeCardDraft = recovered }
+                    } catch { lastError = error.localizedDescription }
+                } else if [.locallySafe, .notStarted, .copying, .verifying].contains(card.localState), let latest,
+                          TransferLibraryPresentation.safetyState(for: latest, in: records) != .safeToErase {
                     operationFailed(jobID: job.id, cardID: card.id)
                 }
             }
         }
+        unsettledCardsAtLoad.removeAll()
     }
 
     private func loadJobs() {
@@ -1147,11 +1184,16 @@ final class PhotographerJobViewModel: ObservableObject {
 
                 for index in recovered.cardIngests.indices {
                     let card = recovered.cardIngests[index]
+                    if [.notStarted, .copying, .verifying].contains(card.localState) { unsettledCardsAtLoad[card.id] = card }
                     let latest = recoveryTransferRecords.filter {
                         $0.projectID == recovered.id && $0.projectCardID == card.id
                     }.max { $0.createdAt < $1.createdAt }
+                    if let latest, TransferLibraryPresentation.safetyState(for: latest, in: recoveryTransferRecords) == .safeToErase,
+                       [.notStarted, .copying, .verifying].contains(card.localState) { continue }
                     let interrupted = [PhotographerLocalState.notStarted, .copying, .verifying].contains(card.localState)
-                        || (card.localState == .locallySafe && latest != nil && latest?.state != .completed)
+                        || (card.localState == .locallySafe && latest.map {
+                            TransferLibraryPresentation.safetyState(for: $0, in: recoveryTransferRecords) != .safeToErase
+                        } == true)
                     guard interrupted else { continue }
                     recovered.cardIngests[index].localState = .issues
                     recovered.cardIngests[index].locallySafeAt = nil
@@ -1178,6 +1220,7 @@ final class PhotographerJobViewModel: ObservableObject {
             } else {
                 lastError = nil
             }
+            if !recoveryTransferRecords.isEmpty { recoverIncompleteTransfers(recoveryTransferRecords) }
         } catch {
             lastError = error.localizedDescription
         }

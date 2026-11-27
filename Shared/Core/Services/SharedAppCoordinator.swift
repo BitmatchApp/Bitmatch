@@ -391,6 +391,7 @@ class SharedAppCoordinator: ObservableObject {
     private let beforeFinalReportSettlement: (() throws -> Void)?
     private let beforeRecoveryReportSettlement: (() throws -> Void)?
     private var pendingProjectFinalization: (() throws -> Void)?
+    private var pendingProjectCardSnapshot: Data?
     private lazy var copyVerifyExecutor: CopyVerifyExecutor = {
         CopyVerifyExecutor(
             platformManager: platformManager,
@@ -1055,7 +1056,8 @@ class SharedAppCoordinator: ObservableObject {
             self.photographerJobViewModel = PhotographerJobViewModel(
                 store: selectedProjectStore,
                 remoteBackupCoordinator: UnavailableRemoteProjectCoordinator(store: selectedProjectStore),
-                workflowDefaults: defaults
+                workflowDefaults: defaults,
+                recoveryRecords: selectedJournal.records
             )
         }
         self.reportSettings = reportPrefsStore.load()
@@ -2696,7 +2698,8 @@ class SharedAppCoordinator: ObservableObject {
             fanOutHooks: demoFanOutHooks(for: context.journalRecordID),
             expectedExclusionQueueIdentity: expectedExclusionQueueIdentity,
             priorSourceFaultPreventsSafeClaim: lineagePreventsSafeClaim,
-            deferReportSafetyUntilHistory: true
+            deferReportSafetyUntilHistory: true,
+            reportJobID: recordID
         )
 
         let callbacks = CopyVerifyCallbacks(
@@ -2793,6 +2796,7 @@ class SharedAppCoordinator: ObservableObject {
         }
 
         pendingProjectFinalization = nil
+        pendingProjectCardSnapshot = nil
         var attemptingJournalFinish = false
         var finalizingProject = false
         var firstInterruptWriteFailure: String?
@@ -2847,7 +2851,8 @@ class SharedAppCoordinator: ObservableObject {
                     verifyDurationSeconds: durations.verifySeconds,
                     performanceTelemetry: copyVerifyExecutor.completedPerformanceTelemetry,
                     sourceFingerprint: currentOperation?.sourceFingerprint,
-                    skippedFinderMetadataPaths: currentOperation?.skippedFinderMetadataPaths
+                    skippedFinderMetadataPaths: currentOperation?.skippedFinderMetadataPaths,
+                    projectCardSnapshot: pendingProjectCardSnapshot
                 )
                 attemptingJournalFinish = false
                 if publicationFailure == nil, (info.success || info.expectedExclusionQueueQualification != nil),
@@ -3223,6 +3228,11 @@ class SharedAppCoordinator: ObservableObject {
                 independentDestinationCount: independentDestinationCount,
                 priorSourceFault: priorSourceFault, provenSkippedSourcePaths: provenSkippedSourcePaths,
                 persist: false)
+            guard let card = prepared.context?.job.cardIngests.first(where: { $0.id == cardID }) else {
+                throw PhotographerReportError.cardNotReady
+            }
+            let snapshot = try JSONEncoder().encode(card)
+            self?.pendingProjectCardSnapshot = snapshot
             self?.pendingProjectFinalization = { [weak photographerJobViewModel] in
                 guard let photographerJobViewModel else { throw PhotographerReportError.cardNotReady }
                 try photographerJobViewModel.commitPreparedIngest(prepared)

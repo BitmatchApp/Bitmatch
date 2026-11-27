@@ -23,6 +23,7 @@ typealias PhotographerReportFinalizer = @MainActor (
 /// Configuration for a copy/verify operation
 struct CopyVerifyConfig {
     let operationId: UUID
+    let reportJobID: UUID?
     let sourceURL: URL
     let destinationURLs: [URL]
     let verificationMode: VerificationMode
@@ -64,9 +65,11 @@ struct CopyVerifyConfig {
         fanOutHooks: DestinationWriter.FanOutHooks? = nil,
         expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil,
         priorSourceFaultPreventsSafeClaim: Bool = false,
-        deferReportSafetyUntilHistory: Bool = false
+        deferReportSafetyUntilHistory: Bool = false,
+        reportJobID: UUID? = nil
     ) {
         self.operationId = operationId
+        self.reportJobID = reportJobID
         self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
         self.deferReportSafetyUntilHistory = deferReportSafetyUntilHistory
         self.sourceURL = sourceURL
@@ -804,11 +807,12 @@ final class CopyVerifyExecutor {
         let reportResults = results
         let reportOperation = operation
         let reportContext = photographerContext
+        let reportJobID = config.reportJobID ?? reportOperation.id
 
         let work = Task.detached(priority: .utility) {
             try await ReportExporter.export(
                 mode: reportMode,
-                jobID: reportOperation.id,
+                jobID: reportJobID,
                 started: reportOperation.startTime,
                 finished: reportOperation.endTime ?? Date(),
                 sourceURL: reportOperation.sourceURL,

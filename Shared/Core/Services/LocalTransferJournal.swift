@@ -428,6 +428,11 @@ final class LocalTransferJournal: ObservableObject {
         try store.recordPendingReportPaths(id: id, paths: paths)
     }
 
+    func retryPendingReportWithdrawals(id: UUID) throws {
+        defer { refresh() }
+        try store.retryPendingReportWithdrawals(id: id)
+    }
+
     func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow]) {
         guard var record = records.first(where: { $0.id == id }) else { return }
         record.state = .interrupted
@@ -459,7 +464,8 @@ final class LocalTransferJournal: ObservableObject {
         verifyDurationSeconds: TimeInterval? = nil,
         performanceTelemetry: TransferPerformanceTelemetry? = nil,
         sourceFingerprint: String? = nil,
-        skippedFinderMetadataPaths: [String]? = nil
+        skippedFinderMetadataPaths: [String]? = nil,
+        projectCardSnapshot: Data? = nil
     ) throws {
         defer { refresh() }
         try beforeFinish?(id)
@@ -474,7 +480,8 @@ final class LocalTransferJournal: ObservableObject {
             verifyDurationSeconds: verifyDurationSeconds,
             performanceTelemetry: performanceTelemetry,
             sourceFingerprint: sourceFingerprint,
-            skippedFinderMetadataPaths: skippedFinderMetadataPaths
+            skippedFinderMetadataPaths: skippedFinderMetadataPaths,
+            projectCardSnapshot: projectCardSnapshot
         )
     }
 

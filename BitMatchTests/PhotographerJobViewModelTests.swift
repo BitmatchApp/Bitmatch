@@ -919,6 +919,52 @@ struct PhotographerJobViewModelTests {
         #expect(store.storedJobs.first?.cardIngests.first == result)
     }
 
+    @Test func recoveryCommitsCompletedHistoryForAnUnsettledCard() throws {
+        let store = InMemoryPhotographerJobStore()
+        let original = preparedViewModel(store: store)
+        _ = original.beginIngest(destinationCount: 2)
+        let job = try #require(original.activeJob)
+        let card = try #require(job.cardIngests.first)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("project-recovery-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = LocalTransferJournal(fileURL: root.appendingPathComponent("journal.json"))
+        try journal.enqueue(sourceURL: root, destinationURLs: [root, root], verificationMode: .standard,
+                            cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
+                            projectID: job.id, projectCardID: card.id)
+        var record = try #require(journal.records.first)
+        record.state = .completed
+        record.endedAt = now
+        record.results = verifiedRows(destinationNames: ["Primary", "Secondary"])
+        record.independentDestinationCount = 2
+        record.runDestinationURLs = [URL(fileURLWithPath: "/primary"), URL(fileURLWithPath: "/secondary")]
+        record.plannedFileCounts = [1, 1]
+        var prepared = card
+        prepared.localState = .locallySafe
+        prepared.locallySafeAt = now
+        prepared.verifiedDestinationCount = 2
+        prepared.provenance.confirmedFingerprint = "prepared-evidence"
+        record.projectCardSnapshot = try JSONEncoder().encode(prepared)
+        var unsafe = record
+        unsafe.state = .issues
+        let interrupted = PhotographerJobViewModel(store: store, now: { now },
+            workflowDefaults: .isolatedWorkflowDefaults(remembering: .photography), recoveryRecords: [unsafe])
+        #expect(interrupted.activeJob?.cardIngests.first?.localState == .issues)
+        try store.save(job)
+        original.recoverIncompleteTransfers([record])
+        let result = try #require(original.activeJob?.cardIngests.first)
+        #expect(result.localState == .locallySafe)
+        #expect(result.locallySafeAt == now)
+        #expect(result.verifiedDestinationCount == 2)
+        #expect(result.provenance.confirmedFingerprint == "prepared-evidence")
+        #expect(store.storedJobs.first?.cardIngests.first == result)
+        try store.save(job)
+        let reopened = PhotographerJobViewModel(store: store, now: { now },
+            workflowDefaults: .isolatedWorkflowDefaults(remembering: .photography), recoveryRecords: [record])
+        #expect(reopened.activeJob?.cardIngests.first == result)
+        #expect(store.storedJobs.first?.cardIngests.first == result)
+    }
+
     @Test func recoveryDowngradesSafeCardWhenItsLatestTransferDidNotComplete() throws {
         let store = InMemoryPhotographerJobStore()
         let original = preparedViewModel(store: store)
@@ -934,9 +980,7 @@ struct PhotographerJobViewModelTests {
                             cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs(),
                             projectID: job.id, projectCardID: card.id)
         var record = try #require(journal.records.first)
-        record.state = .completed
         let recovered = makeViewModel(store: store)
-        recovered.recoverIncompleteTransfers([record])
         #expect(recovered.activeJob?.cardIngests.first?.localState == .locallySafe)
         record.state = .interrupted
         recovered.recoverIncompleteTransfers([record])

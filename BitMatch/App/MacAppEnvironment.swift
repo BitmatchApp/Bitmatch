@@ -72,8 +72,10 @@ final class MacAppEnvironment: ObservableObject {
     static func make(platformManager: PlatformManager = MacOSPlatformManager.shared) -> MacAppEnvironment {
         let store = CoreDataPhotographerJobStore(persistence: BitMatchPersistenceController.shared)
         let remoteBackupCoordinator = RemoteBackupCoordinator(store: store)
-        let jobs = PhotographerJobViewModel(store: store, remoteBackupCoordinator: remoteBackupCoordinator)
-        let coordinator = SharedAppCoordinator(platformManager: platformManager, photographerJobViewModel: jobs)
+        let journal = LocalTransferJournal()
+        let jobs = PhotographerJobViewModel(store: store, remoteBackupCoordinator: remoteBackupCoordinator,
+                                            recoveryRecords: journal.records)
+        let coordinator = SharedAppCoordinator(platformManager: platformManager, transferJournal: journal, photographerJobViewModel: jobs)
         let remoteBackups = MacRemoteBackupController.makeDefault(
             store: store,
             photographerJobViewModel: jobs,

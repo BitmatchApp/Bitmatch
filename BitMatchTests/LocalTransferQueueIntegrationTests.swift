@@ -106,6 +106,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let url = try XCTUnwrap(scan.reports.first?.url)
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: url)) as? [String: Any])
         XCTAssertEqual(object["safeToErase"] as? Bool, true)
+        XCTAssertEqual(object["jobId"] as? String, id.uuidString)
         XCTAssertEqual(url.deletingLastPathComponent().lastPathComponent, "Reports")
         let siblings = try FileManager.default.contentsOfDirectory(at: f.destination, includingPropertiesForKeys: nil)
         XCTAssertFalse(siblings.contains { $0.lastPathComponent.hasPrefix(".BitMatch-report-staging-") })

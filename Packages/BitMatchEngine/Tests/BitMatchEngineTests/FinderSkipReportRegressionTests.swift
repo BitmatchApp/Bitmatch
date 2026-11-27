@@ -3,6 +3,25 @@ import Testing
 @testable import BitMatchEngine
 
 struct FinderSkipReportRegressionTests {
+    @Test func selectionExcludesFinderSkipThatFailedTheFinalGate() throws {
+        let rows = [
+            ResultRow(path: "/Card/clip.mov", status: ResultOutcome.verified.statusText, size: 1, checksum: "abc", destination: "backup"),
+            ResultRow(path: "/Card/.DS_Store", status: ResultOutcome.failed.statusText, size: 1, checksum: nil, destination: "backup"),
+            ResultRow(path: "/Card/._clip.mov", status: ResultOutcome.excludedAppleDouble.statusText, size: 1, checksum: nil, destination: "backup")
+        ]
+        let excluded = Set([rows[1].id])
+        let csv = try EvidenceWriter.makeEnhancedCSV(results: rows, started: .distantPast, duration: 1,
+            filesPerSecond: 1, project: nil, excludedFromFileCounts: excluded)
+        let report: EnhancedJSONReport<String> = try EvidenceWriter.makeEnhancedJSONReport(
+            results: rows, jobID: UUID(), started: .distantPast, finished: .distantPast,
+            kind: .copyAndVerify, sourceURL: URL(fileURLWithPath: "/Card"), destinationURLs: [],
+            fileCount: 1, matchCount: 1, totalBytesProcessed: 1, duration: 1, workers: nil,
+            prefs: ReportPrefs(), project: nil, excludedFromFileCounts: excluded)
+        #expect(report.selection?.selectedFileCount == 1)
+        #expect(report.source.fileCount == 1)
+        #expect(csv.contains("Selected Recorded Source Files,1\n"))
+        #expect(csv.contains("Total Files,1\n"))
+    }
     @Test func failedSelectedRowsCountInSourceBytesButNotProcessedBytes() throws {
         let rows = [
             ResultRow(path: "/Card/good.mov", status: ResultOutcome.verified.statusText, size: 4, checksum: "abc", destination: "backup"),
