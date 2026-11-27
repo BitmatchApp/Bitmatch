@@ -268,6 +268,37 @@ struct TransferConcurrencyPipelineTests {
         }
     }
 
+    /// Thorough and Paranoid reread the card for every backup. On a spinning
+    /// card, lanes per backup drive would make it seek between files, so the
+    /// run uses one lane however many drives there are. Standard reads only
+    /// the backups and keeps a lane per drive.
+    @Test(arguments: [(VerificationMode.thorough, 1), (.standard, 2)])
+    func aSpinningCardCollapsesLanesOnlyWhenTheCardIsReread(mode: VerificationMode, lanes: Int) async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            let second = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch_conc_dst2_\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: second, withIntermediateDirectories: true)
+            defer {
+                try? FileManager.default.removeItem(at: tree.source)
+                try? FileManager.default.removeItem(at: tree.destination)
+                try? FileManager.default.removeItem(at: second)
+            }
+            let detector = FixedMediumDetector(kind: .rotational, driveByPath: [
+                tree.destination.path: "drive-one", second.path: "drive-two",
+            ])
+            #expect(Set(TransferPipeline.verifyLaneKeys(for: [tree.destination, second], detector: detector)).count == 2)
+            let pipeline = TransferPipeline(
+                fileSystem: LocalFileAccess(), checksum: ChecksumEngine.shared,
+                storageMediumDetector: detector)
+            let operation = try await pipeline.performFileOperation(
+                sourceURL: tree.source, destinationURLs: [tree.destination, second],
+                verificationMode: mode, settings: CameraLabelSettings(),
+                estimatedTotalBytes: nil, progressCallback: { _ in }, onFileResult: nil)
+            #expect(operation.results.allSatisfy { $0.success })
+            #expect(operation.concurrency?.verifyLanes == lanes, "\(mode)")
+        }
+    }
+
     @Test func anExplicitChoiceReachesTheRunThroughTheSettingsClosure() async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()

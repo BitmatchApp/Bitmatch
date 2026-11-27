@@ -760,8 +760,19 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Finder view files (`.DS_Store`) proven by their Bud1 header are
         // skipped when the setting is on: Finder rewrites them whenever a
         // folder is browsed, so copying them only invites a false failure.
-        let skipped = operation.settings.skipFinderViewFiles
-            ? try FinderMetadataSelection.skipped(in: completeSourceManifest) : []
+        // Reading each header can block on a stalled card, so it runs on the
+        // transfer executor under its own security scope, as the final
+        // check's recheck does.
+        let skipped: [FileEntry]
+        if operation.settings.skipFinderViewFiles {
+            skipped = try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
+                let scoped = fileSystem.startAccessing(url: sourceURL)
+                defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+                return try FinderMetadataSelection.skipped(in: completeSourceManifest, checkCancellation: check)
+            }
+        } else {
+            skipped = []
+        }
         if !skipped.isEmpty {
             SharedLogger.transferEvent(.finderMetadataSkipped, run: TransferDiagnostics.runID ?? operation.id, code: skipped.count)
         }
