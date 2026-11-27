@@ -288,11 +288,22 @@ struct WorkingReportEntry {
         guard ReportName.withdrawnReport(ReportName.withdrawnName(report: report, recordID: id)) == report,
               let record = records.first(where: { $0.id == id }) else { return false }
         let directory = parts[...index].reduce(root) { $0.appendingPathComponent($1) }.standardizedFileURL
-        guard (record.reportStagingPaths ?? []).contains(where: { URL(fileURLWithPath: $0).standardizedFileURL == directory }),
+        guard let stageRelative = TransferJournal.reportRelativePath(directory.path, root: root),
               let pinned = try? PinnedReportFile(url: directory.appendingPathComponent(entry)) else { return false }
         let publicURL = directory.deletingLastPathComponent().appendingPathComponent(report).standardizedFileURL
-        return ((record.intendedReportFileFacts ?? []) + (record.reportFileFacts ?? [])).contains {
-            URL(fileURLWithPath: $0.path).standardizedFileURL == publicURL && $0.sha256 == pinned.sha256
+        guard let reportRelative = TransferJournal.reportRelativePath(publicURL.path, root: root) else { return false }
+        let facts = (record.intendedReportFileFacts ?? []) + (record.reportFileFacts ?? [])
+        if (record.reportStagingPaths ?? []).contains(where: { URL(fileURLWithPath: $0).standardizedFileURL == directory }),
+           facts.contains(where: { URL(fileURLWithPath: $0.path).standardizedFileURL == publicURL && $0.sha256 == pinned.sha256 }) {
+            return true
+        }
+        let roots = (record.runDestinationURLs ?? []) + record.destinations.map(\.url)
+        return roots.contains { recordedRoot in
+            (record.reportStagingPaths ?? []).contains {
+                TransferJournal.reportRelativePath($0, root: recordedRoot) == stageRelative
+            } && facts.contains {
+                TransferJournal.reportRelativePath($0.path, root: recordedRoot) == reportRelative && $0.sha256 == pinned.sha256
+            }
         }
     }
 

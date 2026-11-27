@@ -4,6 +4,39 @@ import XCTest
 @testable import BitMatchEngine
 
 final class ComparisonDiagnosticTests: XCTestCase {
+    func testCompareRerootsRecordedStagingAfterRemount() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("remounted")
+        try fm.createDirectory(at: left, withIntermediateDirectories: true)
+        try fm.createDirectory(at: right, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: left, destinationURLs: [right], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        let stageName = ".bitmatch-staging-" + id.uuidString
+        let stage = right.appendingPathComponent("Reports/" + stageName)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: stage.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        let name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        let file = stage.appendingPathComponent(name)
+        try Data("owned".utf8).write(to: file)
+        try Data("foreign".utf8).write(to: stage.appendingPathComponent("foreign"))
+        let pinned = try PinnedReportFile(url: file)
+        var record = try XCTUnwrap(journal.records.first)
+        record.runDestinationURLs = [URL(fileURLWithPath: "/Volumes/A")]
+        record.reportStagingPaths = ["/Volumes/A/Reports/" + stageName]
+        record.intendedReportFileFacts = [ReportFileFact(path: "/Volumes/A/Reports/" + name, size: pinned.size, modificationDate: nil, sha256: pinned.sha256)]
+        record.pendingWithdrawalPaths = ["/Volumes/A/Reports/" + name]
+        let comparer = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared, stagingRecords: [record])
+        let result = try await comparer.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertFalse(result.onlyInRightPaths.contains("Reports/" + stageName + "/" + name))
+        XCTAssertTrue(result.onlyInRightPaths.contains("Reports/" + stageName + "/foreign"))
+        record.reportStagingPaths = ["/Volumes/A/other/Reports/" + stageName]
+        let unmatched = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared, stagingRecords: [record])
+        let unmatchedResult = try await unmatched.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertTrue(unmatchedResult.onlyInRightPaths.contains("Reports/" + stageName + "/" + name))
+    }
+
     func testCompareRejectsOversizedWithdrawnProofWithDefaultReader() async throws {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)

@@ -723,9 +723,11 @@ struct EvidenceWriterCommitOrderTests {
         let foreignReport = "BitMatch_Report_2026-11-27T12-00-01Z.pdf"
         try Data("foreign".utf8).write(to: root.appendingPathComponent(foreignReport))
         let wrongFact = ReportFileFact(path: "/Reports/" + foreignReport, size: nil, modificationDate: nil, sha256: pinned.sha256)
-        for entry in ["._" + name, "._.bitmatch-owner", "._footage", "._" + foreignReport] {
+        for entry in ["._.bitmatch-owner", "._" + foreignReport] {
             try Data("sidecar".utf8).write(to: root.appendingPathComponent(entry))
         }
+        try Data([0, 5, 22, 7] + [UInt8](repeating: 0, count: 22)).write(to: root.appendingPathComponent("._footage"))
+        try Data([0, 5, 22, 7] + [UInt8](repeating: 0, count: 22)).write(to: root.appendingPathComponent("._" + name))
         try Data("not Finder".utf8).write(to: root.appendingPathComponent(".DS_Store"))
         guard case .retained = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [fact, wrongFact]) else {
             Issue.record("Foreign noise must retain staging"); return
@@ -735,10 +737,11 @@ struct EvidenceWriterCommitOrderTests {
         #expect(try Data(contentsOf: root.appendingPathComponent(foreignReport)) == Data("foreign".utf8))
         #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".DS_Store").path))
         #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("._" + name).path))
-        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("._.bitmatch-owner").path))
+        #expect(try Data(contentsOf: root.appendingPathComponent("._.bitmatch-owner")) == Data("sidecar".utf8))
         try FileManager.default.removeItem(at: root.appendingPathComponent("._footage"))
         try FileManager.default.removeItem(at: root.appendingPathComponent("._" + foreignReport))
         try FileManager.default.removeItem(at: root.appendingPathComponent(foreignReport))
+        try Data([0, 5, 22, 7] + [UInt8](repeating: 0, count: 22)).write(to: root.appendingPathComponent("._.bitmatch-owner"))
         try FinderMetadataFixtures.bud1(size: 6148).write(to: root.appendingPathComponent(".DS_Store"))
         #expect(try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [fact]) == .removed)
     }
@@ -749,13 +752,46 @@ struct EvidenceWriterCommitOrderTests {
         defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID()
         try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
-        try Data().write(to: root.appendingPathComponent("._.bitmatch-owner"))
+        try Data([0, 5, 22, 7] + [UInt8](repeating: 0, count: 22)).write(to: root.appendingPathComponent("._.bitmatch-owner"))
         let result = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [], beforeNoiseRemoval: { _ in
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
         })
         guard case .retained(let note) = result else { Issue.record("Expected retained directory"); return }
         #expect(note.contains("folder retained"))
         #expect(TransferJournal.ownsStagingDirectory(root, recordID: id))
+    }
+
+    @Test(arguments: [
+        [UInt8](arrayLiteral: 0, 5, 22, 7),
+        [UInt8](repeating: 0, count: 26)
+    ]) func invalidAppleDoubleHeaderIsRetained(bytes: [UInt8]) throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), sidecar = root.appendingPathComponent("._.bitmatch-owner")
+        try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
+        try Data(bytes).write(to: sidecar)
+        guard case .retained = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: []) else {
+            Issue.record("An invalid AppleDouble must remain in staging"); return
+        }
+        #expect(try Data(contentsOf: sidecar) == Data(bytes))
+    }
+
+    @Test func sidecarDisappearingWithRemovedPrimaryDoesNotRetainStaging() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
+        let primary = root.appendingPathComponent(name), sidecar = root.appendingPathComponent("._" + name)
+        try Data("owned".utf8).write(to: primary)
+        try Data([0, 5, 22, 7] + [UInt8](repeating: 0, count: 22)).write(to: sidecar)
+        let pinned = try PinnedReportFile(url: primary)
+        let fact = ReportFileFact(path: "/Reports/" + name, size: pinned.size, modificationDate: nil, sha256: pinned.sha256)
+        let result = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [fact], afterEntryRemoval: { entry in
+            if entry == name { try FileManager.default.removeItem(at: sidecar) }
+        })
+        #expect(result == .removed)
     }
 
     @Test func promotionIgnoresOlderStagingAndSettlementClearsRemovedAttempt() throws {

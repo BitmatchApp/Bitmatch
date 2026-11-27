@@ -699,7 +699,7 @@ public final class TransferJournal: Sendable {
         PathContainment.comparablePath(url.standardizedFileURL.resolvingSymlinksInPath().path)
     }
 
-    private static func reportRelativePath(_ path: String, root: URL) -> String? {
+    static func reportRelativePath(_ path: String, root: URL) -> String? {
         let absolute = reportComparablePath(URL(fileURLWithPath: path))
         let rootPath = reportComparablePath(root)
         let prefix = rootPath == "/" ? "/" : rootPath + "/"
@@ -752,6 +752,7 @@ public final class TransferJournal: Sendable {
     static func removeOwnedStagingDirectory(_ directory: URL, recordID: UUID, facts: [ReportFileFact],
                                             afterOpening: () throws -> Void = {},
                                             beforeNoiseRemoval: (String) throws -> Void = { _ in },
+                                            afterEntryRemoval: (String) throws -> Void = { _ in },
                                             beforeDirectoryRemoval: () throws -> Void = {}) throws -> StagingCleanupResult {
         let parent = directory.deletingLastPathComponent()
         let name = directory.lastPathComponent
@@ -774,10 +775,12 @@ public final class TransferJournal: Sendable {
             a.st_ctimespec.tv_sec == b.st_ctimespec.tv_sec && a.st_ctimespec.tv_nsec == b.st_ctimespec.tv_nsec &&
             (b.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG)
         }
-        func snapshot(_ entry: String) throws -> (stat, String) {
+        func snapshot(_ entry: String) throws -> (stat, String, Bool) {
             var pathInfo = stat()
-            guard fstatat(fd, entry, &pathInfo, AT_SYMLINK_NOFOLLOW) == 0,
-                  (pathInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
+            guard fstatat(fd, entry, &pathInfo, AT_SYMLINK_NOFOLLOW) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+            guard (pathInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFREG) else {
                 throw FileOperationError.unsafeOperation("Staging entry is not a regular file")
             }
             let file = openat(fd, entry, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
@@ -789,6 +792,7 @@ public final class TransferJournal: Sendable {
             }
             var hash = SHA256()
             var buffer = [UInt8](repeating: 0, count: 1024 * 1024)
+            var header: [UInt8] = []
             while true {
                 let count = buffer.withUnsafeMutableBytes { Darwin.read(file, $0.baseAddress!, $0.count) }
                 if count < 0 {
@@ -796,14 +800,16 @@ public final class TransferJournal: Sendable {
                     throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
                 }
                 if count == 0 { break }
+                if header.count < 4 { header.append(contentsOf: buffer.prefix(min(count, 4 - header.count))) }
                 hash.update(data: Data(buffer.prefix(count)))
             }
             guard fstat(file, &final) == 0, same(initial, final) else {
                 throw FileOperationError.unsafeOperation("Staging entry changed")
             }
-            return (initial, hash.finalize().map { String(format: "%02x", $0) }.joined())
+            return (initial, hash.finalize().map { String(format: "%02x", $0) }.joined(),
+                    initial.st_size >= 26 && header == [0, 5, 22, 7])
         }
-        func remove(_ entry: String, expected: (stat, String)) throws {
+        func remove(_ entry: String, expected: (stat, String, Bool)) throws {
             let current = try snapshot(entry)
             var namedEntry = stat()
             guard same(expected.0, current.0), expected.1 == current.1,
@@ -837,7 +843,7 @@ public final class TransferJournal: Sendable {
         guard readError == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(readError)) }
         // Decide sidecar ownership before deleting reports, independent of directory order.
         var written = Set([stagingOwnerMarker])
-        var writtenSnapshots: [String: (stat, String)] = [:]
+        var writtenSnapshots: [String: (stat, String, Bool)] = [:]
         for entry in names where entry != stagingOwnerMarker {
             let report = entry.hasPrefix("backup-") ? String(entry.dropFirst(7)) : entry
             let grammar = ReportName.withdrawnName(report: report, recordID: recordID)
@@ -847,7 +853,7 @@ public final class TransferJournal: Sendable {
             written.insert(entry)
             writtenSnapshots[entry] = pinned
         }
-        func isFinderFile(_ entry: String, pinned: (stat, String)) -> Bool {
+        func isFinderFile(_ entry: String, pinned: (stat, String, Bool)) -> Bool {
             let file = openat(fd, entry, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
             guard file >= 0 else { return false }
             defer { close(file) }
@@ -858,15 +864,32 @@ public final class TransferJournal: Sendable {
         let note = "unexpected file(s) in \(directory.path) were left in place"
         var unexpected = false
         var noiseRemovalFailed = false
-        for entry in names where entry != stagingOwnerMarker {
-            guard let pinned = try? snapshot(entry) else { unexpected = true; continue }
-            let sidecar = entry.hasPrefix("._") && written.contains(String(entry.dropFirst(2)))
+        var removedPrimaries = Set<String>()
+        // Process proven reports first; FAT may remove their companions as a side effect.
+        let entries = names.filter { $0 != stagingOwnerMarker }.sorted {
+            if written.contains($0) != written.contains($1) { return written.contains($0) }
+            return $0 < $1
+        }
+        for entry in entries {
+            let primary = entry.hasPrefix("._") ? String(entry.dropFirst(2)) : nil
+            let pinned: (stat, String, Bool)
+            do { pinned = try snapshot(entry) }
+            catch {
+                let failure = error as NSError
+                if let primary, removedPrimaries.contains(primary),
+                   failure.domain == NSPOSIXErrorDomain && failure.code == Int(ENOENT) { continue }
+                unexpected = true
+                continue
+            }
+            let sidecar = primary.map { written.contains($0) } == true && pinned.2
             let finder = entry == ".DS_Store" && isFinderFile(entry, pinned: pinned)
             let noise = sidecar || finder
             guard noise || written.contains(entry) else { unexpected = true; continue }
             do {
                 if noise { try beforeNoiseRemoval(entry) }
                 try remove(entry, expected: noise ? pinned : writtenSnapshots[entry]!)
+                if written.contains(entry) { removedPrimaries.insert(entry) }
+                try afterEntryRemoval(entry)
             } catch {
                 if noise { noiseRemovalFailed = true; continue }
                 throw error
