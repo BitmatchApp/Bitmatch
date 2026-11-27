@@ -243,6 +243,7 @@ struct PhotographerJobViewModelTests {
         )
         #expect(viewModel.activeCard?.localState == (proven ? .locallySafe : .issues))
         #expect((viewModel.activeCard?.verifiedDestinationCount ?? 0) == (proven ? 2 : 0))
+        #expect(viewModel.activeCard?.skippedFinderMetadataPaths == (proven ? ["/card/.DS_Store"] : nil))
     }
 
     @Test func handoffFailurePreservesPersistedLocalVerificationEvidence() throws {

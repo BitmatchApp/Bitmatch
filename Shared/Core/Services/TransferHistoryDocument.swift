@@ -16,8 +16,7 @@ struct TransferHistoryDocument: FileDocument {
     /// `history` is the whole journal: an exported verdict must see the
     /// record's lineage, like every other surface.
     init(record: LocalTransferRecord, history: [LocalTransferRecord], asCSV: Bool) throws {
-        let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
-            results: record.results, includeModePlan: record.plannedFileCounts != nil)
+        let scope = VerificationScopeEvidence(record: record)
         let savedVerdict = TransferLibraryPresentation.safetyState(for: record, in: history)
         if asCSV {
             func quote(_ value: String) -> String { "\"" + value.replacingOccurrences(of: "\"", with: "\"\"") + "\"" }
@@ -40,10 +39,11 @@ struct TransferHistoryDocument: FileDocument {
             let telemetry = record.performanceTelemetry
             // Skipped Finder view files keep their own rows above; one summary
             // line names them, never as an exclusion. Absent with no skips.
-            let skipSummary = scope.finderMetadataSkipLine.map {
+            let skipSummary = TransferCompletion.finderMetadataSkipSummary(results: record.results).map {
                 [pair("recordedSkippedFinderViewFiles", String(scope.recordedSkippedFinderMetadata)),
                  pair("finderViewFiles", $0)]
             } ?? []
+            let settingSummary = scope.finderViewFilesSettingLine.map { [pair("finderViewFilesSetting", $0)] } ?? []
             let timingSummary = ([
                 "\n# Summary",
                 pair("retryOf", record.retryOf?.uuidString ?? ""),
@@ -56,7 +56,7 @@ struct TransferHistoryDocument: FileDocument {
                 pair("recordedSelectedBackupResults", String(scope.recordedSelectedResults)),
                 pair("recordedVerifiedBackupResults", String(scope.recordedVerifiedResults)),
                 pair("recordedExcludedSourceFiles", String(scope.recordedExcludedSourceFiles))]
-                + skipSummary + [
+                + skipSummary + settingSummary + [
                 pair("evidenceScope", record.plannedFileCounts == nil
                     ? "Original selected-file plan was not saved; export describes recorded results only and cannot establish whole-card safety"
                     : "Saved results only; selected mode does not prove every check finished"),
@@ -108,7 +108,7 @@ struct TransferHistoryDocument: FileDocument {
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 savedVerdict: savedVerdict.title, savedSafeToErase: savedVerdict.isSafe,
-                verificationScope: scope, finderViewFiles: scope.finderMetadataSkipLine,
+                verificationScope: scope, finderViewFiles: TransferCompletion.finderMetadataSkipSummary(results: record.results),
                 selectedFilePlanRecorded: record.plannedFileCounts != nil,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
                 operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName),

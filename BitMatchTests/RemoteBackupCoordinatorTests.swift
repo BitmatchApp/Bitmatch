@@ -31,6 +31,22 @@ struct RemoteBackupCoordinatorTests {
         }
     }
 
+    /// A Finder-browsed card: its file count includes the skipped .DS_Store,
+    /// which is on no backup. The recorded proven skip leaves the artifact;
+    /// a skipped row the card did not record is an unverified file.
+    @Test func provenSkippedFinderViewFileDoesNotBlockTheUpload() throws {
+        let fixture = try CoordinatorFixture(skippedFinderViewFile: true)
+        let items = try fixture.coordinator.queueRemoteBackup(for: fixture.card.id, in: fixture.job.id, results: fixture.rows)
+        #expect(items.count == 1)
+        #expect(items.first?.localArtifactRelativePath.components == ["DCIM", "A.ARW"])
+
+        let unrecorded = try CoordinatorFixture(skippedFinderViewFile: true, cardRecordsTheSkip: false)
+        #expect(throws: RemoteBackupError.localArtifactNotVerified) {
+            try unrecorded.coordinator.queueRemoteBackup(for: unrecorded.card.id, in: unrecorded.job.id, results: unrecorded.rows)
+        }
+        #expect(unrecorded.store.storedManifests.isEmpty)
+    }
+
     @Test func queueBookmarkIsCreatedFromVerifiedDestinationPackageNeverSourceCard() throws {
         let fixture = try CoordinatorFixture()
 
@@ -211,7 +227,9 @@ private final class CoordinatorFixture {
         checksum: String = String(repeating: "a", count: 64),
         fileCount: Int = 1,
         fileSize: RemoteBackupCoordinator.FileSize? = nil,
-        sha256: RemoteBackupCoordinator.SHA256? = nil
+        sha256: RemoteBackupCoordinator.SHA256? = nil,
+        skippedFinderViewFile: Bool = false,
+        cardRecordsTheSkip: Bool = true
     ) throws {
         let sourceCard = URL(fileURLWithPath: "/Volumes/CARD")
         let destinationPackage = URL(fileURLWithPath: "/Volumes/Archive/Job/Card-001")
@@ -221,7 +239,7 @@ private final class CoordinatorFixture {
         self.destinationPackage = destinationPackage
         self.checksumBox = checksumBox
         self.scopeCounter = scopeCounter
-        let card = CardIngest(
+        var card = CardIngest(
             id: UUID(),
             provenance: CardProvenance(
                 photographerID: UUID(), photographerName: "Mike", cameraName: "Sony", cardNumber: 1,
@@ -232,10 +250,12 @@ private final class CoordinatorFixture {
             localState: localState,
             startedAt: Date(timeIntervalSince1970: 1),
             locallySafeAt: localState == .locallySafe ? Date(timeIntervalSince1970: 2) : nil,
-            fileCount: fileCount,
+            fileCount: fileCount + (skippedFinderViewFile ? 1 : 0),
             totalBytes: 3,
             verifiedDestinationCount: localState == .locallySafe ? 1 : 0
         )
+        let skippedPath = sourceCard.appendingPathComponent("DCIM/.DS_Store").path
+        if skippedFinderViewFile, cardRecordsTheSkip { card.skippedFinderMetadataPaths = [skippedPath] }
         self.card = card
         let profile = RemoteDestinationProfile(
             id: UUID(), name: "Archive", host: "archive.example.test", port: 22, username: "mike",
@@ -254,7 +274,10 @@ private final class CoordinatorFixture {
                 status: "✅ Verified", size: 3, checksum: checksum, destination: "Archive",
                 destinationPath: destinationPackage.appendingPathComponent("DCIM/\(name)").path
             )
-        }
+        } + (skippedFinderViewFile ? [ResultRow(
+            path: skippedPath, status: ResultOutcome.skippedFinderMetadata.statusText, size: 6, checksum: nil,
+            destination: "Archive", destinationPath: destinationPackage.appendingPathComponent("DCIM/.DS_Store").path
+        )] : [])
         self.store = CoordinatorStore(jobs: [job], profiles: [profile])
         self.coordinator = RemoteBackupCoordinator(
             store: store,

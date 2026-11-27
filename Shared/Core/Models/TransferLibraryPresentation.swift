@@ -595,3 +595,16 @@ enum TransferLibraryPresentation {
         )
     }
 }
+
+extension VerificationScopeEvidence {
+    /// A saved attempt's scope, with the Finder-file setting that applied to
+    /// it: on when the run recorded a proven list (even an empty one), off
+    /// when its settings say so, and unknown (nil) for an older record, which
+    /// decodes the missing setting as on but never recorded a list.
+    init(record: LocalTransferRecord) {
+        let setting: Bool? = record.skippedFinderMetadataPaths != nil
+            ? true : (record.cameraSettings.skipFinderViewFiles ? nil : false)
+        self.init(selectedMode: record.verificationMode, results: record.results,
+                  includeModePlan: record.plannedFileCounts != nil, skipFinderViewFiles: setting)
+    }
+}

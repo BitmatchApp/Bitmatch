@@ -1047,6 +1047,62 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         }
     }
 
+    /// The one Shared call of `finderMetadataSkipsProven`: the project
+    /// finalizer gets the skipped paths only when the run proved them.
+    func testFinalizerReceivesSkippedFinderViewFilesOnlyWhenProven() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("executor-finder-proof-\(UUID())")
+        addTeardownBlock { try? fm.removeItem(at: root) }
+        let source = root.appendingPathComponent("card")
+        let destination = root.appendingPathComponent("backup")
+        try fm.createDirectory(at: source, withIntermediateDirectories: true)
+        try fm.createDirectory(at: destination, withIntermediateDirectories: true)
+        try Data("clip contents".utf8).write(to: source.appendingPathComponent("A001.mov"))
+        // A buddy-allocator header only: view settings, nothing else.
+        var bud1: [UInt8] = [0, 0, 0, 1] + Array("Bud1".utf8)
+        for value: UInt32 in [0x800, 0x800, 0x800] {
+            for shift: UInt32 in [24, 16, 8, 0] { bud1.append(UInt8(truncatingIfNeeded: value >> shift)) }
+        }
+        bud1 += [UInt8](repeating: 0, count: 6148 - bud1.count)
+        try Data(bud1).write(to: source.appendingPathComponent(".DS_Store"))
+
+        var proven: [Set<String>] = []
+        let real = ExecutorHarness(returnedResults: [], emittedResults: [], sourceURL: source, destinationURLs: [destination],
+            makeReport: true,
+            realFileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared),
+            estimatedFiles: 2, estimatedBytes: 6161,
+            finalizerWithProvenSkips: { _, skipped in
+                proven.append(skipped)
+                return PhotographerFinalizationResult(context: nil, locallySafe: true)
+            })
+        let operation = try await real.execute()
+        XCTAssertEqual(operation?.results.filter(\.skippedFinderMetadata).count, 1)
+        XCTAssertEqual(proven.count, 1)
+        XCTAssertEqual(proven.first?.map { URL(fileURLWithPath: $0).lastPathComponent }, [".DS_Store"])
+        // The report states the run's setting and carries the summary line.
+        let reports = try fm.contentsOfDirectory(at: destination.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        let csv = try String(contentsOf: try XCTUnwrap(reports.first { $0.pathExtension == "csv" }), encoding: .utf8)
+        XCTAssertTrue(csv.contains("Finder View Files Setting,Finder view files (.DS_Store): skipped when proven"), csv)
+        XCTAssertTrue(csv.contains("1 Finder view file (.DS_Store) skipped: not card content; Finder recreates them"), csv)
+
+        // The same skipped row with no engine proof: nothing is handed over.
+        let fixture = try ascFixture()
+        var skipped = FileOperationResult(sourceURL: fixture.source.appendingPathComponent(".DS_Store"),
+            destinationURL: fixture.result.destinationURL.deletingLastPathComponent().appendingPathComponent(".DS_Store"),
+            success: false, error: nil, fileSize: 6148, verificationResult: nil, processingTime: 0)
+        skipped.skippedFinderMetadata = true
+        var unproven: [Set<String>] = []
+        let fake = ExecutorHarness(returnedResults: [fixture.result, skipped], emittedResults: [],
+            sourceURL: fixture.source, destinationURLs: [fixture.destination],
+            finalizerWithProvenSkips: { _, skipped in
+                unproven.append(skipped)
+                return PhotographerFinalizationResult(context: nil, locallySafe: true)
+            })
+        _ = try await fake.execute()
+        XCTAssertEqual(unproven, [[]])
+        XCTAssertEqual(fake.terminalInfo?.success, false)
+    }
+
     private func ascFixture() throws -> (source: URL, destination: URL, history: URL, result: FileOperationResult) {
         let fm = FileManager.default
         let root = fm.temporaryDirectory.appendingPathComponent("executor-asc-\(UUID())")
@@ -1108,7 +1164,8 @@ private final class ExecutorHarness {
         realFileOperations: FileOperationsService? = nil,
         estimatedFiles: Int? = nil,
         estimatedBytes: Int64? = nil,
-        sleepPreventer: TransferSleepPreventing = RecordingSleepPreventer()
+        sleepPreventer: TransferSleepPreventing = RecordingSleepPreventer(),
+        finalizerWithProvenSkips: PhotographerReportFinalizer? = nil
     ) {
         let fileOperations = ExecutorFileOperationsService(
             returnedResults: returnedResults,
@@ -1128,7 +1185,7 @@ private final class ExecutorHarness {
             backgroundTaskService: IOSBackgroundTaskService.shared,
             sleepPreventer: sleepPreventer
         )
-        var finalizer: PhotographerReportFinalizer?
+        var finalizer: PhotographerReportFinalizer? = finalizerWithProvenSkips
         if let lifecycleCompletion {
             finalizer = { @MainActor rows, _ in try lifecycleCompletion(rows) }
         }

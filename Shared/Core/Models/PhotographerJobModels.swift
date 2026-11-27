@@ -166,6 +166,10 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
     var totalBytes: Int64
     var verifiedDestinationCount: Int
     var remoteBackupSummaries: [UUID: RemoteBackupCardSummary]
+    /// Source paths of the skipped Finder view files the run proved, set only
+    /// with `.locallySafe`. They are on the card (`fileCount`) but on no
+    /// backup, so they are never part of the card's artifacts. Nil when none.
+    var skippedFinderMetadataPaths: [String]? = nil
 
     init(
         id: UUID,
@@ -196,6 +200,7 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case id, provenance, sourceDisplayName, renderedRelativePath, localState
         case startedAt, locallySafeAt, fileCount, totalBytes, verifiedDestinationCount, remoteBackupSummaries
+        case skippedFinderMetadataPaths
     }
 
     init(from decoder: Decoder) throws {
@@ -211,6 +216,7 @@ struct CardIngest: Identifiable, Codable, Equatable, Sendable {
         totalBytes = try values.decode(Int64.self, forKey: .totalBytes)
         verifiedDestinationCount = try values.decodeIfPresent(Int.self, forKey: .verifiedDestinationCount) ?? 0
         remoteBackupSummaries = try values.decodeIfPresent([UUID: RemoteBackupCardSummary].self, forKey: .remoteBackupSummaries) ?? [:]
+        skippedFinderMetadataPaths = try values.decodeIfPresent([String].self, forKey: .skippedFinderMetadataPaths)
     }
 }
 
@@ -501,6 +507,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
             card.locallySafeAt = card.locallySafeAt ?? finishedAt ?? context.job.updatedAt
             card.provenance.confirmedFingerprint = try confirmedFingerprint(evidence.canonicalRows)
             card.verifiedDestinationCount = evidence.destinationCount
+            card.skippedFinderMetadataPaths = skipped.isEmpty ? nil : skipped.sorted()
             return FinalizedCard(
                 card: card,
                 verifiedDestinationCount: evidence.destinationCount
@@ -517,11 +524,11 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         guard let card = context.job.cardIngests.first(where: { $0.id == context.cardIngestID }) else {
             throw PhotographerReportError.cardNotFound
         }
-        // Only a card already finalized locally safe (which required this
-        // run's skips to be proven) can use its skipped rows; the evidence
-        // and fingerprint below must still match exactly.
+        // Only the skips the card recorded when it was finalized locally safe
+        // (which required them to be proven); the evidence and fingerprint
+        // below must still match exactly.
         let skippedPaths = card.localState == .locallySafe
-            ? Set(results.filter(\.isSkippedFinderMetadata).map(\.path)) : []
+            ? Set(card.skippedFinderMetadataPaths ?? []) : []
         let (copiedRows, skipped) = withoutSkippedRows(results, skippedPaths)
         let evidence = finalEvidence(context: context, card: card, results: copiedRows,
                                      excludingSourcePaths: skipped)
@@ -557,6 +564,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         card.locallySafeAt = nil
         card.provenance.confirmedFingerprint = nil
         card.verifiedDestinationCount = 0
+        card.skippedFinderMetadataPaths = nil
         return FinalizedCard(card: card, verifiedDestinationCount: 0)
     }
 

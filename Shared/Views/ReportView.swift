@@ -585,8 +585,11 @@ struct ReportView: View {
                     Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
                 }
             }
-            if let skipLine = VerificationScopeEvidence.finderMetadataSkipLine(results: rows) {
+            if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: rows) {
                 Text("\(skipLine).").font(.system(size: 9)).foregroundColor(.secondary)
+            }
+            if let setting = s.verificationScope?.finderViewFilesSettingLine {
+                Text(setting).font(.system(size: 9)).foregroundColor(.secondary)
             }
             if let note = s.verificationScopeNote {
                 Text(note).font(.system(size: 9)).foregroundColor(.secondary)

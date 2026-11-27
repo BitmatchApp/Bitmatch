@@ -268,6 +268,10 @@ public struct ReportPrefs: Codable, Sendable {
     public var autoPopulateSource: Bool = true
     public var showCameraDetectionNotifications: Bool = true
     public var checksumAlgorithm: ChecksumAlgorithm = .sha256
+    /// Run-only, like the per-run `verificationMode`: the run's Skip Finder
+    /// view files setting, for the report's verification scope. Not in
+    /// `CodingKeys`, so saved preferences never carry it.
+    public var skipFinderViewFiles: Bool? = nil
 
     public init(verificationMode: VerificationMode? = nil, includeThumbnails: Bool = false, clientName: String = "", projectName: String = "", production: String = "", company: String = "", notes: String = "", makeReport: Bool = true, verifyWithChecksum: Bool = true, enableAutoCameraDetection: Bool = true, autoPopulateSource: Bool = true, showCameraDetectionNotifications: Bool = true, checksumAlgorithm: ChecksumAlgorithm = .sha256, operatorName: String = "") {
         self.verificationMode = verificationMode

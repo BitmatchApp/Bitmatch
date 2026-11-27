@@ -643,12 +643,13 @@ struct TransferQueueSection: View {
         }
         if row.isFinished, let record = coordinator.transferJournal.records.first(where: { $0.id == row.id }) {
             DisclosureGroup("Verification details") {
-                let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
-                    results: record.results, includeModePlan: record.plannedFileCounts != nil)
+                let scope = VerificationScopeEvidence(record: record)
                 VStack(alignment: .leading, spacing: 6) {
                     Text(scope.selectedModeLine)
                     Text(scope.recordedResultsLine)
                     if let exclusion = scope.exclusionLine { Text(exclusion) }
+                    if let skip = scope.finderMetadataSkipLine { Text(skip) }
+                    if let setting = scope.finderViewFilesSettingLine { Text(setting) }
                 }
                 .font(.caption).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

@@ -287,8 +287,7 @@ struct TransferLibraryView: View {
     @ViewBuilder
     private func detailsView(_ record: LocalTransferRecord, actions: TransferLibraryPresentation.Actions) -> some View {
         let safetyState = TransferLibraryPresentation.safetyState(for: record, in: journal.records)
-        let scope = VerificationScopeEvidence(selectedMode: record.verificationMode,
-            results: record.results, includeModePlan: record.plannedFileCounts != nil)
+        let scope = VerificationScopeEvidence(record: record)
         VStack(alignment: .leading, spacing: 8) {
             Label(safetyState.title, systemImage: safetyState.symbol)
                 .font(.caption.weight(.semibold)).foregroundStyle(safetyState.tint.color)
@@ -298,6 +297,12 @@ struct TransferLibraryView: View {
             Text(scope.recordedResultsLine).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let exclusion = scope.exclusionLine {
                 Text(exclusion).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let skip = scope.finderMetadataSkipLine {
+                Text(skip).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+            if let setting = scope.finderViewFilesSettingLine {
+                Text(setting).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             }
             if record.plannedFileCounts == nil {
                 Text("Original selected-file plan was not saved; these details describe recorded results only.")

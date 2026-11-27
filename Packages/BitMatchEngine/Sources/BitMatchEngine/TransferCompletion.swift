@@ -149,6 +149,19 @@ public enum TransferCompletion: Sendable {
         "\(count) Finder view \(count == 1 ? "file" : "files") (.DS_Store) skipped"
     }
 
+    /// The report's summary line for skipped Finder view files, the same words
+    /// the verdict's coverage uses: "2 Finder view files (.DS_Store) skipped:
+    /// not card content; Finder recreates them". Nil with no skipped row;
+    /// counts distinct source files, not rows per backup.
+    public static func finderMetadataSkipSummary(results: [ResultRow]) -> String? {
+        let count = Set(results.filter(\.isSkippedFinderMetadata).map(\.path)).count
+        return count > 0 ? finderMetadataSkipSummary(count) : nil
+    }
+
+    static func finderMetadataSkipSummary(_ count: Int) -> String {
+        finderMetadataSkipDescription(count) + ": not card content; Finder recreates them"
+    }
+
     // MARK: - ASC MHL
 
     private struct CoverageEntry: Sendable {
@@ -364,7 +377,7 @@ public enum TransferCompletion: Sendable {
             }
         }
         if skippedFinderMetadataCount > 0 {
-            issues.append(finderMetadataSkipDescription(skippedFinderMetadataCount) + ": not card content; Finder recreates them")
+            issues.append(finderMetadataSkipSummary(skippedFinderMetadataCount))
         }
         return issues
     }

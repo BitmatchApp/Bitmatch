@@ -14,11 +14,17 @@ public struct VerificationScopeEvidence: Codable, Sendable {
     /// Distinct Finder view files (`.DS_Store`) the run skipped. Not card
     /// content and not selected files; 0 for reports written before skipping.
     public let recordedSkippedFinderMetadata: Int
+    /// The run's Skip Finder view files setting, so a run with it off reads
+    /// apart from one where nothing qualified. Nil when not recorded (older
+    /// reports and records).
+    public let skipFinderViewFiles: Bool?
 
     private enum CodingKeys: String, CodingKey {
         case selectedMode, configuredChecks, countsBasis, recordedSelectedSourceFiles
         case recordedSelectedResults, recordedVerifiedResults, recordedExcludedSourceFiles
-        case recordedSkippedFinderMetadata
+        case recordedSkippedFinderMetadata, skipFinderViewFiles
+        /// Written for readers; derived from skipFinderViewFiles, never decoded.
+        case finderViewFilesSetting
     }
 
     public init(from decoder: Decoder) throws {
@@ -31,9 +37,10 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         recordedVerifiedResults = try c.decode(Int.self, forKey: .recordedVerifiedResults)
         recordedExcludedSourceFiles = try c.decode(Int.self, forKey: .recordedExcludedSourceFiles)
         recordedSkippedFinderMetadata = try c.decodeIfPresent(Int.self, forKey: .recordedSkippedFinderMetadata) ?? 0
+        skipFinderViewFiles = try c.decodeIfPresent(Bool.self, forKey: .skipFinderViewFiles)
     }
 
-    /// A run with no skipped file writes the same keys as before.
+    /// A run with no skipped file and no recorded setting writes the same keys as before.
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encode(selectedMode, forKey: .selectedMode)
@@ -46,10 +53,14 @@ public struct VerificationScopeEvidence: Codable, Sendable {
         if recordedSkippedFinderMetadata != 0 {
             try c.encode(recordedSkippedFinderMetadata, forKey: .recordedSkippedFinderMetadata)
         }
+        try c.encodeIfPresent(skipFinderViewFiles, forKey: .skipFinderViewFiles)
+        try c.encodeIfPresent(finderViewFilesSettingLine, forKey: .finderViewFilesSetting)
     }
 
-    public init(selectedMode: VerificationMode, results: [ResultRow], includeModePlan: Bool = true) {
+    public init(selectedMode: VerificationMode, results: [ResultRow], includeModePlan: Bool = true,
+                skipFinderViewFiles: Bool? = nil) {
         self.selectedMode = selectedMode
+        self.skipFinderViewFiles = skipFinderViewFiles
         configuredChecks = includeModePlan ? Self.checkPlan(for: selectedMode) : nil
         countsBasis = "recorded-results-only"
         let selected = results.filter(\.isInSelectedPlan)
@@ -97,20 +108,15 @@ public struct VerificationScopeEvidence: Codable, Sendable {
     /// "2 Finder view files skipped (not card content)". Never says
     /// "excluded" or "the whole card": that is AppleDouble's wording.
     public var finderMetadataSkipLine: String? {
-        Self.finderMetadataSkipLine(results: nil, count: recordedSkippedFinderMetadata)
+        guard recordedSkippedFinderMetadata > 0 else { return nil }
+        let noun = recordedSkippedFinderMetadata == 1 ? "file" : "files"
+        return "\(recordedSkippedFinderMetadata) Finder view \(noun) skipped (not card content)"
     }
 
-    /// The same line for result rows without a scope (CSV, PDF and notes):
-    /// distinct skipped source files, nil when there are none.
-    public static func finderMetadataSkipLine(results: [ResultRow]) -> String? {
-        finderMetadataSkipLine(results: results, count: 0)
-    }
-
-    private static func finderMetadataSkipLine(results: [ResultRow]?, count: Int) -> String? {
-        let count = results.map { Set($0.filter(\.isSkippedFinderMetadata).map(\.path)).count } ?? count
-        guard count > 0 else { return nil }
-        let noun = count == 1 ? "file" : "files"
-        return "\(count) Finder view \(noun) skipped (not card content)"
+    /// "Finder view files (.DS_Store): skipped when proven" or "…: copied";
+    /// nil when the run did not record the setting.
+    public var finderViewFilesSettingLine: String? {
+        skipFinderViewFiles.map { "Finder view files (.DS_Store): " + ($0 ? "skipped when proven" : "copied") }
     }
 
     /// Counts decoded from another report are claims, not trusted counters.

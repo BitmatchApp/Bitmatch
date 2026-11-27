@@ -89,7 +89,8 @@ enum ReportExporter {
             verifiedSelection: verifiedSelection
         )
         if mode == .copyAndVerify, let selectedMode = prefs.verificationMode {
-            summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results)
+            summary.verificationScope = VerificationScopeEvidence(selectedMode: selectedMode, results: results,
+                                                                  skipFinderViewFiles: prefs.skipFinderViewFiles)
         }
 
         // Raw CSV/JSON retain the full evidence notes. Only a proof matching
@@ -204,8 +205,7 @@ enum ReportExporter {
             safetyState: safetyState,
             hasRecordedTiming: record.startedAt != nil && record.endedAt != nil,
             verifiedSelection: VerifiedReportSelection.saved(record))
-        summary.verificationScope = VerificationScopeEvidence(selectedMode: record.verificationMode,
-            results: record.results, includeModePlan: record.plannedFileCounts != nil)
+        summary.verificationScope = VerificationScopeEvidence(record: record)
         if record.plannedFileCounts == nil {
             summary.verificationScopeNote = "Original selected-file plan was not saved; this export describes recorded results only."
         } else if TransferLibraryPresentation.savedResultsCoverSelectedPlan(record) == false {

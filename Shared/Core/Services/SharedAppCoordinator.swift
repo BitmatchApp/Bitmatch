@@ -203,7 +203,7 @@ class SharedAppCoordinator: ObservableObject {
             // The person's Settings choice, except while a saved record's
             // settings are replayed for one run.
             if !isReplayingQueuedTransfer {
-                settings.skipFinderViewFiles = generalSettings.skipFinderViewFiles
+                settings.skipFinderViewFiles = composerSkipFinderViewFiles
             }
             return settings
         }
@@ -258,7 +258,17 @@ class SharedAppCoordinator: ObservableObject {
     @Published private(set) var reviewedQueueRecordID: UUID?
     @Published private(set) var queueSessionEnded = false
     @Published private(set) var queueSessionStarted = false
-    @Published private(set) var editingSetupTransferID: UUID?
+    @Published private(set) var editingSetupTransferID: UUID? {
+        didSet { if editingSetupTransferID == nil { editingSkipFinderViewFiles = nil } }
+    }
+    /// The Finder-file choice of the queued transfer being edited, kept
+    /// until the edit ends so saving it never swaps in the current Settings
+    /// value. Nil when not editing.
+    private var editingSkipFinderViewFiles: Bool?
+    /// What the next composed run uses: the edited record's choice, else Settings.
+    private var composerSkipFinderViewFiles: Bool {
+        editingSkipFinderViewFiles ?? generalSettings.skipFinderViewFiles
+    }
     private(set) var queueSessionRecordOrder: [UUID] = []
     private var isProcessingQueue = false
     // Retained through access.release(), not just until the engine starts.
@@ -738,6 +748,7 @@ class SharedAppCoordinator: ObservableObject {
         selectedDestinationIdentities = Dictionary(uniqueKeysWithValues: zip(access.destinationURLs, record.destinations))
         scheduleSelectionPreparation()
         verificationMode = record.verificationMode
+        editingSkipFinderViewFiles = record.cameraSettings.skipFinderViewFiles
         cameraLabelSettings = record.cameraSettings
         reportSettings = record.reportSettings
         generateASCMHL = record.generateASCMHL
@@ -2343,7 +2354,7 @@ class SharedAppCoordinator: ObservableObject {
             runCameraSettings.excludedAppleDoublePaths = cameraLabelSettings.excludedAppleDoublePaths
             // A project run's folder recipe is built from an earlier
             // snapshot; the skip choice is the one in Settings now.
-            runCameraSettings.skipFinderViewFiles = generalSettings.skipFinderViewFiles
+            runCameraSettings.skipFinderViewFiles = composerSkipFinderViewFiles
         }
         let projectID = photographerReportFinalizer == nil ? nil : photographerJobViewModel.activeJob?.id
         let projectCardID = photographerReportFinalizer == nil ? nil : activeProjectCardID

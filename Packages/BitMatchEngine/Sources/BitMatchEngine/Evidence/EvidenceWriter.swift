@@ -438,7 +438,7 @@ public enum EvidenceWriter: Sendable {
                                  project: projectCSV,
                                  prefs: prefs,
                                  scope: kind == .copyAndVerify && safeToErase != nil
-                                     ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results) }
+                                     ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) }
                                      : nil)
             
             try Task.checkCancellation()
@@ -582,7 +582,7 @@ public enum EvidenceWriter: Sendable {
         }
         // Skipped Finder view files are listed above with their own status;
         // one line says how many, never "excluded".
-        if let skipLine = VerificationScopeEvidence.finderMetadataSkipLine(results: results) {
+        if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results) {
             csvContent += csvRow(["Finder View Files", skipLine])
         }
         csvContent += csvRow(["Started", dateFormatter.string(from: started)])
@@ -601,6 +601,9 @@ public enum EvidenceWriter: Sendable {
             csvContent += csvRow(["Recorded Excluded Source Files", String(scope.recordedExcludedSourceFiles)])
             if scope.recordedSkippedFinderMetadata > 0 {
                 csvContent += csvRow(["Recorded Skipped Finder View Files", String(scope.recordedSkippedFinderMetadata)])
+            }
+            if let setting = scope.finderViewFilesSettingLine {
+                csvContent += csvRow(["Finder View Files Setting", setting])
             }
             csvContent += csvRow(["Evidence Scope", "Recorded results only; selected mode does not prove every check finished"])
         }
@@ -848,7 +851,7 @@ public enum EvidenceWriter: Sendable {
                 issuesByType: issuesByType,
                 checksumCache: nil, // Would need to track cache stats during operation
                 scope: kind == .copyAndVerify && safeToErase != nil
-                    ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results) }
+                    ? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) }
                     : nil
             ),
             results: results.map { JSONReportItem(from: $0) },

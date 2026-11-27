@@ -367,6 +367,34 @@ struct MainScreenQueueTests {
         }
     }
 
+    /// Editing a queued card keeps the Finder-file choice it was queued with,
+    /// even after Settings changed; the edit's end returns to Settings.
+    @Test func editingAQueuedTransferKeepsItsFinderFileChoice() async throws {
+        let fixture = try await SharedProjectFixture.make(prepareCard: false)
+        defer { fixture.folders.cleanup() }
+        let coordinator = fixture.coordinator
+        coordinator.generalSettings.skipFinderViewFiles = false
+        _ = try await coordinator.enqueueSelectionPrepared()
+        let id = try #require(coordinator.stagedSetupTransfers.first?.id)
+        #expect(coordinator.stagedSetupTransfers.first?.cameraSettings.skipFinderViewFiles == false)
+        coordinator.generalSettings.skipFinderViewFiles = true
+
+        try await coordinator.editSetupTransferPrepared(id: id)
+        #expect(!coordinator.cameraLabelSettings.skipFinderViewFiles)
+        coordinator.cancelSetupTransferEdit()
+        #expect(coordinator.cameraLabelSettings.skipFinderViewFiles)
+
+        try await coordinator.editSetupTransferPrepared(id: id)
+        coordinator.reportSettings.notes = "Edited"
+        #expect(await waitUntil { !coordinator.isAnalysingSource })
+        _ = try await coordinator.enqueueSelectionPrepared()
+        let updated = try #require(coordinator.stagedSetupTransfers.first { $0.id == id })
+        #expect(updated.reportSettings.notes == "Edited")
+        #expect(!updated.cameraSettings.skipFinderViewFiles)
+        #expect(coordinator.editingSetupTransferID == nil)
+        #expect(coordinator.cameraLabelSettings.skipFinderViewFiles)
+    }
+
     @Test func editCancelRestoresComposerAndUpdateReplacesSnapshotInPlace() async throws {
         let fixture = try await SharedProjectFixture.make(prepareCard: false)
         defer { fixture.folders.cleanup() }

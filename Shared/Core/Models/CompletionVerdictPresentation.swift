@@ -16,7 +16,8 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
         _ verdict: CompletionVerdict,
         cardName: String = "",
         backupCount: Int = 0,
-        issueCount: Int = 0
+        issueCount: Int = 0,
+        skippedFinderViewFiles: Int = 0
     ) -> Self {
         // A real card name reads fine anywhere in a sentence; the generic
         // fallback needs "The card" to open a sentence and "the card"
@@ -33,7 +34,7 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
                 title: safetyState.headline(cardName: cardName),
                 detail: "Copied to \(backups) and verified.",
                 symbol: safetyState.symbol,
-                sourceGuidance: "BitMatch read every file on every backup and checked it against the bytes it read from the card."
+                sourceGuidance: "BitMatch read every \(readFiles(skippedFinderViewFiles)) on every backup and checked it against the bytes it read from the card."
             )
         case .copiedNotVerified:
             return Self(
@@ -92,7 +93,9 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
         // A skipped Finder view file is not a failed file; an unproven skip
         // is already in `state` (the verdict says so in its message).
         let issueCount = rows.filter { !$0.isSuccessStatus && !$0.isSkippedFinderMetadata }.count
-        let presentation = make(verdict, cardName: cardName, backupCount: backupCount, issueCount: issueCount)
+        let skipped = Set(rows.filter(\.isSkippedFinderMetadata).map(\.path)).count
+        let presentation = make(verdict, cardName: cardName, backupCount: backupCount, issueCount: issueCount,
+                                skippedFinderViewFiles: skipped)
         if case .completed(let info) = state, !info.success {
             return Self(
                 title: presentation.title,
@@ -102,5 +105,12 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
             )
         }
         return presentation
+    }
+
+    /// "file", or "file except 2 skipped Finder view files": a skipped
+    /// .DS_Store was never copied, so it was never read back.
+    private static func readFiles(_ skipped: Int) -> String {
+        guard skipped > 0 else { return "file" }
+        return "file except \(skipped) skipped Finder view \(skipped == 1 ? "file" : "files")"
     }
 }

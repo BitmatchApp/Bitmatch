@@ -710,17 +710,19 @@ final class CopyVerifyExecutor {
         let reportMode = config.currentMode
         var reportSettings = config.reportSettings
         reportSettings.verificationMode = config.verificationMode
+        reportSettings.skipFinderViewFiles = config.cameraLabelSettings.skipFinderViewFiles
         let notesBeforeSelection = reportSettings.notes
         let excluded = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
         if !excluded.isEmpty {
             let count = Set(excluded.map(\.path)).count
             reportSettings.notes += "\nSelection: \(count) AppleDouble source files intentionally excluded (listed in results). Only selected files were copied. Keep the source; the whole card is not backed up."
         }
-        // Skipped Finder view files: one neutral line, listed in results. When
-        // the verdict could not prove them, its own words go in the notes, so
-        // the evidence never reads as a clean run with "Issues 0".
-        if let skipLine = VerificationScopeEvidence.finderMetadataSkipLine(results: results) {
-            reportSettings.notes += "\nFinder view files: \(skipLine), listed in results."
+        // Skipped Finder view files: the verdict's own summary line (they are
+        // listed in results). When the verdict could not prove them, its
+        // mismatch words go in the notes too, so the evidence never reads as
+        // a clean run with "Issues 0".
+        if let skipLine = TransferCompletion.finderMetadataSkipSummary(results: results) {
+            reportSettings.notes += "\n\(skipLine)."
             if verdictMessage.contains(TransferCompletion.finderMetadataSkipMismatch) {
                 reportSettings.notes += "\n\(TransferCompletion.finderMetadataSkipMismatch)."
             }
