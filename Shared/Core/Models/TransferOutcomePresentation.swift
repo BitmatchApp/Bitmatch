@@ -343,7 +343,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             verificationModeLabel: algorithm,
             destinations: makeDestinationLines(rows: rows, destinations: destinations,
                 interrupted: safetyState == .interrupted, verificationMode: verificationMode,
-                selectedFilesVerified: selectedFilesVerified),
+                selectedFilesVerified: selectedFilesVerified,
+                skipsUnproven: Self.verdictNamesSkipMismatch(state: state, completionReason: completionReason)),
             rowCount: rows.count,
             rowsTruncated: rows.count > fileListLimit,
             canRetry: allowsRetry,
@@ -532,9 +533,17 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         return String(format: "%d:%02d", minutes, secs)
     }
 
+    /// The verdict's own words say the skipped-file records do not match.
+    private static func verdictNamesSkipMismatch(state: OperationState, completionReason: String?) -> Bool {
+        let mismatch = TransferCompletion.finderMetadataSkipMismatch
+        if completionReason?.contains(mismatch) == true { return true }
+        if case .completed(let info) = state { return info.message.contains(mismatch) }
+        return false
+    }
+
     private static func makeDestinationLines(
         rows: [ResultRow], destinations: [URL], interrupted: Bool, verificationMode: VerificationMode?,
-        selectedFilesVerified: Bool
+        selectedFilesVerified: Bool, skipsUnproven: Bool = false
     ) -> [OutcomeDestinationLine] {
         let displayedRows = selectedFilesVerified ? rows.filter {
             ResultOutcome(statusText: $0.status) != .excludedAppleDouble
@@ -545,7 +554,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                     id: summary.id,
                     title: destinationLabel(URL(fileURLWithPath: summary.id, isDirectory: true)),
                     detail: summary.detail,
-                    needsAttention: summary.needsAttention
+                    // A skip the verdict could not prove is not a calm line.
+                    needsAttention: summary.needsAttention || (skipsUnproven && summary.skippedCount > 0)
                 )
             }
             let verified = summary.rows.filter { verificationMode != .quick && Self.isVerified($0) }.count

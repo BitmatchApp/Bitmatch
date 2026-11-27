@@ -4,6 +4,17 @@ import BitMatchEngine
 /// Keep older Quick rows' original status in the journal, but present their
 /// successful copy as unverified everywhere a person reads it.
 enum TransferHistoryResultPresentation {
+    /// The rows History's details show, at most `limit`: copied and failed
+    /// rows first, then excluded and skipped ones, each in saved order. The
+    /// engine records omitted rows before copying, so a card with many
+    /// folders would otherwise fill the list with skipped `.DS_Store` rows.
+    static func previewRows(_ rows: [ResultRow], limit: Int) -> [ResultRow] {
+        let limit = max(0, limit)
+        let selected = rows.lazy.filter { !$0.isOmittedBySelection }.prefix(limit)
+        let omitted = rows.lazy.filter(\.isOmittedBySelection).prefix(limit - selected.count)
+        return Array(selected) + Array(omitted)
+    }
+
     static func statusText(for row: ResultRow, mode: VerificationMode) -> String {
         if mode == .quick && row.isSuccessStatus {
             return "Copied · contents not verified"

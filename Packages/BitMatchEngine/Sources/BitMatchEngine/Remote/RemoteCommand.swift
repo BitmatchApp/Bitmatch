@@ -11,6 +11,8 @@ public struct RemoteSettingsPatch: Codable, Hashable, Sendable {
     public var queueNewCardsAutomatically: Bool?
     public var autoEjectWhenSafe: Bool?
     public var reportSettingsJSON: Data?
+    /// Not applied yet: the Mac rejects `.setSettings` as a whole in this
+    /// slice (`RemoteCommandExecutor`), so no field here changes a setting.
     public var skipFinderViewFiles: Bool?
     public init(generateASCMHL: Bool? = nil, copyWorkers: Int? = nil, verifyWorkers: Int? = nil,
                 verifyWhileCopying: Bool? = nil, queueNewCardsAutomatically: Bool? = nil,

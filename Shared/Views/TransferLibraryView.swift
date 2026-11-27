@@ -349,7 +349,7 @@ struct TransferLibraryView: View {
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            ForEach(record.results.prefix(100)) { row in
+            ForEach(TransferHistoryResultPresentation.previewRows(record.results, limit: 100)) { row in
                 VStack(alignment: .leading) {
                     Text(row.fileName)
                     Text("\(row.destination ?? "Destination"): \(TransferHistoryResultPresentation.statusText(for: row, mode: record.verificationMode))")
@@ -357,7 +357,7 @@ struct TransferLibraryView: View {
                 }
                 .accessibilityElement(children: .combine)
             }
-            if record.results.count > 100 { Text("Showing the first 100 files. Export includes every result.") }
+            if record.results.count > 100 { Text("Showing 100 results, copied and failed files first. Export includes every result.") }
         }
         .font(.caption)
         .frame(maxWidth: .infinity, alignment: .leading)

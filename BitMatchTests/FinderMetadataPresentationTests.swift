@@ -201,6 +201,28 @@ struct FinderMetadataPresentationTests {
         #expect(unproven.safetyState == .needsAttention)
         #expect(unproven.verdict.detail.contains("Skipped-file records do not match this run"))
         #expect(!unproven.canEject)
+        // The backup line holding the unproven skip asks for attention too.
+        #expect(!unproven.destinations.isEmpty)
+        #expect(unproven.destinations.allSatisfy { $0.needsAttention })
+    }
+
+    /// History's details list at most 100 rows: copied and failed rows come
+    /// first, so a card with many folders does not show only skipped rows.
+    @Test func historyPreviewListsCopiedRowsBeforeOmittedOnes() throws {
+        let folders = try Folders()
+        let skips = (0..<150).map { index in
+            ResultRow(path: folders.card.appendingPathComponent("F\(index)/.DS_Store").path, status: Self.skipStatus,
+                      size: 6, checksum: nil, destination: "Backup")
+        }
+        let clips = (0..<3).map { index in
+            ResultRow(path: folders.card.appendingPathComponent("C\(index).MP4").path,
+                      status: ResultOutcome.verified.statusText, size: 10, checksum: "abc", destination: "Backup")
+        }
+        let preview = TransferHistoryResultPresentation.previewRows(skips + clips, limit: 100)
+        #expect(preview.count == 100)
+        #expect(Array(preview.prefix(3).map(\.path)) == clips.map(\.path))
+        #expect(preview.dropFirst(3).allSatisfy { $0.isSkippedFinderMetadata })
+        #expect(preview.dropFirst(3).first?.path == skips.first?.path, "omitted rows keep their order")
     }
 
     // MARK: - Reports
