@@ -210,8 +210,13 @@ extension TransferPipeline {
         let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         guard fd >= 0 else { return errno == ENOENT }
         defer { close(fd) }
+        // The size is the open file's own, not the scan's: Finder may have
+        // rewritten the file since. The classifier's before/after check
+        // still catches a change during the read.
+        var status = stat()
+        guard fstat(fd, &status) == 0 else { return false }
         do {
-            return try FinderMetadataSelection.isFinderViewFile(fd: fd, size: entry.size, checkCancellation: checkCancellation)
+            return try FinderMetadataSelection.isFinderViewFile(fd: fd, size: Int64(status.st_size), checkCancellation: checkCancellation)
         } catch is CancellationError {
             throw CancellationError()
         } catch {

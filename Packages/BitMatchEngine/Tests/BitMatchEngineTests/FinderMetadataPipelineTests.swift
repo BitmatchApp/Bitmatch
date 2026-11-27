@@ -164,14 +164,15 @@ import Testing
 
     /// Writes `contents` as `DCIM/.DS_Store` on the card after the first clip,
     /// a path the card did not have at Start.
-    private func runCreatingNewDSStore(_ tree: Tree, contents: Data, settings: CameraLabelSettings = CameraLabelSettings()) async throws -> FileOperation {
+    private func runCreatingNewDSStore(_ tree: Tree, contents: Data, name: String = ".DS_Store",
+                                       settings: CameraLabelSettings = CameraLabelSettings()) async throws -> FileOperation {
         let created = Mutex(false)
         let folder = tree.source.appendingPathComponent("DCIM")
         let operation = try await run(tree, settings: settings, onFileResult: { row in
             guard row.success, row.sourceURL.lastPathComponent == "A001.mov",
                   !created.withLock({ let was = $0; $0 = true; return was }) else { return }
             try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            try? contents.write(to: folder.appendingPathComponent(".DS_Store"))
+            try? contents.write(to: folder.appendingPathComponent(name))
         })
         #expect(created.withLock { $0 })
         return operation
@@ -210,6 +211,65 @@ import Testing
             #expect(clips.allSatisfy { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue })
             #expect(!operation.results.contains(where: isNewDSStore))
         }
+    }
+
+    @Test func aBud1FileUnderAnotherNameThatAppearsMidRunStillFailsTheGate() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let operation = try await runCreatingNewDSStore(tree, contents: FinderMetadataFixtures.bud1(size: 6148), name: "DS_Store")
+
+            let clips = operation.results.filter { $0.sourceURL.pathExtension == "mov" }
+            #expect(clips.count == 4)
+            #expect(clips.allSatisfy { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue },
+                    "only the exact name .DS_Store is ever ignored")
+        }
+    }
+
+    @Test func aSkippedFinderFileThatVanishesMidRunIsNotAFailure() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let removed = Mutex(false)
+            let dsStore = tree.dsStore
+            let operation = try await run(tree, onFileResult: { row in
+                guard row.success, row.sourceURL.lastPathComponent == "A001.mov",
+                      !removed.withLock({ let was = $0; $0 = true; return was }) else { return }
+                try? FileManager.default.removeItem(at: dsStore)
+            })
+
+            #expect(removed.withLock { $0 })
+            #expect(!FileManager.default.fileExists(atPath: dsStore.path))
+            #expect(!operation.results.contains { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue })
+            #expect(operation.results.filter(\.skippedFinderMetadata).count == 2)
+            expectSelectedRowsVerified(operation, count: 4)
+            #expect(operation.skippedFinderMetadataPaths == [".DS_Store"])
+        }
+    }
+
+    /// No seam runs between the final scan and the recheck, so the helper is
+    /// tested directly: a Finder rewrite after the scan leaves the scan's
+    /// size stale, and the recheck must use the open file's own size.
+    @Test func theGateRecheckUsesTheOpenFilesSizeNotTheScans() throws {
+        let root = try FinderMetadataFixtures.makeTree()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let url = root.appendingPathComponent(".DS_Store")
+        let stale = FileEntry(url: url, relativePath: ".DS_Store", size: 6148)
+        let never: @Sendable () throws -> Void = {}
+
+        try FinderMetadataFixtures.bud1(size: 8192).write(to: url)
+        #expect(try TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never), "rewritten Bud1 of another size")
+
+        try randomBytes(6148).write(to: url)
+        #expect(try !TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never), "ordinary bytes")
+
+        try FileManager.default.removeItem(at: url)
+        #expect(try TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never), "vanished is not a change")
+
+        let target = root.appendingPathComponent("target")
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: target)
+        try FileManager.default.createSymbolicLink(at: url, withDestinationURL: target)
+        #expect(try !TransferPipeline.isStillFinderViewFile(stale, checkCancellation: never), "a link is never followed")
     }
 
     @Test func withTheSettingOffANewFinderFileStillFailsTheGate() async throws {
