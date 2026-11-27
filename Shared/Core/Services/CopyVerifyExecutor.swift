@@ -431,7 +431,8 @@ final class CopyVerifyExecutor {
             project: TransferCompletion.ProjectGate(
                 didPersist: photographerLifecycle.didPersist,
                 locallySafe: photographerLifecycle.locallySafe
-            )
+            ),
+            skippedFinderMetadataPaths: operation.skippedFinderMetadataPaths
         )
         let ownSafetyState = ReportExporter.safetyState(
             authoritativeVerdict: preReportVerdict,
@@ -482,7 +483,8 @@ final class CopyVerifyExecutor {
             project: TransferCompletion.ProjectGate(
                 didPersist: photographerLifecycle.didPersist,
                 locallySafe: photographerLifecycle.locallySafe
-            )
+            ),
+            skippedFinderMetadataPaths: operation.skippedFinderMetadataPaths
         )
         let succeeded = verdict.success
         let completionMessage = verdict.message
@@ -542,7 +544,8 @@ final class CopyVerifyExecutor {
             sourceFiles: operation.sourceManifest,
             destinations: config.destinationURLs,
             source: config.sourceURL,
-            settings: config.cameraLabelSettings
+            settings: config.cameraLabelSettings,
+            skippedFinderMetadataPaths: operation.skippedFinderMetadataPaths
         )
         callbacks.onStateChange(.verifying)
         timingService.updateStage(.verifying)

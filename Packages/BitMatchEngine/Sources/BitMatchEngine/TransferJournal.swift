@@ -308,7 +308,9 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
             ExpectedExclusionQueueQualification.self, forKey: .expectedExclusionQueueQualification
         )
     }
-    public var issueCount: Int { results.filter { !$0.isSuccessStatus }.count }
+    /// Failed rows. A skipped Finder view file is not one; a reviewed
+    /// AppleDouble exclusion still counts, as before (never safe to erase).
+    public var issueCount: Int { results.filter { !$0.isSuccessStatus && !$0.isSkippedFinderMetadata }.count }
 }
 
 /// Retain this lease for the entire operation, then release it (or let it deinitialize).

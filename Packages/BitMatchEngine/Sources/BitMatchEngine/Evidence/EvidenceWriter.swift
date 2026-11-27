@@ -30,10 +30,13 @@ public struct TransferSelectionEvidence: Codable, Sendable {
     public init(results: [ResultRow]) {
         let all = Set(results.map(\.path))
         let excluded = Set(results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.map(\.path))
+        // A skipped Finder view file is not selected either, but it is not
+        // "excluded": that word is reserved for AppleDouble.
+        let skipped = Set(results.filter(\.isSkippedFinderMetadata).map(\.path))
         policy = "exclude-appledouble-companions"
         countsBasis = "recorded-source-results"
         sourceFileCount = all.count
-        selectedFileCount = all.subtracting(excluded).count
+        selectedFileCount = all.subtracting(excluded).subtracting(skipped).count
         excludedFileCount = excluded.count
         excludedSourcePaths = excluded.sorted()
     }
@@ -579,7 +582,7 @@ public enum EvidenceWriter: Sendable {
         // a Quick copy is not a match.
         csvContent += csvRow(["Verified", String(results.filter { $0.isVerifiedStatus }.count)])
         csvContent += csvRow(["Copied, not verified", String(results.filter { isMatchStatus($0.status) && !$0.isVerifiedStatus }.count)])
-        csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count)])
+        csvContent += csvRow(["Issues", String(results.filter { !isMatchStatus($0.status) && !$0.isOmittedBySelection }.count)])
         if let scope {
             csvContent += csvRow(["Selected Mode", scope.selectedMode.rawValue])
             csvContent += csvRow(["Selected Mode Checks", scope.configuredChecks ?? "Not recorded for this attempt"])
@@ -729,7 +732,7 @@ public enum EvidenceWriter: Sendable {
         
         // Calculate issues by type
         var issuesByType: [String: Int] = [:]
-        for result in results.filter({ !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }) {
+        for result in results.filter({ !isMatchStatus($0.status) && !$0.isOmittedBySelection }) {
             let key = normalizedStatus(result.status)
             issuesByType[key, default: 0] += 1
         }
@@ -796,7 +799,7 @@ public enum EvidenceWriter: Sendable {
                 matches: matchCount,
                 // Failed rows only: a copied-but-unverified file is neither a
                 // match nor an issue.
-                issues: results.filter { !isMatchStatus($0.status) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count,
+                issues: results.filter { !isMatchStatus($0.status) && !$0.isOmittedBySelection }.count,
                 successRate: fileCount > 0 ? Double(matchCount) / Double(fileCount) * 100 : 100,
                 averageFileSize: averageFileSize,
                 largestFile: largestFile,

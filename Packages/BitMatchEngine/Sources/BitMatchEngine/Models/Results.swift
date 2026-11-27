@@ -204,7 +204,16 @@ public struct ResultRow: Identifiable, Sendable {
     /// never be copied. All stay in History as evidence; none makes a
     /// complete plan look long or short.
     public var isInSelectedPlan: Bool {
-        ResultOutcome(statusText: status) != .excludedAppleDouble && !isSkippedFinderMetadata && !isUnsupportedSourceEntry
+        !isOmittedBySelection && !isUnsupportedSourceEntry
+    }
+
+    /// A file BitMatch deliberately did not copy: a reviewed AppleDouble
+    /// exclusion or a skipped Finder view file. Never counted as an issue
+    /// and never listed in a checksum manifest. Not a success either: the
+    /// verdict decides what each means (an exclusion is never safe to erase;
+    /// a skip only when `TransferCompletion.finderMetadataSkipsProven`).
+    public var isOmittedBySelection: Bool {
+        ResultOutcome(statusText: status) == .excludedAppleDouble || isSkippedFinderMetadata
     }
 
     /// Single source of truth for whether a result row represents a verified

@@ -85,6 +85,65 @@ public enum TransferCompletion: Sendable {
         return labels
     }
 
+    // MARK: - Finder view files
+
+    /// The one rule for skipped Finder view files (`.DS_Store`): every site
+    /// that lets a skip stand in for a copy asks this. True only when every
+    /// skipped row's path is in the engine-proven set (relative to `source`),
+    /// each proven path has exactly one skipped row on every destination, at
+    /// its own place under that backup's root, and no skipped row falls
+    /// outside the set. Status text alone never counts: a skipped row with no
+    /// proof, a missing or duplicate row, or a proven path whose rows the
+    /// final gate turned into failures all answer false. With no proven set
+    /// and no skipped row there is nothing to prove, so true.
+    public static func finderMetadataSkipsProven(
+        rows: [ResultRow], provenPaths: [String]?, destinations: [URL], source: URL, settings: CameraLabelSettings
+    ) -> Bool {
+        let skipped = rows.filter(\.isSkippedFinderMetadata)
+        guard let provenPaths, !provenPaths.isEmpty else { return skipped.isEmpty }
+        guard !destinations.isEmpty else { return false }
+        let sourcePath = PathContainment.comparablePath(source.path)
+        let sourcePrefix = sourcePath.hasSuffix("/") ? sourcePath : sourcePath + "/"
+        var proven = Set<String>()
+        for relative in provenPaths {
+            let parts = relative.split(separator: "/", omittingEmptySubsequences: false)
+            guard !relative.hasPrefix("/"), !parts.isEmpty,
+                  parts.allSatisfy({ !$0.isEmpty && $0 != "." && $0 != ".." }),
+                  parts.last.map({ $0.utf8.elementsEqual(".DS_Store".utf8) }) == true else { return false }
+            let path = PathContainment.comparablePath(source.appendingPathComponent(relative).path)
+            guard path.hasPrefix(sourcePrefix), proven.insert(path).inserted else { return false }
+        }
+        let roots = destinations.map {
+            PathContainment.comparablePath(SafetyValidator.resolvedDestinationRoot(
+                source: source, destination: $0, settings: settings
+            ).path)
+        }
+        guard Set(roots).count == roots.count else { return false }
+        for first in roots.indices {
+            for second in roots.indices where second > first {
+                guard !PathContainment.isWithin(roots[first], root: roots[second]),
+                      !PathContainment.isWithin(roots[second], root: roots[first]) else { return false }
+            }
+        }
+        var skippedByDestination = Array(repeating: Set<String>(), count: roots.count)
+        for row in skipped {
+            let path = PathContainment.comparablePath(row.path)
+            guard proven.contains(path), path.hasPrefix(sourcePrefix),
+                  let destinationPath = row.destinationPath else { return false }
+            let relative = String(path.dropFirst(sourcePrefix.count))
+            let destination = PathContainment.comparablePath(destinationPath)
+            let matching = roots.indices.filter { destination == roots[$0] + "/" + relative }
+            guard matching.count == 1, let index = matching.first,
+                  skippedByDestination[index].insert(path).inserted else { return false }
+        }
+        return skippedByDestination.allSatisfy { $0 == proven }
+    }
+
+    /// "1 Finder view file (.DS_Store) skipped", "2 Finder view files (.DS_Store) skipped".
+    private static func finderMetadataSkipDescription(_ count: Int) -> String {
+        "\(count) Finder view \(count == 1 ? "file" : "files") (.DS_Store) skipped"
+    }
+
     // MARK: - ASC MHL
 
     private struct CoverageEntry: Sendable {
@@ -265,8 +324,11 @@ public enum TransferCompletion: Sendable {
 
     /// `explainReasons` adds a backup's one shared reason in parentheses;
     /// the caller turns it off when its headline already says that reason.
+    /// `skippedFinderMetadataCount` adds one line for proven skips, which are
+    /// not issues; the caller passes it only when its headline does not
+    /// already name them.
     private static func coverageIssues(_ coverage: CoverageAnalysis, notVerifiedWord: String = "not verified",
-                                       explainReasons: Bool = true) -> [String] {
+                                       explainReasons: Bool = true, skippedFinderMetadataCount: Int = 0) -> [String] {
         var issues = coverage.issues
         for item in coverage.destinations {
             let name = destinationLabel(for: item.destination, roots: [item.destination])
@@ -296,6 +358,9 @@ public enum TransferCompletion: Sendable {
                     : "\(name): \(item.unexpectedCount) results are not in the source manifest")
             }
         }
+        if skippedFinderMetadataCount > 0 {
+            issues.append(finderMetadataSkipDescription(skippedFinderMetadataCount) + ": not card content; Finder recreates them")
+        }
         return issues
     }
 
@@ -319,15 +384,26 @@ public enum TransferCompletion: Sendable {
         sourceFiles: [URL]?,
         destinations: [URL],
         source: URL,
-        settings: CameraLabelSettings
+        settings: CameraLabelSettings,
+        skippedFinderMetadataPaths: [String]? = nil
     ) -> (jobs: [ASCMHLJob], issues: [String]) {
         // A filtered inventory describes only selected, verified destination
         // contents. The report/history retain excluded rows and an unsafe
         // whole-card verdict; the history is never a whole-source assertion.
         // Entries BitMatch does not copy are failures for the verdict, not files
         // the history could describe.
-        let results = results.filter { !$0.excludedAppleDouble && $0.failureReason != ResultFailureReason.unsupportedSourceEntry.rawValue }
-        let excludedPaths = Set(settings.excludedAppleDoublePaths ?? [])
+        // Skipped Finder view files were never written, so they are left out
+        // of the hashes too (no `<ignore>` element: the reference verifier
+        // already ignores `.DS_Store`). A path leaves the expected files only
+        // when it is in the proven set and still has a skipped row; a path the
+        // final gate failed keeps its failure rows and blocks the history.
+        let skippedPaths = Set(skippedFinderMetadataPaths ?? []).intersection(
+            results.filter(\.skippedFinderMetadata).map { $0.sourceURL.relativePath(to: source) })
+        let results = results.filter {
+            !$0.excludedAppleDouble && !$0.skippedFinderMetadata
+                && $0.failureReason != ResultFailureReason.unsupportedSourceEntry.rawValue
+        }
+        let excludedPaths = Set(settings.excludedAppleDoublePaths ?? []).union(skippedPaths)
         let sourceFiles = sourceFiles.map { files in files.filter { !excludedPaths.contains($0.relativePath(to: source)) } }
         let entries = results.map { CoverageEntry(source: $0.sourceURL, destination: $0.destinationURL) }
         let coverage = coverageAnalysis(
@@ -490,8 +566,26 @@ public enum TransferCompletion: Sendable {
         generateASCMHL: Bool,
         handoffIssues: [String],
         reportIssue: String?,
-        project: ProjectGate
+        project: ProjectGate,
+        skippedFinderMetadataPaths: [String]? = nil
     ) -> Verdict {
+        // Skipped Finder view files are neither issues nor selected files:
+        // they leave the expected files and every count below, and the run
+        // is safe only when the one predicate proves them. Their paths must
+        // also be on the card's manifest.
+        let skipped = rows.filter(\.isSkippedFinderMetadata)
+        let skippedSourcePaths = Set(skipped.map(\.path))
+        let skipsProven = finderMetadataSkipsProven(
+            rows: rows, provenPaths: skippedFinderMetadataPaths,
+            destinations: destinations, source: source, settings: settings
+        ) && (skipped.isEmpty || sourceFiles.map { files in
+            skippedSourcePaths.isSubset(of: Set(files.map(\.path)))
+        } == true)
+        let skippedCount = skippedSourcePaths.count
+        // With no skipped row this is `rows` and `sourceFiles` unchanged.
+        let rowsWithoutSkips = skipped.isEmpty ? rows : rows.filter { !$0.isSkippedFinderMetadata }
+        let sourceFiles = skipped.isEmpty ? sourceFiles
+            : sourceFiles.map { files in files.filter { !skippedSourcePaths.contains($0.path) } }
         // Safe-to-erase modes count only independently verified readback rows.
         // Quick has no safe verdict; its copied rows remain eligible only for
         // the separate amber "copied, not verified" outcome.
@@ -500,7 +594,7 @@ public enum TransferCompletion: Sendable {
         // Rows that exist but do not count, so coverage can say "not
         // verified" for them and "has no result" only for absent files.
         let notVerifiedEntries = rows
-            .filter { !counts($0) && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+            .filter { !counts($0) && !$0.isOmittedBySelection }
             .map {
                 CoverageEntry(source: URL(fileURLWithPath: $0.path),
                               destination: $0.destinationPath.map { URL(fileURLWithPath: $0) },
@@ -535,29 +629,47 @@ public enum TransferCompletion: Sendable {
         }
         // Set when the headline below already names the one failure reason.
         var headlineGivesReason = false
+        // Set when the headline below already names the proven skips.
+        var headlineGivesSkips = false
         let excludedDescription = "\(excludedCount) AppleDouble \(excludedCount == 1 ? "file" : "files") intentionally excluded"
-        let actualIssueCount = rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count
-        let issueCount = rows.filter { !$0.isSuccessStatus }.count
-        let fileResultsSucceeded = !rows.isEmpty && issueCount == 0
+        let skipMismatch = "Skipped-file records do not match this run; keep the card"
+        let actualIssueCount = rows.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }.count
+        // An AppleDouble exclusion stays an issue here, so it is never safe.
+        let issueCount = rowsWithoutSkips.filter { !$0.isSuccessStatus }.count
+        let fileResultsSucceeded = !rowsWithoutSkips.isEmpty && issueCount == 0
         // Outside Quick, a row that was copied but not verified keeps the
         // run from success here too, not only in the app's own verdict: the
         // Dock tile and the finish notification read this success.
-        let everyRowVerified = rows.allSatisfy(\.isVerifiedStatus)
+        let everyRowVerified = rowsWithoutSkips.allSatisfy(\.isVerifiedStatus)
         let allFilesReused = mode != .quick
-            && !rows.isEmpty
+            && !rowsWithoutSkips.isEmpty
             && everyRowVerified
-            && rows.allSatisfy(\.wasReused)
-        let fileResultsMessage: String
-        if rows.isEmpty {
+            && rowsWithoutSkips.allSatisfy(\.wasReused)
+        var fileResultsMessage: String
+        if rowsWithoutSkips.isEmpty {
             fileResultsMessage = "No files were copied"
+            if !skipsProven {
+                fileResultsMessage += "; " + skipMismatch
+            } else if skippedCount > 0 {
+                fileResultsMessage += "; " + finderMetadataSkipDescription(skippedCount)
+                headlineGivesSkips = true
+            }
+        } else if !skipsProven && actualIssueCount == 0 {
+            // Every copied file is fine but the skips are not proven: say that,
+            // never "All files copied and verified".
+            fileResultsMessage = excludedCount > 0 ? "\(skipMismatch); \(excludedDescription)" : skipMismatch
         } else if fileResultsSucceeded {
             if allFilesReused {
                 fileResultsMessage = "All files already existed and were verified; nothing new copied"
             } else {
                 fileResultsMessage = mode == .quick || !everyRowVerified ? "All files copied" : "All files copied and verified"
             }
+            if skippedCount > 0 {
+                fileResultsMessage += "; " + finderMetadataSkipDescription(skippedCount)
+                headlineGivesSkips = true
+            }
         } else if excludedCount > 0 {
-            let selected = rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+            let selected = rows.filter { !$0.isOmittedBySelection }
             let selectedFailures = selected.filter { !$0.isSuccessStatus }
             let onlyUnsupportedFailed = !selectedFailures.isEmpty && selectedFailures.allSatisfy(\.isUnsupportedSourceEntry)
             fileResultsMessage = !selected.isEmpty && selectedCoverage.isExact && selected.allSatisfy(\.isVerifiedStatus)
@@ -569,7 +681,7 @@ public enum TransferCompletion: Sendable {
                         : "\(excludedDescription); selected file results need review. Keep the source"))
         } else {
             var failedMessage = issueCount == 1 ? "1 file failed" : "\(issueCount) files failed"
-            let reasons = Set(rows.filter { !$0.isSuccessStatus }.map(\.failureReason))
+            let reasons = Set(rowsWithoutSkips.filter { !$0.isSuccessStatus }.map(\.failureReason))
             if reasons.count == 1, let token = reasons.first ?? nil, let reason = ResultFailureReason(rawValue: token) {
                 headlineGivesReason = true
                 switch reason {
@@ -607,10 +719,12 @@ public enum TransferCompletion: Sendable {
         let incompleteCoverageIssues = coverageIssues(
             excludedCount > 0 ? selectedCoverage : coverage,
             notVerifiedWord: mode == .quick ? "failed" : "not verified",
-            explainReasons: !headlineGivesReason
+            explainReasons: !headlineGivesReason,
+            skippedFinderMetadataCount: skipsProven && !headlineGivesSkips ? skippedCount : 0
         )
 
-        let everythingElseHeld = fileResultsSucceeded && coverage.isExact && project.permitsSuccess && handoffIssues.isEmpty && reportIssue == nil
+        let everythingElseHeld = fileResultsSucceeded && skipsProven && coverage.isExact
+            && project.permitsSuccess && handoffIssues.isEmpty && reportIssue == nil
         let succeeded = everythingElseHeld && mode != .quick && everyRowVerified
         var completionMessage = fileResultsMessage
         if !incompleteCoverageIssues.isEmpty {
