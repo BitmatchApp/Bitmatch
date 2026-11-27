@@ -618,8 +618,33 @@ struct EvidenceWriterCommitOrderTests {
         try reopened.retryPendingReportWithdrawals(id: id)
         #expect(reopened.records.first?.reportStagingPaths == nil)
         #expect(reopened.records.first?.cleanupOnlyStagingPaths == nil)
+        #expect(reopened.records.first?.summary.contains("unexpected file(s)") == false)
+        #expect(reopened.records.first?.summary.contains("staging folder removed on ") == true)
         #expect(reopened.records.first?.state == .completed)
         #expect(reports.allSatisfy { FileManager.default.fileExists(atPath: $0) })
+    }
+
+    @Test func publicationCollisionReportsOccupantNotStagedChange() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let occupied = Mutex<URL?>(nil), date = Date()
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root], pdfData: nil,
+                results: [], finished: date, checksumAlgorithm: nil, jobID: UUID(), started: date, duration: 1,
+                sourceURL: nil, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: false, beforePublish: { url in
+                    try Data("foreign".utf8).write(to: url)
+                    occupied.withLock { $0 = url }
+                })
+            Issue.record("Collision must fail")
+        } catch {
+            let path = try #require(occupied.withLock { $0 })
+            #expect(error.localizedDescription.contains("a file appeared at " + path.path))
+            #expect(!error.localizedDescription.contains("staged report changed"))
+            #expect(try Data(contentsOf: path) == Data("foreign".utf8))
+        }
     }
 
     @Test func substitutedStagedReportCannotBePublished() async throws {
@@ -641,7 +666,9 @@ struct EvidenceWriterCommitOrderTests {
                     swapped.withLock { $0 = source }
                 })
             Issue.record("A substituted staged report was published")
-        } catch { }
+        } catch {
+            #expect(error.localizedDescription.contains("staged report changed"))
+        }
         let path = try #require(swapped.withLock { $0 })
         #expect(try Data(contentsOf: path) == Data("foreign safe verdict".utf8))
         #expect(!FileManager.default.fileExists(atPath: path.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent(path.lastPathComponent).path))
@@ -684,16 +711,51 @@ struct EvidenceWriterCommitOrderTests {
         #expect(TransferJournal.ownsStagingDirectory(root, recordID: id))
     }
 
-    @Test func stagingCleanupRemovesFinderNoise() throws {
+    @Test func stagingCleanupOnlyRemovesProvenNoise() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
+        try Data("owned".utf8).write(to: root.appendingPathComponent(name))
+        let pinned = try PinnedReportFile(url: root.appendingPathComponent(name))
+        let fact = ReportFileFact(path: "/Reports/" + name, size: pinned.size, modificationDate: nil, sha256: pinned.sha256)
+        let foreignReport = "BitMatch_Report_2026-11-27T12-00-01Z.pdf"
+        try Data("foreign".utf8).write(to: root.appendingPathComponent(foreignReport))
+        let wrongFact = ReportFileFact(path: "/Reports/" + foreignReport, size: nil, modificationDate: nil, sha256: pinned.sha256)
+        for entry in ["._" + name, "._.bitmatch-owner", "._footage", "._" + foreignReport] {
+            try Data("sidecar".utf8).write(to: root.appendingPathComponent(entry))
+        }
+        try Data("not Finder".utf8).write(to: root.appendingPathComponent(".DS_Store"))
+        guard case .retained = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [fact, wrongFact]) else {
+            Issue.record("Foreign noise must retain staging"); return
+        }
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("._footage").path))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent("._" + foreignReport).path))
+        #expect(try Data(contentsOf: root.appendingPathComponent(foreignReport)) == Data("foreign".utf8))
+        #expect(FileManager.default.fileExists(atPath: root.appendingPathComponent(".DS_Store").path))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("._" + name).path))
+        #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("._.bitmatch-owner").path))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("._footage"))
+        try FileManager.default.removeItem(at: root.appendingPathComponent("._" + foreignReport))
+        try FileManager.default.removeItem(at: root.appendingPathComponent(foreignReport))
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: root.appendingPathComponent(".DS_Store"))
+        #expect(try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [fact]) == .removed)
+    }
+
+    @Test(arguments: [EBUSY, ENOENT]) func noiseRemovalFailureRetainsStaging(code: Int32) throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let id = UUID()
         try Data(id.uuidString.utf8).write(to: root.appendingPathComponent(".bitmatch-owner"))
-        try Data().write(to: root.appendingPathComponent(".DS_Store"))
-        try Data().write(to: root.appendingPathComponent("._report"))
-        try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [])
-        #expect(!FileManager.default.fileExists(atPath: root.path))
+        try Data().write(to: root.appendingPathComponent("._.bitmatch-owner"))
+        let result = try TransferJournal.removeOwnedStagingDirectory(root, recordID: id, facts: [], beforeNoiseRemoval: { _ in
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(code))
+        })
+        guard case .retained(let note) = result else { Issue.record("Expected retained directory"); return }
+        #expect(note.contains("folder retained"))
+        #expect(TransferJournal.ownsStagingDirectory(root, recordID: id))
     }
 
     @Test func promotionIgnoresOlderStagingAndSettlementClearsRemovedAttempt() throws {

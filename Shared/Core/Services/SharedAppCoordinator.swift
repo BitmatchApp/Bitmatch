@@ -426,7 +426,9 @@ class SharedAppCoordinator: ObservableObject {
         )
     }()
     private(set) lazy var comparisonCoordinator: ComparisonCoordinator = {
-        ComparisonCoordinator(platformManager: platformManager)
+        ComparisonCoordinator(platformManager: platformManager, stagingRecords: { [weak self] in
+            self?.transferJournal.records ?? []
+        })
     }()
 
     enum CompletionExportError: LocalizedError {

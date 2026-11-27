@@ -3,6 +3,7 @@
 // offload reported "1 only in destination" because Finder wrote a .DS_Store into
 // the destination folder after the copy.
 import Foundation
+import CryptoKit
 import Testing
 @testable import BitMatch
 import BitMatchEngine
@@ -57,6 +58,35 @@ struct CompareIgnoredFilesTests {
         #expect(stats.onlyInRightPaths == [])
         #expect(stats.isClean)
         #expect(stats.commonCount == 2)
+    }
+
+    @Test
+    func coordinatorUsesHistoryToDiscloseChangedStagedReports() async throws {
+        let f = try Fixture()
+        defer { f.cleanup() }
+        let journal = TransferJournal(fileURL: f.root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: f.card, destinationURLs: [f.offload], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let prefix = "Reports/.bitmatch-staging-" + id.uuidString
+        let name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        try f.write(prefix + "/.bitmatch-owner", in: f.offload, id.uuidString)
+        try f.write(prefix + "/" + name, in: f.offload, "owned")
+        let publicPath = f.offload.appendingPathComponent("Reports/" + name).path
+        let digest = SHA256.hash(data: Data("owned".utf8)).map { String(format: "%02x", $0) }.joined()
+        let data = try JSONSerialization.data(withJSONObject: ["path": publicPath, "sha256": digest])
+        let fact = try JSONDecoder().decode(ReportFileFact.self, from: data)
+        try journal.recordPendingReportPaths(id: id, paths: [publicPath, f.offload.appendingPathComponent(prefix).path])
+        try journal.recordIntendedReportFacts(id: id, facts: [fact])
+        let record = try #require(journal.records.first)
+        let coordinator = await MainActor.run {
+            ComparisonCoordinator(platformManager: MacOSPlatformManager.shared, stagingRecords: { [record] in [record] })
+        }
+        var result = try await coordinator.compareFolders(left: f.card, right: f.offload, verificationMode: .standard, onProgress: { _ in })
+        #expect(!result.onlyInRightPaths.contains(prefix + "/" + name))
+        try f.write(prefix + "/" + name, in: f.offload, "foreign")
+        result = try await coordinator.compareFolders(left: f.card, right: f.offload, verificationMode: .standard, onProgress: { _ in })
+        #expect(result.onlyInRightPaths.contains(prefix + "/" + name))
     }
 
     @Test

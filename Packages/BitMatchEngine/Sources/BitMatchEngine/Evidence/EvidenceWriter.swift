@@ -4,6 +4,11 @@ import Foundation
 import CryptoKit
 
 
+private struct ReportPublicationCollision: LocalizedError {
+    let path: String
+    var errorDescription: String? { "a file appeared at \(path)" }
+}
+
 /// Pins report identity and bytes before a path-based operation. The final
 /// lstat and re-hash close before unlink or rename, including on SMB. Darwin
 /// has no conditional rename/unlink by identity: another process can still
@@ -825,7 +830,15 @@ public enum EvidenceWriter: Sendable {
                     catch { throw ReportReplacementOwnershipError(path: url.path) }
                 } else {
                     do { try source.rename(to: url) }
-                    catch { stagedSourceChanged = true; throw error }
+                    catch let error as PinnedReportFile.ActionFailed {
+                        let underlying = error.underlying as NSError
+                        var occupant = stat()
+                        if (underlying.domain == NSPOSIXErrorDomain && underlying.code == Int(EEXIST)) || lstat(url.path, &occupant) == 0 {
+                            throw ReportPublicationCollision(path: url.path)
+                        }
+                        throw error
+                    }
+                    catch let identityChanged as PinnedReportFile.IdentityChanged { stagedSourceChanged = true; throw identityChanged }
                 }
                 published.append(url)
             }

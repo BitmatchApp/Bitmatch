@@ -7,13 +7,15 @@ import BitMatchEngine
 @MainActor
 final class ComparisonCoordinator {
     private let platformManager: PlatformManager
+    private let stagingRecords: @MainActor () -> [LocalTransferRecord]
     private var cancellationRequested = false
     private var running: Task<CompareStats, Error>?
     private var savedRunning: Task<SavedChecksumCheck.Result, Error>?
     private var pauseGate: PauseGate?
 
-    init(platformManager: PlatformManager) {
+    init(platformManager: PlatformManager, stagingRecords: @escaping @MainActor () -> [LocalTransferRecord] = { [] }) {
         self.platformManager = platformManager
+        self.stagingRecords = stagingRecords
     }
 
     func requestCancellation() {
@@ -38,7 +40,8 @@ final class ComparisonCoordinator {
         cancellationRequested = false
         let comparer = FolderComparer(
             fileAccess: platformManager.fileSystem,
-            checksum: platformManager.checksum
+            checksum: platformManager.checksum,
+            stagingRecords: stagingRecords()
         )
         let gate = PauseGate()
         pauseGate = gate
@@ -64,7 +67,8 @@ final class ComparisonCoordinator {
     func discoverSavedChecksums(at root: URL) async throws -> SavedChecksumCheck.Discovery {
         try await SavedChecksumCheck(
             fileAccess: platformManager.fileSystem,
-            checksum: platformManager.checksum
+            checksum: platformManager.checksum,
+            stagingRecords: stagingRecords()
         ).discover(under: root)
     }
 
@@ -75,7 +79,8 @@ final class ComparisonCoordinator {
         cancellationRequested = false
         let checker = SavedChecksumCheck(
             fileAccess: platformManager.fileSystem,
-            checksum: platformManager.checksum
+            checksum: platformManager.checksum,
+            stagingRecords: stagingRecords()
         )
         let gate = PauseGate()
         pauseGate = gate

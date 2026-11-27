@@ -145,11 +145,13 @@ public struct SavedChecksumCheck: Sendable {
 
     private let fileAccess: any FileAccess
     private let checksum: any ChecksumService
+    private let stagingRecords: [LocalTransferRecord]
     private let inventoryChunkRead: (@Sendable (URL, Int64) async throws -> Void)?
 
-    public init(fileAccess: any FileAccess, checksum: any ChecksumService) {
+    public init(fileAccess: any FileAccess, checksum: any ChecksumService, stagingRecords: [LocalTransferRecord] = []) {
         self.fileAccess = fileAccess
         self.checksum = checksum
+        self.stagingRecords = stagingRecords
         self.inventoryChunkRead = nil
     }
 
@@ -159,6 +161,7 @@ public struct SavedChecksumCheck: Sendable {
          inventoryChunkRead: @escaping @Sendable (URL, Int64) async throws -> Void) {
         self.fileAccess = fileAccess
         self.checksum = checksum
+        self.stagingRecords = []
         self.inventoryChunkRead = inventoryChunkRead
     }
 
@@ -255,7 +258,7 @@ public struct SavedChecksumCheck: Sendable {
         let resolver = RelativePathResolver(base: root)
         var actual: [String: URL] = [:]
         actual.reserveCapacity(files.count)
-        var workingEntries = WorkingReportEntry()
+        var workingEntries = WorkingReportEntry(records: stagingRecords)
         for file in files {
             try Task.checkCancellation()
             try await PauseGate.waitIfCurrentIsPaused()

@@ -49,6 +49,64 @@ final class ComparisonDiagnosticTests: XCTestCase {
         XCTAssertTrue(working.isWorkingFile(path: "Reports/" + prefix + ".pdf", root: root))
         XCTAssertFalse(working.isWorkingFile(path: "Reports/" + prefix + "-2.pdf", root: root))
     }
+    func testStagingExtrasRequireRecordedDigestAndFinderMetadataIsExempt() async throws {
+        let fm = FileManager.default, root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        try fm.createDirectory(at: left, withIntermediateDirectories: true)
+        try fm.createDirectory(at: right, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: left, destinationURLs: [right], verificationMode: .standard, cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let stage = right.appendingPathComponent("Reports/.bitmatch-staging-" + id.uuidString)
+        try fm.createDirectory(at: stage, withIntermediateDirectories: true)
+        try Data(id.uuidString.utf8).write(to: stage.appendingPathComponent(".bitmatch-owner"))
+        let name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        let file = stage.appendingPathComponent(name)
+        try Data("owned".utf8).write(to: file)
+        try FinderMetadataFixtures.bud1(size: 6148).write(to: stage.appendingPathComponent(".DS_Store"))
+        let pinned = try PinnedReportFile(url: file)
+        let publicFile = right.appendingPathComponent("Reports/" + name)
+        try journal.recordPendingReportPaths(id: id, paths: [publicFile.path, stage.path])
+        try journal.recordIntendedReportFacts(id: id, facts: [ReportFileFact(path: publicFile.path, size: pinned.size, modificationDate: nil, sha256: pinned.sha256)])
+        let path = "Reports/" + stage.lastPathComponent + "/" + name
+        let comparer = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared, stagingRecords: journal.records)
+        var result = try await comparer.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertFalse(result.onlyInRightPaths.contains(path))
+        XCTAssertFalse(result.onlyInRightPaths.contains("Reports/" + stage.lastPathComponent + "/.DS_Store"))
+        let checker = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared, stagingRecords: journal.records)
+        let discovery = SavedChecksumCheck.Discovery(root: right, expectedFiles: [:], records: [])
+        var checked = try await checker.check(discovery, progress: { _ in })
+        XCTAssertFalse(checked.newPaths.contains(path))
+        let withoutJournal = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let unproven = try await withoutJournal.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertTrue(unproven.onlyInRightPaths.contains(path))
+        let noHistoryCheck = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let unprovenCheck = try await noHistoryCheck.check(discovery, progress: { _ in })
+        XCTAssertTrue(unprovenCheck.newPaths.contains(path))
+        var missingDigest = try XCTUnwrap(journal.records.first)
+        missingDigest.intendedReportFileFacts = missingDigest.intendedReportFileFacts?.map {
+            ReportFileFact(path: $0.path, size: $0.size, modificationDate: $0.modificationDate, sha256: nil)
+        }
+        let oldRecordCheck = SavedChecksumCheck(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared, stagingRecords: [missingDigest])
+        let oldRecordResult = try await oldRecordCheck.check(discovery, progress: { _ in })
+        XCTAssertTrue(oldRecordResult.newPaths.contains(path))
+        var published = try XCTUnwrap(journal.records.first)
+        published.reportFileFacts = published.intendedReportFileFacts
+        published.intendedReportFileFacts = nil
+        let backup = stage.appendingPathComponent("backup-" + name)
+        try Data("owned".utf8).write(to: backup)
+        let withPublishedFact = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared, stagingRecords: [published])
+        let proven = try await withPublishedFact.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertFalse(proven.onlyInRightPaths.contains("Reports/" + stage.lastPathComponent + "/backup-" + name))
+        try Data("foreign".utf8).write(to: file)
+        result = try await comparer.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        checked = try await checker.check(discovery, progress: { _ in })
+        XCTAssertTrue(result.onlyInRightPaths.contains(path))
+        XCTAssertTrue(checked.newPaths.contains(path))
+        result = try await withoutJournal.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertTrue(result.onlyInRightPaths.contains(path))
+    }
     private func events(_ run: UUID, store: TransferDiagnosticStore) throws -> [[String: Any]] {
         let data = try store.exportData()
         let root = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
@@ -134,7 +192,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
         let compare = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
         let clean = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
         XCTAssertEqual(Set(clean.onlyInRightPaths), ["Reports/.bitmatch-staging-\(id.uuidString)/report.json",
-            "Reports/.bitmatch-staging-\(id.uuidString)/.DS_Store",
+            "Reports/.bitmatch-staging-\(id.uuidString)/BitMatch_Report_2026-11-27T12-00-00Z.json",
             "Reports/.bitmatch-staging-\(id.uuidString)/empty",
             "Reports/.bitmatch-staging-\(id.uuidString)/nested",
             "Reports/.bitmatch-staging-\(id.uuidString)/nested/BitMatch_Report_2026-11-27T12-00-00Z.json"])
@@ -152,7 +210,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
         let result = try await compare.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
         XCTAssertEqual(Set(result.onlyInRightPaths), [
             "Reports/.bitmatch-staging-\(id.uuidString)/report.json",
-            "Reports/.bitmatch-staging-\(id.uuidString)/.DS_Store",
+            "Reports/.bitmatch-staging-\(id.uuidString)/BitMatch_Report_2026-11-27T12-00-00Z.json",
             "Reports/.bitmatch-staging-\(id.uuidString)/empty",
             "Reports/.bitmatch-staging-\(id.uuidString)/nested",
             "Reports/.bitmatch-staging-\(id.uuidString)/nested/BitMatch_Report_2026-11-27T12-00-00Z.json",
@@ -202,7 +260,7 @@ final class ComparisonDiagnosticTests: XCTestCase {
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/nested/file", root: root))
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/foreign", root: root))
         XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/.bitmatch-owner", root: root))
-        XCTAssertTrue(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/backup-BitMatch_Report_2026-11-27T12-00-00Z.json", root: root))
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)/backup-BitMatch_Report_2026-11-27T12-00-00Z.json", root: root))
         XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: "Reports/\(stagingName)-x/file", root: root))
     }
 

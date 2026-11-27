@@ -9,10 +9,12 @@ public struct FolderComparer: Sendable {
     public let fileAccess: any FileAccess
     public let checksum: any ChecksumService
     private let stagingMarkerRead: @Sendable (URL) throws -> Data
+    private let stagingRecords: [LocalTransferRecord]
 
-    public init(fileAccess: any FileAccess, checksum: any ChecksumService) {
+    public init(fileAccess: any FileAccess, checksum: any ChecksumService, stagingRecords: [LocalTransferRecord] = []) {
         self.fileAccess = fileAccess
         self.checksum = checksum
+        self.stagingRecords = stagingRecords
         self.stagingMarkerRead = { try PinnedReportFile.readContents($0, maximumSize: 16 * 1024 * 1024) }
     }
 
@@ -20,6 +22,7 @@ public struct FolderComparer: Sendable {
          stagingMarkerRead: @escaping @Sendable (URL) throws -> Data) {
         self.fileAccess = fileAccess
         self.checksum = checksum
+        self.stagingRecords = []
         self.stagingMarkerRead = stagingMarkerRead
     }
 
@@ -81,11 +84,11 @@ public struct FolderComparer: Sendable {
         // held a `._` sidecar the backup does not have, and doubt fails
         // closed. Files present on both sides are never content-compared.
         let onlyInSource = sourceSet.subtracting(destSet)
-        var workingEntries = WorkingReportEntry(markerRead: stagingMarkerRead)
+        var workingEntries = WorkingReportEntry(records: stagingRecords, markerRead: stagingMarkerRead)
         var onlyInDest = destSet.subtracting(sourceSet).filter { path in
             let insideStaging = workingEntries.isOwnedStagingDescendant(path: path, root: right)
             guard !workingEntries.isWorkingFile(path: path, root: right),
-                  insideStaging || (!Self.isOffloadManifest(path) && !Self.isFinderMetadata(path)) else { return false }
+                  !Self.isFinderMetadata(path) && (insideStaging || !Self.isOffloadManifest(path)) else { return false }
             #if canImport(Darwin)
             if !insideStaging, let item = destMap[path], TransferStatusMarker.validatedStatus(at: item.url, relativePath: path) != nil {
                 return false
@@ -100,9 +103,7 @@ public struct FolderComparer: Sendable {
                (sourceInfo.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) { return nil }
             return path
         })
-        let common = sourceSet.intersection(destSet).filter {
-            !Self.isFinderMetadata($0) || workingEntries.isOwnedStagingDescendant(path: $0, root: right)
-        }
+        let common = sourceSet.intersection(destSet).filter { !Self.isFinderMetadata($0) }
 
         var mismatched: Set<String> = []
         // One plan for engine and screen: Paranoid is byte-by-byte plus SHA-256.
@@ -226,14 +227,17 @@ public struct FolderComparer: Sendable {
 }
 
 /// Working reports are ignored only as destination extras. A name alone never
-/// establishes ownership of a staging directory.
+/// establishes ownership of a staging directory. Without History records, only
+/// the validated owner marker is suppressed inside staging.
 struct WorkingReportEntry {
     private var ownership: [URL: Bool] = [:]
     private var withdrawnOwnership: [String: Bool] = [:]
     private let markerRead: (URL) throws -> Data
+    private let records: [LocalTransferRecord]
 
-    init(markerRead: @escaping (URL) throws -> Data = { try PinnedReportFile.readContents($0, maximumSize: 16 * 1024 * 1024) }) {
+    init(records: [LocalTransferRecord] = [], markerRead: @escaping (URL) throws -> Data = { try PinnedReportFile.readContents($0, maximumSize: 16 * 1024 * 1024) }) {
         self.markerRead = markerRead
+        self.records = records
     }
 
     static func isWorkingFile(path: String, root: URL) -> Bool {
@@ -273,7 +277,7 @@ struct WorkingReportEntry {
             withdrawnOwnership[key] = owned
             return owned
         }
-        // Only immediate, grammar-named reports and the marker are ours.
+        // Only immediate reports with a matching recorded digest and the marker are ours.
         guard let index = ownedStagingIndex(path: path, root: root), index + 2 == parts.count else { return false }
         let directoryName = parts[index]
         let text = String(directoryName.dropFirst(".bitmatch-staging-".count).prefix(36))
@@ -281,7 +285,15 @@ struct WorkingReportEntry {
         let entry = parts[index + 1]
         if entry == TransferJournal.stagingOwnerMarker { return true }
         let report = entry.hasPrefix("backup-") ? String(entry.dropFirst(7)) : entry
-        return ReportName.withdrawnReport(ReportName.withdrawnName(report: report, recordID: id)) == report
+        guard ReportName.withdrawnReport(ReportName.withdrawnName(report: report, recordID: id)) == report,
+              let record = records.first(where: { $0.id == id }) else { return false }
+        let directory = parts[...index].reduce(root) { $0.appendingPathComponent($1) }.standardizedFileURL
+        guard (record.reportStagingPaths ?? []).contains(where: { URL(fileURLWithPath: $0).standardizedFileURL == directory }),
+              let pinned = try? PinnedReportFile(url: directory.appendingPathComponent(entry)) else { return false }
+        let publicURL = directory.deletingLastPathComponent().appendingPathComponent(report).standardizedFileURL
+        return ((record.intendedReportFileFacts ?? []) + (record.reportFileFacts ?? [])).contains {
+            URL(fileURLWithPath: $0.path).standardizedFileURL == publicURL && $0.sha256 == pinned.sha256
+        }
     }
 
     /// The usual file listing omits directories and special entries. They

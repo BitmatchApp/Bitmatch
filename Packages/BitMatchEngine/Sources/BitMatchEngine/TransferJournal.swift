@@ -751,6 +751,7 @@ public final class TransferJournal: Sendable {
     @discardableResult
     static func removeOwnedStagingDirectory(_ directory: URL, recordID: UUID, facts: [ReportFileFact],
                                             afterOpening: () throws -> Void = {},
+                                            beforeNoiseRemoval: (String) throws -> Void = { _ in },
                                             beforeDirectoryRemoval: () throws -> Void = {}) throws -> StagingCleanupResult {
         let parent = directory.deletingLastPathComponent()
         let name = directory.lastPathComponent
@@ -834,24 +835,45 @@ public final class TransferJournal: Sendable {
         let readError = errno
         closedir(stream)
         guard readError == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(readError)) }
-        var unexpected = false
+        // Decide sidecar ownership before deleting reports, independent of directory order.
+        var written = Set([stagingOwnerMarker])
+        var writtenSnapshots: [String: (stat, String)] = [:]
         for entry in names where entry != stagingOwnerMarker {
-            let reportName = entry.hasPrefix("backup-") ? String(entry.dropFirst(7)) : entry
-            let grammarName = ReportName.withdrawnName(report: reportName, recordID: recordID)
-            let matchingFacts = facts.filter {
-                URL(fileURLWithPath: $0.path).lastPathComponent == reportName && $0.sha256 != nil
-            }
-            let noise = entry == ".DS_Store" || entry.hasPrefix("._")
-            guard let pinned = try? snapshot(entry),
-                  noise || (ReportName.withdrawnReport(grammarName) == reportName &&
-                            matchingFacts.contains(where: { $0.sha256 == pinned.1 })) else {
-                unexpected = true
-                continue
-            }
-            try remove(entry, expected: pinned)
+            let report = entry.hasPrefix("backup-") ? String(entry.dropFirst(7)) : entry
+            let grammar = ReportName.withdrawnName(report: report, recordID: recordID)
+            guard ReportName.withdrawnReport(grammar) == report,
+                  let pinned = try? snapshot(entry),
+                  facts.contains(where: { URL(fileURLWithPath: $0.path).lastPathComponent == report && $0.sha256 == pinned.1 }) else { continue }
+            written.insert(entry)
+            writtenSnapshots[entry] = pinned
+        }
+        func isFinderFile(_ entry: String, pinned: (stat, String)) -> Bool {
+            let file = openat(fd, entry, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
+            guard file >= 0 else { return false }
+            defer { close(file) }
+            var info = stat()
+            guard fstat(file, &info) == 0, same(pinned.0, info) else { return false }
+            return (try? FinderMetadataSelection.isFinderViewFile(fd: file, size: Int64(info.st_size))) == true
         }
         let note = "unexpected file(s) in \(directory.path) were left in place"
+        var unexpected = false
+        var noiseRemovalFailed = false
+        for entry in names where entry != stagingOwnerMarker {
+            guard let pinned = try? snapshot(entry) else { unexpected = true; continue }
+            let sidecar = entry.hasPrefix("._") && written.contains(String(entry.dropFirst(2)))
+            let finder = entry == ".DS_Store" && isFinderFile(entry, pinned: pinned)
+            let noise = sidecar || finder
+            guard noise || written.contains(entry) else { unexpected = true; continue }
+            do {
+                if noise { try beforeNoiseRemoval(entry) }
+                try remove(entry, expected: noise ? pinned : writtenSnapshots[entry]!)
+            } catch {
+                if noise { noiseRemovalFailed = true; continue }
+                throw error
+            }
+        }
         if unexpected { return .retained(note) }
+        if noiseRemovalFailed { return .retained("staging cleanup could not be completed in \(directory.path); folder retained") }
         guard fstatat(parentFD, name, &named, AT_SYMLINK_NOFOLLOW) == 0,
               opened.st_dev == named.st_dev, opened.st_ino == named.st_ino,
               (named.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
@@ -1347,6 +1369,14 @@ public final class TransferJournal: Sendable {
         let staging = (record.reportStagingPaths ?? []).filter { !removed.contains($0) }
         record.reportStagingPaths = staging.isEmpty ? nil : staging
         record.reportStagingPath = staging.last
+        for path in removed {
+            let old = "unexpected file(s) in \(path) were left in place"
+            let date = ISO8601DateFormatter().string(from: Date())
+            let replacement = "staging folder removed on \(date)"
+            record.summary = record.summary.replacingOccurrences(of: old, with: replacement)
+            let failedCleanup = "staging cleanup could not be completed in \(path); folder retained"
+            record.summary = record.summary.replacingOccurrences(of: failedCleanup, with: replacement)
+        }
         for path in retained {
             guard case .pending(let note) = outcomes[path], !record.summary.contains(note) else { continue }
             record.summary += " " + note + "."
