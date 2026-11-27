@@ -78,7 +78,8 @@ extension SharedAppCoordinator {
             ignoreAppleDouble: appleDoubleSelection.enabled,
             reports: .init(makeReport: reportSettings.makeReport, includeThumbnails: reportSettings.includeThumbnails),
             naming: .init(position: naming.position, separator: naming.separator,
-                autoNumber: naming.autoNumber, groupByCamera: naming.groupByCamera))
+                autoNumber: naming.autoNumber, groupByCamera: naming.groupByCamera),
+            skipFinderViewFiles: generalSettings.skipFinderViewFiles)
     }
 
     func portableTransferSettingsForExport() throws -> PortableTransferSettings {
@@ -87,7 +88,8 @@ extension SharedAppCoordinator {
         return PortableTransferSettings(verificationMode: current.verificationMode,
             generateASCMHL: current.generateASCMHL, ignoreAppleDouble: current.ignoreAppleDouble,
             reports: current.reports, naming: current.naming,
-            folderRecipes: recipes.isEmpty ? nil : recipes)
+            folderRecipes: recipes.isEmpty ? nil : recipes,
+            skipFinderViewFiles: current.skipFinderViewFiles)
     }
 
     /// Marker for an import that has started but not yet committed. It holds
@@ -204,5 +206,6 @@ extension SharedAppCoordinator {
             cameraLabels.settings = naming
         }
         appleDoubleSelection.enabled = proposed.ignoreAppleDouble
+        generalSettings.skipFinderViewFiles = proposed.skipFinderViewFiles
     }
 }

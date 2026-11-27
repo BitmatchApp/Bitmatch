@@ -303,6 +303,10 @@ final class RemoteBackupCoordinator: ProjectRemoteCoordinator {
         results: [ResultRow]
     ) throws -> [VerifiedArtifact] {
         let packageComponents = try remotePath(from: card.renderedRelativePath).components
+        // A skipped Finder view file is on no local backup, so it has no
+        // artifact to upload. The caller's locally-safe gate already required
+        // the run's skips to be proven.
+        let results = results.filter { !$0.isSkippedFinderMetadata }
         let verifiedRows = results.filter { row in
             row.isSuccessStatus && row.size >= 0 && validSHA256(row.checksum)
         }

@@ -44,7 +44,9 @@ enum ReportExporter {
         let method = verification.label
 
         let destinationPaths = destinationURLs.map { $0.path }
-        let issues = results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        // Neither an AppleDouble exclusion nor a skipped Finder view file is
+        // an issue; an unproven skip is named by the verdict in the notes.
+        let issues = results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
 
         // Calculate performance metrics
         let duration = finished.timeIntervalSince(started)
@@ -181,14 +183,18 @@ enum ReportExporter {
         // The saved summary may say "verified" even when the saved rows or
         // selected-file plan do not support that verdict. Keep it in the
         // History record/CSV/JSON, but omit it from unsafe regenerated PDFs.
+        // The saved verdict's own words for unproven skips, never re-derived.
+        let skipMismatch = record.results.contains(where: \.isSkippedFinderMetadata)
+            && record.summary.contains(TransferCompletion.finderMetadataSkipMismatch)
         let notes = [EvidenceWriter.normalizedNotes(record.reportSettings.notes),
             safetyState == .safeToErase ? record.summary : nil,
+            skipMismatch ? TransferCompletion.finderMetadataSkipMismatch + "." : nil,
             "Regenerated from saved history. No new verification was performed. Recorded results only.",
             record.startedAt == nil || record.endedAt == nil ? "Some original transfer timing is unavailable." : nil].compactMap { $0 }.joined(separator: "\n")
         var summary = ReportSummary(jobID: record.id, started: start, finished: finish, mode: .copyAndVerify,
             source: record.source.url.path, destinations: record.destinations.map { $0.url.path }, totalFiles: files,
             matched: record.results.filter(\.isVerifiedStatus).count,
-            issues: record.results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count,
+            issues: record.results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }.count,
             workers: nil, appVersion: "", osVersion: "",
             client: record.reportSettings.clientName, production: record.reportSettings.production, company: record.reportSettings.company,
             verificationMethod: record.verificationMode.rawValue, verificationMode: record.verificationMode,

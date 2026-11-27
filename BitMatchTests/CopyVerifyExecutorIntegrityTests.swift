@@ -1128,6 +1128,10 @@ private final class ExecutorHarness {
             backgroundTaskService: IOSBackgroundTaskService.shared,
             sleepPreventer: sleepPreventer
         )
+        var finalizer: PhotographerReportFinalizer?
+        if let lifecycleCompletion {
+            finalizer = { @MainActor rows, _ in try lifecycleCompletion(rows) }
+        }
         config = CopyVerifyConfig(
             operationId: UUID(),
             sourceURL: sourceURL,
@@ -1138,7 +1142,7 @@ private final class ExecutorHarness {
             estimatedFiles: estimatedFiles ?? returnedResults.count,
             estimatedBytes: estimatedBytes ?? returnedResults.reduce(0) { $0 + $1.fileSize },
             currentMode: .copyAndVerify,
-            photographerReportFinalizer: lifecycleCompletion,
+            photographerReportFinalizer: finalizer,
             generateASCMHL: generateASCMHL
         )
         stateService.$currentState

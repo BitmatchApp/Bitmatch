@@ -97,9 +97,20 @@ public struct VerificationScopeEvidence: Codable, Sendable {
     /// "2 Finder view files skipped (not card content)". Never says
     /// "excluded" or "the whole card": that is AppleDouble's wording.
     public var finderMetadataSkipLine: String? {
-        guard recordedSkippedFinderMetadata > 0 else { return nil }
-        let noun = recordedSkippedFinderMetadata == 1 ? "file" : "files"
-        return "\(recordedSkippedFinderMetadata) Finder view \(noun) skipped (not card content)"
+        Self.finderMetadataSkipLine(results: nil, count: recordedSkippedFinderMetadata)
+    }
+
+    /// The same line for result rows without a scope (CSV, PDF and notes):
+    /// distinct skipped source files, nil when there are none.
+    public static func finderMetadataSkipLine(results: [ResultRow]) -> String? {
+        finderMetadataSkipLine(results: results, count: 0)
+    }
+
+    private static func finderMetadataSkipLine(results: [ResultRow]?, count: Int) -> String? {
+        let count = results.map { Set($0.filter(\.isSkippedFinderMetadata).map(\.path)).count } ?? count
+        guard count > 0 else { return nil }
+        let noun = count == 1 ? "file" : "files"
+        return "\(count) Finder view \(noun) skipped (not card content)"
     }
 
     /// Counts decoded from another report are claims, not trusted counters.

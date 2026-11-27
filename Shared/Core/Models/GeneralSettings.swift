@@ -19,6 +19,7 @@ final class GeneralSettings: ObservableObject {
     nonisolated static let copyWorkersKey = "BitMatchCopyConcurrency"
     nonisolated static let verifyWorkersKey = "BitMatchVerifyConcurrency"
     nonisolated static let verifyAfterCopyKey = "DisablePipelinedVerify"
+    nonisolated static let skipFinderViewFilesKey = "BitMatchSkipFinderViewFiles"
     /// Picker choices for both stages; 0 is Auto.
     nonisolated static let workerChoices = [0, 1, 2, 4, 8, 12, 16]
 
@@ -56,6 +57,12 @@ final class GeneralSettings: ObservableObject {
     @Published var verifyWhileCopying: Bool {
         didSet { defaults.set(!verifyWhileCopying, forKey: Self.verifyAfterCopyKey) }
     }
+    /// Skip Finder view files (`.DS_Store`) the engine proves hold only view
+    /// settings. On by default; applies to the next transfer and to cards
+    /// queued from now on (a queued card keeps the choice it was queued with).
+    @Published var skipFinderViewFiles: Bool {
+        didSet { defaults.set(skipFinderViewFiles, forKey: Self.skipFinderViewFilesKey) }
+    }
     @Published private(set) var notificationPromptWasAnswered: Bool {
         didSet { defaults.set(notificationPromptWasAnswered, forKey: Self.notificationPromptAskedKey) }
     }
@@ -84,6 +91,7 @@ final class GeneralSettings: ObservableObject {
         copyWorkers = Self.explicitWorkers(defaults.integer(forKey: Self.copyWorkersKey)) ?? 0
         verifyWorkers = Self.explicitWorkers(defaults.integer(forKey: Self.verifyWorkersKey)) ?? 0
         verifyWhileCopying = !defaults.bool(forKey: Self.verifyAfterCopyKey)
+        skipFinderViewFiles = Self.bool(defaults, key: Self.skipFinderViewFilesKey, default: true)
         notificationPromptWasAnswered = Self.bool(defaults, key: Self.notificationPromptAskedKey, default: false)
     }
 
@@ -203,6 +211,8 @@ enum GeneralSettingsPresentation {
     #endif
     static let verifyWhileCopyingFootnote = "Off verifies each backup in one pass after all of its files are copied, so the verify workers setting does not apply. On a hard drive this avoids reading back while it is still writing."
     static func workerChoice(_ value: Int) -> String { value == 0 ? "Auto" : "\(value)" }
+    static let skipFinderViewFiles = "Skip Finder view files (.DS_Store)"
+    static let skipFinderViewFilesFootnote = "Finder writes .DS_Store when a folder is browsed; it holds view settings, not footage. Skipped files are listed in the report and do not block the safe-to-erase verdict."
     static let notificationRequestFailed = "Couldn’t request permission. Try again or open Notification Settings."
     static func macNotificationSettingsURL(bundleIdentifier: String? = Bundle.main.bundleIdentifier) -> URL {
         let base = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension")!
@@ -260,7 +270,9 @@ enum TransferNotificationDecision {
     ) -> TransferNotificationKind? {
         guard let state = TransferOutcomePresentation.recordedState(for: record, in: records) else { return nil }
         let issueCount = record.results.filter {
-            !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+            // A skipped Finder view file is not an issue; whether the skips
+            // are proven is already in the record's state above.
+            !$0.isSuccessStatus && !$0.isOmittedBySelection
         }.count
         return kind(
             state: state,

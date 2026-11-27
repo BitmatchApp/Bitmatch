@@ -651,7 +651,8 @@ final class PhotographerJobViewModel: ObservableObject {
         analysis: CardAnalysis,
         results: [ResultRow],
         independentDestinationCount: Int? = nil,
-        priorSourceFault: Bool = false
+        priorSourceFault: Bool = false,
+        provenSkippedSourcePaths: Set<String> = []
     ) throws -> PhotographerFinalizationResult {
         guard var job = jobForRun(jobID) else {
             throw PhotographerJobViewModelError.noActiveJob
@@ -679,8 +680,11 @@ final class PhotographerJobViewModel: ObservableObject {
         let excludedSourcePaths = Set(results.filter {
             ResultOutcome(statusText: $0.status) == .excludedAppleDouble
         }.map(\.path))
+        // Skipped Finder view files leave the card's expected files only when
+        // the executor proved them for this run; they are never exclusions.
         let allowsExpectedExclusionQueueContinuation = PhotographerReportPayload.allowsQueueContinuationForExpectedExclusions(
-            context: context, results: results, excludedSourcePaths: excludedSourcePaths
+            context: context, results: results, excludedSourcePaths: excludedSourcePaths,
+            provenSkippedSourcePaths: provenSkippedSourcePaths
         )
         let finalized: PhotographerReportPayload.FinalizedCard
         do {
@@ -688,7 +692,8 @@ final class PhotographerJobViewModel: ObservableObject {
                 context: context,
                 results: results,
                 finishedAt: now(),
-                confirmedFingerprint: confirmedAnalyzer
+                confirmedFingerprint: confirmedAnalyzer,
+                provenSkippedSourcePaths: provenSkippedSourcePaths
             )
         } catch {
             var failedCard = currentCard

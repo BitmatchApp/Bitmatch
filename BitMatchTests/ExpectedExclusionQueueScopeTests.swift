@@ -41,14 +41,14 @@ final class ExpectedExclusionQueueScopeTests: XCTestCase {
         let lifecycle = CopyVerifyExecutor.PhotographerLifecycleFinalization(context: nil, didPersist: true, locallySafe: nil)
         XCTAssertTrue(CopyVerifyExecutor.expectedExclusionProjectGate(config: config(identity: .ordinaryTransfer), lifecycle: lifecycle).permitsExpectedExclusionQueueContinuation)
         XCTAssertFalse(CopyVerifyExecutor.expectedExclusionProjectGate(config: config(identity: nil), lifecycle: lifecycle).permitsExpectedExclusionQueueContinuation)
-        let finalizer: PhotographerReportFinalizer = { _ in .init(context: nil, locallySafe: false) }
+        let finalizer: PhotographerReportFinalizer = { _, _ in .init(context: nil, locallySafe: false) }
         XCTAssertFalse(CopyVerifyExecutor.expectedExclusionProjectGate(config: config(identity: .ordinaryTransfer, finalizer: finalizer), lifecycle: lifecycle).permitsExpectedExclusionQueueContinuation)
         let unexpected = CopyVerifyExecutor.PhotographerLifecycleFinalization(context: context(jobID: UUID(), cardID: UUID()), didPersist: true, locallySafe: nil)
         XCTAssertFalse(CopyVerifyExecutor.expectedExclusionProjectGate(config: config(identity: .ordinaryTransfer), lifecycle: unexpected).permitsExpectedExclusionQueueContinuation)
     }
     func testProjectNeedsMatchingFinalizedContextAndPositiveQualification() {
         let job = UUID(), card = UUID(), identity = ExpectedExclusionQueueQualification.projectTransfer(projectID: job, cardID: card)
-        let finalizer: PhotographerReportFinalizer = { _ in .init(context: nil, locallySafe: false) }
+        let finalizer: PhotographerReportFinalizer = { _, _ in .init(context: nil, locallySafe: false) }
         let configured = config(identity: identity, finalizer: finalizer)
         let healthy = CopyVerifyExecutor.PhotographerLifecycleFinalization(context: context(jobID: job, cardID: card), didPersist: true,
             locallySafe: false, allowsQueueContinuationForExpectedExclusions: true)

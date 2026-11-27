@@ -89,7 +89,9 @@ struct CompletionVerdictPresentation: Equatable, Sendable {
             hasErrors: hasErrors,
             hasCriticalErrors: hasCriticalErrors
         )
-        let issueCount = rows.filter { !$0.isSuccessStatus }.count
+        // A skipped Finder view file is not a failed file; an unproven skip
+        // is already in `state` (the verdict says so in its message).
+        let issueCount = rows.filter { !$0.isSuccessStatus && !$0.isSkippedFinderMetadata }.count
         let presentation = make(verdict, cardName: cardName, backupCount: backupCount, issueCount: issueCount)
         if case .completed(let info) = state, !info.success {
             return Self(

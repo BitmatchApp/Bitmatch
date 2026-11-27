@@ -11,9 +11,11 @@ public struct RemoteSettingsPatch: Codable, Hashable, Sendable {
     public var queueNewCardsAutomatically: Bool?
     public var autoEjectWhenSafe: Bool?
     public var reportSettingsJSON: Data?
+    public var skipFinderViewFiles: Bool?
     public init(generateASCMHL: Bool? = nil, copyWorkers: Int? = nil, verifyWorkers: Int? = nil,
                 verifyWhileCopying: Bool? = nil, queueNewCardsAutomatically: Bool? = nil,
-                autoEjectWhenSafe: Bool? = nil, reportSettingsJSON: Data? = nil) {
+                autoEjectWhenSafe: Bool? = nil, reportSettingsJSON: Data? = nil,
+                skipFinderViewFiles: Bool? = nil) {
         self.generateASCMHL = generateASCMHL
         self.copyWorkers = copyWorkers
         self.verifyWorkers = verifyWorkers
@@ -21,6 +23,7 @@ public struct RemoteSettingsPatch: Codable, Hashable, Sendable {
         self.queueNewCardsAutomatically = queueNewCardsAutomatically
         self.autoEjectWhenSafe = autoEjectWhenSafe
         self.reportSettingsJSON = reportSettingsJSON
+        self.skipFinderViewFiles = skipFinderViewFiles
     }
 }
 

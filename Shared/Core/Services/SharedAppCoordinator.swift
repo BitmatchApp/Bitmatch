@@ -200,6 +200,11 @@ class SharedAppCoordinator: ObservableObject {
         get {
             var settings = cameraLabels.settings
             settings.excludedAppleDoublePaths = appleDoubleSelection.enabled ? (appleDoubleSelection.paths ?? []) : nil
+            // The person's Settings choice, except while a saved record's
+            // settings are replayed for one run.
+            if !isReplayingQueuedTransfer {
+                settings.skipFinderViewFiles = generalSettings.skipFinderViewFiles
+            }
             return settings
         }
         set {
@@ -2336,6 +2341,9 @@ class SharedAppCoordinator: ObservableObject {
         var runCameraSettings = projectRunCameraSettings ?? cameraLabelSettings
         if !isReplayingQueuedTransfer {
             runCameraSettings.excludedAppleDoublePaths = cameraLabelSettings.excludedAppleDoublePaths
+            // A project run's folder recipe is built from an earlier
+            // snapshot; the skip choice is the one in Settings now.
+            runCameraSettings.skipFinderViewFiles = generalSettings.skipFinderViewFiles
         }
         let projectID = photographerReportFinalizer == nil ? nil : photographerJobViewModel.activeJob?.id
         let projectCardID = photographerReportFinalizer == nil ? nil : activeProjectCardID
@@ -3065,7 +3073,7 @@ class SharedAppCoordinator: ObservableObject {
         // identity must not inflate the count, and a resolved group is not
         // proof of a physically separate device.
         let independentDestinationCount = destinationIndependence.resolvedIdentityCopyCount
-        photographerReportFinalizer = { [weak self, weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results in
+        photographerReportFinalizer = { [weak self, weak photographerJobViewModel, jobID, cardID, analysis, independentDestinationCount] results, provenSkippedSourcePaths in
             guard let photographerJobViewModel, let analysis,
                   let state = photographerJobViewModel.projectCardState(jobID: jobID, cardID: cardID),
                   state == .copying || state == .verifying else {
@@ -3079,7 +3087,8 @@ class SharedAppCoordinator: ObservableObject {
                 analysis: analysis,
                 results: results,
                 independentDestinationCount: independentDestinationCount,
-                priorSourceFault: priorSourceFault
+                priorSourceFault: priorSourceFault,
+                provenSkippedSourcePaths: provenSkippedSourcePaths
             )
         }
         activeProjectCardID = cardID

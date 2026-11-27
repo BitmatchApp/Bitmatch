@@ -48,7 +48,9 @@ struct ResultStatusPresentation: Equatable, Sendable {
             // triangle. A distinct red glyph tells the two apart.
             case .checksumMismatch: return Self(tone: .failure, symbol: "xmark.octagon.fill")
             case .excludedAppleDouble: return Self(tone: .warning, symbol: "minus.circle")
-            case .skippedFinderMetadata: return Self(tone: .warning, symbol: "minus.circle")
+            // Not card content: a neutral, secondary fact, never a warning.
+            // Whether the run's skips are proven is the verdict's job.
+            case .skippedFinderMetadata: return Self(tone: .neutral, symbol: "forward.end")
             case .failed: return Self(tone: .failure, symbol: "xmark.circle")
             }
         }

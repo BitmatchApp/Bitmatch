@@ -690,6 +690,9 @@ struct TransferRecoveryDetails: View {
                         if summary.unverified > 0 { Text("\(summary.unverified) copied, unverified") }
                         Text("\(summary.failed) failed · \(summary.pending.map(String.init) ?? "—") pending")
                         if summary.excluded > 0 { Text("\(summary.excluded) excluded") }
+                        if summary.skipped > 0 {
+                            Text("\(summary.skipped) Finder view \(summary.skipped == 1 ? "file" : "files") skipped")
+                        }
                     }
                     .font(.caption)
                     .fixedSize(horizontal: false, vertical: true)

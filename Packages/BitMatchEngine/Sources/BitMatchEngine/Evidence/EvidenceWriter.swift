@@ -123,17 +123,21 @@ public struct EnhancedJSONReport<Project: Codable & Sendable>: Codable, Sendable
         public let matches: Int
         public let issues: Int
         public var excluded: Int? = nil
+        /// Distinct skipped Finder view files (`.DS_Store`); nil when none,
+        /// so a report without skips keeps its earlier keys.
+        public var skippedFinderViewFiles: Int? = nil
         public let successRate: Double
         public let averageFileSize: Int64
         public let largestFile: FileInfo?
         public let smallestFile: FileInfo?
 
-        public init(totalFiles: Int, totalBytes: Int64, matches: Int, issues: Int, successRate: Double, averageFileSize: Int64, largestFile: FileInfo?, smallestFile: FileInfo?, excluded: Int? = nil) {
+        public init(totalFiles: Int, totalBytes: Int64, matches: Int, issues: Int, successRate: Double, averageFileSize: Int64, largestFile: FileInfo?, smallestFile: FileInfo?, excluded: Int? = nil, skippedFinderViewFiles: Int? = nil) {
             self.totalFiles = totalFiles
             self.totalBytes = totalBytes
             self.matches = matches
             self.issues = issues
             self.excluded = excluded
+            self.skippedFinderViewFiles = skippedFinderViewFiles
             self.successRate = successRate
             self.averageFileSize = averageFileSize
             self.largestFile = largestFile
@@ -576,6 +580,11 @@ public enum EvidenceWriter: Sendable {
             csvContent += csvRow(["Excluded Source Files", String(scope.excludedFileCount)])
             csvContent += csvRow(["Whole Card Backed Up", "No — keep the source"])
         }
+        // Skipped Finder view files are listed above with their own status;
+        // one line says how many, never "excluded".
+        if let skipLine = VerificationScopeEvidence.finderMetadataSkipLine(results: results) {
+            csvContent += csvRow(["Finder View Files", skipLine])
+        }
         csvContent += csvRow(["Started", dateFormatter.string(from: started)])
         csvContent += csvRow(["Finished", dateFormatter.string(from: started.addingTimeInterval(duration))])
         // Verified and copied-but-unverified are counted apart (Promise 2):
@@ -590,6 +599,9 @@ public enum EvidenceWriter: Sendable {
             csvContent += csvRow(["Recorded Selected Backup Results", String(scope.recordedSelectedResults)])
             csvContent += csvRow(["Recorded Verified Backup Results", String(scope.recordedVerifiedResults)])
             csvContent += csvRow(["Recorded Excluded Source Files", String(scope.recordedExcludedSourceFiles)])
+            if scope.recordedSkippedFinderMetadata > 0 {
+                csvContent += csvRow(["Recorded Skipped Finder View Files", String(scope.recordedSkippedFinderMetadata)])
+            }
             csvContent += csvRow(["Evidence Scope", "Recorded results only; selected mode does not prove every check finished"])
         }
         csvContent += csvRow(["Duration", "\(String(format: "%.2f", duration)) seconds"])
@@ -805,7 +817,9 @@ public enum EvidenceWriter: Sendable {
                 largestFile: largestFile,
                 smallestFile: smallestFile,
                 excluded: results.contains { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
-                    ? results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count : nil
+                    ? results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count : nil,
+                skippedFinderViewFiles: results.contains(where: \.isSkippedFinderMetadata)
+                    ? Set(results.filter(\.isSkippedFinderMetadata).map(\.path)).count : nil
             ),
             extensions: extensions,
             performance: EnhancedJSONReport<Project>.Performance(

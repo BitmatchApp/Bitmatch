@@ -34,7 +34,9 @@ struct TransferFinishNotice: Equatable, Sendable {
             state: state,
             sourceName: record.title,
             destinations: record.destinations.map(\.url),
-            issueCount: record.results.filter { !$0.isSuccessStatus }.count,
+            // A skipped Finder view file is not an issue: the record's state
+            // above is safe only when its skips are proven.
+            issueCount: record.results.filter { !$0.isSuccessStatus && !$0.isSkippedFinderMetadata }.count,
             kind: kind,
             priorSourceFault: priorSourceFault,
             lineageIncomplete: lineageIncomplete

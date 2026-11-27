@@ -45,7 +45,7 @@ extension TransferOutcomePresentation {
         let record = coordinator.outcomeRecord
         let rows = record?.results ?? coordinator.results
         let recordedIssueCount = rows.filter {
-            !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble
+            !$0.isSuccessStatus && !$0.isOmittedBySelection
         }.count
         let duration: TimeInterval? = record.flatMap { record in
             guard let started = record.startedAt, let ended = record.endedAt else { return nil }

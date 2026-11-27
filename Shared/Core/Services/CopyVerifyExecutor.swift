@@ -13,7 +13,12 @@ struct PhotographerFinalizationResult {
     var allowsQueueContinuationForExpectedExclusions: Bool = false
 }
 
-typealias PhotographerReportFinalizer = @MainActor ([ResultRow]) throws -> PhotographerFinalizationResult
+/// The run's rows and the skipped Finder view files (source paths) that
+/// `TransferCompletion.finderMetadataSkipsProven` proved for this run, empty
+/// when they are not proven. The project never re-derives that rule.
+typealias PhotographerReportFinalizer = @MainActor (
+    _ rows: [ResultRow], _ provenSkippedSourcePaths: Set<String>
+) throws -> PhotographerFinalizationResult
 
 /// Configuration for a copy/verify operation
 struct CopyVerifyConfig {
@@ -381,7 +386,8 @@ final class CopyVerifyExecutor {
             loggedFileError = true
             SharedLogger.transferError(error, run: diagnosticRun)
         }
-        if !fileResult.excludedAppleDouble {
+        // Neither an exclusion nor a skipped Finder view file was copied.
+        if !fileResult.excludedAppleDouble && !fileResult.skippedFinderMetadata {
             timingService.recordFileResult(fileResult, verificationMode: verificationMode)
         }
         let resultRow = TransferCompletion.row(from: fileResult, destinationRoots: destinationRoots)
@@ -406,10 +412,19 @@ final class CopyVerifyExecutor {
         // Its failure must escape before MHL, project finalization or reports;
         // only a project finalizer error is recoverable as an amber outcome.
         try callbacks.onAuthoritativeResults(allResults)
+        // The same inputs the verdict below uses, so a project card leaves out
+        // only the skipped Finder view files the verdict will also accept.
+        let finderSkipsProven = TransferCompletion.finderMetadataSkipsProven(
+            rows: allResults, provenPaths: operation.skippedFinderMetadataPaths,
+            sourceFiles: operation.sourceManifest, destinations: config.destinationURLs,
+            source: config.sourceURL, settings: config.cameraLabelSettings
+        )
+        let provenSkippedSourcePaths = finderSkipsProven
+            ? Set(allResults.filter(\.isSkippedFinderMetadata).map(\.path)) : []
         let photographerLifecycle = try Self.photographerLifecycleAfterAuthoritativeCompletion(
             completion: {
                 guard let finalizer = config.photographerReportFinalizer else { return nil }
-                return try finalizer(allResults)
+                return try finalizer(allResults, provenSkippedSourcePaths)
             }
         )
         try checkCancellation()
@@ -464,7 +479,8 @@ final class CopyVerifyExecutor {
                 verifiedSelection: VerifiedReportSelection.beforeReport(operation: operation,
                     expectedMode: config.verificationMode, handoffIssues: handoffIssues,
                     project: Self.expectedExclusionProjectGate(config: config, lifecycle: photographerLifecycle)),
-                phaseDurations: phaseDurations
+                phaseDurations: phaseDurations,
+                verdictMessage: preReportVerdict.message
             )
         } else {
             reportIssue = nil
@@ -672,7 +688,8 @@ final class CopyVerifyExecutor {
         handoffSummary: String? = nil,
         safetyState: CardSafetyState,
         verifiedSelection: VerifiedReportSelection?,
-        phaseDurations: OperationPhaseDurations
+        phaseDurations: OperationPhaseDurations,
+        verdictMessage: String = ""
     ) async throws -> String? {
         try checkCancellation()
         SharedLogger.transferEvent(.reportStarted, run: config.operationId)
@@ -681,7 +698,7 @@ final class CopyVerifyExecutor {
         // Evidence (Promise 3): bytes actually copied, one row per file per
         // backup. config.estimatedBytes is a progress estimate that falls
         // back to a placeholder when the source was not measured.
-        let totalBytesProcessed = results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.reduce(Int64(0)) { $0 + $1.size }
+        let totalBytesProcessed = results.filter { !$0.isOmittedBySelection }.reduce(Int64(0)) { $0 + $1.size }
         let fileCount = results.count
         // The workers the run actually used, never the machine's core count.
         let workers = operation.concurrency?.copyWorkers
@@ -698,6 +715,15 @@ final class CopyVerifyExecutor {
         if !excluded.isEmpty {
             let count = Set(excluded.map(\.path)).count
             reportSettings.notes += "\nSelection: \(count) AppleDouble source files intentionally excluded (listed in results). Only selected files were copied. Keep the source; the whole card is not backed up."
+        }
+        // Skipped Finder view files: one neutral line, listed in results. When
+        // the verdict could not prove them, its own words go in the notes, so
+        // the evidence never reads as a clean run with "Issues 0".
+        if let skipLine = VerificationScopeEvidence.finderMetadataSkipLine(results: results) {
+            reportSettings.notes += "\nFinder view files: \(skipLine), listed in results."
+            if verdictMessage.contains(TransferCompletion.finderMetadataSkipMismatch) {
+                reportSettings.notes += "\n\(TransferCompletion.finderMetadataSkipMismatch)."
+            }
         }
         if let handoffSummary { reportSettings.notes += "\nASC MHL: \(handoffSummary)" }
         let reportResults = results

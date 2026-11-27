@@ -93,7 +93,9 @@ struct ReportView: View {
     }
 
     private var reportIssueRows: [ResultRow] {
-        rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        // A skipped Finder view file is listed with its own status, never as
+        // an issue; an unproven skip is the verdict's (and the notes') to say.
+        rows.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
     }
 
     private var sourceIssueWarnings: [String] {
@@ -116,7 +118,7 @@ struct ReportView: View {
     }
 
     private var reportUnsafeReason: String {
-        let selected = rows.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        let selected = rows.filter { !$0.isOmittedBySelection }
         if s.safetyState == .needsAttention, s.photographyJob == nil,
            excludedResultCount > 0, reportIssueRows.isEmpty, !selected.isEmpty,
            selected.allSatisfy(TransferOutcomePresentation.isVerified) {
@@ -582,6 +584,9 @@ struct ReportView: View {
                 } else {
                     Text("\(excludedResultCount) intentionally excluded \(excludedResultCount == 1 ? "result" : "results")").font(.system(size: 10))
                 }
+            }
+            if let skipLine = VerificationScopeEvidence.finderMetadataSkipLine(results: rows) {
+                Text("\(skipLine).").font(.system(size: 9)).foregroundColor(.secondary)
             }
             if let note = s.verificationScopeNote {
                 Text(note).font(.system(size: 9)).foregroundColor(.secondary)

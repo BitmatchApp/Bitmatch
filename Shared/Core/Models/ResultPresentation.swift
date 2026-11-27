@@ -141,9 +141,15 @@ struct ResultIntegritySummary {
     let successfulRows: [ResultRow]
     let issueRows: [ResultRow]
 
+    /// Skipped Finder view files: neither a success nor an issue. Whether
+    /// the run's skips are proven is in the verdict (`OperationState`), not
+    /// in these rows.
+    let skippedRows: [ResultRow]
+
     init(rows: [ResultRow]) {
         successfulRows = rows.filter(\.isSuccessStatus)
-        issueRows = rows.filter { !$0.isSuccessStatus }
+        issueRows = rows.filter { !$0.isSuccessStatus && !$0.isSkippedFinderMetadata }
+        skippedRows = rows.filter(\.isSkippedFinderMetadata)
     }
 
     var isSuccessful: Bool {
@@ -358,9 +364,10 @@ enum ResultPresentation {
             return visibleIssues
         }
 
-        let remainingCapacity = safeLimit - visibleIssues.count
+        let visibleSkips = Array(summary.skippedRows.prefix(safeLimit - visibleIssues.count))
+        let remainingCapacity = safeLimit - visibleIssues.count - visibleSkips.count
         let newestSuccesses = summary.successfulRows.suffix(remainingCapacity)
-        return visibleIssues + newestSuccesses
+        return visibleIssues + visibleSkips + newestSuccesses
     }
 }
 
@@ -425,8 +432,11 @@ struct DestinationResultSummary: Identifiable {
     let rows: [ResultRow]
     var verificationMode: VerificationMode? = nil
 
-    var issueCount: Int { rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count }
+    var issueCount: Int { rows.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }.count }
     var excludedCount: Int { rows.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }.count }
+    /// Skipped Finder view files on this backup: not an issue and not an
+    /// exclusion; the run's verdict says whether they are proven.
+    var skippedCount: Int { rows.filter(\.isSkippedFinderMetadata).count }
     var unverifiedCount: Int {
         rows.filter {
             $0.isSuccessStatus && (verificationMode == .quick || !$0.isVerifiedStatus || $0.checksum?.isEmpty != false)
@@ -434,26 +444,32 @@ struct DestinationResultSummary: Identifiable {
     }
     /// Non-nil only when issueCount > 0 and every failing row carries the same known reason.
     var sharedFailureReason: ResultFailureReason? {
-        let failing = rows.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
+        let failing = rows.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }
         guard !failing.isEmpty else { return nil }
         let reasons = failing.map { $0.failureReason.flatMap(ResultFailureReason.init(rawValue:)) }
         guard let reason = reasons.first ?? nil, reasons.allSatisfy({ $0 == reason }) else { return nil }
         return reason
     }
-    var needsAttention: Bool { rows.isEmpty || issueCount > 0 || unverifiedCount > 0 || excludedCount > 0 }
+    var needsAttention: Bool {
+        rows.count == skippedCount || issueCount > 0 || unverifiedCount > 0 || excludedCount > 0
+    }
     var detail: String {
         guard !rows.isEmpty else { return "No files recorded" }
-        if issueCount > 0 { return issueCount == 1 ? "1 file failed" : "\(issueCount) files failed" }
+        let skipped = skippedCount
+        let skipSuffix = skipped == 0 ? "" : " · \(skipped) Finder view \(skipped == 1 ? "file" : "files") skipped"
+        if issueCount > 0 { return (issueCount == 1 ? "1 file failed" : "\(issueCount) files failed") + skipSuffix }
         if excludedCount > 0 {
-            let verified = rows.count - issueCount - excludedCount - unverifiedCount
-            return "\(verified) verified, \(unverifiedCount) unverified, \(excludedCount) intentionally excluded"
+            let verified = rows.count - issueCount - excludedCount - skipped - unverifiedCount
+            return "\(verified) verified, \(unverifiedCount) unverified, \(excludedCount) intentionally excluded" + skipSuffix
         }
+        let counted = rows.count - skipped
+        guard counted > 0 else { return "No files copied" + skipSuffix }
         if unverifiedCount > 0 {
-            return unverifiedCount == rows.count
-                ? "\(rows.count) \(rows.count == 1 ? "file" : "files") copied, contents not verified"
-                : "\(unverifiedCount) of \(rows.count) files not verified"
+            return (unverifiedCount == counted
+                ? "\(counted) \(counted == 1 ? "file" : "files") copied, contents not verified"
+                : "\(unverifiedCount) of \(counted) files not verified") + skipSuffix
         }
-        return "Checksums matched for \(rows.count) of \(rows.count) files"
+        return "Checksums matched for \(counted) of \(counted) files" + skipSuffix
     }
 
     static func make(rows: [ResultRow], destinations: [URL], verificationMode: VerificationMode? = nil) -> [Self] {
@@ -494,6 +510,9 @@ struct TransferRecoverySummary: Identifiable {
     let failed: Int
     let excluded: Int
     let pending: Int?
+    /// Skipped Finder view files: outside the saved plan, like exclusions,
+    /// but never called excluded.
+    var skipped: Int = 0
 
     static func make(_ record: LocalTransferRecord) -> [Self] {
         let groups = DestinationResultSummary.make(rows: record.results, destinations: record.destinations.map(\.url))
@@ -501,10 +520,12 @@ struct TransferRecoverySummary: Identifiable {
         return groups.enumerated().map { index, group in
             // Duplicate/conflicting evidence must not inflate success or hide an issue.
             let files = Dictionary(grouping: group.rows, by: \.path).values
-            var reused = 0, copied = 0, unverified = 0, failed = 0, excluded = 0, unsupported = 0
+            var reused = 0, copied = 0, unverified = 0, failed = 0, excluded = 0, unsupported = 0, skipped = 0
             for rows in files {
                 if rows.allSatisfy({ ResultOutcome(statusText: $0.status) == .excludedAppleDouble }) {
                     excluded += 1
+                } else if rows.allSatisfy(\.isSkippedFinderMetadata) {
+                    skipped += 1
                 } else if rows.allSatisfy(\.isUnsupportedSourceEntry) {
                     failed += 1
                     unsupported += 1
@@ -526,7 +547,7 @@ struct TransferRecoverySummary: Identifiable {
                 ? plan?[index] : nil
             return Self(id: group.id, title: group.title, reused: reused, copied: copied,
                         unverified: unverified, failed: failed, excluded: excluded,
-                        pending: expected.flatMap { $0 >= settled ? $0 - settled : nil })
+                        pending: expected.flatMap { $0 >= settled ? $0 - settled : nil }, skipped: skipped)
         }
     }
 }

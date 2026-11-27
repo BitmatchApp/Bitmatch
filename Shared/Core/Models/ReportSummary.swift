@@ -105,7 +105,9 @@ struct VerifiedReportSelection: Sendable {
         guard TransferCompletion.expectedExclusionQueueQualification(operation: operation,
             expectedMode: expectedMode, handoffIssues: handoffIssues, reportIssue: nil, project: project) != nil else { return nil }
         let rows = TransferCompletion.rows(from: operation)
-        guard rows.allSatisfy({ ResultOutcome(statusText: $0.status) == .excludedAppleDouble
+        // A skipped Finder view file passes only because the qualification
+        // above already applied `finderMetadataSkipsProven` to this operation.
+        guard rows.allSatisfy({ $0.isOmittedBySelection
             || ($0.isVerifiedStatus && $0.checksum?.isEmpty == false) }) else { return nil }
         return Self(jobID: operation.id, source: operation.sourceURL, destinations: operation.destinationURLs,
             mode: expectedMode, rows: rows)
@@ -121,6 +123,7 @@ struct VerifiedReportSelection: Sendable {
             && currentScope.recordedSelectedResults == scope.recordedSelectedResults
             && currentScope.recordedVerifiedResults == scope.recordedVerifiedResults
             && currentScope.recordedExcludedSourceFiles == scope.recordedExcludedSourceFiles
+            && currentScope.recordedSkippedFinderMetadata == scope.recordedSkippedFinderMetadata
             && summary.safetyState == .needsAttention && self.rows == rows.map(RowFact.init)
     }
 }

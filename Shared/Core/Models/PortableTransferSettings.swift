@@ -5,7 +5,10 @@ import BitMatchEngine
 /// Names, paths, permissions, identities and transfer evidence never enter it.
 struct PortableTransferSettings: Codable, Equatable, Sendable {
     static let format = "BitMatch transfer settings"
-    static let schemaVersion = 2
+    /// 1: no folder recipes. 2: folder recipes. 3: may carry
+    /// `skipFinderViewFiles`, written only when it is off, so a file with
+    /// the default still reads in an older BitMatch.
+    static let schemaVersion = 3
 
     /// True when every preference equals either the value an interrupted
     /// import started from or the value it meant to set. This compares
@@ -18,6 +21,7 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
         return between(verificationMode, from.verificationMode, to.verificationMode)
             && between(generateASCMHL, from.generateASCMHL, to.generateASCMHL)
             && between(ignoreAppleDouble, from.ignoreAppleDouble, to.ignoreAppleDouble)
+            && between(skipFinderViewFiles, from.skipFinderViewFiles, to.skipFinderViewFiles)
             && between(reports, from.reports, to.reports)
             && between(naming, from.naming, to.naming)
     }
@@ -26,6 +30,8 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
     let verificationMode: VerificationMode
     let generateASCMHL: Bool
     let ignoreAppleDouble: Bool
+    /// Absent in a file means on, the default.
+    let skipFinderViewFiles: Bool
     let reports: Reports
     let naming: Naming
     /// Recipe layers only. Preset names, IDs and project metadata stay local.
@@ -110,17 +116,19 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
     }
 
     init(verificationMode: VerificationMode, generateASCMHL: Bool, ignoreAppleDouble: Bool,
-         reports: Reports, naming: Naming, folderRecipes: [Recipe]? = nil) {
+         reports: Reports, naming: Naming, folderRecipes: [Recipe]? = nil, skipFinderViewFiles: Bool = true) {
         self.verificationMode = verificationMode
         self.generateASCMHL = generateASCMHL
         self.ignoreAppleDouble = ignoreAppleDouble
+        self.skipFinderViewFiles = skipFinderViewFiles
         self.reports = reports
         self.naming = naming
         self.folderRecipes = folderRecipes
     }
 
     private enum CodingKeys: String, CodingKey, CaseIterable {
-        case format, schemaVersion, verificationMode, generateASCMHL, ignoreAppleDouble, reports, naming, folderRecipes
+        case format, schemaVersion, verificationMode, generateASCMHL, ignoreAppleDouble, skipFinderViewFiles
+        case reports, naming, folderRecipes
     }
 
     init(from decoder: Decoder) throws {
@@ -129,32 +137,47 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
             throw TransferSettingsImportError.invalidFile
         }
         let version = try values.decode(Int.self, forKey: .schemaVersion)
-        guard version == 1 || version == Self.schemaVersion else {
+        guard (1...Self.schemaVersion).contains(version) else {
             throw TransferSettingsImportError.unsupportedVersion
         }
         try rejectUnknownSettingsKeys(decoder, allowed: CodingKeys.allCases.map(\.rawValue))
         if version == 1, values.contains(.folderRecipes) { throw TransferSettingsImportError.invalidFile }
+        if version < 3, values.contains(.skipFinderViewFiles) { throw TransferSettingsImportError.invalidFile }
         verificationMode = try values.decode(VerificationMode.self, forKey: .verificationMode)
         generateASCMHL = try values.decode(Bool.self, forKey: .generateASCMHL)
         ignoreAppleDouble = try values.decode(Bool.self, forKey: .ignoreAppleDouble)
+        skipFinderViewFiles = try values.decodeIfPresent(Bool.self, forKey: .skipFinderViewFiles) ?? true
         reports = try values.decode(Reports.self, forKey: .reports)
         naming = try values.decode(Naming.self, forKey: .naming)
-        if version == 1 {
+        switch version {
+        case 1:
             folderRecipes = nil
-        } else {
+        case 2:
             let recipes = try values.decode([Recipe].self, forKey: .folderRecipes)
             guard recipes.count <= 32 else { throw TransferSettingsImportError.invalidFile }
             folderRecipes = recipes
+        default:
+            let recipes = try values.decodeIfPresent([Recipe].self, forKey: .folderRecipes)
+            guard (recipes?.count ?? 0) <= 32 else { throw TransferSettingsImportError.invalidFile }
+            folderRecipes = recipes
         }
+    }
+
+    /// The oldest version that can carry this file, so a file another
+    /// BitMatch can read is never stamped newer than it must be.
+    private var encodedSchemaVersion: Int {
+        if !skipFinderViewFiles { return Self.schemaVersion }
+        return folderRecipes == nil ? 1 : 2
     }
 
     func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
         try values.encode(Self.format, forKey: .format)
-        try values.encode(folderRecipes == nil ? 1 : Self.schemaVersion, forKey: .schemaVersion)
+        try values.encode(encodedSchemaVersion, forKey: .schemaVersion)
         try values.encode(verificationMode, forKey: .verificationMode)
         try values.encode(generateASCMHL, forKey: .generateASCMHL)
         try values.encode(ignoreAppleDouble, forKey: .ignoreAppleDouble)
+        if !skipFinderViewFiles { try values.encode(skipFinderViewFiles, forKey: .skipFinderViewFiles) }
         try values.encode(reports, forKey: .reports)
         try values.encode(naming, forKey: .naming)
         try values.encodeIfPresent(folderRecipes, forKey: .folderRecipes)
@@ -195,6 +218,7 @@ struct PortableTransferSettings: Codable, Equatable, Sendable {
         add("Verification", current.verificationMode.rawValue, verificationMode.rawValue)
         add("ASC MHL", onOff(current.generateASCMHL), onOff(generateASCMHL))
         add("Ignore AppleDouble metadata", onOff(current.ignoreAppleDouble), onOff(ignoreAppleDouble))
+        add("Skip Finder view files", onOff(current.skipFinderViewFiles), onOff(skipFinderViewFiles))
         add("Reports", onOff(current.reports.makeReport), onOff(reports.makeReport))
         add("PDF clip thumbnails", onOff(current.reports.includeThumbnails), onOff(reports.includeThumbnails))
         add("Label position", current.naming.position.rawValue, naming.position.rawValue)

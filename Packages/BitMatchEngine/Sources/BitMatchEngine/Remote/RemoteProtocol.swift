@@ -154,8 +154,12 @@ public struct RemoteSettings: Codable, Hashable, Sendable {
     public var queueNewCardsAutomatically: Bool
     public var autoEjectWhenSafe: Bool
     public var reportSettingsJSON: Data
+    /// Skip Finder view files (`.DS_Store`). Optional on the wire: a host
+    /// that predates the setting sends none, which means its default (on).
+    public var skipFinderViewFiles: Bool?
     public init(generateASCMHL: Bool, copyWorkers: Int, verifyWorkers: Int, verifyWhileCopying: Bool,
-                queueNewCardsAutomatically: Bool, autoEjectWhenSafe: Bool, reportSettingsJSON: Data) {
+                queueNewCardsAutomatically: Bool, autoEjectWhenSafe: Bool, reportSettingsJSON: Data,
+                skipFinderViewFiles: Bool? = nil) {
         self.generateASCMHL = generateASCMHL
         self.copyWorkers = copyWorkers
         self.verifyWorkers = verifyWorkers
@@ -163,6 +167,7 @@ public struct RemoteSettings: Codable, Hashable, Sendable {
         self.queueNewCardsAutomatically = queueNewCardsAutomatically
         self.autoEjectWhenSafe = autoEjectWhenSafe
         self.reportSettingsJSON = reportSettingsJSON
+        self.skipFinderViewFiles = skipFinderViewFiles
     }
 }
 

@@ -61,6 +61,21 @@ import BitMatchEngine
         return (directory, LocalTransferJournal(fileURL: file))
     }
 
+    @Test func aSnapshotCarriesTheSkipFinderViewFilesSetting() throws {
+        let (surface, _, builder) = arranged()
+        #expect(builder.snapshot(now: now).settings.skipFinderViewFiles == true)
+        surface.generalSettings.skipFinderViewFiles = false
+        let snapshot = builder.snapshot(now: now)
+        #expect(snapshot.settings.skipFinderViewFiles == false)
+        // Optional on the wire: a host that predates the setting sends none.
+        var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(snapshot.settings)) as? [String: Any])
+        object.removeValue(forKey: "skipFinderViewFiles")
+        let older = try JSONDecoder().decode(RemoteSettings.self, from: JSONSerialization.data(withJSONObject: object))
+        #expect(older.skipFinderViewFiles == nil)
+        let patch = try JSONDecoder().decode(RemoteSettingsPatch.self, from: Data("{}".utf8))
+        #expect(patch.skipFinderViewFiles == nil)
+    }
+
     @Test func aSnapshotCarriesTheSurfaceSelectionAsOpaqueIDs() throws {
         let (_, host, builder) = arranged()
 

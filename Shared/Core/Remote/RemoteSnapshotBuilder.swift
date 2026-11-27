@@ -196,7 +196,8 @@ struct RemoteSnapshotBuilder {
             verifyWhileCopying: general.verifyWhileCopying,
             queueNewCardsAutomatically: general.queueNewCardsAutomatically,
             autoEjectWhenSafe: general.autoEjectWhenSafe,
-            reportSettingsJSON: (try? encoder.encode(surface.reportSettings)) ?? Data())
+            reportSettingsJSON: (try? encoder.encode(surface.reportSettings)) ?? Data(),
+            skipFinderViewFiles: general.skipFinderViewFiles)
     }
 
     private static func same(_ a: URL, _ b: URL) -> Bool {

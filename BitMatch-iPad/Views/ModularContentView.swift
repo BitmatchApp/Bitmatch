@@ -309,6 +309,8 @@ struct SettingsSheetView: View {
                 Section("File handling") {
                     AppleDoubleSelectionView(review: coordinator.appleDoubleSelection)
                         .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
+                    FinderViewFilesSettingView(settings: generalSettings)
+                        .disabled(coordinator.isOperationInProgress || coordinator.isReplayingQueuedTransfer)
                 }
 
                 TransferSettingsSection(coordinator: coordinator)

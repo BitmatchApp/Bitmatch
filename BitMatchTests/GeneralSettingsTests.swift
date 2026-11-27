@@ -59,6 +59,24 @@ struct GeneralSettingsTests {
         #expect(!settings.notificationPromptWasAnswered)
     }
 
+    @Test func skipFinderViewFilesDefaultsOnAndPersists() throws {
+        let box = try DefaultsBox()
+        let settings = GeneralSettings(defaults: box.defaults)
+        #expect(settings.skipFinderViewFiles)
+        #expect(GeneralSettings.skipFinderViewFilesKey == "BitMatchSkipFinderViewFiles")
+        #expect(box.defaults.object(forKey: GeneralSettings.skipFinderViewFilesKey) == nil)
+
+        settings.skipFinderViewFiles = false
+        #expect(box.defaults.object(forKey: "BitMatchSkipFinderViewFiles") as? Bool == false)
+        #expect(!GeneralSettings(defaults: box.defaults).skipFinderViewFiles)
+        settings.skipFinderViewFiles = true
+        #expect(GeneralSettings(defaults: box.defaults).skipFinderViewFiles)
+
+        #expect(GeneralSettingsPresentation.skipFinderViewFiles == "Skip Finder view files (.DS_Store)")
+        #expect(GeneralSettingsPresentation.skipFinderViewFilesFootnote
+            == "Finder writes .DS_Store when a folder is browsed; it holds view settings, not footage. Skipped files are listed in the report and do not block the safe-to-erase verdict.")
+    }
+
     @Test func workerChoicesDefaultToAutoAndReachTheEngineClamped() throws {
         let box = try DefaultsBox()
         let settings = GeneralSettings(defaults: box.defaults)

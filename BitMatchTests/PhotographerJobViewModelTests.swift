@@ -220,6 +220,31 @@ struct PhotographerJobViewModelTests {
         #expect(store.saveCount == 5)
     }
 
+    /// A project card is locally safe with a skipped Finder view file only when
+    /// the executor hands over the proven set; otherwise the skip stays an
+    /// unverified file and the card has issues.
+    @Test(arguments: [true, false])
+    func provenFinderViewFileSkipsLeaveTheCardsExpectedFiles(proven: Bool) throws {
+        let store = InMemoryPhotographerJobStore()
+        let viewModel = preparedViewModel(store: store, sourcePaths: ["/card/.DS_Store", "/card/A.ARW"])
+        viewModel.beginIngest(destinationCount: 2)
+        let skipped = ["Primary", "Secondary"].map { destination in
+            ResultRow(path: "/card/.DS_Store", status: ResultOutcome.skippedFinderMetadata.statusText,
+                      size: 6, checksum: nil, destination: destination,
+                      destinationPath: "/\(destination.lowercased())/\(renderedPackage)/.DS_Store")
+        }
+        let jobID = try #require(viewModel.activeJob?.id)
+        let cardID = try #require(viewModel.activeCardDraft?.id)
+        let analysis = try #require(viewModel.preliminaryAnalysis)
+        try viewModel.completeIngest(
+            jobID: jobID, cardID: cardID, analysis: analysis,
+            results: verifiedRows(destinationNames: ["Primary", "Secondary"]) + skipped,
+            provenSkippedSourcePaths: proven ? ["/card/.DS_Store"] : []
+        )
+        #expect(viewModel.activeCard?.localState == (proven ? .locallySafe : .issues))
+        #expect((viewModel.activeCard?.verifiedDestinationCount ?? 0) == (proven ? 2 : 0))
+    }
+
     @Test func handoffFailurePreservesPersistedLocalVerificationEvidence() throws {
         let store = InMemoryPhotographerJobStore()
         let viewModel = preparedViewModel(store: store)

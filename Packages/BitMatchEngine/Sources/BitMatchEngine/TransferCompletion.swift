@@ -547,6 +547,11 @@ public enum TransferCompletion: Sendable {
     /// spelling, so the two never say it twice or say it differently.
     public static let quickModeNote = "Not verified: Quick mode only compares file sizes."
 
+    /// The verdict's words when skipped Finder view files are not proven by
+    /// `finderMetadataSkipsProven`. Reports quote the verdict through this
+    /// one spelling instead of re-deriving the rule.
+    public static let finderMetadataSkipMismatch = "Skipped-file records do not match this run; keep the card"
+
     public struct Verdict: Equatable, Sendable {
         public let success: Bool
         public let message: String
@@ -639,7 +644,7 @@ public enum TransferCompletion: Sendable {
         // Set when the headline below already names the proven skips.
         var headlineGivesSkips = false
         let excludedDescription = "\(excludedCount) AppleDouble \(excludedCount == 1 ? "file" : "files") intentionally excluded"
-        let skipMismatch = "Skipped-file records do not match this run; keep the card"
+        let skipMismatch = finderMetadataSkipMismatch
         let actualIssueCount = rows.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }.count
         // An AppleDouble exclusion stays an issue here, so it is never safe.
         let issueCount = rowsWithoutSkips.filter { !$0.isSuccessStatus }.count

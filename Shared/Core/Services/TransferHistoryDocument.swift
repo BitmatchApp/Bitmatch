@@ -38,7 +38,13 @@ struct TransferHistoryDocument: FileDocument {
                 return "'" + value
             }
             let telemetry = record.performanceTelemetry
-            let timingSummary = [
+            // Skipped Finder view files keep their own rows above; one summary
+            // line names them, never as an exclusion. Absent with no skips.
+            let skipSummary = scope.finderMetadataSkipLine.map {
+                [pair("recordedSkippedFinderViewFiles", String(scope.recordedSkippedFinderMetadata)),
+                 pair("finderViewFiles", $0)]
+            } ?? []
+            let timingSummary = ([
                 "\n# Summary",
                 pair("retryOf", record.retryOf?.uuidString ?? ""),
                 pair("plannedFileCounts", record.plannedFileCounts?.map(String.init).joined(separator: ";") ?? ""),
@@ -49,7 +55,8 @@ struct TransferHistoryDocument: FileDocument {
                 pair("recordedSelectedSourceFiles", String(scope.recordedSelectedSourceFiles)),
                 pair("recordedSelectedBackupResults", String(scope.recordedSelectedResults)),
                 pair("recordedVerifiedBackupResults", String(scope.recordedVerifiedResults)),
-                pair("recordedExcludedSourceFiles", String(scope.recordedExcludedSourceFiles)),
+                pair("recordedExcludedSourceFiles", String(scope.recordedExcludedSourceFiles))]
+                + skipSummary + [
                 pair("evidenceScope", record.plannedFileCounts == nil
                     ? "Original selected-file plan was not saved; export describes recorded results only and cannot establish whole-card safety"
                     : "Saved results only; selected mode does not prove every check finished"),
@@ -64,7 +71,7 @@ struct TransferHistoryDocument: FileDocument {
                 pair("mhlBytes", telemetry?.mhlBytes.map { String($0) } ?? ""),
                 pair("destinationRereadsAvoided", telemetry.map { String($0.destinationRereadsAvoided) } ?? ""),
                 pair("sourceRereadsAvoided", telemetry.map { String($0.sourceRereadsAvoided) } ?? "")
-            ].joined(separator: "\n")
+            ]).joined(separator: "\n")
             data = Data((header + rows.joined(separator: "\n") + timingSummary + "\n").utf8)
         } else {
             // Do not export security-scoped bookmarks or credentials from the journal.
@@ -81,6 +88,8 @@ struct TransferHistoryDocument: FileDocument {
                 let savedVerdict: String
                 let savedSafeToErase: Bool
                 let verificationScope: VerificationScopeEvidence
+                /// "N Finder view files skipped (not card content)"; omitted with none.
+                let finderViewFiles: String?
                 let selectedFilePlanRecorded: Bool
                 let projectName: String
                 let clientName: String
@@ -99,7 +108,8 @@ struct TransferHistoryDocument: FileDocument {
                 destinations: record.destinations.map { $0.url.path }, state: record.state, summary: record.summary,
                 createdAt: record.createdAt, verificationMode: record.verificationMode,
                 savedVerdict: savedVerdict.title, savedSafeToErase: savedVerdict.isSafe,
-                verificationScope: scope, selectedFilePlanRecorded: record.plannedFileCounts != nil,
+                verificationScope: scope, finderViewFiles: scope.finderMetadataSkipLine,
+                selectedFilePlanRecorded: record.plannedFileCounts != nil,
                 projectName: record.reportSettings.projectName, clientName: record.reportSettings.clientName,
                 operatorName: EvidenceWriter.normalizedNotes(record.reportSettings.operatorName),
                 notes: EvidenceWriter.normalizedNotes(record.reportSettings.notes),

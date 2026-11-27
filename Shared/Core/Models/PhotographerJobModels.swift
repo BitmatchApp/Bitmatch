@@ -466,27 +466,37 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
     static func finalizedCard(
         context: PhotographerReportContext,
         results: [ResultRow],
-        finishedAt: Date?
+        finishedAt: Date?,
+        provenSkippedSourcePaths: Set<String> = []
     ) throws -> FinalizedCard {
         return try finalizedCard(
             context: context,
             results: results,
             finishedAt: finishedAt,
-            confirmedFingerprint: PhotographerCardAnalyzer.confirmedFingerprint
+            confirmedFingerprint: PhotographerCardAnalyzer.confirmedFingerprint,
+            provenSkippedSourcePaths: provenSkippedSourcePaths
         )
     }
 
+    /// `provenSkippedSourcePaths` are the skipped Finder view files the
+    /// executor proved with `TransferCompletion.finderMetadataSkipsProven`
+    /// for this run (empty when they are not proven). Only those rows leave
+    /// the card's expected files; any other skipped row is unverified, so
+    /// the card stays unsafe.
     static func finalizedCard(
         context: PhotographerReportContext,
         results: [ResultRow],
         finishedAt: Date?,
-        confirmedFingerprint: ([ResultRow]) throws -> String
+        confirmedFingerprint: ([ResultRow]) throws -> String,
+        provenSkippedSourcePaths: Set<String> = []
     ) throws -> FinalizedCard {
         guard var card = context.job.cardIngests.first(where: { $0.id == context.cardIngestID }) else {
             throw PhotographerReportError.cardNotFound
         }
+        let (copiedRows, skipped) = withoutSkippedRows(results, provenSkippedSourcePaths)
 
-        if let evidence = finalEvidence(context: context, card: card, results: results) {
+        if let evidence = finalEvidence(context: context, card: card, results: copiedRows,
+                                        excludingSourcePaths: skipped) {
             card.localState = .locallySafe
             card.locallySafeAt = card.locallySafeAt ?? finishedAt ?? context.job.updatedAt
             card.provenance.confirmedFingerprint = try confirmedFingerprint(evidence.canonicalRows)
@@ -507,7 +517,14 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         guard let card = context.job.cardIngests.first(where: { $0.id == context.cardIngestID }) else {
             throw PhotographerReportError.cardNotFound
         }
-        let evidence = finalEvidence(context: context, card: card, results: results)
+        // Only a card already finalized locally safe (which required this
+        // run's skips to be proven) can use its skipped rows; the evidence
+        // and fingerprint below must still match exactly.
+        let skippedPaths = card.localState == .locallySafe
+            ? Set(results.filter(\.isSkippedFinderMetadata).map(\.path)) : []
+        let (copiedRows, skipped) = withoutSkippedRows(results, skippedPaths)
+        let evidence = finalEvidence(context: context, card: card, results: copiedRows,
+                                     excludingSourcePaths: skipped)
         guard card.localState == .locallySafe,
               card.locallySafeAt != nil,
               let fingerprint = nonblank(card.provenance.confirmedFingerprint),
@@ -520,6 +537,18 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
             card: card,
             verifiedDestinationCount: evidence.destinationCount
         )
+    }
+
+    /// The rows left once the given skipped Finder view files are set aside,
+    /// and the paths actually set aside. A skipped row outside `proven`
+    /// stays in, where it fails the all-verified check.
+    private static func withoutSkippedRows(
+        _ results: [ResultRow], _ proven: Set<String>
+    ) -> (rows: [ResultRow], skipped: Set<String>) {
+        guard !proven.isEmpty else { return (results, []) }
+        let setAside = results.filter { $0.isSkippedFinderMetadata && proven.contains($0.path) }
+        return (results.filter { !($0.isSkippedFinderMetadata && proven.contains($0.path)) },
+                Set(setAside.map(\.path)))
     }
 
     private static func unsafeFinalizedCard(_ card: CardIngest) -> FinalizedCard {
@@ -537,9 +566,11 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
     static func allowsQueueContinuationForExpectedExclusions(
         context: PhotographerReportContext,
         results: [ResultRow],
-        excludedSourcePaths: Set<String>
+        excludedSourcePaths: Set<String>,
+        provenSkippedSourcePaths: Set<String> = []
     ) -> Bool {
-        guard !excludedSourcePaths.isEmpty,
+        let (results, skipped) = withoutSkippedRows(results, provenSkippedSourcePaths)
+        guard !excludedSourcePaths.isEmpty, skipped.isDisjoint(with: excludedSourcePaths),
               let card = context.job.cardIngests.first(where: { $0.id == context.cardIngestID }),
               card.localState == .copying || card.localState == .verifying,
               context.job.requiredLocalCopyCount > 0,
@@ -559,7 +590,7 @@ struct PhotographerReportPayload: Codable, Equatable, Sendable {
         guard !selectedRows.isEmpty, selectedRows.allSatisfy(\.isVerifiedStatus) else { return false }
         return finalEvidence(
             context: context, card: card, results: selectedRows,
-            excludingSourcePaths: excludedSourcePaths
+            excludingSourcePaths: excludedSourcePaths.union(skipped)
         ) != nil
     }
 

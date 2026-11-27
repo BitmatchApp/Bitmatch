@@ -546,7 +546,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             destination: "Other",
             destinationPath: "/reviewed-backup/other.mov"
         )
-        coordinator.photographerReportFinalizer = { _ in
+        coordinator.photographerReportFinalizer = { _, _ in
             coordinator.results = [foreignRow]
             return PhotographerFinalizationResult(context: nil, locallySafe: true)
         }

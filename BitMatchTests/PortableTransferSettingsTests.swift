@@ -129,6 +129,62 @@ struct PortableTransferSettingsTests {
                 groupByCamera: !current.naming.groupByCamera))
     }
 
+    @Test func skipFinderViewFilesTravelsOnlyWhenOffAndAbsentMeansOn() throws {
+        let fixture = try Fixture()
+        let app = fixture.coordinator
+        #expect(app.generalSettings.skipFinderViewFiles)
+        let onData = try app.portableTransferSettings.encoded()
+        let on = try #require(JSONSerialization.jsonObject(with: onData) as? [String: Any])
+        // The default writes the earlier keys and version, so an older
+        // BitMatch still reads the file.
+        #expect(on["skipFinderViewFiles"] == nil)
+        #expect(on["schemaVersion"] as? Int == 1)
+        #expect(try PortableTransferSettings.decode(onData).skipFinderViewFiles)
+
+        app.generalSettings.skipFinderViewFiles = false
+        let offSettings = app.portableTransferSettings
+        #expect(!offSettings.skipFinderViewFiles)
+        let offData = try offSettings.encoded()
+        let off = try #require(JSONSerialization.jsonObject(with: offData) as? [String: Any])
+        #expect(off["skipFinderViewFiles"] as? Bool == false)
+        #expect(off["schemaVersion"] as? Int == PortableTransferSettings.schemaVersion)
+        #expect(PortableTransferSettings.schemaVersion == 3)
+        #expect(try PortableTransferSettings.decode(offData) == offSettings)
+
+        // A version 3 file without the key means on; earlier versions cannot carry it.
+        var withoutKey = off
+        withoutKey.removeValue(forKey: "skipFinderViewFiles")
+        #expect(try PortableTransferSettings.decode(JSONSerialization.data(withJSONObject: withoutKey)).skipFinderViewFiles)
+        var legacy = on
+        legacy["skipFinderViewFiles"] = false
+        #expect(throws: TransferSettingsImportError.invalidFile) {
+            _ = try PortableTransferSettings.decode(JSONSerialization.data(withJSONObject: legacy))
+        }
+        var future = off
+        future["schemaVersion"] = 4
+        #expect(throws: TransferSettingsImportError.unsupportedVersion) {
+            _ = try PortableTransferSettings.decode(JSONSerialization.data(withJSONObject: future))
+        }
+    }
+
+    @Test func importShowsAndAppliesSkipFinderViewFiles() throws {
+        let source = try Fixture()
+        let target = try Fixture()
+        source.coordinator.generalSettings.skipFinderViewFiles = false
+        let exported = try source.coordinator.portableTransferSettingsForExport().encoded()
+        let model = TransferSettingsImportModel()
+        try model.preview(exported, coordinator: target.coordinator)
+        let change = try #require(model.review?.changes.first { $0.title == "Skip Finder view files" })
+        #expect(change.before == "On")
+        #expect(change.after == "Off")
+        try model.apply(to: target.coordinator)
+        #expect(!target.coordinator.generalSettings.skipFinderViewFiles)
+        #expect(!GeneralSettings(defaults: target.defaults).skipFinderViewFiles)
+        #expect(!target.coordinator.cameraLabelSettings.skipFinderViewFiles)
+        try model.preview(exported, coordinator: target.coordinator)
+        #expect(model.review?.changes.isEmpty == true)
+    }
+
     @Test func roundTripHasOnlyTheApprovedFieldsAndNoPrivateValues() throws {
         let fixture = try Fixture()
         let app = fixture.coordinator

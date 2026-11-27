@@ -494,19 +494,19 @@ struct PhotographerReportTests {
         let expectedContext = staleContext()
         var order: [String] = []
 
-        let finalizer: PhotographerReportFinalizer = { _ in
+        let finalizer: PhotographerReportFinalizer = { _, _ in
             order.append("lifecycle")
             return PhotographerFinalizationResult(context: expectedContext, locallySafe: false)
         }
-        let failedFinalizer: PhotographerReportFinalizer = { _ in
+        let failedFinalizer: PhotographerReportFinalizer = { _, _ in
             order.append("failed lifecycle")
             throw ReportFixtureError.persistence
         }
-        let cancelledFinalizer: PhotographerReportFinalizer = { _ in
+        let cancelledFinalizer: PhotographerReportFinalizer = { _, _ in
             throw CancellationError()
         }
         let completed = try CopyVerifyExecutor.photographerLifecycleAfterAuthoritativeCompletion(
-            completion: { try finalizer([]) }
+            completion: { try finalizer([], []) }
         )
         let completedWithoutContext = try CopyVerifyExecutor.photographerLifecycleAfterAuthoritativeCompletion(
             completion: {
@@ -515,7 +515,7 @@ struct PhotographerReportTests {
             }
         )
         let failed = try CopyVerifyExecutor.photographerLifecycleAfterAuthoritativeCompletion(
-            completion: { try failedFinalizer([]) }
+            completion: { try failedFinalizer([], []) }
         )
 
         #expect(completed.didPersist)
@@ -530,7 +530,7 @@ struct PhotographerReportTests {
         #expect(order == ["lifecycle", "nil lifecycle", "failed lifecycle"])
         #expect(throws: CancellationError.self) {
             try CopyVerifyExecutor.photographerLifecycleAfterAuthoritativeCompletion(
-                completion: { try cancelledFinalizer([]) }
+                completion: { try cancelledFinalizer([], []) }
             )
         }
         #expect(order == ["lifecycle", "nil lifecycle", "failed lifecycle"])

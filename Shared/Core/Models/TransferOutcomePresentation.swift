@@ -15,17 +15,23 @@ struct OutcomeFileCounts: Equatable, Sendable {
     let needsAttention: Int
 
     var excluded: Int = 0
+    /// Skipped Finder view files: not an issue and not an exclusion. The
+    /// verdict, not this count, says whether the run's skips are proven.
+    var skipped: Int = 0
 
-    var total: Int { verified + copiedNotVerified + needsAttention + excluded }
+    var total: Int { verified + copiedNotVerified + needsAttention + excluded + skipped }
 
     static func make(rows: [ResultRow], verificationMode: VerificationMode? = nil) -> Self {
         var verified = 0
         var copied = 0
         var attention = 0
         var excluded = 0
+        var skipped = 0
         for row in rows {
             if ResultOutcome(statusText: row.status) == .excludedAppleDouble {
                 excluded += 1
+            } else if row.isSkippedFinderMetadata {
+                skipped += 1
             } else if !row.isSuccessStatus {
                 attention += 1
             } else if verificationMode != .quick && TransferOutcomePresentation.isVerified(row) {
@@ -34,7 +40,8 @@ struct OutcomeFileCounts: Equatable, Sendable {
                 copied += 1
             }
         }
-        return Self(verified: verified, copiedNotVerified: copied, needsAttention: attention, excluded: excluded)
+        return Self(verified: verified, copiedNotVerified: copied, needsAttention: attention,
+                    excluded: excluded, skipped: skipped)
     }
 }
 
@@ -168,11 +175,14 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         hasVerifiedSelectedFiles(record) && !SourceFaultLineage.assess(for: record, in: records).preventsSafeToEraseClaim
     }
 
+    /// A skipped Finder view file passes only because the journal's own
+    /// qualification above already requires the record's skips to be proven
+    /// (`TransferJournal.permitsExpectedExclusionQueueContinuation` applies
+    /// the one predicate); this never re-derives that rule.
     static func hasVerifiedSelectedFiles(_ record: LocalTransferRecord) -> Bool {
         TransferJournal.permitsExpectedExclusionQueueContinuation(record)
             && record.results.allSatisfy {
-                ResultOutcome(statusText: $0.status) == .excludedAppleDouble
-                    || ($0.isVerifiedStatus && $0.checksum?.isEmpty == false)
+                $0.isOmittedBySelection || ($0.isVerifiedStatus && $0.checksum?.isEmpty == false)
             }
     }
 
@@ -235,14 +245,9 @@ struct TransferOutcomePresentation: Equatable, Sendable {
             && resolvedSafetyState == .needsAttention && verificationMode != nil && verificationMode != .quick
             && counts.excluded > 0 && counts.verified > 0
             && counts.needsAttention == 0 && counts.copiedNotVerified == 0
-            && rows.allSatisfy {
-                ResultOutcome(statusText: $0.status) == .excludedAppleDouble
-                    || $0.checksum?.isEmpty == false
-            }
+            && rows.allSatisfy { $0.isOmittedBySelection || $0.checksum?.isEmpty == false }
             && !hasErrors && !hasCriticalErrors && errorCount == 0 && warningCount == 0
-        let selectedEvidence = Self.sourceEvidence(rows.filter {
-            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
-        })
+        let selectedEvidence = Self.sourceEvidence(rows.filter { !$0.isOmittedBySelection })
 
         let verifiedBytes = rows.filter { verificationMode != .quick && Self.isVerified($0) }.reduce(into: Int64(0)) { total, row in
             let (sum, overflow) = total.addingReportingOverflow(max(0, row.size))
@@ -252,12 +257,16 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         let needsRetry = safetyState == .failed
             || safetyState == .interrupted
             || safetyState == .needsAttention
-        let sourceEvidence = sourceEvidence(rows)
+        // Files the mode claims were checked: skipped Finder view files were
+        // never copied, so they are named on their own, not counted here.
+        let copiedRows = counts.skipped == 0 ? rows : rows.filter { !$0.isSkippedFinderMetadata }
+        let sourceEvidence = sourceEvidence(copiedRows)
+        let skippedFileCount = Set(rows.filter(\.isSkippedFinderMetadata).map(\.path)).count
         let algorithm = algorithmLabel(verificationMode)
         let destinationNames = destinations.map(destinationDriveName)
         let allFilesReused = safetyState == .safeToErase
-            && !rows.isEmpty
-            && rows.allSatisfy { $0.isVerifiedStatus && $0.wasReused }
+            && !copiedRows.isEmpty
+            && copiedRows.allSatisfy { $0.isVerifiedStatus && $0.wasReused }
         let reason = issueReason(
             safetyState: safetyState,
             completionDetail: baseVerdict.detail,
@@ -287,7 +296,8 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 duration: duration,
                 reason: reason,
                 allFilesReused: allFilesReused,
-                fallback: baseVerdict.detail
+                fallback: baseVerdict.detail,
+                skippedFileCount: skippedFileCount
             ),
             symbol: selectedFilesVerified ? "checkmark.circle" : safetyState.symbol,
             // The banner names the card once. All guidance comes from the
@@ -539,14 +549,15 @@ struct TransferOutcomePresentation: Equatable, Sendable {
                 )
             }
             let verified = summary.rows.filter { verificationMode != .quick && Self.isVerified($0) }.count
+            let copiedRows = summary.rows.filter { !$0.isSkippedFinderMetadata }
             let detail: String
-            if summary.rows.isEmpty {
+            if copiedRows.isEmpty {
                 detail = "Interrupted before any files were recorded"
             } else if verificationMode == .quick {
                 let copied = summary.rows.filter(\.isSuccessStatus).count
                 detail = "Interrupted: \(copied) copied, contents not verified"
             } else {
-                detail = "Interrupted: \(verified) of \(summary.rows.count) files verified before the stop"
+                detail = "Interrupted: \(verified) of \(copiedRows.count) files verified before the stop"
             }
             return OutcomeDestinationLine(
                 id: summary.id,
@@ -693,17 +704,24 @@ struct TransferOutcomePresentation: Equatable, Sendable {
         duration: TimeInterval?,
         reason: String?,
         allFilesReused: Bool,
-        fallback: String
+        fallback: String,
+        skippedFileCount: Int = 0
     ) -> String {
         let destinationText = naturalList(destinations)
+        // Named only on a safe verdict, which already proved the skips; the
+        // words stay neutral, never "excluded".
+        let skipped = skippedFileCount > 0
+            ? "\(skippedFileCount) Finder view \(skippedFileCount == 1 ? "file" : "files") skipped" : nil
         switch safetyState {
         case .safeToErase:
             if allFilesReused {
-                return "Already on \(destinationText) · verified, nothing new copied"
+                return ["Already on \(destinationText) · verified, nothing new copied", skipped]
+                    .compactMap { $0 }
+                    .joined(separator: " · ")
             }
             let files = sourceFileCount == 1 ? "1 file" : "\(sourceFileCount) files"
             let size = ByteCountPresentation.fileSize(sourceBytes)
-            return ["\(files) · \(size) verified on \(destinationText)", algorithm, duration.map(durationText)]
+            return ["\(files) · \(size) verified on \(destinationText)", skipped, algorithm, duration.map(durationText)]
                 .compactMap { $0 }
                 .joined(separator: " · ")
         case .copiedNotVerified:
@@ -745,6 +763,8 @@ struct LiveResultsCounts: Equatable {
     static func make(rows: [ResultRow]) -> Self {
         var verified = 0, copied = 0, issues = 0
         for row in rows {
+            // A skipped Finder view file is neither copied nor an issue.
+            if row.isSkippedFinderMetadata { continue }
             if !row.isSuccessStatus {
                 issues += 1
             } else if TransferOutcomePresentation.isVerified(row) {

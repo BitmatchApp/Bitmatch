@@ -507,9 +507,10 @@ struct QueueSessionPresentation: Equatable, Sendable {
             state = TransferLibraryPresentation.safetyState(for: record, in: history)
         }
         let qualifiedSelection = TransferOutcomePresentation.hasVerifiedSelectedFiles(record, in: history)
-        let countedRows = qualifiedSelection ? record.results.filter {
-            ResultOutcome(statusText: $0.status) != .excludedAppleDouble
-        } : record.results
+        // Skipped Finder view files were never copied, so they are not counted.
+        let countedRows = qualifiedSelection
+            ? record.results.filter { !$0.isOmittedBySelection }
+            : record.results.filter { !$0.isSkippedFinderMetadata }
         let paths = Dictionary(grouping: countedRows, by: \.path)
         let recordedBytes = paths.values.compactMap { $0.first }.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
         let count = paths.isEmpty ? max(0, progress?.totalFiles ?? 0) : paths.count
@@ -596,9 +597,12 @@ struct QueueSessionPresentation: Equatable, Sendable {
         case .waiting, .preparing, .copying, .verifying, .finishing:
             return nil
         }
-        let uniqueFiles = Dictionary(grouping: record.results, by: \.path).values.compactMap(\.first)
+        // The banner counts what the mode checked; skipped Finder view files
+        // are named on their own (`TransferOutcomePresentation`).
+        let uniqueFiles = Dictionary(grouping: record.results.filter { !$0.isSkippedFinderMetadata }, by: \.path)
+            .values.compactMap(\.first)
         let sourceBytes = uniqueFiles.reduce(into: Int64(0)) { $0 += max(0, $1.size) }
-        let issueCount = record.results.filter { !$0.isSuccessStatus && ResultOutcome(statusText: $0.status) != .excludedAppleDouble }.count
+        let issueCount = record.results.filter { !$0.isSuccessStatus && !$0.isOmittedBySelection }.count
         let duration = record.startedAt.flatMap { started in record.endedAt.map { $0.timeIntervalSince(started) } }
         let lineage = SourceFaultLineage.assess(for: record, in: history)
         return TransferOutcomePresentation.make(

@@ -39,12 +39,14 @@ enum TransferLibraryPresentation {
 
         private enum DestinationState: Int, Sendable {
             case verified
+            case skipped
             case notVerified
             case excluded
             case failed
 
             init(_ row: ResultRow, mode: VerificationMode) {
                 if ResultOutcome(statusText: row.status) == .excludedAppleDouble { self = .excluded }
+                else if row.isSkippedFinderMetadata { self = .skipped }
                 else if !row.isSuccessStatus { self = .failed }
                 else if mode == .quick { self = .notVerified }
                 else if row.isVerifiedStatus { self = .verified }
@@ -195,6 +197,7 @@ enum TransferLibraryPresentation {
             let destinations = first.destinationOrder.map { destination in
                 switch first.destinationStates[destination] ?? .failed {
                 case .verified: destination
+                case .skipped: "\(destination) (skipped Finder view file)"
                 case .notVerified: "\(destination) (not verified)"
                 case .failed: "\(destination) (failed)"
                 case .excluded: "\(destination) (intentionally excluded)"
@@ -272,8 +275,11 @@ enum TransferLibraryPresentation {
                 // Older records have no explicit verdict, so keep them out of
                 // the benign copied-only state rather than hide a real issue.
                 guard record.quickOnlyUnverified == true else { return .needsAttention }
-                if hasCompleteEvidence(record, where: {
-                    ResultOutcome(statusText: $0.status) == .copiedUnverified
+                // `quickOnlyUnverified` is the verdict's copied-not-verified
+                // answer, which already required any skips to be proven.
+                if record.results.contains(where: { ResultOutcome(statusText: $0.status) == .copiedUnverified }),
+                   hasCompleteEvidence(record, where: {
+                    ResultOutcome(statusText: $0.status) == .copiedUnverified || $0.isSkippedFinderMetadata
                 }) {
                     return .copiedNotVerified
                 }
@@ -281,7 +287,11 @@ enum TransferLibraryPresentation {
                 // legacy record carries rows that claim otherwise.
                 return .needsAttention
             }
-            if record.state == .completed, hasCompleteEvidence(record, where: \.isVerifiedStatus) {
+            // The journal sets `.completed` only when the record's skipped
+            // Finder view files are proven, so a skipped row stands in for
+            // a copy here; an unproven skip leaves the record `.issues`.
+            if record.state == .completed, record.results.contains(where: \.isVerifiedStatus),
+               hasCompleteEvidence(record, where: { $0.isVerifiedStatus || $0.isSkippedFinderMetadata }) {
                 return .safeToErase
             }
             return .needsAttention
@@ -517,9 +527,10 @@ enum TransferLibraryPresentation {
     }
 
     private static func fileCount(for record: LocalTransferRecord, hasVerifiedSelectedFiles: Bool) -> Int {
+        // The count is of files transferred; skipped Finder view files are not.
         let rows = hasVerifiedSelectedFiles
-            ? record.results.filter { ResultOutcome(statusText: $0.status) != .excludedAppleDouble }
-            : record.results
+            ? record.results.filter { !$0.isOmittedBySelection }
+            : record.results.filter { !$0.isSkippedFinderMetadata }
         return Set(rows.map(\.path)).count
     }
 
