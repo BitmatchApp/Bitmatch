@@ -68,10 +68,13 @@ struct EvidenceWriterCommitOrderTests {
                 validateReplacement: { url in
                     try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: url.path)
                 }, beforePublish: { url in
-                    if url == pdf { try Data("foreign occupant".utf8).write(to: pdf, options: .atomic) }
+                    if url == pdf {
+                        let json = try #require(files.first { $0.pathExtension == "json" })
+                        try Data("foreign occupant".utf8).write(to: json, options: .atomic)
+                    }
                 })
         }
-        #expect(try Data(contentsOf: pdf) == Data("foreign occupant".utf8))
+        #expect(try Data(contentsOf: pdf) == Data("safe".utf8))
     }
 
     @Test func replacementAcceptsLegacyOwnershipWithoutOptionalFileFacts() async throws {
@@ -100,18 +103,98 @@ struct EvidenceWriterCommitOrderTests {
         record.reportFileFacts = [ReportFileFact(path: csv.path, size: nil, modificationDate: nil)]
         try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
         record.reportFileFacts = [ReportFileFact(path: csv.path, size: UInt64.max, modificationDate: nil)]
-        #expect(throws: ReportReplacementOwnershipError.self) {
-            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
-        }
+        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
         record.reportFileFacts = [ReportFileFact(path: csv.path, size: nil, modificationDate: .distantPast)]
-        #expect(throws: ReportReplacementOwnershipError.self) {
-            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path))
+        #expect(files.allSatisfy { outcomes[$0.path] == .withdrawn })
+        // Restore the paths for the source-identity assertion below.
+        for file in files {
+            let hidden = file.deletingLastPathComponent().appendingPathComponent(".unsettled-" + id.uuidString + "-" + file.lastPathComponent)
+            try FileManager.default.moveItem(at: hidden, to: file)
         }
         record.reportFileFacts = nil
         record.runSourceURL = source
         #expect(throws: ReportReplacementOwnershipError.self) {
             try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
         }
+    }
+
+    @Test func freshReportAndStagingPathsAreRecordedBeforeFirstRename() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let old = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("old".utf8),
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        try journal.recordPendingReportPaths(id: id, paths: old.map(\.path), publicationID: id)
+        await #expect(throws: (any Error).self) {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("safe".utf8),
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true,
+                recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0, publicationID: id) },
+                beforePublish: { url in
+                    let saved = try #require(journal.records.first)
+                    let paths = try #require(saved.pendingReportPaths)
+                    #expect(paths.contains(url.path))
+                    #expect(paths.contains { $0.hasSuffix(".json") && !old.map(\.path).contains($0) })
+                    let staging = try #require(saved.reportStagingPath)
+                    #expect(FileManager.default.fileExists(atPath: staging + "/" + url.lastPathComponent))
+                    throw NSError(domain: "SimulatedStop", code: 1)
+                })
+        }
+    }
+
+    @Test func recoveryRemovesRecordedStagingDirectoryBeforePublication() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let history = root.appendingPathComponent("history.json")
+        let journal = TransferJournal(fileURL: history, recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let staging = backup.appendingPathComponent("Reports/.bitmatch-staging-" + id.uuidString)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try journal.recordPendingReportPaths(id: id, paths: [staging.path], publicationID: id)
+        try Data("safe report".utf8).write(to: staging.appendingPathComponent("report.pdf"))
+        let record = try #require(journal.records.first)
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [staging.path])
+        #expect(outcomes[staging.path] == .withdrawn)
+        #expect(!FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    @Test func overrideCannotReplaceAdvancedRecord() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
+        var old = try #require(journal.records.first)
+        let revision = old.revision ?? 0
+        old.state = .interrupted
+        let row = ResultRow(path: "clip.mov", status: ResultOutcome.verified.statusText, size: 4,
+            checksum: "abc", destination: "Backup", destinationPath: backup.appendingPathComponent("clip.mov").path)
+        try journal.finish(id: id, results: [row], summary: "Later completion", hadIssues: false)
+        #expect(journal.records.first?.state == .completed)
+        #expect(try journal.persistInterruptedOverride(old, expectedRevision: revision) == false)
+        #expect(journal.records.first?.summary == "Later completion")
     }
 
     @Test func replacementRejectsForeignOwnershipJSON() async throws {

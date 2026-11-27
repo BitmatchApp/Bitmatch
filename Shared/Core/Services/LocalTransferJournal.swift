@@ -30,6 +30,7 @@ final class LocalTransferJournal: ObservableObject {
     private let beforeMarkRunning: ((UUID) throws -> Void)?
     private let beforeCancel: ((UUID) throws -> Void)?
     private let beforeRecordPlan: ((UUID) throws -> Void)?
+    private let beforeRecordReportPaths: ((UUID) throws -> Void)?
     private let beforeFinish: ((UUID) throws -> Void)?
     private let beforeInterrupt: ((UUID) throws -> Void)?
     private let beforeWithdrawalRetry: ((UUID) -> Void)?
@@ -44,6 +45,7 @@ final class LocalTransferJournal: ObservableObject {
     private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
     private var interruptedOverrides: [UUID: LocalTransferRecord] = [:]
     private var persistencePending: Set<UUID> = []
+    private var overrideRevisions: [UUID: UInt64] = [:]
     private var isRefreshingRecords = false
     private var withdrawalRetriesInFlight: Set<UUID> = []
     private var withdrawalRetriesRequested: Set<UUID> = []
@@ -59,6 +61,7 @@ final class LocalTransferJournal: ObservableObject {
         beforeMarkRunning: ((UUID) throws -> Void)? = nil,
         beforeCancel: ((UUID) throws -> Void)? = nil,
         beforeRecordPlan: ((UUID) throws -> Void)? = nil,
+        beforeRecordReportPaths: ((UUID) throws -> Void)? = nil,
         beforeFinish: ((UUID) throws -> Void)? = nil,
         beforeInterrupt: ((UUID) throws -> Void)? = nil,
         beforeWithdrawalRetry: ((UUID) -> Void)? = nil,
@@ -74,6 +77,7 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeMarkRunning = beforeMarkRunning
         self.beforeCancel = beforeCancel
         self.beforeRecordPlan = beforeRecordPlan
+        self.beforeRecordReportPaths = beforeRecordReportPaths
         self.beforeFinish = beforeFinish
         self.beforeInterrupt = beforeInterrupt
         self.beforeWithdrawalRetry = beforeWithdrawalRetry
@@ -121,10 +125,18 @@ final class LocalTransferJournal: ObservableObject {
             for id in persistencePending {
                 guard let record = interruptedOverrides[id] else { continue }
                 do {
-                    try store.persistInterruptedOverride(record)
+                    try store.persistInterruptedOverride(record, expectedRevision: overrideRevisions[id] ?? record.revision ?? 0)
+                    overrideRevisions.removeValue(forKey: id)
                     interruptedOverrides.removeValue(forKey: id)
                     persistencePending.remove(id)
-                } catch { break }
+                } catch {
+                    if let stored = store.records.first(where: { $0.id == id }),
+                       stored.state == .interrupted, stored.summary == record.summary,
+                       stored.endedAt == record.endedAt {
+                        overrideRevisions[id] = stored.revision ?? 0
+                    }
+                    break
+                }
             }
         }
         // All record mutation goes through this owner, including failed calls.
@@ -481,8 +493,14 @@ final class LocalTransferJournal: ObservableObject {
         try store.reorderQueued(idsInRunOrder: orderedIDs)
     }
 
+    func reportPathRecorder(id: UUID) -> @Sendable ([String]) throws -> Void {
+        let store = self.store
+        return { paths in try store.recordPendingReportPaths(id: id, paths: paths, publicationID: id) }
+    }
+
     func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
         defer { refresh() }
+        try beforeRecordReportPaths?(id)
         try store.recordPendingReportPaths(id: id, paths: paths, publicationID: publicationID)
     }
 
@@ -525,14 +543,20 @@ final class LocalTransferJournal: ObservableObject {
                 let merged = TransferJournal.mergeWithdrawalRecovery(current: current, snapshot: snapshot, recovered: recovered)
                 do {
                     if self.interruptedOverrides[id] != nil {
-                        try store.persistInterruptedOverride(merged)
+                        try store.persistInterruptedOverride(merged, expectedRevision: self.overrideRevisions[id] ?? snapshot.revision ?? 0)
                     } else {
                         try store.applyWithdrawalRecovery(id: id, snapshot: snapshot, recovered: recovered)
                     }
                     self.interruptedOverrides.removeValue(forKey: id)
+                    self.overrideRevisions.removeValue(forKey: id)
                     self.persistencePending.remove(id)
                 } catch {
                     if merged.state == .interrupted {
+                        if self.overrideRevisions[id] == nil { self.overrideRevisions[id] = current.revision ?? 0 }
+                        if let stored = store.records.first(where: { $0.id == id }),
+                           stored.state == .interrupted, stored.summary == merged.summary, stored.endedAt == merged.endedAt {
+                            self.overrideRevisions[id] = stored.revision ?? 0
+                        }
                         self.interruptedOverrides[id] = merged
                         self.persistencePending.insert(id)
                     }
@@ -576,6 +600,7 @@ final class LocalTransferJournal: ObservableObject {
             record.relativeReportPaths = nil
         }
         record.withdrawalReason = pendingWithdrawalReason
+        if overrideRevisions[id] == nil { overrideRevisions[id] = store.records.first(where: { $0.id == id })?.revision ?? 0 }
         interruptedOverrides[id] = record
         persistencePending.insert(id)
         refresh(persistOverrides: false)

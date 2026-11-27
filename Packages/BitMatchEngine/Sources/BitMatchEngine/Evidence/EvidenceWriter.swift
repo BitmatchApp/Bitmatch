@@ -418,6 +418,7 @@ public enum EvidenceWriter: Sendable {
                                         excludedFromFileCounts: Set<UUID> = [],
                                         beforePDFWrite: (@Sendable () throws -> Void)? = nil,
                                         replacing: [URL]? = nil,
+                                        recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil,
                                         validatePublication: (@Sendable () throws -> Void)? = nil,
                                         validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
@@ -487,8 +488,13 @@ public enum EvidenceWriter: Sendable {
         let csvURL = replacement("csv") ?? stem.appendingPathExtension("csv")
         let jsonURL = replacement("json") ?? stem.appendingPathExtension("json")
         let checksumURL = replacement(checksumExtension) ?? stem.appendingPathExtension(checksumExtension)
-        let stagingDirectory = saveDirectory.resolvingSymlinksInPath()
-            .appendingPathComponent(".BitMatch-report-staging-\(UUID().uuidString)", isDirectory: true)
+        let stagingName = recordIntendedPaths == nil ? ".BitMatch-report-staging-\(UUID().uuidString)" : ".bitmatch-staging-\(jobID.uuidString)"
+        let stagingDirectory = saveDirectory.resolvingSymlinksInPath().appendingPathComponent(stagingName, isDirectory: true)
+        var intendedURLs = [csvURL]
+        if generateFullReport, checksumAlgorithm != nil { intendedURLs.append(checksumURL) }
+        if generateFullReport, pdfData != nil { intendedURLs.append(pdfURL) }
+        intendedURLs.append(jsonURL)
+        try recordIntendedPaths?((intendedURLs + [stagingDirectory]).map(\.path))
         try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
         func staged(_ url: URL) -> URL { stagingDirectory.appendingPathComponent(url.lastPathComponent) }
         func backup(_ url: URL) -> URL { stagingDirectory.appendingPathComponent("backup-" + url.lastPathComponent) }
@@ -623,8 +629,9 @@ public enum EvidenceWriter: Sendable {
             }
             SharedLogger.info("Report export error: \(originalError.localizedDescription)")
             guard cleanupErrors.isEmpty else {
-                let retained = (try? FileManager.default.contentsOfDirectory(at: stagingDirectory, includingPropertiesForKeys: nil).map(\.path))
-                    ?? [pdfURL, csvURL, jsonURL, checksumURL].flatMap { [staged($0).path, backup($0).path] }
+                let retained = recordIntendedPaths != nil ? [stagingDirectory.path] :
+                    ((try? FileManager.default.contentsOfDirectory(at: stagingDirectory, includingPropertiesForKeys: nil).map(\.path))
+                    ?? [pdfURL, csvURL, jsonURL, checksumURL].flatMap { [staged($0).path, backup($0).path] })
                 throw ReportExportError.unsettledReports("\(originalError.localizedDescription); \(cleanupErrors.joined(separator: "; "))", retained)
             }
             throw originalError

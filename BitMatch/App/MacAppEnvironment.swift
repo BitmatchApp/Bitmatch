@@ -73,8 +73,7 @@ final class MacAppEnvironment: ObservableObject {
         let store = CoreDataPhotographerJobStore(persistence: BitMatchPersistenceController.shared)
         let remoteBackupCoordinator = RemoteBackupCoordinator(store: store)
         let journal = LocalTransferJournal()
-        let jobs = PhotographerJobViewModel(store: store, remoteBackupCoordinator: remoteBackupCoordinator,
-                                            recoveryRecords: journal.records)
+        let jobs = makeProjectViewModel(store: store, remoteBackupCoordinator: remoteBackupCoordinator, journal: journal)
         let coordinator = SharedAppCoordinator(platformManager: platformManager, transferJournal: journal, photographerJobViewModel: jobs)
         let remoteBackups = MacRemoteBackupController.makeDefault(
             store: store,
@@ -86,6 +85,13 @@ final class MacAppEnvironment: ObservableObject {
         environment.dockTile = DockTileController(coordinator: coordinator)
         environment.transferSignals = MacTransferSignalController(coordinator: coordinator)
         return environment
+    }
+
+    static func makeProjectViewModel(store: any PhotographerJobStore,
+                                     remoteBackupCoordinator: any ProjectRemoteCoordinator,
+                                     journal: LocalTransferJournal) -> PhotographerJobViewModel {
+        PhotographerJobViewModel(store: store, remoteBackupCoordinator: remoteBackupCoordinator,
+                                 recoveryRecords: journal.records, historyAvailable: journal.historyAvailable)
     }
 
     /// Tests and previews: the given coordinator, no volume or camera

@@ -25,7 +25,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let ended = await waitUntil(timeout: .seconds(30)) { !coordinator.isOperationInProgress && journal.records.first { $0.id == id }?.state == .interrupted }
         XCTAssertTrue(ended)
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
-        let staged = try XCTUnwrap(record.pendingWithdrawalPaths?.filter { $0.contains(".BitMatch-report-staging-") })
+        let staged = try XCTUnwrap(record.pendingWithdrawalPaths?.filter { $0.contains(".bitmatch-staging-") })
         XCTAssertFalse(staged.isEmpty)
         XCTAssertTrue(record.summary.contains("unsettled"))
         XCTAssertFalse(record.summary.contains("Original reports retained"))
@@ -43,7 +43,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let coordinator = SharedAppCoordinator(
             platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
             transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
-                let path = try XCTUnwrap(journal.records.first { $0.id == id }?.pendingReportPaths?.first { $0.hasSuffix(".pdf") })
+                let path = try XCTUnwrap(journal.records.first { $0.id == id }?.pendingReportPaths?.first { $0.hasSuffix(".json") })
                 let url = URL(fileURLWithPath: path)
                 try Data("foreign file".utf8).write(to: url, options: .atomic)
                 foreign = url
@@ -58,7 +58,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: url), Data("foreign file".utf8))
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertTrue(record.summary.contains("changed or replaced"))
-        let replacement = try XCTUnwrap(record.pendingReportPaths?.first { $0.hasSuffix(".pdf") })
+        XCTAssertTrue(record.pendingWithdrawalPaths?.contains(url.path) == true)
+        let replacement = try XCTUnwrap(record.pendingReportPaths?.first { $0.hasSuffix(".json") && $0 != url.path })
         XCTAssertNotEqual(replacement, url.path)
         XCTAssertTrue(FileManager.default.fileExists(atPath: replacement))
     }
@@ -85,6 +86,49 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let saved = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
         XCTAssertEqual(saved.first { $0.id == id }?.state, .interrupted)
     }
+    func testAdvancedCompletionDiscardsFailedCancellationOverride() throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeCancel: { _ in
+            throw NSError(domain: "Cancel", code: 1)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: false))
+        try journal.markRunning(id: id)
+        try journal.recordPlan(id: id, fileCounts: [1])
+        XCTAssertThrowsError(try journal.cancel(id: id))
+        journal.retainInterruptedOverride(id: id, summary: "Old cancellation", results: [], pendingCancellation: true)
+        let row = ResultRow(path: "clip.mov", status: ResultOutcome.verified.statusText, size: 4,
+            checksum: "abc", destination: "backup", destinationPath: f.destination.appendingPathComponent("clip.mov").path)
+        try journal.finish(id: id, results: [row], summary: "Later completion", hadIssues: false)
+        journal.historyAppeared()
+        XCTAssertEqual(journal.records.first { $0.id == id }?.state, .completed)
+        XCTAssertEqual(journal.records.first { $0.id == id }?.summary, "Later completion")
+    }
+
+    func testFailedPostPublicationFactsUpdateReplacesSafeReports() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        var calls = 0
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeRecordReportPaths: { _ in
+            calls += 1
+            if calls == 2 { throw NSError(domain: "FactsUpdate", code: 1) }
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults)
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(30)) {
+            journal.records.first(where: { $0.id == id })?.state == .issues && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(calls, 2)
+        let reports = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertEqual(reports.reports.count, 1)
+        XCTAssertEqual(reports.reports.first?.snapshot.safeToErase, false)
+        XCTAssertNil(journal.records.first { $0.id == id }?.pendingWithdrawalPaths)
+    }
+
     func testUnflushedFinishNeverPublishesSafeOrEnablesAutoEject() async throws {
         let f = try QueueFixture(); defer { f.cleanup() }
         let failFlush = JournalFlushGate()
@@ -373,6 +417,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         defer { f.cleanup() }
         var safeBeforeFinish = false
         var sawProvisional = false
+        var rerenderedPDF: URL?
         let reports = f.destination.appendingPathComponent("Reports", isDirectory: true)
         let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
             let urls = (try? FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)) ?? []
@@ -381,6 +426,12 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 if let data = try? Data(contentsOf: url),
                    let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
                    object["safeToErase"] as? Bool == true { safeBeforeFinish = true }
+            }
+            if let pdf = urls.first(where: { $0.pathExtension == "pdf" }) {
+                var data = try Data(contentsOf: pdf)
+                data.append(Data("\n% Re-rendered report with a different size\n".utf8))
+                try data.write(to: pdf, options: .atomic)
+                rerenderedPDF = pdf
             }
             throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
         })
@@ -403,6 +454,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertEqual(object["safeToErase"] as? Bool, false)
         XCTAssertTrue(String(decoding: try Data(contentsOf: jsonURL), as: UTF8.self).localizedCaseInsensitiveContains("history"))
         let pdfURL = try XCTUnwrap(files.first { $0.pathExtension == "pdf" })
+        XCTAssertEqual(pdfURL, rerenderedPDF)
+        XCTAssertEqual(files.filter { $0.pathExtension == "json" }.count, 1)
         let pdf = try XCTUnwrap(PDFDocument(url: pdfURL))
         XCTAssertTrue(try XCTUnwrap(pdf.string).contains("NOT SAFE TO ERASE"))
         XCTAssertTrue(try XCTUnwrap(pdf.string).localizedCaseInsensitiveContains("history"))
@@ -477,7 +530,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 let replacement = f.destination.appendingPathComponent("Reports")
                 try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
                 let originalReports = offline.appendingPathComponent("Reports")
-                for name in try FileManager.default.contentsOfDirectory(atPath: originalReports.path) {
+                for name in try FileManager.default.contentsOfDirectory(atPath: originalReports.path) where !name.hasPrefix(".") {
                     try Data("replacement".utf8).write(to: replacement.appendingPathComponent(name))
                 }
             })
@@ -487,7 +540,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(ended)
         let record = try XCTUnwrap(journal.records.first(where: { $0.id == id }))
-        let paths = try XCTUnwrap(record.pendingReportPaths)
+        let paths = try XCTUnwrap(record.pendingReportPaths).filter { !URL(fileURLWithPath: $0).lastPathComponent.hasPrefix(".") }
         XCTAssertFalse(paths.isEmpty)
         for path in paths {
             XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data("replacement".utf8))
@@ -511,7 +564,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
                 try FileManager.default.moveItem(at: f.destination, to: offline)
                 let replacement = f.destination.appendingPathComponent("Reports")
                 try FileManager.default.createDirectory(at: replacement, withIntermediateDirectories: true)
-                for name in try FileManager.default.contentsOfDirectory(atPath: offline.appendingPathComponent("Reports").path) {
+                for name in try FileManager.default.contentsOfDirectory(atPath: offline.appendingPathComponent("Reports").path) where !name.hasPrefix(".") {
                     try Data("replacement".utf8).write(to: replacement.appendingPathComponent(name))
                 }
             })
@@ -521,9 +574,11 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(ended)
         let record = try XCTUnwrap(journal.records.first(where: { $0.id == id }))
-        let paths = try XCTUnwrap(record.pendingReportPaths)
+        let paths = try XCTUnwrap(record.pendingReportPaths).filter { !URL(fileURLWithPath: $0).lastPathComponent.hasPrefix(".") }
         XCTAssertFalse(paths.isEmpty)
-        for path in paths { XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data("replacement".utf8)) }
+        for path in paths {
+            XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), Data("replacement".utf8))
+        }
         XCTAssertFalse((record.pendingWithdrawalPaths ?? []).isEmpty)
         XCTAssertNotNil(record.withdrawalReason)
         XCTAssertTrue(record.summary.contains("report export failed"))
@@ -560,8 +615,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         let record = try XCTUnwrap(journal.records.first { $0.id == id })
         XCTAssertFalse(record.pendingWithdrawalPaths?.isEmpty ?? true)
         XCTAssertNotNil(record.withdrawalReason)
-        let pendingNames = Set((record.pendingWithdrawalPaths ?? []).map { URL(fileURLWithPath: $0).lastPathComponent })
-        let publishedNames = Set(try FileManager.default.contentsOfDirectory(atPath: offline.path))
+        let pendingNames = Set((record.pendingWithdrawalPaths ?? []).map { URL(fileURLWithPath: $0).lastPathComponent }.filter { !$0.hasPrefix(".") })
+        let publishedNames = Set(try FileManager.default.contentsOfDirectory(atPath: offline.path).filter { !$0.hasPrefix(".") })
         XCTAssertEqual(pendingNames, publishedNames)
         for ext in ["csv", "json", "pdf", "txt"] {
             XCTAssertTrue(publishedNames.contains { $0.hasSuffix(".\(ext)") }, ext)

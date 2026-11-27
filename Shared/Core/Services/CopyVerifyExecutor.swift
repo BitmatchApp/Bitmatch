@@ -24,6 +24,7 @@ typealias PhotographerReportFinalizer = @MainActor (
 struct CopyVerifyConfig {
     let operationId: UUID
     let reportJobID: UUID?
+    let recordReportPaths: (@Sendable ([String]) throws -> Void)?
     let sourceURL: URL
     let destinationURLs: [URL]
     let verificationMode: VerificationMode
@@ -66,10 +67,12 @@ struct CopyVerifyConfig {
         expectedExclusionQueueIdentity: ExpectedExclusionQueueQualification? = nil,
         priorSourceFaultPreventsSafeClaim: Bool = false,
         deferReportSafetyUntilHistory: Bool = false,
-        reportJobID: UUID? = nil
+        reportJobID: UUID? = nil,
+        recordReportPaths: (@Sendable ([String]) throws -> Void)? = nil
     ) {
         self.operationId = operationId
         self.reportJobID = reportJobID
+        self.recordReportPaths = recordReportPaths
         self.priorSourceFaultPreventsSafeClaim = priorSourceFaultPreventsSafeClaim
         self.deferReportSafetyUntilHistory = deferReportSafetyUntilHistory
         self.sourceURL = sourceURL
@@ -798,6 +801,14 @@ final class CopyVerifyExecutor {
         reportSettings.verificationMode = config.verificationMode
         reportSettings.skipFinderViewFiles = config.cameraLabelSettings.skipFinderViewFiles
         if let additionalNotes { reportSettings.notes += "\n" + additionalNotes }
+        if let record = publicationRecord, let facts = record.reportFileFacts {
+            let changed = facts.contains { fact in
+                guard let attributes = try? FileManager.default.attributesOfItem(atPath: fact.path) else { return false }
+                return fact.size.map { (attributes[.size] as? NSNumber)?.uint64Value != $0 } == true
+                    || fact.modificationDate.map { (attributes[.modificationDate] as? Date) != $0 } == true
+            }
+            if changed { reportSettings.notes += "\nRecorded report size or modification date changed since publication." }
+        }
         let notesBeforeSelection = reportSettings.notes
         let excluded = results.filter { ResultOutcome(statusText: $0.status) == .excludedAppleDouble }
         if !excluded.isEmpty {
@@ -823,6 +834,7 @@ final class CopyVerifyExecutor {
         let reportJobID = config.reportJobID ?? reportOperation.id
         let beforePublish = recovery ? beforeRecoveryReportPublish : nil
         let beforeRestore = recovery ? beforeRecoveryReportRestore : nil
+        let recordIntendedPaths = config.recordReportPaths
         let validationFiles = replacing ?? publicationRecord?.pendingReportPaths?.map { URL(fileURLWithPath: $0) }
         let validatePublication: (@Sendable () throws -> Void)? = validationFiles.map { files in
             let paths = files.map(\.path)
@@ -872,6 +884,7 @@ final class CopyVerifyExecutor {
                 skipsProven: skipsProven,
                 excludedFromFileCounts: excludedFromFileCounts,
                 replacing: replacing,
+                recordIntendedPaths: recordIntendedPaths,
                 validatePublication: validatePublication,
                 validateReplacement: validateReplacement,
                 beforePublish: beforePublish,
@@ -937,19 +950,22 @@ final class CopyVerifyExecutor {
         do {
             issue = try await export(replacing: pending.files)
         } catch let mismatch as ReportReplacementOwnershipError {
-            reportReplacementMismatch = mismatch.localizedDescription + " A new report was written alongside the recorded files."
-            if failure != nil { unsettledOriginalPaths.formUnion(pending.files.map(\.path)) }
+            unsettledOriginalPaths.formUnion(pending.files.map(\.path))
             issue = try await export(replacing: nil)
+            reportReplacementMismatch = mismatch.localizedDescription
+                + (issue == nil ? " A new report was written alongside the recorded files." : "")
         }
         if let issue {
             throw FileOperationError.unsafeOperation("Could not replace transfer reports: \(issue)")
         }
         pendingReport?.files = lastReportFiles
-        if !unsettledStagingPaths.isEmpty || !unsettledOriginalPaths.isEmpty {
+        if !unsettledStagingPaths.isEmpty || (failure == nil && !unsettledOriginalPaths.isEmpty) {
             throw FileOperationError.unsafeOperation("Reports are unsettled and will be withdrawn. Keep the card.")
         }
         if failure != nil { pendingReport = nil }
     }
+
+    var unprovenOriginalReportPaths: [String] { Array(unsettledOriginalPaths).sorted() }
 
     var pendingPublishedReportPaths: [String] {
         Array(Set((pendingReport?.files.map(\.path) ?? []) + Array(unsettledStagingPaths) + Array(unsettledOriginalPaths))).sorted()
@@ -957,7 +973,7 @@ final class CopyVerifyExecutor {
 
     /// Use the same identity and ownership checks as interrupted-run recovery.
     func withdrawPendingReports(record: LocalTransferRecord) -> [String: TransferJournal.ReportWithdrawalOutcome] {
-        let paths = pendingPublishedReportPaths
+        let paths = Array(Set(pendingPublishedReportPaths + (record.pendingReportPaths ?? []) + [record.reportStagingPath].compactMap { $0 })).sorted()
         var snapshot = record
         snapshot.pendingReportPaths = paths
         // The executor may have published before paths were persisted.

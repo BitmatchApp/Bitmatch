@@ -946,8 +946,18 @@ struct PhotographerJobViewModelTests {
         try Data("not JSON".utf8).write(to: unreadableURL)
         let unreadable = LocalTransferJournal(fileURL: unreadableURL)
         #expect(!unreadable.historyAvailable)
-        let restored = makeViewModel(store: store)
-        restored.recoverIncompleteTransfers(unreadable.records, historyAvailable: unreadable.historyAvailable)
+        // The Mac factory must pass availability before the view model loads
+        // its nonempty recovered records; otherwise construction persists a false issue.
+        let failedRecoveryURL = root.appendingPathComponent("failed-recovery.json")
+        var running = record
+        running.state = .running
+        try JSONEncoder().encode([running]).write(to: failedRecoveryURL)
+        let failedRecovery = LocalTransferJournal(fileURL: failedRecoveryURL,
+            beforeRecoveryPersist: { throw NSError(domain: "Recovery", code: 1) })
+        #expect(!failedRecovery.historyAvailable)
+        #expect(!failedRecovery.records.isEmpty)
+        let restored = MacAppEnvironment.makeProjectViewModel(store: store,
+            remoteBackupCoordinator: RemoteBackupCoordinator(store: store), journal: failedRecovery)
         let unconfirmed = try #require(restored.activeJob?.cardIngests.first)
         let row = PhotographerCardRowPresentation.make(card: unconfirmed, verifiedDestinationCount: 2)
         #expect(row.statusTitle == "Unconfirmed")
