@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [0.2.15] - 2026-11-26
+## [0.2.15] - 2026-11-27
 
 - Project cards wait for reports and History to finish before showing Locally Safe. Interrupted report publication is withdrawn on recovery, and History retains a visible interrupted attempt if its final write fails.
 
