@@ -100,8 +100,8 @@ public struct FileOperation: Sendable {
     /// such fact; only the pipeline can record it after validating the review.
     public internal(set) var reviewedAppleDoubleExclusionPaths: [String]? = nil
     /// Card-relative paths of the Finder view files (`.DS_Store`) this run
-    /// skipped. Nil when none were skipped or the run predates the setting;
-    /// only the pipeline records it.
+    /// skipped. Empty when the setting was on and none were found; nil when
+    /// the setting was off or the run predates it. Only the pipeline records it.
     public internal(set) var skippedFinderMetadataPaths: [String]? = nil
     /// The copy and verify workers this run used, decided from the user's
     /// choice and the storage it found. Only the pipeline records it.

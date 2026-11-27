@@ -55,6 +55,7 @@ extension SharedLogger {
         case verifyConfiguration, clipInspectionStarted, clipInspectionFinished
         case compareStarted, comparePhase, compareProgress, compareFinished
         case appleDoubleExcluded
+        case finderMetadataSkipped
         case destinationIdentityRejected
         case sourceStabilityRejected
     }

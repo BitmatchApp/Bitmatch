@@ -199,6 +199,24 @@ extension TransferPipeline {
             return "destination:\(index)"
         }
     }
+
+    /// The final gate's recheck of a skipped `.DS_Store` still on the card.
+    /// Vanishing between the scan and this open is not a change; anything
+    /// that cannot be proven a Finder view file again is. Only cancellation
+    /// throws.
+    static func isStillFinderViewFile(_ entry: FileEntry, checkCancellation: @Sendable () throws -> Void) throws -> Bool {
+        try checkCancellation()
+        let fd = open(entry.url.path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        guard fd >= 0 else { return errno == ENOENT }
+        defer { close(fd) }
+        do {
+            return try FinderMetadataSelection.isFinderViewFile(fd: fd, size: entry.size, checkCancellation: checkCancellation)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return false
+        }
+    }
 }
 
 /// Files this attempt did not write (pre-existing files proven identical and
@@ -733,13 +751,23 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         if !excluded.isEmpty {
             SharedLogger.transferEvent(.appleDoubleExcluded, run: TransferDiagnostics.runID ?? operation.id, code: excluded.count)
         }
+        // Finder view files (`.DS_Store`) proven by their Bud1 header are
+        // skipped when the setting is on: Finder rewrites them whenever a
+        // folder is browsed, so copying them only invites a false failure.
+        let skipped = operation.settings.skipFinderViewFiles
+            ? try FinderMetadataSelection.skipped(in: completeSourceManifest) : []
+        if !skipped.isEmpty {
+            SharedLogger.transferEvent(.finderMetadataSkipped, run: TransferDiagnostics.runID ?? operation.id, code: skipped.count)
+        }
         let excludedPaths = Set(excluded.map(\.relativePath))
-        let sourceManifest = excluded.isEmpty ? completeSourceManifest
-            : completeSourceManifest.filter { !excludedPaths.contains($0.relativePath) }
+        let skippedPaths = Set(skipped.map(\.relativePath))
+        let sourceManifest = excluded.isEmpty && skipped.isEmpty ? completeSourceManifest
+            : completeSourceManifest.filter { !excludedPaths.contains($0.relativePath) && !skippedPaths.contains($0.relativePath) }
         guard !sourceManifest.isEmpty else {
-            if !excluded.isEmpty || !unsupportedEntries.isEmpty {
+            if !excluded.isEmpty || !skipped.isEmpty || !unsupportedEntries.isEmpty {
                 var parts: [String] = []
                 if !excluded.isEmpty { parts.append("\(excluded.count) AppleDouble \(excluded.count == 1 ? "file" : "files") excluded") }
+                if !skipped.isEmpty { parts.append("\(skipped.count) Finder view \(skipped.count == 1 ? "file" : "files") (.DS_Store) skipped") }
                 if !unsupportedEntries.isEmpty { parts.append("\(Self.describe(unsupportedEntries)) BitMatch does not copy") }
                 throw FileOperationError.unsafeOperation("No files remain to copy: " + parts.joined(separator: " and ") + ". Nothing was copied; keep the source.")
             }
@@ -785,6 +813,13 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                 var row = FileOperationResult(sourceURL: entry.url, destinationURL: root.appendingPathComponent(entry.relativePath),
                     success: false, error: nil, fileSize: entry.size, verificationResult: nil, processingTime: 0)
                 row.excludedAppleDouble = true
+                await ledger.record(row, relativePath: entry.relativePath, destination: index)
+                await onFileResult?(row)
+            }
+            for entry in skipped {
+                var row = FileOperationResult(sourceURL: entry.url, destinationURL: root.appendingPathComponent(entry.relativePath),
+                    success: false, error: nil, fileSize: entry.size, verificationResult: nil, processingTime: 0)
+                row.skippedFinderMetadata = true
                 await ledger.record(row, relativePath: entry.relativePath, destination: index)
                 await onFileResult?(row)
             }
@@ -1435,7 +1470,14 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // An entry BitMatch does not copy that appeared or vanished during the
         // run is a changed card too; the regular-file comparison cannot see it.
         let unsupportedChanged = Set(finalSourceEnumeration.unsupported) != Set(unsupportedEntries)
-        if let reason = sourceChangeReason(initial: completeSourceManifest, current: finalSourceEnumeration.files)
+        // Skipped Finder view files are compared by what they are, not by
+        // size or date: Finder may rewrite or delete one at any time. One
+        // still present must still be a Finder view file.
+        let comparedInitial = skipped.isEmpty ? completeSourceManifest
+            : completeSourceManifest.filter { !skippedPaths.contains($0.relativePath) }
+        let comparedCurrent = skipped.isEmpty ? finalSourceEnumeration.files
+            : finalSourceEnumeration.files.filter { !skippedPaths.contains($0.relativePath) }
+        if let reason = sourceChangeReason(initial: comparedInitial, current: comparedCurrent)
             ?? (unsupportedChanged ? "The source's links, pipes or devices changed during the transfer" : nil) {
             let error = completionGateError(reason, reason: .sourceUnstable)
             for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
@@ -1461,6 +1503,52 @@ public final class TransferPipeline: FileOperationsService, Sendable {
                         destination: destIndex
                     )
                     await onFileResult?(failure)
+                }
+            }
+        }
+        // A skipped path that vanished, or that Finder rewrote as another
+        // Bud1 file, is not a change. One that no longer passes the
+        // classifier is ordinary data this run never copied.
+        if !skipped.isEmpty {
+            let currentByPath = Dictionary(finalSourceEnumeration.files.map { ($0.relativePath, $0) },
+                                           uniquingKeysWith: { first, _ in first })
+            let stillPresent = skipped.compactMap { currentByPath[$0.relativePath] }
+            let noLongerFinderFiles = try await taggingSourceReadFailure {
+                try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
+                    let sourceURL = operation.sourceURL
+                    let scoped = fileSystem.startAccessing(url: sourceURL)
+                    defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+                    return try stillPresent.filter { try !Self.isStillFinderViewFile($0, checkCancellation: check) }
+                        .map(\.relativePath)
+                }
+            }
+            if !noLongerFinderFiles.isEmpty {
+                let error = completionGateError(
+                    "The card changed during the copy: \(noLongerFinderFiles.count) skipped Finder view \(noLongerFinderFiles.count == 1 ? "file is" : "files are") no longer a Finder view file (\(noLongerFinderFiles.joined(separator: ", "))). Run it again.",
+                    reason: .sourceUnstable
+                )
+                let changed = Set(noLongerFinderFiles)
+                for (destIndex, destinationURL) in operation.destinationURLs.enumerated() {
+                    let root = pinnedDestinations[destIndex]?.logicalRootURL
+                        ?? SafetyValidator.resolvedDestinationRoot(
+                            source: operation.sourceURL,
+                            destination: destinationURL,
+                            settings: operation.settings
+                        )
+                    for entry in skipped where changed.contains(entry.relativePath) {
+                        // Not a skip any more: the row counts as a failure.
+                        let failure = FileOperationResult(
+                            sourceURL: entry.url,
+                            destinationURL: root.appendingPathComponent(entry.relativePath),
+                            success: false,
+                            error: error,
+                            fileSize: entry.size,
+                            verificationResult: nil,
+                            processingTime: 0
+                        )
+                        await ledger.record(failure, relativePath: entry.relativePath, destination: destIndex)
+                        await onFileResult?(failure)
+                    }
                 }
             }
         }
@@ -1642,7 +1730,9 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // The executor writes optional ASC MHL handoff records after authoritative verification.
 
         let finalResults = await ledger.results()
-        let selectedResults = finalResults.filter { !$0.excludedAppleDouble }
+        // Excluded and skipped rows are outside the selected plan. A skipped
+        // row the final gate failed is no longer flagged, so it counts here.
+        let selectedResults = finalResults.filter { !$0.excludedAppleDouble && !$0.skippedFinderMetadata }
         let selectedFilesSucceeded = selectedResults.count == totalFiles
             && selectedResults.allSatisfy {
                 $0.success && (operation.verificationMode == .quick || $0.verificationResult?.isValid == true)
@@ -1686,6 +1776,7 @@ public final class TransferPipeline: FileOperationsService, Sendable {
             estimatedTotalBytes: operation.estimatedTotalBytes
         )
         completed.reviewedAppleDoubleExclusionPaths = excluded.map(\.relativePath)
+        completed.skippedFinderMetadataPaths = operation.settings.skipFinderViewFiles ? skipped.map(\.relativePath) : nil
         completed.concurrency = recordedConcurrency
         return completed
     }

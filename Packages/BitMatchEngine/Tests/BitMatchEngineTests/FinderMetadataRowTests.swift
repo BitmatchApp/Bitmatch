@@ -78,6 +78,8 @@ import Testing
             verificationMode: .standard, cameraSettings: CameraLabelSettings(), reportSettings: ReportPrefs()
         )
         #expect(record.skippedFinderMetadataPaths == nil)
+        let encodedWithoutPaths = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        #expect(encodedWithoutPaths["skippedFinderMetadataPaths"] == nil, "a nil list is omitted, not written as null")
 
         // An old record: no skipped-paths key, and settings without the new toggle.
         var object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
