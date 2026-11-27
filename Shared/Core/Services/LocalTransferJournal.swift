@@ -32,6 +32,7 @@ final class LocalTransferJournal: ObservableObject {
     private let beforeFinish: ((UUID) throws -> Void)?
     private let beforeInterrupt: ((UUID) throws -> Void)?
     private let beforeWithdrawalRetry: ((UUID) -> Void)?
+    private let beforeWithdrawalIO: (@Sendable () -> Void)?
     /// Cache only derived finish fields, with a stable newest-first admission
     /// window. Older rows bypass it instead of evicting every other row on a
     /// large queue's next render.
@@ -41,6 +42,7 @@ final class LocalTransferJournal: ObservableObject {
     /// earlier attempt (pruned, retried) must rebuild the row.
     private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
     private var interruptedOverrides: [UUID: LocalTransferRecord] = [:]
+    private var persistencePending: Set<UUID> = []
     private var isRefreshingRecords = false
     private var withdrawalRetriesInFlight: Set<UUID> = []
     private var withdrawalRetriesRequested: Set<UUID> = []
@@ -58,7 +60,9 @@ final class LocalTransferJournal: ObservableObject {
         beforeRecordPlan: ((UUID) throws -> Void)? = nil,
         beforeFinish: ((UUID) throws -> Void)? = nil,
         beforeInterrupt: ((UUID) throws -> Void)? = nil,
-        beforeWithdrawalRetry: ((UUID) -> Void)? = nil
+        beforeWithdrawalRetry: ((UUID) -> Void)? = nil,
+        beforeWithdrawalIO: (@Sendable () -> Void)? = nil,
+        afterJournalRename: (@Sendable () throws -> Void)? = nil
     ) {
         let selectedURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
@@ -71,7 +75,8 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeFinish = beforeFinish
         self.beforeInterrupt = beforeInterrupt
         self.beforeWithdrawalRetry = beforeWithdrawalRetry
-        store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false)
+        self.beforeWithdrawalIO = beforeWithdrawalIO
+        store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false, afterJournalRename: afterJournalRename)
         refresh()
         retryAllPendingReportWithdrawals()
         #if os(macOS)
@@ -109,11 +114,13 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     private func refresh(persistOverrides: Bool = true) {
-        if persistOverrides && store.persistenceError == nil {
-            for (id, record) in interruptedOverrides {
+        if persistOverrides {
+            for id in persistencePending {
+                guard let record = interruptedOverrides[id] else { continue }
                 do {
                     try store.persistInterruptedOverride(record)
                     interruptedOverrides.removeValue(forKey: id)
+                    persistencePending.remove(id)
                 } catch { break }
             }
         }
@@ -475,6 +482,7 @@ final class LocalTransferJournal: ObservableObject {
     }
 
     func historyAppeared() {
+        refresh()
         for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
             retryPendingReportWithdrawalsFromView(id: record.id)
         }
@@ -483,6 +491,7 @@ final class LocalTransferJournal: ObservableObject {
     func applicationWillEnterForeground() { retryAllPendingReportWithdrawals() }
 
     func retryAllPendingReportWithdrawals() {
+        if !persistencePending.isEmpty { refresh() }
         for record in records where !(record.pendingWithdrawalPaths ?? []).isEmpty {
             retryPendingReportWithdrawals(id: record.id)
         }
@@ -495,29 +504,34 @@ final class LocalTransferJournal: ObservableObject {
             return
         }
         let store = self.store
-        let override = interruptedOverrides[id]
+        guard let snapshot = records.first(where: { $0.id == id }) else {
+            withdrawalRetriesInFlight.remove(id)
+            return
+        }
+        let beforeIO = beforeWithdrawalIO
         let previousError = persistenceError
         beforeWithdrawalRetry?(id)
         Task { [weak self] in
-            var changed = false
-            var recoveredOverride: LocalTransferRecord?
-            if let override {
-                let recovered = await TransferJournal.recoverPendingWithdrawals(override)
-                recoveredOverride = recovered
-                changed = override.pendingWithdrawalPaths != recovered.pendingWithdrawalPaths
-                    || override.withdrawalReason != recovered.withdrawalReason || override.summary != recovered.summary
-            } else {
-                do { changed = try await store.retryPendingReportWithdrawalsAsync(id: id) }
-                catch { /* Publish a changed persistence error below. */ }
-            }
+            let recovered = await TransferJournal.recoverPendingWithdrawals(snapshot, beforeIO: beforeIO)
+            let changed = snapshot.pendingWithdrawalPaths != recovered.pendingWithdrawalPaths
+                || snapshot.withdrawalReason != recovered.withdrawalReason || snapshot.summary != recovered.summary
             guard let self else { return }
-            if let override, let recoveredOverride,
-               self.interruptedOverrides[id]?.pendingWithdrawalPaths == override.pendingWithdrawalPaths {
-                self.interruptedOverrides[id] = recoveredOverride
+            if changed, let current = self.interruptedOverrides[id] ?? store.records.first(where: { $0.id == id }) {
+                let merged = TransferJournal.mergeWithdrawalRecovery(current: current, snapshot: snapshot, recovered: recovered)
                 do {
-                    try store.persistInterruptedOverride(recoveredOverride)
+                    if self.interruptedOverrides[id] != nil {
+                        try store.persistInterruptedOverride(merged)
+                    } else {
+                        try store.applyWithdrawalRecovery(id: id, snapshot: snapshot, recovered: recovered)
+                    }
                     self.interruptedOverrides.removeValue(forKey: id)
-                } catch { /* Retain the recovered override for the next successful write. */ }
+                    self.persistencePending.remove(id)
+                } catch {
+                    if merged.state == .interrupted {
+                        self.interruptedOverrides[id] = merged
+                        self.persistencePending.insert(id)
+                    }
+                }
             }
             self.withdrawalRetriesInFlight.remove(id)
             if changed {
@@ -553,6 +567,7 @@ final class LocalTransferJournal: ObservableObject {
         record.pendingWithdrawalPaths = pendingWithdrawalPaths
         record.withdrawalReason = pendingWithdrawalReason
         interruptedOverrides[id] = record
+        persistencePending.insert(id)
         refresh(persistOverrides: false)
     }
 

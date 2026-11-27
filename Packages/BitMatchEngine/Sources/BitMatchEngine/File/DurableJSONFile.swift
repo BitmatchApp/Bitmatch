@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// The file was renamed into place but the folder flush did not confirm
-/// it durable. `commit` keeps memory in step with the file for this case.
+/// it durable. Callers must treat the write as unconfirmed.
 /// Public so a caller of a durable store can tell "written but not confirmed
 /// flushed" from "not written".
 public struct FlushAfterPublishFailure: LocalizedError {
@@ -69,19 +69,20 @@ enum DurableJSONFile {
         // The rename is durable only once the folder is. The new file is
         // already in place, so a failure here is reported as one: the caller
         // records that the file was not safely saved rather than assuming it.
+        do { try flushDirectory(directory, folder: folder) }
+        catch { throw FlushAfterPublishFailure(underlying: error as NSError) }
+    }
+
+    static func flushDirectory(_ directory: URL, folder: String = "its folder") throws {
         let (directoryFD, directoryFailure) = directory.withUnsafeFileSystemRepresentation { path -> (Int32, Int32) in
             let fd = open(path!, O_RDONLY | O_DIRECTORY | O_CLOEXEC)
             return (fd, errno)
         }
         guard directoryFD >= 0 else {
-            throw FlushAfterPublishFailure(underlying: posixError("Could not open \(folder) to flush it", code: directoryFailure))
+            throw posixError("Could not open \(folder) to flush it", code: directoryFailure)
         }
         defer { _ = Darwin.close(directoryFD) }
-        do {
-            try flushToDrive(directoryFD, what: folder)
-        } catch {
-            throw FlushAfterPublishFailure(underlying: error as NSError)
-        }
+        try flushToDrive(directoryFD, what: folder)
     }
 
     /// F_FULLFSYNC reaches the drive's platters or flash. Only a filesystem

@@ -390,6 +390,7 @@ class SharedAppCoordinator: ObservableObject {
     // MARK: - Sub-coordinators
     private let beforeFinalReportSettlement: (() throws -> Void)?
     private let beforeRecoveryReportSettlement: (() throws -> Void)?
+    private let beforeRecoveryReportSettlementAsync: (() async -> Void)?
     private let beforeProjectCardCommit: (() throws -> Void)?
     private var pendingProjectFinalization: (() throws -> Void)?
     private var pendingProjectCardSnapshot: Data?
@@ -973,10 +974,12 @@ class SharedAppCoordinator: ObservableObject {
         driveAccessWorker: DriveAccessWorker? = nil,
         beforeFinalReportSettlement: (() throws -> Void)? = nil,
         beforeRecoveryReportSettlement: (() throws -> Void)? = nil,
+        beforeRecoveryReportSettlementAsync: (() async -> Void)? = nil,
         beforeProjectCardCommit: (() throws -> Void)? = nil
     ) {
         self.beforeProjectCardCommit = beforeProjectCardCommit
         self.beforeRecoveryReportSettlement = beforeRecoveryReportSettlement
+        self.beforeRecoveryReportSettlementAsync = beforeRecoveryReportSettlementAsync
         self.beforeFinalReportSettlement = beforeFinalReportSettlement
         self.platformManager = platformManager
         let worker = driveAccessWorker ?? DriveAccessWorker(useBlockingThreads: true)
@@ -2922,6 +2925,13 @@ class SharedAppCoordinator: ObservableObject {
             }
         } catch {
             let originalError = error
+            pendingProjectFinalization = nil
+            if let projectIdentity {
+                photographerJobViewModel.operationFailed(jobID: projectIdentity.jobID, cardID: projectIdentity.cardID)
+            }
+            if attemptingJournalFinish && !startCancellationRequested {
+                operationState = .failed
+            }
             var reportFailure: String?
             do {
                 let reason = startCancellationRequested ? "Transfer cancelled" :
@@ -2929,17 +2939,11 @@ class SharedAppCoordinator: ObservableObject {
                     attemptingJournalFinish ? "Transfer history could not be saved: \(originalError.localizedDescription)" :
                     "Transfer did not finish: \(originalError.localizedDescription)"
                 try beforeRecoveryReportSettlement?()
+                await beforeRecoveryReportSettlementAsync?()
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: reason)
             } catch {
                 let deletion = withdrawPublishedReports()
                 reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"
-            }
-            pendingProjectFinalization = nil
-            // The executor may already have finalized the project card before
-            // the journal finish failed. Invalidate it even if interruption
-            // persistence also fails, so this session cannot claim safety.
-            if let projectIdentity {
-                photographerJobViewModel.operationFailed(jobID: projectIdentity.jobID, cardID: projectIdentity.cardID)
             }
             let belongsToQueueSession = runBelongsToQueueSession
             queueIsRunning = false

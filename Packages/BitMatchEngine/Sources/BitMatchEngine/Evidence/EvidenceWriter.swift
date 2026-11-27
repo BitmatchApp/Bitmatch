@@ -414,7 +414,8 @@ public enum EvidenceWriter: Sendable {
                                         replacing: [URL]? = nil,
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeRestore: (@Sendable (URL) throws -> Void)? = nil,
-                                        beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil) async throws -> [URL] {
+                                        beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil,
+                                        reportNames: @Sendable (URL) throws -> [String] = { try FileManager.default.contentsOfDirectory(atPath: $0.path) }) async throws -> [URL] {
         try reportWriteLock.withLock {
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
@@ -446,7 +447,9 @@ public enum EvidenceWriter: Sendable {
         }
         let checksumExtension = "\(checksumAlgorithm?.rawValue.lowercased() ?? "").txt"
         let base = URL(fileURLWithPath: fileName).deletingPathExtension().lastPathComponent
-        let existingNames = try FileManager.default.contentsOfDirectory(atPath: saveDirectory.path)
+        let existingNames = try replacing == nil
+            ? reportNames(saveDirectory).filter { $0.hasPrefix(".unsettled-") && $0.contains(base) }
+            : []
         func withdrawnNameExists(_ filename: String) -> Bool {
             existingNames.contains { name in
                 guard name.hasPrefix(".unsettled-") else { return false }
@@ -458,15 +461,18 @@ public enum EvidenceWriter: Sendable {
             }
         }
         var suffix = 1
-        var stem: URL
-        while true {
-            stem = saveDirectory.appendingPathComponent(base + (suffix == 1 ? "" : "-\(suffix)"))
-            let extensions = ["pdf", "csv", "json", checksumExtension]
-            if extensions.allSatisfy({ ext in
-                replacement(ext) != nil || (!FileManager.default.fileExists(atPath: stem.appendingPathExtension(ext).path)
-                    && !withdrawnNameExists(stem.appendingPathExtension(ext).lastPathComponent))
-            }) { break }
-            suffix += 1
+        var stem = replacing?.first(where: { ["json", "csv", "pdf"].contains($0.pathExtension) })?.deletingPathExtension()
+            ?? saveDirectory.appendingPathComponent(base)
+        if replacing == nil {
+            while true {
+                stem = saveDirectory.appendingPathComponent(base + (suffix == 1 ? "" : "-\(suffix)"))
+                let extensions = ["pdf", "csv", "json", checksumExtension]
+                if extensions.allSatisfy({ ext in
+                    !FileManager.default.fileExists(atPath: stem.appendingPathExtension(ext).path)
+                        && !withdrawnNameExists(stem.appendingPathExtension(ext).lastPathComponent)
+                }) { break }
+                suffix += 1
+            }
         }
         let pdfURL = replacement("pdf") ?? stem.appendingPathExtension("pdf")
         let csvURL = replacement("csv") ?? stem.appendingPathExtension("csv")

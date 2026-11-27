@@ -3,6 +3,23 @@ import Testing
 @testable import BitMatchEngine
 
 struct EvidenceWriterCommitOrderTests {
+    @Test func replacementDoesNotEnumerateReports() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("report-replacement-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+            pdfData: nil, results: [], finished: date, checksumAlgorithm: nil, jobID: UUID(),
+            started: date, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(),
+            generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+            pdfData: nil, results: [], finished: date, checksumAlgorithm: nil, jobID: UUID(),
+            started: date, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(),
+            generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+            safeToErase: false, replacing: files, reportNames: { _ in throw DeliberateFailure.encode })
+    }
     @Test func withdrawnExportsReserveNamesAndRepeatedWithdrawalAvoidsCollisions() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("withdrawn-exports-\(UUID())")
         let source = root.appendingPathComponent("card")

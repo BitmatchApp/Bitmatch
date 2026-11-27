@@ -14,6 +14,23 @@ private final class FlushFailureGate: @unchecked Sendable {
 
 /// Actual journal I/O over owned temporary metadata and backup fixtures.
 final class JournalStartupPersistenceTests: XCTestCase {
+    func testWithdrawalMergeKeepsNewPendingPathsAndRecordsActualOutcome() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var snapshot = try fixture.record(state: .interrupted)
+        snapshot.summary = "Keep the card"
+        snapshot.pendingWithdrawalPaths = ["/backup/old.json"]
+        var recovered = snapshot
+        recovered.pendingWithdrawalPaths = nil
+        recovered.summary += " Unsettled reports were withdrawn: /backup/old.json."
+        var current = snapshot
+        current.pendingWithdrawalPaths = ["/backup/old.json", "/backup/new.json"]
+        current.withdrawalReason = "New report unavailable"
+        let merged = TransferJournal.mergeWithdrawalRecovery(current: current, snapshot: snapshot, recovered: recovered)
+        XCTAssertEqual(merged.pendingWithdrawalPaths, ["/backup/new.json"])
+        XCTAssertTrue(merged.summary.contains("withdrawn: /backup/old.json"))
+        XCTAssertTrue(merged.summary.contains("/backup/new.json"))
+        XCTAssertEqual(merged.withdrawalReason, "New report unavailable")
+    }
     func testFinishThrowsWhenDirectoryFlushFailsAfterPublication() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         let gate = FlushFailureGate()
@@ -36,8 +53,65 @@ final class JournalStartupPersistenceTests: XCTestCase {
             XCTAssertThrowsError(try journal.finish(id: id, results: [row], summary: "Finished", hadIssues: false)) {
                 XCTAssertTrue($0 is FlushAfterPublishFailure)
             }
-            XCTAssertEqual(journal.records.first { $0.id == id }?.state, .completed)
+            XCTAssertEqual(journal.records.first { $0.id == id }?.state, .running)
             XCTAssertNotNil(journal.persistenceError)
+        }
+        let reopened = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false)
+        XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .completed, "A marker for the exact landed record must not cause a false red")
+        let marker = fixture.store.appendingPathComponent(".\(fixture.journal.lastPathComponent).settling-\(id.uuidString)")
+        XCTAssertFalse(FileManager.default.fileExists(atPath: marker.path))
+    }
+
+    func testSettlementMarkerWithOldRecordRecoversConservatively() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        let gate = FlushFailureGate()
+        let source = fixture.root.appendingPathComponent("card")
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let id: UUID
+        do {
+            let journal = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false,
+                afterJournalRename: { if gate.fail { throw NSError(domain: "Flush", code: 1) } })
+            id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
+            let old = try Data(contentsOf: fixture.journal)
+            let row = ResultRow(path: source.appendingPathComponent("clip.mov").path,
+                status: ResultOutcome.verified.statusText, size: 4, checksum: "abc",
+                destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("clip.mov").path)
+            gate.fail = true
+            XCTAssertThrowsError(try journal.finish(id: id, results: [row], summary: "Finished", hadIssues: false))
+            try old.write(to: fixture.journal)
+        }
+        let reopened = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false)
+        XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .interrupted)
+    }
+
+    func testSettlementMarkerForDifferentCompletedRevisionRecoversConservatively() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        let gate = FlushFailureGate()
+        let source = fixture.root.appendingPathComponent("card")
+        let backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let id: UUID
+        do {
+            let journal = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false,
+                afterJournalRename: { if gate.fail { throw NSError(domain: "Flush", code: 1) } })
+            id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                                     cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            try journal.recordPlan(id: id, fileCounts: [1])
+            let row = ResultRow(path: source.appendingPathComponent("clip.mov").path,
+                status: ResultOutcome.verified.statusText, size: 4, checksum: "abc",
+                destination: backup.lastPathComponent, destinationPath: backup.appendingPathComponent("clip.mov").path)
+            gate.fail = true
+            XCTAssertThrowsError(try journal.finish(id: id, results: [row], summary: "Finished", hadIssues: false))
+            var records = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: fixture.journal))
+            records[0].summary = "Older completed revision"
+            try JSONEncoder().encode(records).write(to: fixture.journal)
         }
         let reopened = TransferJournal(fileURL: fixture.journal, recoverReportsOnInit: false)
         XCTAssertEqual(reopened.records.first { $0.id == id }?.state, .interrupted)
