@@ -182,6 +182,7 @@ final class CopyVerifyExecutor {
     private var unsettledStagingPaths: Set<String> = []
     private var unsettledOriginalPaths: Set<String> = []
     private var unsettledExportPaths: Set<String> = []
+    private(set) var withdrawnReportPaths: [String: String] = [:]
     private(set) var unsafeSettledReportPaths: Set<String> = []
     private(set) var reportReplacementMismatch: String?
     private var lastReportFiles: [URL] = []
@@ -249,6 +250,7 @@ final class CopyVerifyExecutor {
         unsettledStagingPaths.removeAll()
         unsettledOriginalPaths.removeAll()
         unsettledExportPaths.removeAll()
+        withdrawnReportPaths.removeAll()
         unsafeSettledReportPaths.removeAll()
         reportReplacementMismatch = nil
         lastReportFiles = []
@@ -1033,7 +1035,7 @@ final class CopyVerifyExecutor {
 
     /// Use the same identity and ownership checks as interrupted-run recovery.
     func withdrawPendingReports(record: LocalTransferRecord, excluding: Set<String> = [], includeStaging: Bool = true) -> [String: TransferJournal.ReportWithdrawalOutcome] {
-        let allPaths = Set(pendingPublishedReportPaths + (record.pendingReportPaths ?? []) + (includeStaging ? [record.reportStagingPath].compactMap { $0 } : []))
+        let allPaths = Set(pendingPublishedReportPaths + (record.pendingReportPaths ?? []) + (includeStaging ? (record.reportStagingPaths ?? []) : []))
         let paths = allPaths.subtracting(excluding).sorted()
         var snapshot = record
         snapshot.pendingReportPaths = Array(allPaths).sorted()
@@ -1044,7 +1046,9 @@ final class CopyVerifyExecutor {
         } catch {
             return Dictionary(uniqueKeysWithValues: paths.map { ($0, .pending(error.localizedDescription)) })
         }
-        return TransferJournal.withdrawReports(record: snapshot, paths: paths)
+        return TransferJournal.withdrawReports(record: snapshot, paths: paths) { original, hidden in
+            self.withdrawnReportPaths[original] = hidden
+        }
     }
 
     func forgetSettledReport() {

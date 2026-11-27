@@ -13,6 +13,12 @@ final class PinnedReportFile {
         let path: String
         var errorDescription: String? { "A file at \(path) changed and was left in place." }
     }
+    struct ActionFailed: LocalizedError {
+        let path: String
+        let action: String
+        let underlying: Error
+        var errorDescription: String? { "A file at \(path) could not be \(action) and was left in place: \(underlying.localizedDescription)" }
+    }
     private let url: URL
     private let identity: stat
     private let didOpen: (Int32) -> Void
@@ -98,22 +104,49 @@ final class PinnedReportFile {
         guard Self.same(identity, current) else { throw IdentityChanged(path: url.path) }
     }
 
-    func remove() throws {
+    func remove(beforeAction: () throws -> Void = {}) throws {
         try requireUnchanged()
-        guard unlink(url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        do {
+            try beforeAction()
+            guard unlink(url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch { throw ActionFailed(path: url.path, action: "removed", underlying: error) }
     }
 
-    func rename(to destination: URL, beforeAction: () -> Void = {}) throws {
+    func rename(to destination: URL, beforeAction: () throws -> Void = {}) throws {
         try requireUnchanged()
-        beforeAction()
-        guard renameatx_np(AT_FDCWD, url.path, AT_FDCWD, destination.path, UInt32(RENAME_EXCL)) == 0 else {
-            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        do {
+            try beforeAction()
+            guard renameatx_np(AT_FDCWD, url.path, AT_FDCWD, destination.path, UInt32(RENAME_EXCL)) == 0 else {
+                throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+            }
+        } catch { throw ActionFailed(path: url.path, action: "withdrawn", underlying: error) }
+    }
+
+    /// Move a pinned report to a unique hidden name without replacing an occupant.
+    /// Return the actual name so recovery never has to guess which suffix won.
+    func withdraw(recordID: UUID) throws -> URL {
+        for suffix in 0..<64 {
+            try Task.checkCancellation()
+            let destination = url.deletingLastPathComponent().appendingPathComponent(
+                ReportName.withdrawnName(report: url.lastPathComponent, recordID: recordID, collision: suffix))
+            do {
+                try rename(to: destination)
+                return destination
+            } catch let error as ActionFailed {
+                let underlying = error.underlying as NSError
+                guard underlying.domain == NSPOSIXErrorDomain, underlying.code == Int(EEXIST) else { throw error }
+            }
         }
+        throw ActionFailed(path: url.path, action: "withdrawn", underlying:
+            FileOperationError.unsafeOperation("No free hidden report name was found"))
     }
 
-    func replace(with source: URL) throws {
+    func replace(with source: URL, beforeAction: () throws -> Void = {}) throws {
         try requireUnchanged()
-        guard Darwin.rename(source.path, url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        do {
+            try beforeAction()
+            guard Darwin.rename(source.path, url.path) == 0 else { throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno)) }
+        } catch { throw ActionFailed(path: url.path, action: "replaced", underlying: error) }
     }
 }
 
@@ -539,6 +572,8 @@ public enum EvidenceWriter: Sendable {
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeRestore: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeRollbackRemoval: (@Sendable (URL) throws -> Void)? = nil,
+                                        beforeRollbackUnlinkAction: (@Sendable (URL) throws -> Void)? = nil,
+                                        beforeReplacementAction: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil,
                                         reportNames: @Sendable (URL) throws -> [String] = { try FileManager.default.contentsOfDirectory(atPath: $0.path) }) async throws -> [URL] {
         try reportWriteLock.withLock {
@@ -761,8 +796,9 @@ public enum EvidenceWriter: Sendable {
                         throw ReportReplacementOwnershipError(path: url.path, changed: true)
                     }
                     try validateReplacement?(url)
-                    do { try occupant.replace(with: staged(url)) }
+                    do { try occupant.replace(with: staged(url), beforeAction: { try beforeReplacementAction?(url) }) }
                     catch is PinnedReportFile.IdentityChanged { throw ReportReplacementOwnershipError(path: url.path, changed: true) }
+                    catch let error as PinnedReportFile.ActionFailed { throw error }
                     catch { throw ReportReplacementOwnershipError(path: url.path) }
                 } else {
                     try FileManager.default.moveItem(at: staged(url), to: url)
@@ -805,8 +841,13 @@ public enum EvidenceWriter: Sendable {
                     }
                     try beforeRollbackRemoval?(url)
                     // Withdraw the new verdict before attempting restoration.
-                    do { try pinned.remove() }
+                    do { try pinned.remove(beforeAction: { try beforeRollbackUnlinkAction?(url) }) }
                     catch is PinnedReportFile.IdentityChanged { changed(url); continue }
+                    catch let error as PinnedReportFile.ActionFailed {
+                        cleanupErrors.append(error.localizedDescription)
+                        pendingPaths.append(url.path)
+                        continue
+                    }
                     catch {
                         cleanupErrors.append("a file at \(url.path) could not be verified and was left in place")
                         pendingPaths.append(url.path)

@@ -222,7 +222,7 @@ struct WorkingReportEntry {
     private var withdrawnOwnership: [String: Bool] = [:]
     private let markerRead: (URL) throws -> Data
 
-    init(markerRead: @escaping (URL) throws -> Data = { try Data(contentsOf: $0) }) {
+    init(markerRead: @escaping (URL) throws -> Data = { try PinnedReportFile.readContents($0, maximumSize: 16 * 1024 * 1024) }) {
         self.markerRead = markerRead
     }
 

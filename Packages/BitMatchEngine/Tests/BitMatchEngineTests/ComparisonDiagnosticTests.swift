@@ -1,8 +1,26 @@
+import Darwin
 import Foundation
 import XCTest
 @testable import BitMatchEngine
 
 final class ComparisonDiagnosticTests: XCTestCase {
+    func testWithdrawnProofRejectsOversizedJSONAndFIFO() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let reports = root.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        let id = UUID()
+        let base = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        let proof = reports.appendingPathComponent(base + ".json")
+        let path = "Reports/" + base + ".pdf"
+        let oversized = try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString, "padding": String(repeating: "x", count: 17 * 1024 * 1024)])
+        try oversized.write(to: proof)
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: path, root: root))
+        try FileManager.default.removeItem(at: proof)
+        XCTAssertEqual(mkfifo(proof.path, 0o600), 0)
+        XCTAssertFalse(WorkingReportEntry.isWorkingFile(path: path, root: root))
+    }
+
     func testWithdrawnProofRequiresSameStem() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

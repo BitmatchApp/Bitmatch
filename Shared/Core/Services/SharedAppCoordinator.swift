@@ -2840,7 +2840,7 @@ class SharedAppCoordinator: ObservableObject {
         func withdrawPublishedReports(excluding: Set<String> = [], includeStaging: Bool = true) -> String {
             let stored = transferJournal.storedRecord(id: recordID)
             let paths = Set(copyVerifyExecutor.pendingPublishedReportPaths + (stored?.pendingReportPaths ?? [])
-                + (includeStaging ? [stored?.reportStagingPath].compactMap { $0 } : [])).subtracting(excluding).sorted()
+                + (includeStaging ? (stored?.reportStagingPaths ?? []) : [])).subtracting(excluding).sorted()
             do { try beforeReportWithdrawal?() } catch {
                 withdrawalPaths = Array(Set((withdrawalPaths ?? []) + paths)).sorted()
                 pendingWithdrawalReason = error.localizedDescription
@@ -2865,7 +2865,10 @@ class SharedAppCoordinator: ObservableObject {
                 }.joined(separator: "; ")
             }
             var notes: [String] = []
-            if !withdrawn.isEmpty { notes.append("Published reports were withdrawn: " + withdrawn.joined(separator: ", ") + ".") }
+            if !withdrawn.isEmpty {
+                let locations = withdrawn.map { copyVerifyExecutor.withdrawnReportPaths[$0] ?? $0 }
+                notes.append("Published reports were withdrawn: " + locations.joined(separator: ", ") + ".")
+            }
             if !absent.isEmpty { notes.append("Reports found absent at the recorded destination: " + absent.joined(separator: ", ") + ".") }
             let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
             if (withdrawn + absent).contains(where: { path in

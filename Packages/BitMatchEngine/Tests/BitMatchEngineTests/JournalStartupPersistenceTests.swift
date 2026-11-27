@@ -93,6 +93,123 @@ final class JournalStartupPersistenceTests: XCTestCase {
         XCTAssertEqual(depth, 0)
     }
 
+    func testWithdrawalStopsAfter64OccupiedHiddenNames() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup"), reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        let json = reports.appendingPathComponent("report.json"), pdf = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        try Data("safe".utf8).write(to: pdf)
+        record.pendingReportPaths = [json.path, pdf.path]
+        for suffix in 0..<64 {
+            let name = ReportName.withdrawnName(report: pdf.lastPathComponent, recordID: record.id, collision: suffix)
+            try Data("foreign".utf8).write(to: reports.appendingPathComponent(name))
+        }
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [pdf.path], volumeIdentityAt: { _ in record.destinations[0].volumeID })
+        guard case .pending(let reason) = outcomes[pdf.path] else { return XCTFail("Expected pending withdrawal") }
+        XCTAssertTrue(reason.contains("No free hidden report name was found"), reason)
+        XCTAssertEqual(try Data(contentsOf: pdf), Data("safe".utf8))
+    }
+
+    func testCancelledWithdrawalLeavesReportPending() async throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup"), reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        let json = reports.appendingPathComponent("report.json"), pdf = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        try Data("safe".utf8).write(to: pdf)
+        record.pendingReportPaths = [json.path, pdf.path]
+        let snapshot = record
+        let outcome = await Task.detached {
+            withUnsafeCurrentTask { $0?.cancel() }
+            return TransferJournal.withdrawReports(record: snapshot, paths: [pdf.path],
+                volumeIdentityAt: { _ in snapshot.destinations[0].volumeID })[pdf.path]
+        }.value
+        guard case .pending(let reason) = outcome else { return XCTFail("Cancelled withdrawal must remain pending") }
+        XCTAssertTrue(reason.contains("withdrawal was cancelled"), reason)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pdf.path))
+    }
+
+    func testLegacyStagingPathDecodesIntoSet() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        let record = try fixture.record(state: .running)
+        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(record)) as? [String: Any])
+        json["reportStagingPath"] = "/backup/Reports/old"
+        json.removeValue(forKey: "reportStagingPaths")
+        let decoded = try JSONDecoder().decode(LocalTransferRecord.self, from: JSONSerialization.data(withJSONObject: json))
+        XCTAssertEqual(decoded.reportStagingPaths, ["/backup/Reports/old"])
+    }
+
+    func testSecondExportKeepsUnreadableFirstStagingAcrossRelaunch() async throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        let source = fixture.root.appendingPathComponent("card"), backup = fixture.root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let history = fixture.root.appendingPathComponent("wave8p-history.json")
+        let paths: [String]
+        let first: URL
+        do {
+            let journal = TransferJournal(fileURL: history, recoverReportsOnInit: false)
+            let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+                cameraSettings: .init(), reportSettings: .init())
+            try journal.markRunning(id: id)
+            first = backup.appendingPathComponent("Reports/.bitmatch-staging-" + id.uuidString)
+            try FileManager.default.createDirectory(at: first, withIntermediateDirectories: true)
+            let marker = first.appendingPathComponent(TransferJournal.stagingOwnerMarker)
+            try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
+            try Data("safe".utf8).write(to: first.appendingPathComponent("retained.pdf"))
+            try journal.recordPendingReportPaths(id: id, paths: [first.path])
+            let date = Date()
+            do {
+                _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
+                    results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                    sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                    prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                    safeToErase: true, recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0) },
+                    beforePublish: { _ in throw NSError(domain: "stop", code: 1) })
+                XCTFail("Expected publication to stop")
+            } catch { }
+            paths = try XCTUnwrap(journal.records.first?.reportStagingPaths)
+            XCTAssertEqual(paths.count, 2)
+            XCTAssertTrue(paths.contains(first.path))
+            XCTAssertTrue(paths.contains(first.path + "-2"))
+            try FileManager.default.removeItem(at: marker)
+            try Data(id.uuidString.utf8).write(to: marker)
+        }
+        let reopened = TransferJournal(fileURL: history)
+        XCTAssertNil(reopened.persistenceError)
+        XCTAssertNil(reopened.records.first?.reportStagingPaths)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertTrue(paths.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+    }
+
+    func testStartupVisitsEveryRecordedStagingDirectory() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .running)
+        let backup = fixture.root.appendingPathComponent("backup"), reports = backup.appendingPathComponent("Reports")
+        let first = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
+        let second = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString + "-2")
+        for folder in [first, second] {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try Data(record.id.uuidString.utf8).write(to: folder.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+            try Data("safe".utf8).write(to: folder.appendingPathComponent("report.pdf"))
+        }
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        record.reportStagingPaths = [first.path, second.path]
+        try fixture.write([record])
+        let journal = TransferJournal(fileURL: fixture.journal)
+        XCTAssertNil(journal.records[0].reportStagingPaths)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: second.path))
+    }
+
     func testWithdrawalFIFOIsPendingWithReason() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         var record = try fixture.record(state: .interrupted)

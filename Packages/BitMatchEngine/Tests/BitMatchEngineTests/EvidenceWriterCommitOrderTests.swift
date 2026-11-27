@@ -92,6 +92,65 @@ struct EvidenceWriterCommitOrderTests {
         }
     }
 
+    @Test func verifiedReportActionFailuresHaveAccurateReasons() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let path = root.appendingPathComponent("report.pdf")
+        try Data("ours".utf8).write(to: path)
+        let pinned = try PinnedReportFile(url: path)
+        let denied = NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))
+        do {
+            try pinned.remove(beforeAction: { throw denied })
+            Issue.record("Removal should fail")
+        } catch {
+            #expect(error.localizedDescription.contains("could not be removed"))
+        }
+        do {
+            try pinned.replace(with: root.appendingPathComponent("replacement"), beforeAction: { throw denied })
+            Issue.record("Replacement should fail")
+        } catch {
+            #expect(error.localizedDescription.contains("could not be replaced"))
+        }
+        #expect(try Data(contentsOf: path) == Data("ours".utf8))
+    }
+
+    @Test func publicationReportsVerifiedRemoveAndReplaceFailures() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let id = UUID(), date = Date()
+        let denied = NSError(domain: NSPOSIXErrorDomain, code: Int(EPERM))
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root], pdfData: Data("new".utf8),
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: nil, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, beforePublish: { if $0.pathExtension == "json" { throw DeliberateFailure.encode } },
+                beforeRollbackUnlinkAction: { _ in throw denied })
+            Issue.record("Rollback should fail")
+        } catch let error as ReportExportError {
+            #expect(error.localizedDescription.contains("could not be removed"))
+            #expect(!error.pendingWithdrawalPaths.isEmpty)
+        }
+        let otherRoot = root.appendingPathComponent("other")
+        try FileManager.default.createDirectory(at: otherRoot, withIntermediateDirectories: true)
+        let original = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [otherRoot], pdfData: Data("old".utf8),
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: nil, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [otherRoot], pdfData: Data("replacement".utf8),
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: nil, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: false, replacing: original, beforeReplacementAction: { _ in throw denied })
+            Issue.record("Replacement should fail")
+        } catch {
+            #expect(error.localizedDescription.contains("could not be replaced"))
+        }
+    }
+
     @Test func rollbackReadFailureAfterHashIsNotReportedAsChange() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
@@ -387,14 +446,17 @@ struct EvidenceWriterCommitOrderTests {
         #expect(throws: ReportReplacementOwnershipError.self) {
             try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
         }
-        let attrs = try FileManager.default.attributesOfItem(atPath: csv.path)
-        record.reportFileFacts = [ReportFileFact(path: csv.path, size: (attrs[.size] as? NSNumber)?.uint64Value,
-                                                 modificationDate: attrs[.modificationDate] as? Date)]
-        let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path))
+        let pinned = try PinnedReportFile(url: csv)
+        record.reportFileFacts = [ReportFileFact(path: csv.path, size: pinned.size,
+                                                 modificationDate: pinned.modificationDate)]
+        var hiddenPaths: [String: String] = [:]
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path),
+            volumeIdentityAt: { _ in record.destinations.first?.volumeID },
+            didWithdraw: { hiddenPaths[$0] = $1 })
         #expect(files.allSatisfy { outcomes[$0.path] == .withdrawn })
         // Restore the paths for the source-identity assertion below.
         for file in files {
-            let hidden = file.deletingLastPathComponent().appendingPathComponent(".unsettled-" + id.uuidString + "-" + file.lastPathComponent)
+            let hidden = URL(fileURLWithPath: try #require(hiddenPaths[file.path]))
             try FileManager.default.moveItem(at: hidden, to: file)
         }
         record.reportFileFacts = nil
@@ -645,6 +707,63 @@ struct EvidenceWriterCommitOrderTests {
         #expect(files.allSatisfy { outcomes[$0.path] == .withdrawn })
         #expect(try Data(contentsOf: hidden) == Data("collision".utf8))
         #expect(FileManager.default.fileExists(atPath: hidden.path + "-1"))
+    }
+
+    @Test(arguments: [false, true])
+    func sameSecondExportsWithdrawThroughLiveAndRecoveryPaths(recoveryFirst: Bool) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("card"), backup = root.appendingPathComponent("backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        var firstFiles: [URL] = []
+        var firstHidden: [String: String] = [:]
+        for iteration in 0..<2 {
+            let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup],
+                pdfData: Data("export \(iteration)".utf8), results: [], finished: date, checksumAlgorithm: nil,
+                jobID: id, started: date, duration: 1, sourceURL: source, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: .init(), generateFullReport: true,
+                projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false,
+                reportNames: { _ in [] }) // Simulate a stale directory listing on the second export.
+            if iteration == 0 { firstFiles = files } else { #expect(files == firstFiles) }
+            try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+            var record = try #require(journal.records.first)
+            record.pendingWithdrawalPaths = files.map(\.path)
+            var hidden: [String: String] = [:]
+            if (iteration == 0) == recoveryFirst {
+                let recovered = await TransferJournal.recoverPendingWithdrawals(record)
+                #expect(recovered.pendingWithdrawalPaths == nil)
+                for path in try #require(recovered.lastWithdrawnReportPaths) {
+                    let name = URL(fileURLWithPath: path).lastPathComponent
+                    if let file = files.first(where: { ReportName.withdrawnReport(name) == $0.lastPathComponent }) {
+                        hidden[file.path] = path
+                    }
+                }
+            } else {
+                let outcomes = TransferJournal.withdrawReports(record: record, paths: files.map(\.path)) {
+                    hidden[$0] = $1
+                }
+                #expect(files.allSatisfy { outcomes[$0.path] == .withdrawn })
+            }
+            #expect(hidden.count == files.count)
+            for file in files {
+                let path = try #require(hidden[file.path])
+                #expect(FileManager.default.fileExists(atPath: path))
+                if iteration == 1 {
+                    #expect(path == (try #require(firstHidden[file.path])) + "-1")
+                }
+            }
+            let pdf = try #require(files.first { $0.pathExtension == "pdf" })
+            #expect(try Data(contentsOf: URL(fileURLWithPath: #require(hidden[pdf.path]))) == Data("export \(iteration)".utf8))
+            if iteration == 0 { firstHidden = hidden }
+        }
+        let firstPDF = try #require(firstFiles.first { $0.pathExtension == "pdf" })
+        #expect(try Data(contentsOf: URL(fileURLWithPath: #require(firstHidden[firstPDF.path]))) == Data("export 0".utf8))
     }
 
     private enum DeliberateFailure: Error { case encode }

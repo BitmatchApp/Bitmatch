@@ -26,7 +26,7 @@ final class LocalTransferJournal: ObservableObject {
     private struct ReportHandlingKey: Equatable {
         let pending: [String]
         let reports: [String]
-        let staging: String?
+        let staging: [String]
         let destinations: [String]
         let publicationID: UUID?
         let revision: UInt64?
@@ -54,7 +54,7 @@ final class LocalTransferJournal: ObservableObject {
         reportHandlingEligibility = reportHandlingEligibility.filter { ids.contains($0.key) }
         for record in pending {
             let key = ReportHandlingKey(pending: record.pendingWithdrawalPaths ?? [], reports: record.pendingReportPaths ?? [],
-                staging: record.reportStagingPath,
+                staging: record.reportStagingPaths ?? [],
                 destinations: (record.runDestinationURLs ?? record.destinations.map(\.url)).map(\.path) + record.destinations.map { $0.volumeID ?? "" },
                 publicationID: record.reportPublicationID, revision: record.revision,
                 retryGeneration: reportHandlingRetryGeneration[record.id, default: 0])
