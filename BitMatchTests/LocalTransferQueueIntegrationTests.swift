@@ -10,6 +10,81 @@ import Testing
 
 @MainActor
 final class LocalTransferQueueIntegrationTests: XCTestCase {
+    func testFailedFinishAndWarningRollbackTracksStagingForRetry() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in throw NSError(domain: "Finish", code: 1) })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: true), generateASCMHL: false)
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults,
+            beforeRecoveryReportPublish: { if $0.pathExtension == "json" { throw NSError(domain: "Publish", code: 1) } },
+            beforeRecoveryReportRestore: { _ in throw NSError(domain: "Restore", code: 1) },
+            beforeReportWithdrawal: { throw NSError(domain: "Withdrawal", code: 1) })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(30)) { !coordinator.isOperationInProgress && journal.records.first { $0.id == id }?.state == .interrupted }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        let staged = try XCTUnwrap(record.pendingWithdrawalPaths?.filter { $0.contains(".BitMatch-report-staging-") })
+        XCTAssertFalse(staged.isEmpty)
+        XCTAssertTrue(record.summary.contains("unsettled"))
+        XCTAssertFalse(record.summary.contains("Original reports retained"))
+        journal.historyAppeared()
+        let withdrawn = await waitUntil(timeout: .seconds(20)) { journal.records.first { $0.id == id }?.pendingWithdrawalPaths == nil }
+        XCTAssertTrue(withdrawn)
+        XCTAssertTrue(staged.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+    }
+    func testForeignReportOccupantSurvivesSettlementAndReplacementUsesFreshStem() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: true), generateASCMHL: false)
+        var foreign: URL?
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
+                let path = try XCTUnwrap(journal.records.first { $0.id == id }?.pendingReportPaths?.first { $0.hasSuffix(".pdf") })
+                let url = URL(fileURLWithPath: path)
+                try Data("foreign file".utf8).write(to: url, options: .atomic)
+                foreign = url
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(30)) {
+            guard let state = journal.records.first(where: { $0.id == id })?.state else { return false }
+            return state != .queued && state != .running && !coordinator.isOperationInProgress
+        }
+        guard ended else { XCTFail("The queued transfer did not finish"); return }
+        let url = try XCTUnwrap(foreign)
+        XCTAssertEqual(try Data(contentsOf: url), Data("foreign file".utf8))
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(record.summary.contains("changed or replaced"))
+        let replacement = try XCTUnwrap(record.pendingReportPaths?.first { $0.hasSuffix(".pdf") })
+        XCTAssertNotEqual(replacement, url.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: replacement))
+    }
+    func testFailedCancellationOverrideWithoutReportsRetriesPersistence() throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let gate = JournalFlushGate()
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeCancel: { _ in
+            throw NSError(domain: "Cancel", code: 1)
+        }, afterJournalRename: { if gate.shouldFail { throw NSError(domain: "Flush", code: 1) } })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: false))
+        try journal.markRunning(id: id)
+        XCTAssertThrowsError(try journal.cancel(id: id))
+        journal.retainInterruptedOverride(id: id, summary: "Cancelled", results: [], pendingCancellation: true)
+        XCTAssertEqual(journal.records.first { $0.id == id }?.state, .interrupted)
+        XCTAssertEqual(journal.storedRecord(id: id)?.state, .running)
+        gate.setFailure(true)
+        journal.historyAppeared()
+        XCTAssertEqual(journal.records.first { $0.id == id }?.state, .interrupted)
+        XCTAssertNotNil(journal.persistenceError)
+        gate.setFailure(false)
+        journal.historyAppeared()
+        XCTAssertEqual(journal.records.first { $0.id == id }?.state, .interrupted)
+        let saved = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
+        XCTAssertEqual(saved.first { $0.id == id }?.state, .interrupted)
+    }
     func testUnflushedFinishNeverPublishesSafeOrEnablesAutoEject() async throws {
         let f = try QueueFixture(); defer { f.cleanup() }
         let failFlush = JournalFlushGate()
@@ -1628,7 +1703,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
     }
 
-    func testExitCancellationReportsPersistenceFailureAndLeavesRunningRecordVisible() async throws {
+    func testExitCancellationReportsPersistenceFailureAndKeepsExitBlocked() async throws {
         struct SaveFailed: Error {}
         let f = try QueueFixture()
         defer { f.cleanup() }
@@ -1654,7 +1729,8 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
             XCTAssertTrue(error.localizedDescription.contains("could not save it as interrupted"))
         }
         await run.value
-        XCTAssertEqual(journal.records.first?.state, .running)
+        XCTAssertEqual(journal.records.first?.state, .interrupted)
+        XCTAssertEqual(journal.storedRecord(id: try XCTUnwrap(journal.records.first?.id))?.state, .running)
         XCTAssertNotNil(coordinator.queueMessage)
     }
 

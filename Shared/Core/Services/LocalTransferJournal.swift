@@ -43,7 +43,6 @@ final class LocalTransferJournal: ObservableObject {
     /// earlier attempt (pruned, retried) must rebuild the row.
     private var completedQueueRowLineage: [UUID: SourceFaultLineage.Assessment] = [:]
     private var interruptedOverrides: [UUID: LocalTransferRecord] = [:]
-    private var pendingCancellationOverrides: Set<UUID> = []
     private var persistencePending: Set<UUID> = []
     private var isRefreshingRecords = false
     private var withdrawalRetriesInFlight: Set<UUID> = []
@@ -64,7 +63,8 @@ final class LocalTransferJournal: ObservableObject {
         beforeInterrupt: ((UUID) throws -> Void)? = nil,
         beforeWithdrawalRetry: ((UUID) -> Void)? = nil,
         beforeWithdrawalIO: (@Sendable () -> Void)? = nil,
-        afterJournalRename: (@Sendable () throws -> Void)? = nil
+        afterJournalRename: (@Sendable () throws -> Void)? = nil,
+        beforeRecoveryPersist: (@Sendable () throws -> Void)? = nil
     ) {
         let selectedURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
@@ -78,7 +78,8 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeInterrupt = beforeInterrupt
         self.beforeWithdrawalRetry = beforeWithdrawalRetry
         self.beforeWithdrawalIO = beforeWithdrawalIO
-        store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false, afterJournalRename: afterJournalRename)
+        store = TransferJournal(fileURL: selectedURL, recoverReportsOnInit: false, afterJournalRename: afterJournalRename,
+                                beforeRecoveryPersist: beforeRecoveryPersist)
         refresh()
         retryAllPendingReportWithdrawals()
         #if os(macOS)
@@ -122,7 +123,6 @@ final class LocalTransferJournal: ObservableObject {
                 do {
                     try store.persistInterruptedOverride(record)
                     interruptedOverrides.removeValue(forKey: id)
-                    pendingCancellationOverrides.remove(id)
                     persistencePending.remove(id)
                 } catch { break }
             }
@@ -134,11 +134,7 @@ final class LocalTransferJournal: ObservableObject {
         isRefreshingRecords = true
         defer { isRefreshingRecords = false }
         records = store.records.map { stored in
-            guard var override = interruptedOverrides[stored.id] else { return stored }
-            if pendingCancellationOverrides.contains(stored.id), (override.pendingWithdrawalPaths ?? []).isEmpty {
-                override.state = stored.state
-            }
-            return override
+            interruptedOverrides[stored.id] ?? stored
         }
         persistenceError = store.persistenceError
     }
@@ -534,7 +530,6 @@ final class LocalTransferJournal: ObservableObject {
                         try store.applyWithdrawalRecovery(id: id, snapshot: snapshot, recovered: recovered)
                     }
                     self.interruptedOverrides.removeValue(forKey: id)
-                    self.pendingCancellationOverrides.remove(id)
                     self.persistencePending.remove(id)
                 } catch {
                     if merged.state == .interrupted {
@@ -576,10 +571,13 @@ final class LocalTransferJournal: ObservableObject {
         record.endedAt = Date()
         record.expectedExclusionQueueQualification = nil
         record.pendingWithdrawalPaths = pendingWithdrawalPaths
+        if let pendingWithdrawalPaths, !pendingWithdrawalPaths.isEmpty {
+            record.pendingReportPaths = Array(Set((record.pendingReportPaths ?? []) + pendingWithdrawalPaths)).sorted()
+            record.relativeReportPaths = nil
+        }
         record.withdrawalReason = pendingWithdrawalReason
         interruptedOverrides[id] = record
-        if pendingCancellation { pendingCancellationOverrides.insert(id) }
-        if !pendingCancellation || !(pendingWithdrawalPaths ?? []).isEmpty { persistencePending.insert(id) }
+        persistencePending.insert(id)
         refresh(persistOverrides: false)
     }
 

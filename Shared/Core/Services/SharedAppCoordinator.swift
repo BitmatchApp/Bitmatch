@@ -392,6 +392,9 @@ class SharedAppCoordinator: ObservableObject {
     private let beforeRecoveryReportSettlement: (() throws -> Void)?
     private let beforeRecoveryReportSettlementAsync: (() async -> Void)?
     private let beforeProjectCardCommit: (() throws -> Void)?
+    private let beforeRecoveryReportPublish: (@Sendable (URL) throws -> Void)?
+    private let beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)?
+    private let beforeReportWithdrawal: (() throws -> Void)?
     private var pendingProjectFinalization: (() throws -> Void)?
     private var pendingProjectCardSnapshot: Data?
     private lazy var copyVerifyExecutor: CopyVerifyExecutor = {
@@ -400,7 +403,9 @@ class SharedAppCoordinator: ObservableObject {
             timingService: timingService,
             errorService: errorService,
             stateService: stateService,
-            backgroundTaskService: backgroundTaskService
+            backgroundTaskService: backgroundTaskService,
+            beforeRecoveryReportPublish: beforeRecoveryReportPublish,
+            beforeRecoveryReportRestore: beforeRecoveryReportRestore
         )
     }()
     private(set) lazy var comparisonCoordinator: ComparisonCoordinator = {
@@ -975,8 +980,14 @@ class SharedAppCoordinator: ObservableObject {
         beforeFinalReportSettlement: (() throws -> Void)? = nil,
         beforeRecoveryReportSettlement: (() throws -> Void)? = nil,
         beforeRecoveryReportSettlementAsync: (() async -> Void)? = nil,
-        beforeProjectCardCommit: (() throws -> Void)? = nil
+        beforeProjectCardCommit: (() throws -> Void)? = nil,
+        beforeRecoveryReportPublish: (@Sendable (URL) throws -> Void)? = nil,
+        beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)? = nil,
+        beforeReportWithdrawal: (() throws -> Void)? = nil
     ) {
+        self.beforeRecoveryReportPublish = beforeRecoveryReportPublish
+        self.beforeRecoveryReportRestore = beforeRecoveryReportRestore
+        self.beforeReportWithdrawal = beforeReportWithdrawal
         self.beforeProjectCardCommit = beforeProjectCardCommit
         self.beforeRecoveryReportSettlement = beforeRecoveryReportSettlement
         self.beforeRecoveryReportSettlementAsync = beforeRecoveryReportSettlementAsync
@@ -1063,7 +1074,8 @@ class SharedAppCoordinator: ObservableObject {
                 store: selectedProjectStore,
                 remoteBackupCoordinator: UnavailableRemoteProjectCoordinator(store: selectedProjectStore),
                 workflowDefaults: defaults,
-                recoveryRecords: selectedJournal.records
+                recoveryRecords: selectedJournal.records,
+                historyAvailable: selectedJournal.historyAvailable
             )
         }
         self.reportSettings = reportPrefsStore.load()
@@ -2819,6 +2831,11 @@ class SharedAppCoordinator: ObservableObject {
         }
         func withdrawPublishedReports() -> String {
             let paths = copyVerifyExecutor.pendingPublishedReportPaths
+            do { try beforeReportWithdrawal?() } catch {
+                withdrawalPaths = paths
+                pendingWithdrawalReason = error.localizedDescription
+                return "Reports are unsettled and will be withdrawn: \(error.localizedDescription)."
+            }
             guard let record = transferJournal.storedRecord(id: recordID) else {
                 if !paths.isEmpty {
                     withdrawalPaths = paths
@@ -2869,6 +2886,10 @@ class SharedAppCoordinator: ObservableObject {
                     if !reportPaths.isEmpty { try transferJournal.recordPendingReportPaths(id: recordID, paths: reportPaths, publicationID: recordID) }
                     try beforeFinalReportSettlement?()
                     try await copyVerifyExecutor.settleReportAfterHistory(failure: nil, record: transferJournal.storedRecord(id: recordID))
+                    let settledPaths = copyVerifyExecutor.pendingPublishedReportPaths
+                    if !settledPaths.isEmpty {
+                        try transferJournal.recordPendingReportPaths(id: recordID, paths: settledPaths, publicationID: recordID)
+                    }
                     notePathMatchedReport()
                 } catch is CancellationError {
                     throw CancellationError()
@@ -2921,7 +2942,9 @@ class SharedAppCoordinator: ObservableObject {
                 try transferJournal.finish(
                     id: recordID,
                     results: runResults.rows,
-                    summary: (publicationFailure ?? info.message) + (reportMatchedByPath ? " Destination identity unavailable; matched by path." : ""),
+                    summary: (publicationFailure ?? info.message)
+                        + (copyVerifyExecutor.reportReplacementMismatch.map { " " + $0 } ?? "")
+                        + (reportMatchedByPath ? " Destination identity unavailable; matched by path." : ""),
                     hadIssues: publicationFailure != nil || !info.success,
                     quickOnlyUnverified: info.copiedNotVerified,
                     expectedExclusionQueueQualification: publicationFailure == nil ? info.expectedExclusionQueueQualification : nil,
@@ -2989,6 +3012,7 @@ class SharedAppCoordinator: ObservableObject {
                             ? "Transfer history could not be saved: \(originalError.localizedDescription). Keep the card."
                             : originalError.localizedDescription
                     let summary = [baseSummary, publicationFailure, reportFailure,
+                                   copyVerifyExecutor.reportReplacementMismatch,
                                    reportMatchedByPath ? "Destination identity unavailable; matched by path." : nil].compactMap { $0 }.joined(separator: " ")
                     if let record = transferJournal.records.first(where: { $0.id == recordID }),
                        record.state == .completed || record.state == .issues {

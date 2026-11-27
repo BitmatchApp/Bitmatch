@@ -3,6 +3,141 @@ import Testing
 @testable import BitMatchEngine
 
 struct EvidenceWriterCommitOrderTests {
+    @Test func failedRestoreTracksStagingCopiesForWithdrawal() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("safe".utf8),
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+        try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        var stagingPaths: [String] = []
+        do {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("warning".utf8),
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: false, replacing: files,
+                beforePublish: { if $0.pathExtension == "json" { throw DeliberateFailure.encode } },
+                beforeRestore: { _ in throw DeliberateFailure.encode })
+            Issue.record("Expected failed restoration")
+        } catch let error as ReportExportError {
+            stagingPaths = error.pendingWithdrawalPaths
+            #expect(!stagingPaths.isEmpty)
+            #expect(!error.localizedDescription.contains("Original reports retained"))
+        }
+        try journal.interrupt(id: id, summary: "Keep the card", pendingWithdrawalReason: "Reports unsettled",
+            pendingWithdrawalPaths: files.map(\.path) + stagingPaths)
+        try journal.retryPendingReportWithdrawals(id: id)
+        #expect(journal.records.first?.pendingWithdrawalPaths == nil)
+        #expect(stagingPaths.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+    }
+
+    @Test func replacementOwnershipRejectsForeignOccupant() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("safe".utf8),
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: true)
+        try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        let pdf = try #require(files.first { $0.pathExtension == "pdf" })
+        let record = try #require(journal.records.first)
+        await #expect(throws: ReportReplacementOwnershipError.self) {
+            _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: Data("new".utf8),
+                results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+                sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+                prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: false, replacing: files,
+                validateReplacement: { url in
+                    try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: url.path)
+                }, beforePublish: { url in
+                    if url == pdf { try Data("foreign occupant".utf8).write(to: pdf, options: .atomic) }
+                })
+        }
+        #expect(try Data(contentsOf: pdf) == Data("foreign occupant".utf8))
+    }
+
+    @Test func replacementAcceptsLegacyOwnershipWithoutOptionalFileFacts() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        let json = try #require(files.first { $0.pathExtension == "json" })
+        let csv = try #require(files.first { $0.pathExtension == "csv" })
+        try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString]).write(to: json)
+        var record = try #require(journal.records.first)
+        record.runSourceURL = nil
+        record.reportFileFacts = nil
+        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        record.reportFileFacts = [ReportFileFact(path: csv.path, size: nil, modificationDate: nil)]
+        try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        record.reportFileFacts = [ReportFileFact(path: csv.path, size: UInt64.max, modificationDate: nil)]
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        }
+        record.reportFileFacts = [ReportFileFact(path: csv.path, size: nil, modificationDate: .distantPast)]
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        }
+        record.reportFileFacts = nil
+        record.runSourceURL = source
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        }
+    }
+
+    @Test func replacementRejectsForeignOwnershipJSON() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let source = root.appendingPathComponent("Card"), backup = root.appendingPathComponent("Backup")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: backup, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let journal = TransferJournal(fileURL: root.appendingPathComponent("history.json"), recoverReportsOnInit: false)
+        let id = try journal.enqueue(sourceURL: source, destinationURLs: [backup], verificationMode: .standard,
+            cameraSettings: .init(), reportSettings: .init())
+        try journal.markRunning(id: id)
+        let date = Date()
+        let files = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
+            results: [], finished: date, checksumAlgorithm: nil, jobID: id, started: date, duration: 1,
+            sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
+            prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        try journal.recordPendingReportPaths(id: id, paths: files.map(\.path), publicationID: id)
+        let json = try #require(files.first { $0.pathExtension == "json" })
+        try JSONSerialization.data(withJSONObject: ["jobId": UUID().uuidString, "source": ["path": source.path]]).write(to: json)
+        let record = try #require(journal.records.first)
+        let csv = try #require(files.first { $0.pathExtension == "csv" })
+        #expect(throws: ReportReplacementOwnershipError.self) {
+            try TransferJournal.validateReportReplacement(record: record, paths: files.map(\.path), target: csv.path)
+        }
+    }
     @Test func replacementDoesNotEnumerateReports() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("report-replacement-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

@@ -99,7 +99,8 @@ final class PhotographerJobViewModel: ObservableObject {
         entryEnumerator: @escaping EntryEnumerator = { url, check in try CardSource.enumerateRegularFiles(base: url, checkCancellation: check) },
         remoteBackupCoordinator: (any ProjectRemoteCoordinator)? = nil,
         workflowDefaults: UserDefaults = .standard,
-        recoveryRecords: [LocalTransferRecord] = []
+        recoveryRecords: [LocalTransferRecord] = [],
+        historyAvailable: Bool? = nil
     ) {
         self.store = store
         self.workflowDefaults = workflowDefaults
@@ -108,7 +109,7 @@ final class PhotographerJobViewModel: ObservableObject {
         self.confirmedAnalyzer = confirmedAnalyzer
         self.entryEnumerator = entryEnumerator
         self.recoveryTransferRecords = recoveryRecords
-        self.recoveryHistoryAvailable = recoveryRecords.isEmpty ? nil : true
+        self.recoveryHistoryAvailable = historyAvailable ?? (recoveryRecords.isEmpty ? nil : true)
         #if os(macOS)
         self.remoteBackupCoordinator = remoteBackupCoordinator ?? RemoteBackupCoordinator(store: store)
         #else
@@ -1208,6 +1209,7 @@ final class PhotographerJobViewModel: ObservableObject {
 
                 for index in recovered.cardIngests.indices {
                     let card = recovered.cardIngests[index]
+                    if card.localState == .locallySafe && card.historySettled == false && recoveryHistoryAvailable != true { continue }
                     if [.notStarted, .copying, .verifying].contains(card.localState) { unsettledCardsAtLoad[card.id] = card }
                     let latest = recoveryTransferRecords.filter {
                         $0.projectID == recovered.id && $0.projectCardID == card.id

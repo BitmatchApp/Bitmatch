@@ -42,7 +42,10 @@ enum ReportExporter {
                        skipsProven: Bool = false,
                        excludedFromFileCounts: Set<UUID> = [],
                        replacing: [URL]? = nil,
-                       validatePublication: (@Sendable () throws -> Void)? = nil) async throws -> [URL] {
+                       validatePublication: (@Sendable () throws -> Void)? = nil,
+                       validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
+                       beforePublish: (@Sendable (URL) throws -> Void)? = nil,
+                       beforeRestore: (@Sendable (URL) throws -> Void)? = nil) async throws -> [URL] {
 
         var reportPrefs = prefs
         let automaticNotes = ResultPresentation.automaticReportNotes(results)
@@ -167,7 +170,10 @@ enum ReportExporter {
                                        skipsProven: skipsProven,
                                        excludedFromFileCounts: excludedFromFileCounts,
                                        replacing: replacing,
-                                       validatePublication: validatePublication)
+                                       validatePublication: validatePublication,
+                                       validateReplacement: validateReplacement,
+                                       beforePublish: beforePublish,
+                                       beforeRestore: beforeRestore)
     }
 
     /// Re-renders saved evidence without touching the source or changing the journal verdict.

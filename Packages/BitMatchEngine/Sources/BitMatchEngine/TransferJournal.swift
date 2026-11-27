@@ -270,6 +270,8 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
     /// IDs and withdrawal diagnostics are absent in older History records.
     public var operationID: UUID? = nil
     public var reportPublicationID: UUID? = nil
+    /// Publication-time file facts; absent in records made by older versions.
+    public var reportFileFacts: [ReportFileFact]? = nil
     public var withdrawalReason: String? = nil
     /// Opaque app-owned project card prepared from the same results as the report.
     public var projectCardSnapshot: Data? = nil
@@ -303,7 +305,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         case generateASCMHL, projectID, projectCardID, state, startedAt, endedAt
         case copyDurationSeconds, verifyDurationSeconds, performanceTelemetry, summary, results, sourceFingerprint
         case independentDestinationCount, retryOf, plannedFileCounts, quickOnlyUnverified, failureReason, estimatedSourceBytes
-        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs, pendingReportPaths, relativeReportPaths, pendingWithdrawalPaths, withdrawalReportsNotFound, operationID, reportPublicationID, withdrawalReason, projectCardSnapshot
+        case expectedExclusionQueueQualification, skippedFinderMetadataPaths, runSourceURL, runDestinationURLs, pendingReportPaths, relativeReportPaths, pendingWithdrawalPaths, withdrawalReportsNotFound, operationID, reportPublicationID, reportFileFacts, withdrawalReason, projectCardSnapshot
     }
 
     public init(from decoder: Decoder) throws {
@@ -348,6 +350,7 @@ public struct LocalTransferRecord: Identifiable, Codable, Sendable {
         withdrawalReportsNotFound = try c.decodeIfPresent(Bool.self, forKey: .withdrawalReportsNotFound)
         operationID = try c.decodeIfPresent(UUID.self, forKey: .operationID)
         reportPublicationID = try c.decodeIfPresent(UUID.self, forKey: .reportPublicationID)
+        reportFileFacts = try c.decodeIfPresent([ReportFileFact].self, forKey: .reportFileFacts)
         withdrawalReason = try c.decodeIfPresent(String.self, forKey: .withdrawalReason)
         projectCardSnapshot = try c.decodeIfPresent(Data.self, forKey: .projectCardSnapshot)
         // Unknown future qualifications are not permission to advance.
@@ -369,6 +372,18 @@ public struct RelativeReportPath: Codable, Sendable {
         self.destinationIndex = destinationIndex
         self.path = path
     }
+}
+
+public struct ReportFileFact: Codable, Sendable {
+    public let path: String
+    public let size: UInt64?
+    public let modificationDate: Date?
+}
+
+public struct ReportReplacementOwnershipError: LocalizedError, Sendable {
+    public let path: String
+    public init(path: String) { self.path = path }
+    public var errorDescription: String? { "A recorded report was changed or replaced at \(path)." }
 }
 
 /// Retain this lease for the entire operation, then release it (or let it deinitialize).
@@ -453,7 +468,8 @@ public final class TransferJournal: Sendable {
     public init(fileURL: URL? = nil, recoverReportsOnInit: Bool = true,
                 afterJournalRename: (@Sendable () throws -> Void)? = nil,
                 afterFlushedMarkerRename: (@Sendable () throws -> Void)? = nil,
-                beforeSettlementMarkerRemoval: (@Sendable () throws -> Void)? = nil) {
+                beforeSettlementMarkerRemoval: (@Sendable () throws -> Void)? = nil,
+                beforeRecoveryPersist: (@Sendable () throws -> Void)? = nil) {
         self.afterJournalRename = afterJournalRename
         self.afterFlushedMarkerRename = afterFlushedMarkerRename
         self.beforeSettlementMarkerRemoval = beforeSettlementMarkerRemoval
@@ -519,6 +535,7 @@ public final class TransferJournal: Sendable {
                 // Publish interruption even if the recovery write fails; never display a stale running claim.
                 initial.records = recovered
                 if recoveredInterruption || migrations.requiresPersistence {
+                    try beforeRecoveryPersist?()
                     try Self.persist(recovered, to: fileURL)
                 }
                 for id in markerIDs {
@@ -624,6 +641,30 @@ public final class TransferJournal: Sendable {
         }
     }
 
+    /// A path alone is never evidence that its current occupant belongs to this run.
+    public static func validateReportReplacement(record: LocalTransferRecord, paths: [String], target: String) throws {
+        try validateReportPublication(record: record, paths: paths)
+        func mismatch() -> ReportReplacementOwnershipError { ReportReplacementOwnershipError(path: target) }
+        guard paths.contains(target), let jsonPath = paths.first(where: { $0.hasSuffix(".json") }),
+              paths.filter({ $0.hasSuffix(".json") }).count == 1,
+              let data = try? Data(contentsOf: URL(fileURLWithPath: jsonPath)),
+              let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+              let rawID = object["jobId"] as? String, let id = UUID(uuidString: rawID),
+              (record.reportPublicationID.map { $0 == id } ?? [record.id, record.operationID].compactMap { $0 }.contains(id)),
+              record.runSourceURL == nil || ((object["source"] as? [String: Any])?["path"] as? String) == record.runSourceURL?.path else { throw mismatch() }
+        let json = URL(fileURLWithPath: jsonPath)
+        let file = URL(fileURLWithPath: target)
+        let stem = json.deletingPathExtension().lastPathComponent
+        guard file.deletingLastPathComponent().standardizedFileURL == json.deletingLastPathComponent().standardizedFileURL,
+              file.lastPathComponent.hasPrefix(stem + "."),
+              let attrs = try? FileManager.default.attributesOfItem(atPath: target),
+              attrs[.type] as? FileAttributeType == .typeRegular else { throw mismatch() }
+        if let fact = record.reportFileFacts?.first(where: { $0.path == target }) {
+            if let size = fact.size, (attrs[.size] as? NSNumber)?.uint64Value != size { throw mismatch() }
+            if let date = fact.modificationDate, (attrs[.modificationDate] as? Date) != date { throw mismatch() }
+        }
+    }
+
     /// Withdraw only recorded files on the original, identity-checked backup.
     /// The ownership JSON is moved last so a partial withdrawal remains retryable.
     public static func withdrawReports(record: LocalTransferRecord, paths: [String]) -> [String: ReportWithdrawalOutcome] {
@@ -638,6 +679,32 @@ public final class TransferJournal: Sendable {
     static func withdrawReports(record: LocalTransferRecord, paths: [String],
                                 volumeIdentityAt: (URL) -> String?) -> [String: ReportWithdrawalOutcome] {
         let allPaths = record.pendingReportPaths ?? paths
+        let publicJSONs = allPaths.filter {
+            let url = URL(fileURLWithPath: $0)
+            return url.pathExtension == "json" && !url.deletingLastPathComponent().lastPathComponent.hasPrefix(".BitMatch-report-staging-")
+        }
+        if publicJSONs.count > 1 {
+            var outcomes = Dictionary(uniqueKeysWithValues: paths.map { ($0, ReportWithdrawalOutcome.pending("No matching report ownership JSON")) })
+            for jsonPath in publicJSONs {
+                let json = URL(fileURLWithPath: jsonPath)
+                let parent = json.deletingLastPathComponent().standardizedFileURL
+                let stem = json.deletingPathExtension().lastPathComponent + "."
+                let members = allPaths.filter { path in
+                    let url = URL(fileURLWithPath: path)
+                    let folder = url.deletingLastPathComponent().standardizedFileURL
+                    let inStaging = folder.lastPathComponent.hasPrefix(".BitMatch-report-staging-") && folder.deletingLastPathComponent() == parent
+                    let name = url.lastPathComponent.hasPrefix("backup-") ? String(url.lastPathComponent.dropFirst(7)) : url.lastPathComponent
+                    return (folder == parent || inStaging) && name.hasPrefix(stem)
+                }
+                let selected = paths.filter { members.contains($0) }
+                guard !selected.isEmpty else { continue }
+                var snapshot = record
+                snapshot.pendingReportPaths = members
+                snapshot.relativeReportPaths = nil
+                outcomes.merge(withdrawReports(record: snapshot, paths: selected, volumeIdentityAt: volumeIdentityAt)) { _, new in new }
+            }
+            return outcomes
+        }
         let mappings = record.relativeReportPaths ?? relativePaths(allPaths, record: record)
         let roots = record.runDestinationURLs ?? record.destinations.map(\.url)
         var outcomes: [String: ReportWithdrawalOutcome] = [:]
@@ -699,28 +766,69 @@ public final class TransferJournal: Sendable {
             }
             let outstanding = group.filter { if case .pending = outcomes[$0] { return true }; return false }
             guard !outstanding.isEmpty else { continue }
-            let jsonPaths = allPaths.filter { reportRelativePath($0, root: root) != nil && $0.hasSuffix(".json") }
-            guard jsonPaths.count == 1, let json = jsonPaths.first.flatMap(resolved), verifiedParent(json) else {
-                fail(outstanding, "Recorded ownership JSON or report parent could not be confirmed: " + outstanding.joined(separator: ", ")); continue
+            let jsonPaths = allPaths.filter {
+                reportRelativePath($0, root: root) != nil && $0.hasSuffix(".json")
+                    && !URL(fileURLWithPath: $0).deletingLastPathComponent().lastPathComponent.hasPrefix(".BitMatch-report-staging-")
             }
-            let data: Data
-            do { data = try Data(contentsOf: json) }
-            catch { fail(outstanding, "ownership JSON could not be read at \(json.path): \(error.localizedDescription)"); continue }
-            guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let rawID = object["jobId"] as? String, let jobID = UUID(uuidString: rawID) else {
-                fail(outstanding, "Ownership JSON is unreadable or incomplete at \(json.path)"); continue
+            guard jsonPaths.count == 1 else {
+                fail(outstanding, "Recorded ownership JSON or report parent could not be confirmed: " + outstanding.joined(separator: ", ")); continue
             }
             let acceptedIDs = record.reportPublicationID.map { Set([$0]) }
                 ?? Set([record.id, record.operationID].compactMap { $0 })
-            guard acceptedIDs.contains(jobID),
-                  record.runSourceURL == nil || ((object["source"] as? [String: Any])?["path"] as? String) == record.runSourceURL?.path else {
-                fail(outstanding, "ownership does not match this run at \(json.path)"); continue
+            let publicJSON = URL(fileURLWithPath: jsonPaths[0])
+            let jsonCandidates = [jsonPaths[0]] + allPaths.filter { path in
+                let url = URL(fileURLWithPath: path)
+                return url.deletingLastPathComponent().lastPathComponent.hasPrefix(".BitMatch-report-staging-")
+                    && [publicJSON.lastPathComponent, "backup-" + publicJSON.lastPathComponent].contains(url.lastPathComponent)
+            }
+            var ownership: String?
+            var ownershipFailure: String?
+            for path in jsonCandidates {
+                guard let url = resolved(path), verifiedParent(url) else {
+                    if ownershipFailure == nil { ownershipFailure = "Recorded ownership JSON or report parent could not be confirmed at \(path)" }
+                    continue
+                }
+                let data: Data
+                do { data = try Data(contentsOf: url) }
+                catch {
+                    if ownershipFailure == nil { ownershipFailure = "ownership JSON could not be read at \(url.path): \(error.localizedDescription)" }
+                    continue
+                }
+                guard let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
+                      let rawID = object["jobId"] as? String, let id = UUID(uuidString: rawID) else {
+                    if ownershipFailure == nil { ownershipFailure = "Ownership JSON is unreadable or incomplete at \(url.path)" }
+                    continue
+                }
+                guard acceptedIDs.contains(id),
+                      record.runSourceURL == nil || ((object["source"] as? [String: Any])?["path"] as? String) == record.runSourceURL?.path else {
+                    if ownershipFailure == nil { ownershipFailure = "ownership does not match this run at \(url.path)" }
+                    continue
+                }
+                ownership = path
+                break
+            }
+            guard let ownership, let json = resolved(ownership) else {
+                fail(outstanding, ownershipFailure ?? "Recorded ownership JSON could not be confirmed: " + outstanding.joined(separator: ", ")); continue
             }
             var failed = false
-            for path in outstanding.sorted(by: { ($0 == jsonPaths[0] ? 1 : 0) < ($1 == jsonPaths[0] ? 1 : 0) }) {
-                if path == jsonPaths[0] && failed { continue }
+            for path in outstanding.sorted(by: { ($0 == ownership ? 1 : 0) < ($1 == ownership ? 1 : 0) }) {
+                if path == ownership && failed { continue }
                 guard let url = resolved(path), verifiedParent(url), verifiedParent(json) else {
                     fail([path], "Report parent or its volume could not be confirmed"); failed = true; continue
+                }
+                if url.deletingLastPathComponent().lastPathComponent.hasPrefix(".BitMatch-report-staging-") {
+                    do { try FileManager.default.removeItem(at: url); outcomes[path] = .withdrawn }
+                    catch { fail([path], "\(url.path): \(error.localizedDescription)"); failed = true }
+                    continue
+                }
+                if let fact = record.reportFileFacts?.first(where: { $0.path == path }) {
+                    let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
+                    if fact.size.map({ (attrs?[.size] as? NSNumber)?.uint64Value != $0 }) == true
+                        || fact.modificationDate.map({ (attrs?[.modificationDate] as? Date) != $0 }) == true {
+                        fail([path], "The recorded report was changed or replaced at \(url.path)")
+                        failed = true
+                        continue
+                    }
                 }
                 let base = ".unsettled-" + record.id.uuidString + "-" + url.lastPathComponent
                 var suffix = 0
@@ -835,16 +943,25 @@ public final class TransferJournal: Sendable {
             record.endedAt = override.endedAt
             record.expectedExclusionQueueQualification = nil
             record.pendingWithdrawalPaths = override.pendingWithdrawalPaths
+            record.pendingReportPaths = override.pendingReportPaths
+            record.relativeReportPaths = override.relativeReportPaths
             record.withdrawalReason = override.withdrawalReason
         }
         removeSettlementMarker(id: override.id)
     }
 
     public func recordPendingReportPaths(id: UUID, paths: [String], publicationID: UUID? = nil) throws {
+        let facts: [ReportFileFact] = paths.compactMap { path in
+            guard let attrs = try? FileManager.default.attributesOfItem(atPath: path),
+                  attrs[.type] as? FileAttributeType == .typeRegular else { return nil }
+            return ReportFileFact(path: path, size: (attrs[.size] as? NSNumber)?.uint64Value,
+                                  modificationDate: attrs[.modificationDate] as? Date)
+        }
         try update(id: id) { record in
             guard record.state == .running else { throw LocalTransferJournalError.invalidState }
             record.pendingReportPaths = paths
             record.reportPublicationID = publicationID
+            record.reportFileFacts = facts
             record.relativeReportPaths = Self.relativePaths(paths, record: record)
         }
     }
@@ -1130,6 +1247,7 @@ public final class TransferJournal: Sendable {
                 record.state = .running
                 record.operationID = operationID
                 record.reportPublicationID = nil
+                record.reportFileFacts = nil
                 record.withdrawalReason = nil
                 record.startedAt = Date()
                 record.runSourceURL = source

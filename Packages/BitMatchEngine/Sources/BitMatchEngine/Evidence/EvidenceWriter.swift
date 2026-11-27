@@ -13,12 +13,18 @@ public enum ReportExportError: LocalizedError, Sendable {
     case missingChecksum(String)
     case replacementFilesChanged
     case cleanupFailed(String)
+    case unsettledReports(String, [String])
+    public var pendingWithdrawalPaths: [String] {
+        if case .unsettledReports(_, let paths) = self { return paths }
+        return []
+    }
     public var errorDescription: String? {
         switch self {
         case .noSaveLocation: "Cannot find a valid directory to save reports"
         case .missingChecksum(let path): "No recorded checksum for \(path)."
         case .replacementFilesChanged: "The replacement report does not match the recorded report files."
         case .cleanupFailed(let details): "Report cleanup failed: \(details)"
+        case .unsettledReports(let details, _): "Reports are unsettled and will be withdrawn: \(details)"
         }
     }
 }
@@ -413,6 +419,7 @@ public enum EvidenceWriter: Sendable {
                                         beforePDFWrite: (@Sendable () throws -> Void)? = nil,
                                         replacing: [URL]? = nil,
                                         validatePublication: (@Sendable () throws -> Void)? = nil,
+                                        validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
                                         beforePublish: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeRestore: (@Sendable (URL) throws -> Void)? = nil,
                                         beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil,
@@ -569,6 +576,7 @@ public enum EvidenceWriter: Sendable {
             }
             for url in finalURLs where replacing?.contains(url) == true {
                 try validatePublication?()
+                try validateReplacement?(url)
                 try FileManager.default.copyItem(at: url, to: backup(url))
             }
             for url in finalURLs {
@@ -576,6 +584,7 @@ public enum EvidenceWriter: Sendable {
                 try beforePublish?(url)
                 try validatePublication?()
                 if replacing?.contains(url) == true {
+                    try validateReplacement?(url)
                     // rename replaces one file atomically; never remove the old
                     // report before its replacement has been fully generated.
                     try renameReplacing(staged(url), url)
@@ -608,16 +617,15 @@ public enum EvidenceWriter: Sendable {
                 }
                 catch { cleanupErrors.append("\(url.path): \(error.localizedDescription)") }
             }
-            if !cleanupErrors.isEmpty {
-                // Keep any unrecovered originals available for manual recovery.
-                cleanupErrors.append("Original reports retained in \(stagingDirectory.path)")
-            } else if FileManager.default.fileExists(atPath: stagingDirectory.path) {
+            if cleanupErrors.isEmpty && FileManager.default.fileExists(atPath: stagingDirectory.path) {
                 do { try FileManager.default.removeItem(at: stagingDirectory) }
                 catch { cleanupErrors.append("\(stagingDirectory.path): \(error.localizedDescription)") }
             }
             SharedLogger.info("Report export error: \(originalError.localizedDescription)")
             guard cleanupErrors.isEmpty else {
-                throw ReportExportError.cleanupFailed("\(originalError.localizedDescription); \(cleanupErrors.joined(separator: "; "))")
+                let retained = (try? FileManager.default.contentsOfDirectory(at: stagingDirectory, includingPropertiesForKeys: nil).map(\.path))
+                    ?? [pdfURL, csvURL, jsonURL, checksumURL].flatMap { [staged($0).path, backup($0).path] }
+                throw ReportExportError.unsettledReports("\(originalError.localizedDescription); \(cleanupErrors.joined(separator: "; "))", retained)
             }
             throw originalError
         }
