@@ -64,6 +64,81 @@ struct EvidenceWriterCommitOrderTests {
         #expect(scan.reports.count == 1)
     }
 
+    @Test func jsonIsPublishedLastAndFailedRestoreDoesNotLeaveSafePDF() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-rollback-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let finished = Date()
+        let original = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+            pdfData: Data("cautious".utf8), results: [], finished: finished, checksumAlgorithm: .sha256,
+            jobID: UUID(), started: finished, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+            totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+            generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none, safeToErase: false)
+        let pdf = try #require(original.first { $0.pathExtension == "pdf" })
+        let json = try #require(original.first { $0.pathExtension == "json" })
+        let oldJSON = try Data(contentsOf: json)
+        await #expect(throws: (any Error).self) {
+            try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+                pdfData: Data("safe".utf8), results: [], finished: finished, checksumAlgorithm: .sha256,
+                jobID: UUID(), started: finished, duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, replacing: original, beforePublish: { url in
+                    if url.pathExtension == "json" {
+                        #expect(try Data(contentsOf: pdf) == Data("safe".utf8))
+                        #expect(try Data(contentsOf: json) == oldJSON)
+                        let reports = pdf.deletingLastPathComponent().resolvingSymlinksInPath()
+                        let entries = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+                        #expect(entries.contains { $0.lastPathComponent.hasSuffix(".sha-256.txt") })
+                        #expect(entries.contains { $0.pathExtension == "csv" })
+                        let staging = try #require(entries.first { $0.lastPathComponent.hasPrefix(".BitMatch-report-staging-") })
+                        // Make the actual final rename fail after the PDF published.
+                        try FileManager.default.removeItem(at: staging.appendingPathComponent(json.lastPathComponent))
+                    }
+                }, beforeRestore: { url in
+                    if url.pathExtension == "pdf" { throw DeliberateFailure.encode }
+                })
+        }
+        #expect(!FileManager.default.fileExists(atPath: pdf.path))
+        #expect(try Data(contentsOf: json) == oldJSON)
+    }
+
+    @Test(arguments: ["csv", "txt", "pdf", "json"])
+    func publicationFailureLeavesNoSafeJSONOrPDF(failingExtension: String) async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-publish-failure-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await #expect(throws: (any Error).self) {
+            try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+                pdfData: Data("safe".utf8), results: [], finished: Date(), checksumAlgorithm: .sha256,
+                jobID: UUID(), started: Date(), duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, beforePublish: { url in
+                    if url.pathExtension == failingExtension { throw DeliberateFailure.encode }
+                })
+        }
+        let reports = root.appendingPathComponent("Reports")
+        let entries = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
+        #expect(entries.isEmpty)
+    }
+
+    @Test func stagingCleanupFailureFailsExportAndWithdrawsPublishedFiles() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-cleanup-\(UUID())")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        await #expect(throws: (any Error).self) {
+            try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [root],
+                pdfData: Data("safe".utf8), results: [], finished: Date(), checksumAlgorithm: nil,
+                jobID: UUID(), started: Date(), duration: 1, sourceURL: nil, fileCount: 0, matchCount: 0,
+                totalBytesProcessed: 0, workers: 1, filesPerSecond: 1, prefs: ReportPrefs(),
+                generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
+                safeToErase: true, beforeStagingRemoval: { _ in throw DeliberateFailure.encode })
+        }
+        let files = try FileManager.default.contentsOfDirectory(at: root.appendingPathComponent("Reports"), includingPropertiesForKeys: nil)
+        #expect(files.isEmpty)
+    }
+
     @Test func simultaneousExportsUseDifferentNames() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("bitmatch-concurrent-reports-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)

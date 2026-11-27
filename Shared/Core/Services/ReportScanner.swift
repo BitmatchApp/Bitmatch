@@ -109,8 +109,8 @@ enum ReportScanner {
         )
     }
 
-    /// PDF is the writer's final commit marker. A saved JSON must not gain a
-    /// green verdict if its requested PDF never published or later changed.
+    /// JSON is published after the PDF. A saved JSON must not gain a green
+    /// verdict if its requested PDF never published or later changed.
     private static func validatePDF(_ evidence: ReportPDFEvidence?, beside reportURL: URL) async -> Bool {
         guard let evidence else { return true } // Legacy / JSON-only report.
         let name = evidence.filename

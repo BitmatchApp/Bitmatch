@@ -1062,7 +1062,7 @@ final class CopyVerifyExecutorIntegrityTests: XCTestCase {
         let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
         XCTAssertEqual(statistics["totalFiles"] as? Int, 2)
         XCTAssertEqual((statistics["totalBytes"] as? NSNumber)?.int64Value, fixture.result.fileSize)
-        XCTAssertEqual(((object["source"] as? [String: Any])?["totalSize"] as? NSNumber)?.int64Value, fixture.result.fileSize)
+        XCTAssertEqual(((object["source"] as? [String: Any])?["totalSize"] as? NSNumber)?.int64Value, fixture.result.fileSize + 8192)
     }
 
     /// The one Shared call of `finderMetadataSkipsProven`: the project

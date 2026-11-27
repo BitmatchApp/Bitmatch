@@ -27,6 +27,23 @@ final class ReportEvidenceBytesTests: XCTestCase {
         XCTAssertEqual(report.results.count, 9)
     }
 
+    func testSourceSizeIncludesFailedFilesWithoutInflatingProcessedBytes() throws {
+        let rows = [
+            ResultRow(path: "/card/good.mov", status: ResultOutcome.verified.statusText, size: 1024, checksum: "abc", destination: "A"),
+            ResultRow(path: "/card/good.mov", status: ResultOutcome.failed.statusText, size: 1024, checksum: nil, destination: "B"),
+            ResultRow(path: "/card/failed.mov", status: ResultOutcome.failed.statusText, size: 8192, checksum: nil, destination: "A"),
+            ResultRow(path: "/card/failed.mov", status: ResultOutcome.failed.statusText, size: 8192, checksum: nil, destination: "B")
+        ]
+        let report = try ReportExporter.makeEnhancedJSONReport(results: rows, jobID: UUID(), started: Date(), finished: Date(),
+            mode: .copyAndVerify, sourceURL: URL(fileURLWithPath: "/card"), destinationURLs: [],
+            fileCount: rows.count, matchCount: 1, totalBytesProcessed: 1024, duration: 1,
+            workers: 1, prefs: ReportPrefs(verificationMode: .standard), photographerContext: nil)
+        XCTAssertEqual(report.source.totalSize, 9216)
+        let object = try XCTUnwrap(JSONSerialization.jsonObject(with: EvidenceWriter.encodeEnhancedJSONReport(report)) as? [String: Any])
+        let statistics = try XCTUnwrap(object["statistics"] as? [String: Any])
+        XCTAssertEqual((statistics["totalBytes"] as? NSNumber)?.int64Value, 1024)
+    }
+
     /// Fails if `CopyVerifyExecutor.generateReport` passes
     /// `config.estimatedBytes` as `totalBytesProcessed` again.
     func testReportBytesComeFromResultsNotTheEstimate() async throws {

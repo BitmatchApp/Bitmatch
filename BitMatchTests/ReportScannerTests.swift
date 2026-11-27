@@ -79,6 +79,34 @@ struct ReportScannerTests {
         #expect(cards.first?.verified == (safety == .safeToErase))
     }
 
+    @Test func checkAndCompareReportRemainsDiscoverable() async throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let finished = Date()
+        let rows = [ResultRow(path: "/card/clip.mov", status: ResultOutcome.verified.statusText,
+            size: 10, checksum: "abc", destination: "Backup")]
+        let report = try ReportExporter.makeEnhancedJSONReport(results: rows, jobID: UUID(),
+            started: finished.addingTimeInterval(-1), finished: finished, mode: .compareFolders,
+            sourceURL: URL(fileURLWithPath: "/card"), destinationURLs: [], fileCount: 1, matchCount: 1,
+            totalBytesProcessed: 10, duration: 1, workers: 1,
+            prefs: ReportPrefs(verificationMode: .standard), photographerContext: nil)
+        let url = root.appendingPathComponent(EvidenceWriter.reportFileName(finished: finished, pathExtension: "json"))
+        try EvidenceWriter.encodeEnhancedJSONReport(report).write(to: url)
+        let scan = await ReportScanner.scanReports(at: root)
+        #expect(scan.cards.count == 1)
+        #expect(scan.skipped.isEmpty)
+    }
+
+    @Test func sourceSizeIncludesFailedFilesWhenScanned() async throws {
+        let root = try makeTemporaryFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        _ = try writeReport(mode: .standard, fileCount: 2, matchCount: 1, root: root)
+        let cards = await ReportScanner.scan(at: root)
+        let card = try #require(cards.first)
+        #expect(card.source.totalSize == 20)
+        #expect(!card.verified)
+    }
+
     @Test(arguments: [true, false])
     func missingOrDamagedRequestedPDFNeverClaimsVerification(remove: Bool) async throws {
         let root = try makeTemporaryFolder()

@@ -25,6 +25,7 @@ final class LocalTransferJournal: ObservableObject {
     private let beforeCancel: ((UUID) throws -> Void)?
     private let beforeRecordPlan: ((UUID) throws -> Void)?
     private let beforeFinish: ((UUID) throws -> Void)?
+    private let beforeInterrupt: ((UUID) throws -> Void)?
     /// Cache only derived finish fields, with a stable newest-first admission
     /// window. Older rows bypass it instead of evicting every other row on a
     /// large queue's next render.
@@ -43,7 +44,8 @@ final class LocalTransferJournal: ObservableObject {
         beforeMarkRunning: ((UUID) throws -> Void)? = nil,
         beforeCancel: ((UUID) throws -> Void)? = nil,
         beforeRecordPlan: ((UUID) throws -> Void)? = nil,
-        beforeFinish: ((UUID) throws -> Void)? = nil
+        beforeFinish: ((UUID) throws -> Void)? = nil,
+        beforeInterrupt: ((UUID) throws -> Void)? = nil
     ) {
         let selectedURL = fileURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("BitMatch/transfer-history.json")
@@ -54,6 +56,7 @@ final class LocalTransferJournal: ObservableObject {
         self.beforeCancel = beforeCancel
         self.beforeRecordPlan = beforeRecordPlan
         self.beforeFinish = beforeFinish
+        self.beforeInterrupt = beforeInterrupt
         store = TransferJournal(fileURL: selectedURL)
         refresh()
     }
@@ -460,6 +463,7 @@ final class LocalTransferJournal: ObservableObject {
 
     func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil) throws {
         defer { refresh() }
+        try beforeInterrupt?(id)
         try store.interrupt(id: id, summary: summary, results: results, reason: reason)
     }
 

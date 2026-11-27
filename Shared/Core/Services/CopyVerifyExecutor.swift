@@ -868,8 +868,8 @@ final class CopyVerifyExecutor {
             independentDestinationCount: context.independentDestinationCount, priorSourceFault: context.priorSourceFault)
     }
 
-    /// Replace the cautious provisional report once History settles. On a
-    /// failed history write, preserve an explicit keep-card report instead.
+    /// Publish the final report before History settles. Keep its inputs until
+    /// the journal write succeeds so a failed write can publish a warning.
     func settleReportAfterHistory(failure: String?) async throws {
         guard let pending = pendingReport else { return }
         let issue = try await generateReport(
@@ -880,12 +880,16 @@ final class CopyVerifyExecutor {
             verifiedSelection: failure == nil ? pending.verifiedSelection : nil,
             phaseDurations: pending.phaseDurations, verdictMessage: pending.verdictMessage,
             skipsProven: pending.skipsProven,
-            additionalNotes: failure.map { "Transfer history could not be saved: \($0). Keep the card." },
+            additionalNotes: failure.map { "\($0). Keep the card." },
             replacing: pending.files, recovery: failure != nil
         )
         if let issue {
             throw FileOperationError.unsafeOperation("Could not replace transfer reports: \(issue)")
         }
+        if failure != nil { pendingReport = nil }
+    }
+
+    func forgetSettledReport() {
         pendingReport = nil
     }
 

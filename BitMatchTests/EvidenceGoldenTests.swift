@@ -61,7 +61,8 @@ struct EvidenceGoldenTests {
         try Self.check(csv, against: Self.expectedProjectCSV, name: "project-csv")
     }
 
-    @Test func jsonIsUnchanged() throws {
+    // The 4,096-byte mismatch is known source content even though it failed.
+    @Test func jsonIncludesFailedSourceBytes() throws {
         let json = try Self.json(rows: Self.rows, context: nil)
         try Self.check(json, against: Self.expectedJSON, name: "json")
     }
@@ -268,7 +269,7 @@ Notes,"Shot day 3, ""B"" camera."
     "fileCount" : 5,
     "name" : "CARD",
     "path" : "\/golden-missing\/CARD",
-    "totalSize" : 1050634
+    "totalSize" : 1054730
   },
   "statistics" : {
     "averageFileSize" : 210946,

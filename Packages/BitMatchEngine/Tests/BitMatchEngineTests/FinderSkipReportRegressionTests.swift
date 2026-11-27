@@ -3,7 +3,7 @@ import Testing
 @testable import BitMatchEngine
 
 struct FinderSkipReportRegressionTests {
-    @Test func failedSelectedRowsDoNotIncreaseRecordedSourceBytes() throws {
+    @Test func failedSelectedRowsCountInSourceBytesButNotProcessedBytes() throws {
         let rows = [
             ResultRow(path: "/Card/good.mov", status: ResultOutcome.verified.statusText, size: 4, checksum: "abc", destination: "backup"),
             ResultRow(path: "/Card/failed.mov", status: ResultOutcome.failed.statusText, size: 8, checksum: nil, destination: "backup")
@@ -14,7 +14,7 @@ struct FinderSkipReportRegressionTests {
             fileCount: 2, matchCount: 1, totalBytesProcessed: 4, duration: 1, workers: nil,
             prefs: ReportPrefs(), project: nil)
         #expect(report.source.fileCount == 2)
-        #expect(report.source.totalSize == 4)
+        #expect(report.source.totalSize == 12)
         #expect(report.statistics.totalBytes == 4)
     }
 

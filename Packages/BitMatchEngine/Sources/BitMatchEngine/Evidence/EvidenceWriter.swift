@@ -49,7 +49,7 @@ public struct TransferSelectionEvidence: Codable, Sendable {
 }
 
 // MARK: - Enhanced JSON Report Structures
-/// Identifies the PDF published last for this report, including its byte digest.
+/// Identifies the report PDF, including its byte digest.
 public struct ReportPDFEvidence: Codable, Sendable {
     public let filename: String
     public let sha256: String
@@ -410,7 +410,9 @@ public enum EvidenceWriter: Sendable {
                                         excludedFromFileCounts: Set<UUID> = [],
                                         beforePDFWrite: (@Sendable () throws -> Void)? = nil,
                                         replacing: [URL]? = nil,
-                                        beforePublish: (@Sendable (URL) throws -> Void)? = nil) async throws -> [URL] {
+                                        beforePublish: (@Sendable (URL) throws -> Void)? = nil,
+                                        beforeRestore: (@Sendable (URL) throws -> Void)? = nil,
+                                        beforeStagingRemoval: (@Sendable (URL) throws -> Void)? = nil) async throws -> [URL] {
         try reportWriteLock.withLock {
         let fileName = reportFileName(finished: finished, pathExtension: "pdf")
         
@@ -450,8 +452,6 @@ public enum EvidenceWriter: Sendable {
         let stagingDirectory = saveDirectory.resolvingSymlinksInPath()
             .appendingPathComponent(".BitMatch-report-staging-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: stagingDirectory, withIntermediateDirectories: false)
-        var preserveStaging = false
-        defer { if !preserveStaging { try? FileManager.default.removeItem(at: stagingDirectory) } }
         func staged(_ url: URL) -> URL { stagingDirectory.appendingPathComponent(url.lastPathComponent) }
         func backup(_ url: URL) -> URL { stagingDirectory.appendingPathComponent("backup-" + url.lastPathComponent) }
         func renameReplacing(_ from: URL, _ to: URL) throws {
@@ -520,10 +520,8 @@ public enum EvidenceWriter: Sendable {
             }
 
             try Task.checkCancellation()
-            // The PDF carries the human-facing safety verdict, so it is the
-            // commit marker for a complete requested report. Write it only
-            // after every later-failing evidence component has succeeded;
-            // otherwise an old, safer verdict could survive a report error.
+            // Stage the PDF before publishing any component. JSON is the
+            // final published component and carries the machine safety claim.
             if generateFullReport, let pdfData {
                 try beforePDFWrite?()
                 try pdfData.write(to: staged(pdfURL), options: .atomic)
@@ -549,6 +547,10 @@ public enum EvidenceWriter: Sendable {
                 published.append(url)
             }
 
+            // Cleanup is part of publication: a failed removal must not be
+            // reported as success while provisional evidence remains behind.
+            try beforeStagingRemoval?(stagingDirectory)
+            try FileManager.default.removeItem(at: stagingDirectory)
             SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")
             return published
 
@@ -557,14 +559,18 @@ public enum EvidenceWriter: Sendable {
             var cleanupErrors: [String] = []
             for url in published.reversed() {
                 do {
-                    if replacing?.contains(url) == true { try renameReplacing(backup(url), url) }
-                    else { try FileManager.default.removeItem(at: url) }
+                    // Withdraw the new verdict before attempting restoration.
+                    // If restoration fails, a newly safe PDF must not remain.
+                    try FileManager.default.removeItem(at: url)
+                    if replacing?.contains(url) == true {
+                        try beforeRestore?(url)
+                        try renameReplacing(backup(url), url)
+                    }
                 }
                 catch { cleanupErrors.append("\(url.path): \(error.localizedDescription)") }
             }
             if !cleanupErrors.isEmpty {
                 // Keep any unrecovered originals available for manual recovery.
-                preserveStaging = true
                 cleanupErrors.append("Original reports retained in \(stagingDirectory.path)")
             } else if FileManager.default.fileExists(atPath: stagingDirectory.path) {
                 do { try FileManager.default.removeItem(at: stagingDirectory) }
@@ -862,7 +868,7 @@ public enum EvidenceWriter: Sendable {
         // (the scope's recorded selected files leave it out the same way).
         let sourceRows = Dictionary(grouping: results.filter { $0.isInSelectedPlan && !excludedFromFileCounts.contains($0.id) }, by: \.path)
         let sourceBytes = sourceRows.values.reduce(into: Int64(0)) { total, rows in
-            let size = max(0, rows.filter(\.isSuccessStatus).map(\.size).max() ?? 0)
+            let size = max(0, rows.map(\.size).max() ?? 0)
             let sum = total.addingReportingOverflow(size)
             total = sum.overflow ? Int64.max : sum.partialValue
         }

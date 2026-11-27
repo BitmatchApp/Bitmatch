@@ -139,7 +139,7 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         }
         XCTAssertTrue(ended)
         XCTAssertTrue(sawProvisional)
-        XCTAssertFalse(safeBeforeFinish)
+        XCTAssertTrue(safeBeforeFinish, "Final reports must settle before the completed journal write")
         let files = try FileManager.default.contentsOfDirectory(at: reports, includingPropertiesForKeys: nil)
         let jsonURL = try XCTUnwrap(files.first { $0.pathExtension == "json" })
         let object = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: jsonURL)) as? [String: Any])
@@ -151,6 +151,68 @@ final class LocalTransferQueueIntegrationTests: XCTestCase {
         XCTAssertTrue(try XCTUnwrap(pdf.string).localizedCaseInsensitiveContains("history"))
         let scan = await EvidenceReader.scanReports(at: f.destination)
         XCTAssertFalse(scan.reports.isEmpty)
+    }
+
+    func testReportReplacementFailureFinishesHistoryWithIssues() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
+                XCTAssertEqual(journal.records.first(where: { $0.id == id })?.state, .running)
+                throw NSError(domain: "BitMatchTestReportReplacement", code: 80)
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            journal.records.first(where: { $0.id == id })?.state == .issues && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        let record = try XCTUnwrap(journal.records.first(where: { $0.id == id }))
+        XCTAssertTrue(record.summary.contains("report export failed"))
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: journal.records), .safeToErase)
+        let scan = await EvidenceReader.scanReports(at: f.destination)
+        let report = try XCTUnwrap(scan.reports.first)
+        XCTAssertEqual(report.snapshot.safeToErase, false)
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
+    }
+
+    func testReportReplacementAndJournalFailureNeverPublishCompletedHistory() async throws {
+        let f = try QueueFixture()
+        defer { f.cleanup() }
+        var finishAttempts = 0
+        var interruptAttempts = 0
+        let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in
+            finishAttempts += 1
+            throw NSError(domain: "BitMatchTestJournalFinish", code: 79)
+        }, beforeInterrupt: { _ in
+            interruptAttempts += 1
+            throw NSError(domain: "BitMatchTestJournalInterrupt", code: 81)
+        })
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: CameraLabelSettings(),
+            reportSettings: ReportPrefs(makeReport: true), generateASCMHL: false)
+        let operations = TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)
+        let coordinator = SharedAppCoordinator(platformManager: QueuePlatformManager(fileOperations: operations),
+            transferJournal: journal, defaults: f.defaults, beforeFinalReportSettlement: {
+                throw NSError(domain: "BitMatchTestReportReplacement", code: 80)
+            })
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(20)) { @MainActor in
+            !coordinator.isOperationInProgress && coordinator.operationState == .failed
+        }
+        XCTAssertTrue(ended)
+        XCTAssertEqual(finishAttempts, 1, "The failed publication must be saved as issues in one finish attempt")
+        XCTAssertEqual(interruptAttempts, 1, "The fallback journal write must fail too")
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertNotEqual(record.state, .completed)
+        XCTAssertNotEqual(TransferLibraryPresentation.safetyState(for: record, in: journal.records), .safeToErase)
+        let persisted = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
+        XCTAssertNotEqual(persisted.first(where: { $0.id == id })?.state, .completed)
+        XCTAssertEqual(coordinator.queuePresentation.tally.safeToErase, 0)
     }
 
     func testLateJournalFinishFailureNeverEmitsASafeLiveVerdict() async throws {
