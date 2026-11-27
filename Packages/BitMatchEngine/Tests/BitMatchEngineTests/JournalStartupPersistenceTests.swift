@@ -22,6 +22,72 @@ private final class FlushFailureGate: @unchecked Sendable {
 
 /// Actual journal I/O over owned temporary metadata and backup fixtures.
 final class JournalStartupPersistenceTests: XCTestCase {
+    func testStagingCleanupPreservesForeignEntriesAndRemovesOnlyRecordedDigests() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        let staging = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        let name = "BitMatch_Report_2026-11-27T12-00-00Z.pdf"
+        let owned = staging.appendingPathComponent(name)
+        let foreign = staging.appendingPathComponent("foreign")
+        try Data("ours".utf8).write(to: owned)
+        try Data("keep".utf8).write(to: foreign)
+        var fact = try reportFact(for: owned)
+        fact = ReportFileFact(path: reports.appendingPathComponent(name).path, size: fact.size, modificationDate: nil, sha256: fact.sha256)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        record.reportStagingPath = staging.path
+        record.intendedReportFileFacts = [fact]
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: [staging.path])
+        guard case .pending(let reason) = outcomes[staging.path] else { return XCTFail("Foreign file must remain pending") }
+        XCTAssertTrue(reason.contains("unexpected file(s)"), reason)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: foreign.path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: owned.path))
+    }
+
+    func testStagingCleanupRemovesFullyProvenDirectory() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup"), reports = backup.appendingPathComponent("Reports")
+        let staging = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        let name = "BitMatch_Report_2026-11-27T12-00-00Z.csv", file = staging.appendingPathComponent(name)
+        try Data("ours".utf8).write(to: file)
+        let fact = try reportFact(for: file)
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.runDestinationURLs = [backup]
+        record.reportStagingPath = staging.path
+        record.intendedReportFileFacts = [ReportFileFact(path: reports.appendingPathComponent(name).path, size: fact.size, modificationDate: nil, sha256: fact.sha256)]
+        XCTAssertEqual(TransferJournal.withdrawReports(record: record, paths: [staging.path])[staging.path], .withdrawn)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+    }
+
+    func testStagingRecoveryRerootsAtResolvedDestination() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup"), moved = fixture.root.appendingPathComponent("remounted")
+        let staging = backup.appendingPathComponent("Reports/.bitmatch-staging-" + record.id.uuidString)
+        try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
+        try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
+        record.destinations = [try LocalTransferResource(url: backup)]
+        record.reportStagingPath = staging.path
+        try FileManager.default.moveItem(at: backup, to: moved)
+        record.runDestinationURLs = [moved]
+        guard let access = try? record.destinations[0].beginReadAccess() else {
+            throw XCTSkip("This filesystem did not resolve the moved bookmark")
+        }
+        defer { access.release() }
+        guard access.url.standardizedFileURL == moved.standardizedFileURL else {
+            throw XCTSkip("This filesystem did not resolve the moved bookmark")
+        }
+        let result = TransferJournal.withdrawReports(record: record, paths: [staging.path])
+        XCTAssertEqual(result[staging.path], .withdrawn)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: moved.appendingPathComponent("Reports/" + staging.lastPathComponent).path))
+    }
     func testNilIdentityReportPublicationReplacementAndWithdrawalUseContainment() async throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }
         var record = try fixture.record(state: .running)
@@ -67,14 +133,16 @@ final class JournalStartupPersistenceTests: XCTestCase {
         let staging = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(TransferJournal.stagingOwnerMarker))
-        let json = reports.appendingPathComponent("report.json"), pdf = reports.appendingPathComponent("report.pdf")
-        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("report.json"))
+        let json = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json"), pdf = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json"))
         try Data("ours".utf8).write(to: pdf)
         record.destinations = [try LocalTransferResource(url: backup)]
         record.runDestinationURLs = [backup]
         record.runSourceURL = nil
         record.pendingReportPaths = [json.path, pdf.path]
         record.reportStagingPath = staging.path
+        let stagedFact = try reportFact(for: staging.appendingPathComponent(json.lastPathComponent))
+        record.intendedReportFileFacts = [ReportFileFact(path: json.path, size: stagedFact.size, modificationDate: nil, sha256: stagedFact.sha256)]
         record.reportFileFacts = [try reportFact(for: pdf)]
         record.pendingWithdrawalPaths = [json.path, pdf.path, staging.path]
         var depth = 0
@@ -165,6 +233,7 @@ final class JournalStartupPersistenceTests: XCTestCase {
             try FileManager.default.createDirectory(at: marker, withIntermediateDirectories: false)
             try Data("safe".utf8).write(to: first.appendingPathComponent("retained.pdf"))
             try journal.recordPendingReportPaths(id: id, paths: [first.path])
+            let removedStaging = Mutex<[String]>([])
             let date = Date()
             do {
                 _ = try await EvidenceWriter.write(kind: .copyAndVerify, destinationURLs: [backup], pdfData: nil,
@@ -172,21 +241,30 @@ final class JournalStartupPersistenceTests: XCTestCase {
                     sourceURL: source, fileCount: 0, matchCount: 0, totalBytesProcessed: 0, workers: 1, filesPerSecond: 1,
                     prefs: .init(), generateFullReport: true, projectCSV: nil, projectJSON: Optional<String>.none,
                     safeToErase: true, recordIntendedPaths: { try journal.recordPendingReportPaths(id: id, paths: $0) },
+                    didRemoveStaging: { path in removedStaging.withLock { $0.append(path) } },
                     beforePublish: { _ in throw NSError(domain: "stop", code: 1) })
                 XCTFail("Expected publication to stop")
-            } catch { }
+            } catch {
+                XCTAssertEqual((error as NSError).domain, "stop")
+            }
             paths = try XCTUnwrap(journal.records.first?.reportStagingPaths)
             XCTAssertEqual(paths.count, 2)
             XCTAssertTrue(paths.contains(first.path))
             XCTAssertTrue(paths.contains(first.path + "-2"))
-            try FileManager.default.removeItem(at: marker)
-            try Data(id.uuidString.utf8).write(to: marker)
+            let removed = removedStaging.withLock { $0 }
+            XCTAssertEqual(removed, [first.path + "-2"])
+            try journal.interrupt(id: id, summary: "Publication stopped", removedStagingPaths: removed)
+            XCTAssertEqual(journal.records.first?.reportStagingPaths, [first.path])
         }
         let reopened = TransferJournal(fileURL: history)
         XCTAssertNil(reopened.persistenceError)
-        XCTAssertNil(reopened.records.first?.reportStagingPaths)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path))
-        XCTAssertTrue(paths.allSatisfy { !FileManager.default.fileExists(atPath: $0) })
+        XCTAssertEqual(reopened.records.first?.reportStagingPaths, [first.path])
+        XCTAssertTrue(reopened.records.first?.pendingWithdrawalPaths?.contains(first.path) == true)
+        var markerIsDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.appendingPathComponent(TransferJournal.stagingOwnerMarker).path, isDirectory: &markerIsDirectory))
+        XCTAssertTrue(markerIsDirectory.boolValue)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: first.appendingPathComponent("retained.pdf").path))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: first.path + "-2"))
     }
 
     func testStartupVisitsEveryRecordedStagingDirectory() throws {
@@ -198,10 +276,12 @@ final class JournalStartupPersistenceTests: XCTestCase {
         for folder in [first, second] {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             try Data(record.id.uuidString.utf8).write(to: folder.appendingPathComponent(TransferJournal.stagingOwnerMarker))
-            try Data("safe".utf8).write(to: folder.appendingPathComponent("report.pdf"))
+            try Data("safe".utf8).write(to: folder.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.pdf"))
         }
         record.destinations = [try LocalTransferResource(url: backup)]
         record.runDestinationURLs = [backup]
+        let fact = try reportFact(for: first.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.pdf"))
+        record.intendedReportFileFacts = [ReportFileFact(path: reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.pdf").path, size: fact.size, modificationDate: nil, sha256: fact.sha256)]
         record.reportStagingPaths = [first.path, second.path]
         try fixture.write([record])
         let journal = TransferJournal(fileURL: fixture.journal)
@@ -553,13 +633,15 @@ final class JournalStartupPersistenceTests: XCTestCase {
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         record.destinations = [try LocalTransferResource(url: backup)]
         record.runDestinationURLs = [backup]
-        let json = reports.appendingPathComponent("fresh.json")
-        let pdf = reports.appendingPathComponent("fresh.pdf")
+        let json = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json")
+        let pdf = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.pdf")
         try Data("safe".utf8).write(to: pdf)
         try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(".bitmatch-owner"))
-        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("fresh.json"))
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json"))
         record.pendingReportPaths = [json.path, pdf.path]
         record.reportStagingPath = staging.path
+        let stagedFact = try reportFact(for: staging.appendingPathComponent(json.lastPathComponent))
+        record.intendedReportFileFacts = [ReportFileFact(path: json.path, size: stagedFact.size, modificationDate: nil, sha256: stagedFact.sha256)]
         try fixture.write([record])
         let journal = TransferJournal(fileURL: fixture.journal)
         XCTAssertNil(journal.records[0].pendingWithdrawalPaths)
@@ -590,16 +672,18 @@ final class JournalStartupPersistenceTests: XCTestCase {
         let staging = reports.appendingPathComponent(".bitmatch-staging-" + record.id.uuidString)
         try FileManager.default.createDirectory(at: staging, withIntermediateDirectories: true)
         try Data(record.id.uuidString.utf8).write(to: staging.appendingPathComponent(".bitmatch-owner"))
-        let pdf = reports.appendingPathComponent("fresh.pdf"), json = reports.appendingPathComponent("fresh.json")
+        let pdf = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.pdf"), json = reports.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json")
         try Data("safe".utf8).write(to: pdf)
-        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("fresh.json"))
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: staging.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json"))
         record.destinations = [try LocalTransferResource(url: backup)]
         record.runDestinationURLs = [backup]
         record.pendingReportPaths = [pdf.path, json.path]
         record.reportStagingPath = staging.path
+        let stagedFact = try reportFact(for: staging.appendingPathComponent(json.lastPathComponent))
+        record.intendedReportFileFacts = [ReportFileFact(path: json.path, size: stagedFact.size, modificationDate: nil, sha256: stagedFact.sha256)]
         let first = TransferJournal.withdrawReports(record: record, paths: [pdf.path, json.path, staging.path], volumeIdentityAt: { _ in "different" })
         guard case .pending = first[staging.path] else { return XCTFail("Proof must stay while withdrawal is pending") }
-        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.appendingPathComponent("fresh.json").path))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.appendingPathComponent("BitMatch_Report_2026-11-27T12-00-00Z.json").path))
         let second = TransferJournal.withdrawReports(record: record, paths: [pdf.path, json.path, staging.path])
         XCTAssertEqual(second[pdf.path], .withdrawn)
         XCTAssertEqual(second[staging.path], .withdrawn)

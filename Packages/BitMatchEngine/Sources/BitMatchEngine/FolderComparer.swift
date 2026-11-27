@@ -13,7 +13,7 @@ public struct FolderComparer: Sendable {
     public init(fileAccess: any FileAccess, checksum: any ChecksumService) {
         self.fileAccess = fileAccess
         self.checksum = checksum
-        self.stagingMarkerRead = { try Data(contentsOf: $0) }
+        self.stagingMarkerRead = { try PinnedReportFile.readContents($0, maximumSize: 16 * 1024 * 1024) }
     }
 
     init(fileAccess: any FileAccess, checksum: any ChecksumService,

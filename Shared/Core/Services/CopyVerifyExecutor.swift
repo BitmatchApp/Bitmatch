@@ -26,7 +26,7 @@ struct CopyVerifyConfig {
     let reportJobID: UUID?
     let recordReportPaths: (@Sendable ([String]) throws -> Void)?
     let recordIntendedReportFacts: (@Sendable ([ReportFileFact]) throws -> Void)?
-    let recordPublishedReportPaths: (@Sendable ([String]) throws -> Void)?
+    let recordPublishedReportPaths: (@Sendable ([String], [String]) throws -> Void)?
     let initialPublicationRecord: LocalTransferRecord?
     let sourceURL: URL
     let destinationURLs: [URL]
@@ -73,7 +73,7 @@ struct CopyVerifyConfig {
         reportJobID: UUID? = nil,
         recordReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
         recordIntendedReportFacts: (@Sendable ([ReportFileFact]) throws -> Void)? = nil,
-        recordPublishedReportPaths: (@Sendable ([String]) throws -> Void)? = nil,
+        recordPublishedReportPaths: (@Sendable ([String], [String]) throws -> Void)? = nil,
         initialPublicationRecord: LocalTransferRecord? = nil
     ) {
         self.operationId = operationId
@@ -180,6 +180,7 @@ final class CopyVerifyExecutor {
     }
     private var pendingReport: PendingReport?
     private var unsettledStagingPaths: Set<String> = []
+    private(set) var removedStagingPaths: Set<String> = []
     private var unsettledOriginalPaths: Set<String> = []
     private var unsettledExportPaths: Set<String> = []
     private(set) var withdrawnReportPaths: [String: String] = [:]
@@ -248,6 +249,7 @@ final class CopyVerifyExecutor {
         cancellationRequested = false
         pendingReport = nil
         unsettledStagingPaths.removeAll()
+        removedStagingPaths.removeAll()
         unsettledOriginalPaths.removeAll()
         unsettledExportPaths.removeAll()
         withdrawnReportPaths.removeAll()
@@ -861,6 +863,11 @@ final class CopyVerifyExecutor {
         }
         let pathsToValidate = Mutex(initialPaths ?? [])
         let intendedPaths = Mutex<[String]>([])
+        let removedStaging = Mutex<Set<String>>([])
+        defer {
+            removedStagingPaths.subtract(intendedPaths.withLock { $0 })
+            removedStagingPaths.formUnion(removedStaging.withLock { $0 })
+        }
         // Spelled as if-let rather than Optional.map returning a closure: the
         // compiler cannot type-check the nested @Sendable closure form.
         var recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil
@@ -924,12 +931,15 @@ final class CopyVerifyExecutor {
                 replacing: replacing,
                 recordIntendedPaths: recordIntendedPaths,
                 recordIntendedFacts: factRecorder,
+                didRemoveStaging: { path in _ = removedStaging.withLock { $0.insert(path) } },
                 validatePublication: validatePublication,
                 validateReplacement: validateReplacement,
                 beforePublish: beforePublish,
                 beforeRestore: beforeRestore
             )
-            try publishedRecorder?(files.map(\.path))
+            // EvidenceWriter records the current staging directory last.
+            let staged = intendedPaths.withLock { Array($0.suffix(1)) }
+            try publishedRecorder?(files.map(\.path), staged)
             return files
         }
         if !recovery { reportTask = work }
@@ -1030,12 +1040,14 @@ final class CopyVerifyExecutor {
     }
 
     var pendingPublishedReportPaths: [String] {
-        Array(Set((pendingReport?.files.map(\.path) ?? []) + Array(unsettledStagingPaths) + Array(unsettledOriginalPaths) + Array(unsettledExportPaths))).sorted()
+        Array(Set((pendingReport?.files.map(\.path) ?? []) + Array(unsettledStagingPaths) + Array(unsettledOriginalPaths) + Array(unsettledExportPaths))
+            .subtracting(removedStagingPaths)).sorted()
     }
 
     /// Use the same identity and ownership checks as interrupted-run recovery.
     func withdrawPendingReports(record: LocalTransferRecord, excluding: Set<String> = [], includeStaging: Bool = true) -> [String: TransferJournal.ReportWithdrawalOutcome] {
         let allPaths = Set(pendingPublishedReportPaths + (record.pendingReportPaths ?? []) + (includeStaging ? (record.reportStagingPaths ?? []) : []))
+            .subtracting(removedStagingPaths)
         let paths = allPaths.subtracting(excluding).sorted()
         var snapshot = record
         snapshot.pendingReportPaths = Array(allPaths).sorted()

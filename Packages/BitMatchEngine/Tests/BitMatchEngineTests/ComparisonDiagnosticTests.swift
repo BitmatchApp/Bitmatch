@@ -4,6 +4,22 @@ import XCTest
 @testable import BitMatchEngine
 
 final class ComparisonDiagnosticTests: XCTestCase {
+    func testCompareRejectsOversizedWithdrawnProofWithDefaultReader() async throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? fm.removeItem(at: root) }
+        let left = root.appendingPathComponent("source"), right = root.appendingPathComponent("backup")
+        let reports = right.appendingPathComponent("Reports")
+        try fm.createDirectory(at: left, withIntermediateDirectories: true)
+        try fm.createDirectory(at: reports, withIntermediateDirectories: true)
+        let id = UUID(), base = ".unsettled-\(id.uuidString)-BitMatch_Report_2026-11-27T12-00-00Z"
+        let oversized = try JSONSerialization.data(withJSONObject: ["jobId": id.uuidString, "padding": String(repeating: "x", count: 17 * 1024 * 1024)])
+        try oversized.write(to: reports.appendingPathComponent(base + ".json"))
+        try Data().write(to: reports.appendingPathComponent(base + ".pdf"))
+        let comparer = FolderComparer(fileAccess: LocalFileAccess(), checksum: ChecksumEngine.shared)
+        let result = try await comparer.compare(left: left, right: right, verificationMode: .standard, progress: { _ in })
+        XCTAssertTrue(result.onlyInRightPaths.contains("Reports/" + base + ".pdf"))
+    }
     func testWithdrawnProofRejectsOversizedJSONAndFIFO() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

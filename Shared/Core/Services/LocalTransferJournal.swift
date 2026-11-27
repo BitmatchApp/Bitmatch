@@ -563,12 +563,12 @@ final class LocalTransferJournal: ObservableObject {
         return { facts in try store.recordIntendedReportFacts(id: id, facts: facts, publicationID: id) }
     }
 
-    func publishedReportPathRecorder(id: UUID) -> @Sendable ([String]) throws -> Void {
+    func publishedReportPathRecorder(id: UUID) -> @Sendable ([String], [String]) throws -> Void {
         let store = self.store
         let beforePromotion = beforeReportFactsPromotion
-        return { paths in
+        return { paths, staging in
             try beforePromotion?(id)
-            try store.promoteIntendedReportFacts(id: id, paths: paths)
+            try store.promoteIntendedReportFacts(id: id, paths: paths, stagingPaths: staging)
         }
     }
 
@@ -742,6 +742,7 @@ final class LocalTransferJournal: ObservableObject {
 
     func retainInterruptedOverride(id: UUID, summary: String, results: [ResultRow],
                                    pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil,
+                                   removedStagingPaths: [String] = [],
                                    pendingCancellation: Bool = false) {
         guard var record = records.first(where: { $0.id == id }) else { return }
         record.state = .interrupted
@@ -749,6 +750,10 @@ final class LocalTransferJournal: ObservableObject {
         record.results = results
         record.endedAt = Date()
         record.expectedExclusionQueueQualification = nil
+        let remainingStaging = (record.reportStagingPaths ?? []).filter { !removedStagingPaths.contains($0) }
+        record.reportStagingPaths = remainingStaging.isEmpty ? nil : remainingStaging
+        record.reportStagingPath = remainingStaging.last
+        let pendingWithdrawalPaths = pendingWithdrawalPaths?.filter { !removedStagingPaths.contains($0) }
         record.pendingWithdrawalPaths = pendingWithdrawalPaths
         if let pendingWithdrawalPaths, !pendingWithdrawalPaths.isEmpty {
             record.pendingReportPaths = Array(Set((record.pendingReportPaths ?? []) + pendingWithdrawalPaths)).sorted()
@@ -784,7 +789,7 @@ final class LocalTransferJournal: ObservableObject {
         sourceFingerprint: String? = nil,
         skippedFinderMetadataPaths: [String]? = nil,
         projectCardSnapshot: Data? = nil,
-        pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil
+        pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil, removedStagingPaths: [String] = []
     ) throws {
         defer { refresh() }
         try beforeFinish?(id)
@@ -801,28 +806,28 @@ final class LocalTransferJournal: ObservableObject {
             sourceFingerprint: sourceFingerprint,
             skippedFinderMetadataPaths: skippedFinderMetadataPaths,
             projectCardSnapshot: projectCardSnapshot,
-            pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths
+            pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths, removedStagingPaths: removedStagingPaths
         )
     }
 
-    func recordReportPublicationFailure(id: UUID, summary: String, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
+    func recordReportPublicationFailure(id: UUID, summary: String, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil, removedStagingPaths: [String] = []) throws {
         defer { refresh() }
-        try store.recordReportPublicationFailure(id: id, summary: summary, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths)
+        try store.recordReportPublicationFailure(id: id, summary: summary, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths, removedStagingPaths: removedStagingPaths)
     }
 
     func matchingVerifiedRecord(sourceFingerprint: String) -> LocalTransferRecord? {
         store.matchingVerifiedRecord(sourceFingerprint: sourceFingerprint)
     }
 
-    func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
+    func interrupt(id: UUID, summary: String, results: [ResultRow]? = nil, reason: ResultFailureReason? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil, removedStagingPaths: [String] = []) throws {
         defer { refresh() }
         try beforeInterrupt?(id)
-        try store.interrupt(id: id, summary: summary, results: results, reason: reason, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths)
+        try store.interrupt(id: id, summary: summary, results: results, reason: reason, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths, removedStagingPaths: removedStagingPaths)
     }
 
-    func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil) throws {
+    func cancel(id: UUID, summary: String = "Cancelled", results: [ResultRow]? = nil, pendingWithdrawalReason: String? = nil, pendingWithdrawalPaths: [String]? = nil, removedStagingPaths: [String] = []) throws {
         defer { refresh() }
         try beforeCancel?(id)
-        try store.cancel(id: id, summary: summary, results: results, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths)
+        try store.cancel(id: id, summary: summary, results: results, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: pendingWithdrawalPaths, removedStagingPaths: removedStagingPaths)
     }
 }

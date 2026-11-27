@@ -566,6 +566,7 @@ public enum EvidenceWriter: Sendable {
                                         replacing: [URL]? = nil,
                                         recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil,
                                         recordIntendedFacts: (@Sendable ([ReportFileFact]) throws -> Void)? = nil,
+                                        didRemoveStaging: (@Sendable (String) -> Void)? = nil,
                                         beforeStagedReportRead: (@Sendable (URL) -> Void)? = nil,
                                         validatePublication: (@Sendable () throws -> Void)? = nil,
                                         validateReplacement: (@Sendable (URL) throws -> Void)? = nil,
@@ -651,14 +652,10 @@ public enum EvidenceWriter: Sendable {
             if mkdir(stagingDirectory.path, 0o700) == 0 {
                 createdStaging = true
                 do {
-                    if recordIntendedPaths != nil {
-                        try Data(jobID.uuidString.utf8).write(to: stagingDirectory.appendingPathComponent(TransferJournal.stagingOwnerMarker), options: .withoutOverwriting)
-                    }
+                    try Data(jobID.uuidString.utf8).write(to: stagingDirectory.appendingPathComponent(TransferJournal.stagingOwnerMarker), options: .withoutOverwriting)
                 } catch {
                     // A path occupied during marker creation is not ours to remove.
-                    if recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) {
-                        try? FileManager.default.removeItem(at: stagingDirectory)
-                    }
+                    _ = rmdir(stagingDirectory.path)
                     throw error
                 }
                 break
@@ -681,7 +678,9 @@ public enum EvidenceWriter: Sendable {
         do { try recordIntendedPaths?((intendedURLs + [stagingDirectory]).map(\.path)) }
         catch {
             if createdStaging && (recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID)) {
-                try? FileManager.default.removeItem(at: stagingDirectory)
+                if (try? TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID, facts: [])) != nil {
+                    didRemoveStaging?(stagingDirectory.path)
+                }
             }
             throw error
         }
@@ -695,6 +694,12 @@ public enum EvidenceWriter: Sendable {
         var published: [URL] = []
         var intendedFacts: [String: ReportFileFact] = [:]
         var previousFacts: [String: ReportFileFact] = [:]
+        func rememberStaged(_ url: URL) throws {
+            beforeStagedReportRead?(staged(url))
+            let fact = try reportFact(staged(url), publicURL: url)
+            try recordIntendedFacts?([fact])
+            intendedFacts[url.path] = fact
+        }
         do {
             // Build the complete report in a hidden directory on the report volume.
             try exportEnhancedCSV(results: results,
@@ -712,6 +717,7 @@ public enum EvidenceWriter: Sendable {
                                  scope: kind == .copyAndVerify && safeToErase != nil
                                      ? (verificationScope ?? prefs.verificationMode.map { VerificationScopeEvidence(selectedMode: $0, results: results, skipFinderViewFiles: prefs.skipFinderViewFiles) })
                                      : nil)
+            try rememberStaged(csvURL)
             
             try Task.checkCancellation()
             // Save enhanced JSON report
@@ -745,10 +751,12 @@ public enum EvidenceWriter: Sendable {
                 verificationScope: verificationScope,
                 skipsProven: skipsProven
             )
+            try rememberStaged(jsonURL)
             
             // If checksums were used, auto-export checksum file (no dialog)
             if generateFullReport, let algorithm = checksumAlgorithm {
                 try writeRecordedChecksumManifest(results: results, algorithm: algorithm, to: staged(checksumURL))
+                try rememberStaged(checksumURL)
             }
 
             try Task.checkCancellation()
@@ -757,6 +765,7 @@ public enum EvidenceWriter: Sendable {
             if generateFullReport, let pdfData {
                 try beforePDFWrite?()
                 try pdfData.write(to: staged(pdfURL), options: .atomic)
+                try rememberStaged(pdfURL)
             }
 
             var finalURLs = [csvURL]
@@ -770,12 +779,6 @@ public enum EvidenceWriter: Sendable {
             }
             // Hash the bytes we produced, before any public path can be replaced.
             // The caller runs report export on its detached worker.
-            let facts = try finalURLs.map { url in
-                beforeStagedReportRead?(staged(url))
-                return try reportFact(staged(url), publicURL: url)
-            }
-            intendedFacts = Dictionary(uniqueKeysWithValues: facts.map { ($0.path, $0) })
-            try recordIntendedFacts?(facts)
             for url in finalURLs where replacing?.contains(url) == true {
                 try validatePublication?()
                 try validateReplacement?(url)
@@ -809,10 +812,9 @@ public enum EvidenceWriter: Sendable {
             // Cleanup is part of publication: a failed removal must not be
             // reported as success while provisional evidence remains behind.
             try beforeStagingRemoval?(stagingDirectory)
-            guard recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) else {
-                throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
-            }
-            try FileManager.default.removeItem(at: stagingDirectory)
+            try TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID,
+                facts: Array(intendedFacts.values) + Array(previousFacts.values))
+            didRemoveStaging?(stagingDirectory.path)
             SharedLogger.info("Report auto-saved successfully to: \(pdfURL.path)")
             return published
 
@@ -886,10 +888,9 @@ public enum EvidenceWriter: Sendable {
             }
             if cleanupErrors.isEmpty && FileManager.default.fileExists(atPath: stagingDirectory.path) {
                 do {
-                    guard recordIntendedPaths == nil || TransferJournal.ownsStagingDirectory(stagingDirectory, recordID: jobID) else {
-                        throw FileOperationError.unsafeOperation("Staging ownership marker is missing or does not match")
-                    }
-                    try FileManager.default.removeItem(at: stagingDirectory)
+                    try TransferJournal.removeOwnedStagingDirectory(stagingDirectory, recordID: jobID,
+                        facts: Array(intendedFacts.values) + Array(previousFacts.values))
+                    didRemoveStaging?(stagingDirectory.path)
                 }
                 catch { cleanupErrors.append("\(stagingDirectory.path): \(error.localizedDescription)") }
             }
