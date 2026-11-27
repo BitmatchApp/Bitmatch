@@ -394,6 +394,7 @@ class SharedAppCoordinator: ObservableObject {
     private let beforeProjectCardCommit: (() throws -> Void)?
     private let beforeRecoveryReportPublish: (@Sendable (URL) throws -> Void)?
     private let beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)?
+    private let afterFreshSettlementReportPublished: (([URL]) -> Void)?
     private let beforeReportWithdrawal: (() throws -> Void)?
     private var pendingProjectFinalization: (() throws -> Void)?
     private var pendingProjectCardSnapshot: Data?
@@ -405,7 +406,8 @@ class SharedAppCoordinator: ObservableObject {
             stateService: stateService,
             backgroundTaskService: backgroundTaskService,
             beforeRecoveryReportPublish: beforeRecoveryReportPublish,
-            beforeRecoveryReportRestore: beforeRecoveryReportRestore
+            beforeRecoveryReportRestore: beforeRecoveryReportRestore,
+            afterFreshSettlementReportPublished: afterFreshSettlementReportPublished
         )
     }()
     private(set) lazy var comparisonCoordinator: ComparisonCoordinator = {
@@ -983,10 +985,12 @@ class SharedAppCoordinator: ObservableObject {
         beforeProjectCardCommit: (() throws -> Void)? = nil,
         beforeRecoveryReportPublish: (@Sendable (URL) throws -> Void)? = nil,
         beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)? = nil,
-        beforeReportWithdrawal: (() throws -> Void)? = nil
+        beforeReportWithdrawal: (() throws -> Void)? = nil,
+        afterFreshSettlementReportPublished: (([URL]) -> Void)? = nil
     ) {
         self.beforeRecoveryReportPublish = beforeRecoveryReportPublish
         self.beforeRecoveryReportRestore = beforeRecoveryReportRestore
+        self.afterFreshSettlementReportPublished = afterFreshSettlementReportPublished
         self.beforeReportWithdrawal = beforeReportWithdrawal
         self.beforeProjectCardCommit = beforeProjectCardCommit
         self.beforeRecoveryReportSettlement = beforeRecoveryReportSettlement
@@ -2831,34 +2835,28 @@ class SharedAppCoordinator: ObservableObject {
                     && record.destinations[mapping.destinationIndex].volumeID == nil
             }
         }
-        func noteUnprovenOriginalReports() {
-            let paths = copyVerifyExecutor.unprovenOriginalReportPaths
-            guard !paths.isEmpty else { return }
-            withdrawalPaths = Array(Set((withdrawalPaths ?? []) + paths)).sorted()
-            pendingWithdrawalReason = "The original report ownership could not be confirmed"
-        }
-        func withdrawPublishedReports() -> String {
+        func withdrawPublishedReports(excluding: Set<String> = [], includeStaging: Bool = true) -> String {
             let stored = transferJournal.storedRecord(id: recordID)
-            let paths = Array(Set(copyVerifyExecutor.pendingPublishedReportPaths + (stored?.pendingReportPaths ?? [])
-                + [stored?.reportStagingPath].compactMap { $0 })).sorted()
+            let paths = Set(copyVerifyExecutor.pendingPublishedReportPaths + (stored?.pendingReportPaths ?? [])
+                + (includeStaging ? [stored?.reportStagingPath].compactMap { $0 } : [])).subtracting(excluding).sorted()
             do { try beforeReportWithdrawal?() } catch {
-                withdrawalPaths = paths
+                withdrawalPaths = Array(Set((withdrawalPaths ?? []) + paths)).sorted()
                 pendingWithdrawalReason = error.localizedDescription
                 return "Reports are unsettled and will be withdrawn: \(error.localizedDescription)."
             }
             guard let record = transferJournal.storedRecord(id: recordID) else {
                 if !paths.isEmpty {
-                    withdrawalPaths = paths
+                    withdrawalPaths = Array(Set((withdrawalPaths ?? []) + paths)).sorted()
                     pendingWithdrawalReason = "The original destination identity is unavailable"
                 }
                 return paths.isEmpty ? "No published reports to withdraw." : "Published reports could not be checked."
             }
-            let outcomes = copyVerifyExecutor.withdrawPendingReports(record: record)
+            let outcomes = copyVerifyExecutor.withdrawPendingReports(record: record, excluding: excluding, includeStaging: includeStaging)
             let pending = paths.filter { if case .pending = outcomes[$0] { return true }; return false }
             let withdrawn = paths.filter { outcomes[$0] == .withdrawn }
             let absent = paths.filter { outcomes[$0] == .absentOnVerifiedBackup }
             if !pending.isEmpty {
-                withdrawalPaths = pending
+                withdrawalPaths = Array(Set((withdrawalPaths ?? []) + pending)).sorted()
                 pendingWithdrawalReason = pending.compactMap { path in
                     guard case .pending(let reason) = outcomes[path] else { return nil }
                     return "\(path): \(reason)"
@@ -2878,13 +2876,19 @@ class SharedAppCoordinator: ObservableObject {
             if !pending.isEmpty { notes.append("Report withdrawal remains pending: " + pending.joined(separator: ", ") + ".") }
             return notes.isEmpty ? "No published reports to withdraw." : notes.joined(separator: " ")
         }
+        func withdrawReportsNotReplacedByWarning() {
+            let replaced = copyVerifyExecutor.unsafeSettledReportPaths
+            let recorded = transferJournal.storedRecord(id: recordID)?.pendingReportPaths ?? []
+            let remaining = Set(copyVerifyExecutor.pendingPublishedReportPaths + recorded).subtracting(replaced)
+            if !remaining.isEmpty { _ = withdrawPublishedReports(excluding: replaced, includeStaging: false) }
+        }
         do {
             currentOperation = try await copyVerifyExecutor.execute(config: config, callbacks: callbacks)
             let belongsToQueueSession = runBelongsToQueueSession
             if startCancellationRequested {
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer cancelled", record: transferJournal.storedRecord(id: recordID))
                 notePathMatchedReport()
-                noteUnprovenOriginalReports()
+                withdrawReportsNotReplacedByWarning()
                 let summary = "Cancelled by user (\(cancellationOrigin.rawValue))." + (reportMatchedByPath ? " Destination identity unavailable; matched by path." : "")
                 try transferJournal.cancel(id: recordID, summary: summary, results: runResults.rows, pendingWithdrawalReason: pendingWithdrawalReason, pendingWithdrawalPaths: withdrawalPaths)
                 SharedLogger.transferEvent(.journalCancelled, run: startID, explicit: true)
@@ -2912,7 +2916,7 @@ class SharedAppCoordinator: ObservableObject {
                         try beforeRecoveryReportSettlement?()
                         try await copyVerifyExecutor.settleReportAfterHistory(failure: "Transfer report export failed: \(exportError.localizedDescription)", record: transferJournal.storedRecord(id: recordID))
                         notePathMatchedReport()
-                        noteUnprovenOriginalReports()
+                        withdrawReportsNotReplacedByWarning()
                     } catch {
                         let deletion = withdrawPublishedReports()
                         recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
@@ -2937,7 +2941,7 @@ class SharedAppCoordinator: ObservableObject {
                             try beforeRecoveryReportSettlement?()
                             try await copyVerifyExecutor.settleReportAfterHistory(failure: "Project card could not be saved: \(cardError.localizedDescription)", record: transferJournal.storedRecord(id: recordID))
                             notePathMatchedReport()
-                            noteUnprovenOriginalReports()
+                            withdrawReportsNotReplacedByWarning()
                         } catch {
                             let deletion = withdrawPublishedReports()
                             recoveryError = "Could not replace the reports with a keep-card warning: \(error.localizedDescription). \(deletion)"
@@ -3006,7 +3010,7 @@ class SharedAppCoordinator: ObservableObject {
                 await beforeRecoveryReportSettlementAsync?()
                 try await copyVerifyExecutor.settleReportAfterHistory(failure: reason, record: transferJournal.storedRecord(id: recordID))
                 notePathMatchedReport()
-                noteUnprovenOriginalReports()
+                withdrawReportsNotReplacedByWarning()
             } catch {
                 let deletion = withdrawPublishedReports()
                 reportFailure = "The reports could not be replaced: \(error.localizedDescription). \(deletion)"

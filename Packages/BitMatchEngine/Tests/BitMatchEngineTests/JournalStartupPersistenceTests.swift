@@ -36,6 +36,8 @@ final class JournalStartupPersistenceTests: XCTestCase {
         let outcomes = TransferJournal.withdrawReports(record: record, paths: paths, volumeIdentityAt: { _ in nil })
         XCTAssertEqual(outcomes[json.path], .withdrawn)
         XCTAssertEqual(outcomes[pdf.path], .withdrawn)
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        try Data("safe".utf8).write(to: pdf)
         record.pendingWithdrawalPaths = paths
         let recovered = await TransferJournal.recoverPendingWithdrawals(record)
         XCTAssertTrue(recovered.summary.lowercased().contains("destination identity unavailable; matched by path"))
@@ -48,6 +50,48 @@ final class JournalStartupPersistenceTests: XCTestCase {
         XCTAssertThrowsError(try TransferJournal.validateReportPublication(record: record, paths: [escaped], volumeIdentityAt: { _ in nil }))
         try FileManager.default.removeItem(at: backup)
         XCTAssertThrowsError(try TransferJournal.validateReportPublication(record: record, paths: paths, volumeIdentityAt: { _ in nil }))
+    }
+
+    func testNilIdentityMissingReportsOnReplacementTreeRemainPending() async throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalTransferResource(url: backup))) as? [String: Any])
+        encoded.removeValue(forKey: "volumeID")
+        record.destinations = [try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: encoded))]
+        record.runDestinationURLs = [backup]
+        let paths = ["report.json", "report.pdf"].map { reports.appendingPathComponent($0).path }
+        record.pendingReportPaths = paths
+        record.pendingWithdrawalPaths = paths
+        try FileManager.default.moveItem(at: backup, to: fixture.root.appendingPathComponent("original-backup"))
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+
+        let recovered = await TransferJournal.recoverPendingWithdrawals(record)
+        XCTAssertEqual(Set(recovered.pendingWithdrawalPaths ?? []), Set(paths))
+        XCTAssertTrue(recovered.withdrawalReason?.contains("destination identity unavailable; cannot confirm the report is gone") == true)
+        XCTAssertTrue(recovered.summary.contains("Reports on an unavailable backup may still read safe"))
+    }
+
+    func testNilIdentityOwnedJSONAllowsMissingStemMemberToClear() throws {
+        let fixture = try Fixture(); defer { fixture.cleanup() }
+        var record = try fixture.record(state: .interrupted)
+        let backup = fixture.root.appendingPathComponent("backup")
+        let reports = backup.appendingPathComponent("Reports")
+        try FileManager.default.createDirectory(at: reports, withIntermediateDirectories: true)
+        var encoded = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(LocalTransferResource(url: backup))) as? [String: Any])
+        encoded.removeValue(forKey: "volumeID")
+        record.destinations = [try JSONDecoder().decode(LocalTransferResource.self, from: JSONSerialization.data(withJSONObject: encoded))]
+        record.runDestinationURLs = [backup]
+        let json = reports.appendingPathComponent("report.json")
+        let missing = reports.appendingPathComponent("report.pdf")
+        try JSONSerialization.data(withJSONObject: ["jobId": record.id.uuidString]).write(to: json)
+        let paths = [json.path, missing.path]
+        record.pendingReportPaths = paths
+        let outcomes = TransferJournal.withdrawReports(record: record, paths: paths, volumeIdentityAt: { _ in nil })
+        XCTAssertEqual(outcomes[json.path], .withdrawn)
+        XCTAssertEqual(outcomes[missing.path], .absentOnVerifiedBackup)
     }
     func testStartupWithdrawsFreshStemAndStagingButKeepsForeignOriginalPending() throws {
         let fixture = try Fixture(); defer { fixture.cleanup() }

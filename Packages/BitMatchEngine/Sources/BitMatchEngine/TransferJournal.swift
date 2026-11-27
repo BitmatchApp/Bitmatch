@@ -727,6 +727,10 @@ public final class TransferJournal: Sendable {
                     var info = stat()
                     if lstat(url.path, &info) != 0 {
                         guard errno == ENOENT else { throw FileOperationError.unsafeOperation("Cannot inspect staging directory") }
+                        let index = roots.firstIndex { reportComparablePath($0.appendingPathComponent("Reports", isDirectory: true)) == reportComparablePath(url.deletingLastPathComponent()) }
+                        guard let index, record.destinations.indices.contains(index), record.destinations[index].volumeID != nil else {
+                            throw FileOperationError.unsafeOperation("destination identity unavailable; cannot confirm the report is gone")
+                        }
                         outcomes[path] = .absentOnVerifiedBackup
                     } else {
                         guard (info.st_mode & mode_t(S_IFMT)) == mode_t(S_IFDIR) else {
@@ -844,7 +848,13 @@ public final class TransferJournal: Sendable {
             for path in group {
                 guard let url = resolved(path) else { fail([path], "Recorded path could not be mapped to the confirmed destination \(rootURL.path)"); continue }
                 guard verifiedParent(url) else { fail([path], "Report parent or its volume could not be confirmed at \(url.path)"); continue }
-                if absent(url) { outcomes[path] = .absentOnVerifiedBackup }
+                if absent(url) {
+                    if destination.volumeID != nil {
+                        outcomes[path] = .absentOnVerifiedBackup
+                    } else {
+                        fail([path], "destination identity unavailable; cannot confirm the report is gone")
+                    }
+                }
             }
             let outstanding = group.filter { if case .pending = outcomes[$0] { return true }; return false }
             guard !outstanding.isEmpty else { continue }
@@ -853,7 +863,14 @@ public final class TransferJournal: Sendable {
                     && !isStaging(URL(fileURLWithPath: $0))
             }
             guard jsonPaths.count == 1 else {
-                fail(outstanding, "Recorded ownership JSON or report parent could not be confirmed: " + outstanding.joined(separator: ", ")); continue
+                for path in outstanding {
+                    if destination.volumeID == nil, let url = resolved(path), absent(url) {
+                        fail([path], "destination identity unavailable; cannot confirm the report is gone")
+                    } else {
+                        fail([path], "Recorded ownership JSON or report parent could not be confirmed: " + path)
+                    }
+                }
+                continue
             }
             let acceptedIDs = record.reportPublicationID.map { Set([$0]) }
                 ?? Set([record.id, record.operationID].compactMap { $0 })
@@ -894,13 +911,24 @@ public final class TransferJournal: Sendable {
                 break
             }
             guard let ownership, let json = resolved(ownership) else {
-                fail(outstanding, ownershipFailure ?? "Recorded ownership JSON could not be confirmed: " + outstanding.joined(separator: ", ")); continue
+                for path in outstanding {
+                    if destination.volumeID == nil, let url = resolved(path), absent(url) {
+                        fail([path], "destination identity unavailable; cannot confirm the report is gone")
+                    } else {
+                        fail([path], ownershipFailure ?? "Recorded ownership JSON could not be confirmed: " + path)
+                    }
+                }
+                continue
             }
             var failed = false
             for path in outstanding.sorted(by: { ($0 == ownership ? 1 : 0) < ($1 == ownership ? 1 : 0) }) {
                 if path == ownership && failed { continue }
                 guard let url = resolved(path), verifiedParent(url), verifiedParent(json) else {
                     fail([path], "Report parent or its volume could not be confirmed"); failed = true; continue
+                }
+                if absent(url) {
+                    outcomes[path] = .absentOnVerifiedBackup
+                    continue
                 }
                 if url.deletingLastPathComponent().lastPathComponent.hasPrefix(".BitMatch-report-staging-") {
                     do { try FileManager.default.removeItem(at: url); outcomes[path] = .withdrawn }

@@ -10,6 +10,54 @@ import Testing
 
 @MainActor
 final class LocalTransferQueueIntegrationTests: XCTestCase {
+    func testCancellationAfterFreshSettlementPublicationTracksEveryStem() async throws {
+        let f = try QueueFixture(); defer { f.cleanup() }
+        let journal = LocalTransferJournal(fileURL: f.journalURL)
+        let id = try journal.enqueue(sourceURL: f.source, destinationURLs: [f.destination],
+            verificationMode: .standard, cameraSettings: .init(), reportSettings: .init(makeReport: true), generateASCMHL: false)
+        weak var activeCoordinator: SharedAppCoordinator?
+        var freshPaths: [String] = []
+        var freshWasSafe: Bool?
+        let coordinator = SharedAppCoordinator(
+            platformManager: QueuePlatformManager(fileOperations: TransferPipeline(fileSystem: MacOSFileSystemService.shared, checksum: ChecksumEngine.shared)),
+            transferJournal: journal, defaults: f.defaults,
+            beforeFinalReportSettlement: {
+                let path = try XCTUnwrap(journal.records.first { $0.id == id }?.pendingReportPaths?.first { $0.hasSuffix(".json") })
+                try Data("foreign file".utf8).write(to: URL(fileURLWithPath: path), options: .atomic)
+            },
+            afterFreshSettlementReportPublished: { files in
+                freshPaths = files.map(\.path)
+                if let json = files.first(where: { $0.pathExtension == "json" }),
+                   let data = try? Data(contentsOf: json),
+                   let object = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] {
+                    freshWasSafe = object["safeToErase"] as? Bool
+                }
+                activeCoordinator?.cancelOperation()
+            })
+        activeCoordinator = coordinator
+        coordinator.startQueue()
+        let ended = await waitUntil(timeout: .seconds(30)) {
+            journal.records.first(where: { $0.id == id })?.state == .cancelled && !coordinator.isOperationInProgress
+        }
+        XCTAssertTrue(ended)
+        XCTAssertTrue(freshPaths.contains { $0.hasSuffix(".json") })
+        XCTAssertEqual(freshWasSafe, true)
+        let record = try XCTUnwrap(journal.records.first { $0.id == id })
+        XCTAssertTrue(Set(freshPaths).isSubset(of: Set(record.pendingReportPaths ?? [])))
+        let persisted = try JSONDecoder().decode([LocalTransferRecord].self, from: Data(contentsOf: f.journalURL))
+        let saved = try XCTUnwrap(persisted.first { $0.id == id })
+        XCTAssertEqual(saved.state, .cancelled)
+        XCTAssertEqual(Set(saved.pendingWithdrawalPaths ?? []), Set(record.pendingWithdrawalPaths ?? []))
+        let scan = await EvidenceReader.scanReports(at: f.destination)
+        XCTAssertTrue(scan.reports.allSatisfy { $0.snapshot.safeToErase == false })
+        let freshJSON = try XCTUnwrap(freshPaths.first { $0.hasSuffix(".json") })
+        let replacement = scan.reports.first { $0.url.path == freshJSON }
+        for path in freshPaths {
+            XCTAssertTrue((record.pendingWithdrawalPaths ?? []).contains(path) ||
+                (FileManager.default.fileExists(atPath: path) && replacement?.snapshot.safeToErase == false), path)
+        }
+    }
+
     func testFailedFinishAndWarningRollbackTracksStagingForRetry() async throws {
         let f = try QueueFixture(); defer { f.cleanup() }
         let journal = LocalTransferJournal(fileURL: f.journalURL, beforeFinish: { _ in throw NSError(domain: "Finish", code: 1) })

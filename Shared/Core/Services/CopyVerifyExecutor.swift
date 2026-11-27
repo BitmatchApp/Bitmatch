@@ -154,6 +154,7 @@ final class CopyVerifyExecutor {
     private let sleepPreventer: TransferSleepPreventing
     private let beforeRecoveryReportPublish: (@Sendable (URL) throws -> Void)?
     private let beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)?
+    private let afterFreshSettlementReportPublished: (([URL]) -> Void)?
 
     // MARK: - State
     private var handoffTask: Task<[String], Error>?
@@ -174,6 +175,8 @@ final class CopyVerifyExecutor {
     private var pendingReport: PendingReport?
     private var unsettledStagingPaths: Set<String> = []
     private var unsettledOriginalPaths: Set<String> = []
+    private var unsettledExportPaths: Set<String> = []
+    private(set) var unsafeSettledReportPaths: Set<String> = []
     private(set) var reportReplacementMismatch: String?
     private var lastReportFiles: [URL] = []
     private var cancellationRequested = false
@@ -203,7 +206,8 @@ final class CopyVerifyExecutor {
         backgroundTaskService: IOSBackgroundTaskService,
         sleepPreventer: TransferSleepPreventing = ProcessInfoSleepPreventer(),
         beforeRecoveryReportPublish: (@Sendable (URL) throws -> Void)? = nil,
-        beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)? = nil
+        beforeRecoveryReportRestore: (@Sendable (URL) throws -> Void)? = nil,
+        afterFreshSettlementReportPublished: (([URL]) -> Void)? = nil
     ) {
         self.platformManager = platformManager
         self.timingService = timingService
@@ -213,6 +217,7 @@ final class CopyVerifyExecutor {
         self.sleepPreventer = sleepPreventer
         self.beforeRecoveryReportPublish = beforeRecoveryReportPublish
         self.beforeRecoveryReportRestore = beforeRecoveryReportRestore
+        self.afterFreshSettlementReportPublished = afterFreshSettlementReportPublished
     }
 
     // MARK: - Execution
@@ -237,6 +242,8 @@ final class CopyVerifyExecutor {
         pendingReport = nil
         unsettledStagingPaths.removeAll()
         unsettledOriginalPaths.removeAll()
+        unsettledExportPaths.removeAll()
+        unsafeSettledReportPaths.removeAll()
         reportReplacementMismatch = nil
         lastReportFiles = []
         highestOverallProgress = 0
@@ -773,7 +780,9 @@ final class CopyVerifyExecutor {
         additionalNotes: String? = nil,
         replacing: [URL]? = nil,
         publicationRecord: LocalTransferRecord? = nil,
-        recovery: Bool = false
+        recovery: Bool = false,
+        settlement: Bool = false,
+        freshSettlement: Bool = false
     ) async throws -> String? {
         if !recovery { try checkCancellation() }
         SharedLogger.transferEvent(.reportStarted, run: config.operationId)
@@ -849,11 +858,13 @@ final class CopyVerifyExecutor {
             }
         }
         let pathsToValidate = Mutex(initialPaths ?? [])
+        let intendedPaths = Mutex<[String]>([])
         // Spelled as if-let rather than Optional.map returning a closure: the
         // compiler cannot type-check the nested @Sendable closure form.
         var recordIntendedPaths: (@Sendable ([String]) throws -> Void)? = nil
         if let record = recorder {
             recordIntendedPaths = { paths in
+                intendedPaths.withLock { $0 = paths }
                 try record(paths)
                 pathsToValidate.withLock { $0 = paths }
             }
@@ -878,6 +889,9 @@ final class CopyVerifyExecutor {
                 try TransferJournal.validateReportReplacement(record: snapshot, paths: paths, target: url.path)
             }
         }
+        // A thrown export must not leave an earlier export's files looking like
+        // the result of this attempt.
+        lastReportFiles = []
         let work = Task.detached(priority: .utility) {
             try await ReportExporter.export(
                 mode: reportMode,
@@ -915,23 +929,35 @@ final class CopyVerifyExecutor {
         }
         if !recovery { reportTask = work }
         defer { reportTask = nil }
+        var exportCompleted = false
         do {
             if recovery {
                 lastReportFiles = try await work.value
             } else {
                 lastReportFiles = try await withTaskCancellationHandler(operation: { try await work.value }, onCancel: { work.cancel() })
+            }
+            exportCompleted = true
+            // A successful export removed its owned staging directory itself.
+            let temporaryPaths = Set(intendedPaths.withLock { $0 }).subtracting(lastReportFiles.map(\.path))
+            unsettledExportPaths.subtract(temporaryPaths)
+            if !recovery {
+                if freshSettlement { afterFreshSettlementReportPublished?(lastReportFiles) }
                 try checkCancellation()
             }
             SharedLogger.transferEvent(.reportFinished, run: config.operationId)
             return nil
         } catch is CancellationError {
+            if settlement { unsettledExportPaths.formUnion(exportCompleted ? lastReportFiles.map(\.path) : intendedPaths.withLock { $0 }) }
             throw CancellationError()
         } catch let error as ReportReplacementOwnershipError {
+            if settlement { unsettledExportPaths.formUnion(intendedPaths.withLock { $0 }) }
             throw error
         } catch let error as ReportExportError where !error.pendingWithdrawalPaths.isEmpty {
+            if settlement { unsettledExportPaths.formUnion(intendedPaths.withLock { $0 }) }
             unsettledStagingPaths.formUnion(error.pendingWithdrawalPaths)
             throw error
         } catch {
+            if settlement { unsettledExportPaths.formUnion(intendedPaths.withLock { $0 }) }
             if !recovery { try checkCancellation() }
             SharedLogger.error("Auto-report failed for job \(operation.id): \(error.localizedDescription)", category: .transfer)
             return error.localizedDescription
@@ -965,7 +991,8 @@ final class CopyVerifyExecutor {
             phaseDurations: pending.phaseDurations, verdictMessage: pending.verdictMessage,
             skipsProven: pending.skipsProven,
             additionalNotes: failure.map { "\($0). Keep the card." },
-            replacing: replacing, publicationRecord: record, recovery: failure != nil
+            replacing: replacing, publicationRecord: record, recovery: failure != nil,
+            settlement: true, freshSettlement: failure == nil && replacing == nil
         )
         }
         let issue: String?
@@ -973,7 +1000,14 @@ final class CopyVerifyExecutor {
             issue = try await export(replacing: pending.files)
         } catch let mismatch as ReportReplacementOwnershipError {
             unsettledOriginalPaths.formUnion(pending.files.map(\.path))
-            issue = try await export(replacing: nil)
+            do {
+                issue = try await export(replacing: nil)
+            } catch {
+                // Cancellation can arrive after the fresh stem was published.
+                // Prefer replacing that stem with a warning during recovery.
+                if !lastReportFiles.isEmpty { pendingReport?.files = lastReportFiles }
+                throw error
+            }
             reportReplacementMismatch = mismatch.localizedDescription
                 + (issue == nil ? " A new report was written alongside the recorded files." : "")
         }
@@ -984,20 +1018,22 @@ final class CopyVerifyExecutor {
         if !unsettledStagingPaths.isEmpty || (failure == nil && !unsettledOriginalPaths.isEmpty) {
             throw FileOperationError.unsafeOperation("Reports are unsettled and will be withdrawn. Keep the card.")
         }
-        if failure != nil { pendingReport = nil }
+        if failure != nil {
+            unsafeSettledReportPaths = Set(lastReportFiles.map(\.path))
+            pendingReport = nil
+        }
     }
 
-    var unprovenOriginalReportPaths: [String] { Array(unsettledOriginalPaths).sorted() }
-
     var pendingPublishedReportPaths: [String] {
-        Array(Set((pendingReport?.files.map(\.path) ?? []) + Array(unsettledStagingPaths) + Array(unsettledOriginalPaths))).sorted()
+        Array(Set((pendingReport?.files.map(\.path) ?? []) + Array(unsettledStagingPaths) + Array(unsettledOriginalPaths) + Array(unsettledExportPaths))).sorted()
     }
 
     /// Use the same identity and ownership checks as interrupted-run recovery.
-    func withdrawPendingReports(record: LocalTransferRecord) -> [String: TransferJournal.ReportWithdrawalOutcome] {
-        let paths = Array(Set(pendingPublishedReportPaths + (record.pendingReportPaths ?? []) + [record.reportStagingPath].compactMap { $0 })).sorted()
+    func withdrawPendingReports(record: LocalTransferRecord, excluding: Set<String> = [], includeStaging: Bool = true) -> [String: TransferJournal.ReportWithdrawalOutcome] {
+        let allPaths = Set(pendingPublishedReportPaths + (record.pendingReportPaths ?? []) + (includeStaging ? [record.reportStagingPath].compactMap { $0 } : []))
+        let paths = allPaths.subtracting(excluding).sorted()
         var snapshot = record
-        snapshot.pendingReportPaths = paths
+        snapshot.pendingReportPaths = Array(allPaths).sorted()
         // The executor may have published before paths were persisted.
         if record.pendingReportPaths != paths { snapshot.relativeReportPaths = nil }
         do {
@@ -1012,6 +1048,8 @@ final class CopyVerifyExecutor {
         pendingReport = nil
         unsettledStagingPaths.removeAll()
         unsettledOriginalPaths.removeAll()
+        unsettledExportPaths.removeAll()
+        unsafeSettledReportPaths.removeAll()
     }
 
     static func photographerLifecycleAfterAuthoritativeCompletion(
