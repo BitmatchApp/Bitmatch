@@ -60,10 +60,11 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
             // path, and the volume's own capabilities must agree; anything else
             // keeps the link path and fails closed if the link is refused.
             let fileSystem = try fileSystemType(directoryFD: destinationFD)
-            let direct = forceDirectFinalPublication
-                || DirectPublicationFilesystems.fatFamily.contains(fileSystem)
-                || (DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystem)
-                    && hardLinkSupport(directoryFD: destinationFD) == false)
+            // Only a measured filesystem needs its capability words read.
+            let hardLinks = DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystem)
+                ? hardLinkSupport(directoryFD: destinationFD) : nil
+            let direct = publishesDirectly(
+                fileSystem: fileSystem, hardLinkSupport: hardLinks, forced: forceDirectFinalPublication)
             if direct, !forceDirectFinalPublication {
                 SharedLogger.destinationPublishesDirectly(fileSystem, path: destination.path)
             }
@@ -85,6 +86,17 @@ public final class PinnedDestinationDirectory: @unchecked Sendable {
             _ = Darwin.close(currentFD)
             throw error
         }
+    }
+
+    /// Whether a destination publishes each file under its final name
+    /// directly (behind a visible status marker) instead of linking a
+    /// finished temp file. FAT always does. A measured filesystem (SMB) does
+    /// only when the volume itself says it cannot hard link; an unknown or a
+    /// "yes" answer keeps the link path, which fails closed if refused.
+    static func publishesDirectly(fileSystem: String, hardLinkSupport: Bool?, forced: Bool) -> Bool {
+        forced
+            || DirectPublicationFilesystems.fatFamily.contains(fileSystem)
+            || (DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystem) && hardLinkSupport == false)
     }
 
     public func openOrCreateDirectory(at relativeComponents: [String]) throws -> Int32 {

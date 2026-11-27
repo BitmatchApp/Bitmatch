@@ -312,6 +312,12 @@ public enum ASCMHLGenerator: Sendable {
         timestamp.dateFormat = "yyyy-MM-dd_HHmmss'Z'"
         let fileSystemType = destinationFileSystemType?.lowercased() ?? ""
         let fatFamily = DirectPublicationFilesystems.fatFamily.contains(fileSystemType)
+        // Deliberately name-based: every SMB volume claims the history
+        // folder directly, even one that says it can hard link, where the
+        // file writer (`PinnedDestinationDirectory.publishesDirectly`) would
+        // still link. Claiming the public name once and writing through its
+        // descriptor never needs a rename, so it is the stricter choice and
+        // is safe on any volume; it only gives up the staging rename.
         let claimsDirectly = fatFamily || DirectPublicationFilesystems.measuredWithoutHardLinks.contains(fileSystemType)
         let prefix = fatFamily ? fatManifestPrefix : (claimsDirectly ? directClaimManifestPrefix : "0001_BitMatch_")
         let name = "\(prefix)\(timestamp.string(from: Date())).mhl"

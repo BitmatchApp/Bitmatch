@@ -28,6 +28,23 @@ struct FanOutTests {
         #expect(try PinnedDestinationDirectory.fileSystemType(directoryFD: fd) == "apfs")
     }
 
+    /// FAT always publishes directly. SMB does only when the volume itself
+    /// says it cannot hard link: an unknown answer or a "yes" keeps the link
+    /// path. Any other filesystem links, whatever it says, unless forced.
+    @Test func directPublicationDecisionTable() {
+        let decide = PinnedDestinationDirectory.publishesDirectly
+        for answer: Bool? in [true, false, nil] {
+            #expect(decide("exfat", answer, false), "exfat \(String(describing: answer))")
+            #expect(decide("apfs", answer, true), "forced \(String(describing: answer))")
+            #expect(decide("smbfs", answer, true), "forced smbfs \(String(describing: answer))")
+        }
+        #expect(decide("smbfs", false, false))
+        #expect(!decide("smbfs", nil, false))
+        #expect(!decide("smbfs", true, false))
+        #expect(!decide("apfs", false, false))
+        #expect(!decide("apfs", nil, false))
+    }
+
     @Test
     func copyStageStartsBeforeFirstLargeFileFinishes() async throws {
         try await FileOperationsTestLock.shared.run {
