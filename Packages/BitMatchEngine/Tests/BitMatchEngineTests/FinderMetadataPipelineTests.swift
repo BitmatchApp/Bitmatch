@@ -162,6 +162,70 @@ import Testing
         }
     }
 
+    /// Writes `contents` as `DCIM/.DS_Store` on the card after the first clip,
+    /// a path the card did not have at Start.
+    private func runCreatingNewDSStore(_ tree: Tree, contents: Data, settings: CameraLabelSettings = CameraLabelSettings()) async throws -> FileOperation {
+        let created = Mutex(false)
+        let folder = tree.source.appendingPathComponent("DCIM")
+        let operation = try await run(tree, settings: settings, onFileResult: { row in
+            guard row.success, row.sourceURL.lastPathComponent == "A001.mov",
+                  !created.withLock({ let was = $0; $0 = true; return was }) else { return }
+            try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            try? contents.write(to: folder.appendingPathComponent(".DS_Store"))
+        })
+        #expect(created.withLock { $0 })
+        return operation
+    }
+
+    private func isNewDSStore(_ row: FileOperationResult) -> Bool {
+        row.sourceURL.path.hasSuffix("DCIM/.DS_Store")
+    }
+
+    @Test func aFinderFileThatAppearsOnTheCardMidRunIsIgnoredAtTheGate() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let operation = try await runCreatingNewDSStore(tree, contents: FinderMetadataFixtures.bud1(size: 6148))
+
+            #expect(!operation.results.contains { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue })
+            #expect(!operation.results.contains(where: isNewDSStore), "no row for the new file")
+            expectSelectedRowsVerified(operation, count: 4)
+            #expect(operation.results.filter(\.skippedFinderMetadata).count == 2)
+            #expect(operation.skippedFinderMetadataPaths == [".DS_Store"], "unchanged from Start")
+            for destination in tree.destinations {
+                let root = SafetyValidator.resolvedDestinationRoot(source: tree.source, destination: destination, settings: operation.settings)
+                #expect(!FileManager.default.fileExists(atPath: root.appendingPathComponent("DCIM/.DS_Store").path), "not copied")
+            }
+        }
+    }
+
+    @Test func anOrdinaryDSStoreThatAppearsOnTheCardMidRunStillFailsTheGate() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            let operation = try await runCreatingNewDSStore(tree, contents: randomBytes(6148))
+
+            let clips = operation.results.filter { $0.sourceURL.pathExtension == "mov" }
+            #expect(clips.count == 4)
+            #expect(clips.allSatisfy { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue })
+            #expect(!operation.results.contains(where: isNewDSStore))
+        }
+    }
+
+    @Test func withTheSettingOffANewFinderFileStillFailsTheGate() async throws {
+        try await FileOperationsTestLock.shared.run {
+            let tree = try makeTree()
+            defer { try? FileManager.default.removeItem(at: tree.root) }
+            var settings = CameraLabelSettings()
+            settings.skipFinderViewFiles = false
+            let operation = try await runCreatingNewDSStore(tree, contents: FinderMetadataFixtures.bud1(size: 6148), settings: settings)
+
+            let rows = operation.results.filter { !isNewDSStore($0) }
+            #expect(rows.count == 6)
+            #expect(rows.allSatisfy { $0.failureReason == ResultFailureReason.sourceUnstable.rawValue })
+        }
+    }
+
     @Test func finderWritingDSStoreOnADestinationBeforeOrAfterCopyIsNotAFailure() async throws {
         try await FileOperationsTestLock.shared.run {
             let tree = try makeTree()

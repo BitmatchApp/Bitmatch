@@ -200,7 +200,8 @@ extension TransferPipeline {
         }
     }
 
-    /// The final gate's recheck of a skipped `.DS_Store` still on the card.
+    /// The final gate's check of a `.DS_Store` on the card: one skipped at
+    /// Start that is still there, or one that appeared during the run.
     /// Vanishing between the scan and this open is not a change; anything
     /// that cannot be proven a Finder view file again is. Only cancellation
     /// throws.
@@ -1473,10 +1474,34 @@ public final class TransferPipeline: FileOperationsService, Sendable {
         // Skipped Finder view files are compared by what they are, not by
         // size or date: Finder may rewrite or delete one at any time. One
         // still present must still be a Finder view file.
+        // A `.DS_Store` Finder created during the run, at a path the card
+        // did not have at Start, is ignored the same way when it proves to
+        // be a Finder view file: no row, not copied. Anything else new
+        // still changes the card.
+        var newFinderPaths: Set<String> = []
+        if operation.settings.skipFinderViewFiles {
+            let initialPaths = Set(completeSourceManifest.map(\.relativePath))
+            let candidates = finalSourceEnumeration.files.filter {
+                $0.url.lastPathComponent == ".DS_Store" && !initialPaths.contains($0.relativePath)
+            }
+            if !candidates.isEmpty {
+                newFinderPaths = Set(try await taggingSourceReadFailure {
+                    try await BoundedBlockingExecutor.transfer.performCancellable { [fileSystem] check in
+                        let sourceURL = operation.sourceURL
+                        let scoped = fileSystem.startAccessing(url: sourceURL)
+                        defer { if scoped { fileSystem.stopAccessing(url: sourceURL) } }
+                        return try candidates.filter { try Self.isStillFinderViewFile($0, checkCancellation: check) }
+                            .map(\.relativePath)
+                    }
+                })
+            }
+        }
         let comparedInitial = skipped.isEmpty ? completeSourceManifest
             : completeSourceManifest.filter { !skippedPaths.contains($0.relativePath) }
-        let comparedCurrent = skipped.isEmpty ? finalSourceEnumeration.files
-            : finalSourceEnumeration.files.filter { !skippedPaths.contains($0.relativePath) }
+        let comparedCurrent = skipped.isEmpty && newFinderPaths.isEmpty ? finalSourceEnumeration.files
+            : finalSourceEnumeration.files.filter {
+                !skippedPaths.contains($0.relativePath) && !newFinderPaths.contains($0.relativePath)
+            }
         if let reason = sourceChangeReason(initial: comparedInitial, current: comparedCurrent)
             ?? (unsupportedChanged ? "The source's links, pipes or devices changed during the transfer" : nil) {
             let error = completionGateError(reason, reason: .sourceUnstable)
